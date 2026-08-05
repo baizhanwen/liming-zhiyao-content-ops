@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
+import { InteractionFeedback } from "../components/InteractionFeedback";
 import "./globals.css";
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -18,7 +19,7 @@ export async function generateMetadata(): Promise<Metadata> {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="zh-CN">
-      <body>{children}</body>
+      <body>{children}<InteractionFeedback /></body>
     </html>
   );
 }

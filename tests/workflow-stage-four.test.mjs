@@ -56,10 +56,11 @@ test("stage four APIs keep tenant scope, client visibility, audit events, and op
 });
 
 test("review, calendar, and publishing navigation use one real workflow workspace", async () => {
-  const [shell, page, workspace] = await Promise.all([
+  const [shell, page, workspace, collection] = await Promise.all([
     readFile(new URL("../components/AppShell.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/workflow/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/WorkflowWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/workflow/route.ts", import.meta.url), "utf8"),
   ]);
   assert.match(shell, /\/workflow\?view=review/);
   assert.match(shell, /\/workflow\?view=calendar/);
@@ -68,5 +69,9 @@ test("review, calendar, and publishing navigation use one real workflow workspac
   assert.match(workspace, /ReviewBoard/);
   assert.match(workspace, /CalendarView/);
   assert.match(workspace, /PublicationView/);
+  assert.match(workspace, /ReviewContentPreview/);
+  assert.match(workspace, /完整口播稿/);
+  assert.match(workspace, /分镜脚本/);
+  assert.match(collection, /v\.pack_json, v\.full_script, v\.short_script/);
+  assert.match(collection, /clientReviewPack/);
 });
-
