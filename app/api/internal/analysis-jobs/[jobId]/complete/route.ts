@@ -11,10 +11,10 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     const payload = parseCompletionPayload(await request.json()); if (!payload) return apiError("INVALID_ANALYSIS_RESULT", "分析结果格式无效或体积超限。", 400);
     const { jobId } = await context.params; const db = getD1(); const nowIso = new Date().toISOString();
     const job = await db.prepare(`
-      SELECT j.id, j.organization_id, j.project_id, j.video_id, j.status, j.progress, j.current_stage, j.lease_owner, j.lease_expires_at, j.attempt_count, j.version, j.result_key
+      SELECT j.id, j.organization_id, j.project_id, j.video_id, j.input_transcript_id, j.status, j.progress, j.current_stage, j.lease_owner, j.lease_expires_at, j.attempt_count, j.version, j.result_key
       FROM analysis_jobs j INNER JOIN videos v ON v.id = j.video_id AND v.organization_id = j.organization_id AND v.project_id = j.project_id
       WHERE j.id = ?
-    `).bind(jobId).first<WorkerJobRow>();
+    `).bind(jobId).first<WorkerJobRow & { input_transcript_id: string | null }>();
     if (!job) return apiError("JOB_NOT_FOUND", "分析任务不存在。", 404);
     if (job.status === "completed" && job.result_key === payload.resultKey) return Response.json({ job: { id: jobId, status: "completed", version: job.version }, idempotent: true });
     if (job.status !== "analyzing") return apiError("INVALID_STATUS_TRANSITION", "只有分析中的任务可以提交最终结果。", 409);
@@ -28,7 +28,7 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     if (payload.transcript) {
       statements.push(db.prepare(`
         INSERT INTO video_transcripts (id, organization_id, project_id, video_id, version, language, source, full_text, segments_json, confidence, created_by, created_at, updated_at)
-        SELECT ?, j.organization_id, j.project_id, j.video_id, (SELECT COALESCE(MAX(t.version), 0) + 1 FROM video_transcripts t WHERE t.video_id = j.video_id), ?, 'asr', ?, ?, ?, ?, ?, ?
+        SELECT ?, j.organization_id, j.project_id, j.video_id, (SELECT COALESCE(MAX(t.version), 0) + 1 FROM video_transcripts t WHERE t.video_id = j.video_id), ?, CASE WHEN j.input_transcript_id IS NULL THEN 'asr' ELSE 'manual' END, ?, ?, ?, ?, ?, ?
         FROM analysis_jobs j INNER JOIN videos v ON v.id = j.video_id AND v.organization_id = j.organization_id AND v.project_id = j.project_id
         WHERE j.id = ? AND j.status = 'completed' AND j.result_key = ? AND j.version = ?
       `).bind(crypto.randomUUID(), payload.transcript.language, payload.transcript.fullText, payload.transcript.segmentsJson, payload.transcript.confidence, actor, nowIso, nowIso, jobId, payload.resultKey, finalVersion));

@@ -59,6 +59,21 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(result.report["evidence"][0]["text"], "先提出问题")
         self.assertEqual(result.confidence, 91)
 
+    def test_manual_transcript_skips_asr_and_drives_reanalysis(self):
+        class ForbiddenSpeech:
+            def transcribe(self, _audio):
+                raise AssertionError("ASR must not run for a manual transcript")
+
+        job = ClaimedJob("job-2", "org-1", "project-1", "video-1", "upload", "queued", 1, 2, {
+            "manual_transcript": {"language": "zh-CN", "segments": [{"start_ms": 0, "end_ms": 2200, "text": "人工校正后的原文"}]}
+        })
+        structure = Structure()
+
+        result = AnalysisPipeline(Source(), Media(), ForbiddenSpeech(), Visual(), structure).process(job, lambda *_: job)
+
+        self.assertEqual(result.transcript.full_text, "人工校正后的原文")
+        self.assertEqual(structure.inputs[2].segments[0].text, "人工校正后的原文")
+
 
 if __name__ == "__main__":
     unittest.main()

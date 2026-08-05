@@ -5,12 +5,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type Video = { id: string; source_type: "url" | "upload"; source_url: string | null; media_url: string | null; title: string | null; author_name: string | null; duration_sec: number | null; status: string; content_type: string | null; filename: string | null };
 type Job = { status: string; progress: number; current_stage: string | null; error_code: string | null; error_message: string | null; completed_at: string | null };
-type Transcript = { language: string; source: string; full_text: string; confidence: number | null; segments: unknown };
+type Transcript = { id: string; version: number; language: string; source: string; full_text: string; confidence: number | null; segments: unknown };
 type Analysis = { schema_version: string; report: unknown; confidence: number | null; model_provider: string | null; model_name: string | null; prompt_version: string | null; created_at: string };
 type Metric = { source: string; plays: number | null; likes: number | null; comments: number | null; favorites: number | null; shares: number | null; followers_gained: number | null; collected_at: string };
 type EventRow = { event_type: string; from_status: string | null; to_status: string | null; progress: number | null; created_at: string };
 type Asset = { id: string; kind: "keyframe" | "subtitle" | "report"; filename: string; content_type: string; size_bytes: number; url: string };
-type DetailResponse = { video: Video; job: Job | null; transcript: Transcript | null; analysis: Analysis | null; metrics: Metric[]; assets: Asset[]; events: EventRow[] };
+type DetailResponse = { video: Video; job: Job | null; transcript: Transcript | null; analysis: Analysis | null; metrics: Metric[]; assets: Asset[]; events: EventRow[]; canWrite: boolean };
 type Segment = { startMs: number; endMs: number; text: string };
 type Evidence = { startMs: number | null; text: string; source: string; confidence: number | null };
 
@@ -56,13 +56,18 @@ function renderValue(value: unknown) {
 
 export function AnalysisDetail({ videoId, organizationId, projectId }: { videoId: string; organizationId: string; projectId: string }) {
   const [detail, setDetail] = useState<DetailResponse | null>(null); const [loading, setLoading] = useState(true); const [error, setError] = useState("");
+  const [editingTranscript, setEditingTranscript] = useState(false); const [savingTranscript, setSavingTranscript] = useState(false); const [draftSegments, setDraftSegments] = useState<Segment[]>([]); const [editMessage, setEditMessage] = useState("");
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
   const requestUrl = useMemo(() => `/api/videos/${encodeURIComponent(videoId)}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`, [organizationId, projectId, videoId]);
   const load = useCallback(async () => {
     setLoading(true); setError("");
-    const response = await fetch(requestUrl);
-    if (!response.ok) { setError(await readError(response)); setLoading(false); return; }
-    setDetail(await response.json()); setLoading(false);
+    try {
+      const response = await fetch(requestUrl);
+      if (!response.ok) { setError(await readError(response)); return; }
+      setDetail(await response.json());
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "分析结果暂时无法读取。");
+    } finally { setLoading(false); }
   }, [requestUrl]);
   useEffect(() => {
     let active = true;
@@ -79,6 +84,21 @@ export function AnalysisDetail({ videoId, organizationId, projectId }: { videoId
   const keyframes = detail?.assets.filter((asset) => asset.kind === "keyframe") ?? [];
   const latestMetric = detail?.metrics[0] ?? null;
   function seek(startMs: number) { if (!mediaRef.current) return; mediaRef.current.currentTime = startMs / 1000; void mediaRef.current.play(); }
+  function startTranscriptEdit() {
+    if (!detail?.transcript) return;
+    setDraftSegments(segments.length ? segments : [{ startMs: 0, endMs: Math.max(500, (detail.video.duration_sec ?? 1) * 1000), text: detail.transcript.full_text }]);
+    setEditMessage(""); setEditingTranscript(true);
+  }
+  async function saveTranscript(reanalyze: boolean) {
+    setSavingTranscript(true); setEditMessage("");
+    try {
+      const response = await fetch(`/api/videos/${encodeURIComponent(videoId)}/transcript`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, language: detail?.transcript?.language || "zh-CN", segments: draftSegments, reanalyze }) });
+      if (!response.ok) { setEditMessage(await readError(response)); return; }
+      setEditingTranscript(false); setEditMessage(reanalyze ? "校正版已保存，新的结构分析任务已经进入队列。" : "校正版已保存。随时可以再次编辑并重新分析。"); await load();
+    } catch (reason) {
+      setEditMessage(reason instanceof Error ? reason.message : "校正版没有保存成功，请稍后重试。");
+    } finally { setSavingTranscript(false); }
+  }
 
   if (loading) return <div className="management-state" role="status">正在读取分析结果…</div>;
   if (error || !detail) return <div className="management-state error-state"><strong>暂时无法查看分析详情</strong><p>{error}</p><Link href="/analysis">返回视频分析</Link></div>;
@@ -91,9 +111,10 @@ export function AnalysisDetail({ videoId, organizationId, projectId }: { videoId
           {detail.video.media_url && isAudio && <audio ref={(node) => { mediaRef.current = node; }} controls preload="metadata" src={detail.video.media_url}><track kind="captions" src={captionTrack} srcLang={detail.transcript?.language || "zh-CN"} label="转写字幕" default /></audio>}
           {detail.video.media_url && !isAudio && <video ref={(node) => { mediaRef.current = node; }} controls preload="metadata" src={detail.video.media_url}><track kind="captions" src={captionTrack} srcLang={detail.transcript?.language || "zh-CN"} label="转写字幕" default />浏览器不支持视频播放。</video>}
           {!detail.video.media_url && detail.video.source_url && <div className="external-media"><span aria-hidden="true">↗</span><strong>公开视频来源</strong><p>平台内容保持外链，不在页面中绕过平台限制嵌入。</p><a href={detail.video.source_url} target="_blank" rel="noreferrer">打开原始抖音链接</a></div>}
-        </div><div className="transcript-timeline">
-          <div className="timeline-heading"><strong>时间轴文案</strong><span>{detail.transcript ? `${detail.transcript.language} · 置信度 ${detail.transcript.confidence ?? "—"}` : "等待转写"}</span></div>
-          {segments.length > 0 ? <ol>{segments.map((segment, index) => <li key={`${segment.startMs}-${index}`}><button type="button" onClick={() => seek(segment.startMs)} disabled={!detail.video.media_url}><time>{timeLabel(segment.startMs)}</time><span>{segment.text}</span></button></li>)}</ol> : <div className="timeline-empty">{detail.transcript?.full_text || "转写完成后，这里会按时间点展示原文。"}</div>}
+        </div><div className={`transcript-timeline${editingTranscript ? " editing" : ""}`}>
+          <div className="timeline-heading"><div><strong>时间轴文案</strong><span>{detail.transcript ? `${detail.transcript.source === "manual" ? "人工校正版" : "ASR 原稿"} · 版本 ${detail.transcript.version} · 置信度 ${detail.transcript.confidence ?? "—"}` : "等待转写"}</span></div>{detail.transcript && detail.canWrite && !editingTranscript && <button type="button" onClick={startTranscriptEdit}>校正转写</button>}</div>
+          {editingTranscript ? <div className="transcript-editor"><p>逐段修正错别字和专有名词，时间点会继续保留用于证据定位。</p>{draftSegments.map((segment, index) => <label key={`${segment.startMs}-${index}`}><time>{timeLabel(segment.startMs)}</time><textarea value={segment.text} maxLength={2000} onChange={(event) => setDraftSegments((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, text: event.target.value } : item))} aria-label={`${timeLabel(segment.startMs)} 的转写内容`} /></label>)}<div className="transcript-editor-actions"><button type="button" onClick={() => setEditingTranscript(false)} disabled={savingTranscript}>取消</button><button type="button" onClick={() => saveTranscript(false)} disabled={savingTranscript}>仅保存校正版</button><button className="primary" type="button" onClick={() => saveTranscript(true)} disabled={savingTranscript}>{savingTranscript ? "正在保存…" : "保存并重新分析"}</button></div>{editMessage && <div className="inline-alert" role="alert">{editMessage}</div>}</div> : segments.length > 0 ? <ol>{segments.map((segment, index) => <li key={`${segment.startMs}-${index}`}><button type="button" onClick={() => seek(segment.startMs)} disabled={!detail.video.media_url}><time>{timeLabel(segment.startMs)}</time><span>{segment.text}</span></button></li>)}</ol> : <div className="timeline-empty">{detail.transcript?.full_text || "转写完成后，这里会按时间点展示原文。"}</div>}
+          {!editingTranscript && editMessage && <div className="transcript-save-message" role="status">{editMessage}</div>}
         </div></div>
         {keyframes.length > 0 && <div className="keyframe-strip"><div className="timeline-heading"><strong>镜头关键帧</strong><span>{keyframes.length} 个可追溯画面</span></div><div>{keyframes.map((asset, index) => <a key={asset.id} href={asset.url} target="_blank" rel="noreferrer"><span className="keyframe-image" style={{ backgroundImage: `url(${JSON.stringify(asset.url)})` }} role="img" aria-label={`关键帧 ${index + 1}`} /><span>{asset.filename}</span></a>)}</div></div>}
       </article>

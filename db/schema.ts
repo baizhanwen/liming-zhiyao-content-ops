@@ -108,6 +108,7 @@ export const videoAnalyses = sqliteTable("video_analyses", {
 export const analysisJobs = sqliteTable("analysis_jobs", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id),
   videoId: text("video_id").references(() => videos.id),
+  inputTranscriptId: text("input_transcript_id").references(() => videoTranscripts.id),
   sourceType: text("source_type", { enum: ["url", "upload"] }).notNull(), sourceRef: text("source_ref").notNull(), idempotencyKey: text("idempotency_key").notNull(),
   status: text("status", { enum: ["pending", "queued", "downloading", "processing", "transcribing", "extracting", "analyzing", "completed", "failed", "cancelled"] }).notNull().default("pending"),
   progress: integer("progress").notNull().default(0), currentStage: text("current_stage"), errorCode: text("error_code"), errorMessage: text("error_message"), retryCount: integer("retry_count").notNull().default(0),

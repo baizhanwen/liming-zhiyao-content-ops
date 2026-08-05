@@ -1,4 +1,4 @@
-import { getD1, getProjectAccess } from "../../../../db/runtime";
+import { canWriteProjectAccess, getD1, getProjectAccess } from "../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../lib/api-response";
 import { readRequestIdentity } from "../../../../lib/request-auth";
 
@@ -37,6 +37,7 @@ export async function GET(request: Request, context: { params: Promise<{ videoId
       metrics: metrics.results,
       assets: assets.results.map((asset) => ({ ...asset, url: `/api/videos/${videoId}/assets/${asset.id}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}` })),
       events: events.results.map((event) => ({ ...event, details: parseStoredJson(typeof event.details_json === "string" ? event.details_json : null), details_json: undefined })),
+      canWrite: canWriteProjectAccess(access),
     });
   } catch (error) { return errorResponse(error); }
 }

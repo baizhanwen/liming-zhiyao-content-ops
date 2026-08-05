@@ -6,6 +6,8 @@ Cloudflare Web/API 负责身份、权限、D1 业务记录、R2 私有媒体和�
 
 Python 服务使用独立的 `ANALYZER_SERVICE_TOKEN`，不得复用浏览器用户身份。正式值通过 Sites 运行时配置管理；仓库只保留 `.env.example` 中的占位说明。
 
+人工校正后的重新分析任务通过 `analysis_jobs.input_transcript_id` 绑定指定的 `video_transcripts` 版本。领取任务时，API 会再次校验公司、项目和视频归属；Worker 使用该版本跳过 ASR，并继续执行画面提取与结构化分析。新结果仍会写入新的转写/分析版本，不覆盖历史记录。
+
 ## 领取与租约
 
 1. `POST /api/internal/analysis-jobs/claim` 原子领取最早的待处理任务，或接管租约已经过期的活动任务。

@@ -3,8 +3,8 @@ import { apiError, errorResponse } from "../../../../../lib/api-response";
 import { normalizeLeaseSeconds, normalizeWorkerId, requireAnalyzerService } from "../../../../../lib/service-auth";
 import type { WorkerJobRow } from "../../../../../lib/analysis-worker";
 
-type ClaimedJob = WorkerJobRow & { source_type: "url" | "upload"; source_ref: string };
-type JobSource = { source_url: string | null; media_asset_id: string | null; r2_key: string | null; content_type: string | null; filename: string | null; size_bytes: number | null; sha256: string | null };
+type ClaimedJob = WorkerJobRow & { source_type: "url" | "upload"; source_ref: string; input_transcript_id: string | null };
+type JobSource = { source_url: string | null; media_asset_id: string | null; r2_key: string | null; content_type: string | null; filename: string | null; size_bytes: number | null; sha256: string | null; transcript_id: string | null; transcript_version: number | null; transcript_language: string | null; transcript_segments_json: string | null };
 
 export const dynamic = "force-dynamic";
 
@@ -32,24 +32,49 @@ export async function POST(request: Request) {
         ORDER BY CASE WHEN j.status = 'pending' THEN 0 ELSE 1 END, j.created_at ASC
         LIMIT 1
       )
-      RETURNING id, organization_id, project_id, video_id, source_type, source_ref, status, progress, current_stage,
+      RETURNING id, organization_id, project_id, video_id, input_transcript_id, source_type, source_ref, status, progress, current_stage,
         lease_owner, lease_expires_at, attempt_count, version, result_key
     `).bind(workerId, leaseExpiresAt, nowIso, actor, nowIso, nowIso).first<ClaimedJob>();
     if (!job) return new Response(null, { status: 204 });
 
     const source = await db.prepare(`
-      SELECT v.source_url, v.media_asset_id, m.r2_key, m.content_type, m.filename, m.size_bytes, m.sha256
+      SELECT v.source_url, v.media_asset_id, m.r2_key, m.content_type, m.filename, m.size_bytes, m.sha256,
+        t.id AS transcript_id, t.version AS transcript_version, t.language AS transcript_language, t.segments_json AS transcript_segments_json
       FROM analysis_jobs j
       INNER JOIN videos v ON v.id = j.video_id AND v.organization_id = j.organization_id AND v.project_id = j.project_id
       LEFT JOIN media_assets m ON m.id = v.media_asset_id AND m.organization_id = j.organization_id AND m.project_id = j.project_id AND m.status = 'active'
+      LEFT JOIN video_transcripts t ON t.id = j.input_transcript_id AND t.organization_id = j.organization_id AND t.project_id = j.project_id AND t.video_id = j.video_id
       WHERE j.id = ? AND j.lease_owner = ? AND j.version = ?
     `).bind(job.id, workerId, job.version).first<JobSource>();
     if (!source || (job.source_type === "url" ? !source.source_url : !source.r2_key)) {
       await db.prepare("UPDATE analysis_jobs SET status = 'failed', error_code = 'SOURCE_UNAVAILABLE', error_message = '任务来源记录不完整', lease_owner = NULL, lease_expires_at = NULL, version = version + 1, updated_at = ? WHERE id = ? AND lease_owner = ? AND version = ?").bind(nowIso, job.id, workerId, job.version).run();
       return apiError("JOB_SOURCE_UNAVAILABLE", "任务来源记录不完整。", 409);
     }
+    if (job.input_transcript_id && (!source.transcript_id || !source.transcript_segments_json || !source.transcript_language)) {
+      await db.prepare("UPDATE analysis_jobs SET status = 'failed', error_code = 'TRANSCRIPT_UNAVAILABLE', error_message = '人工校正版不存在或范围不匹配', lease_owner = NULL, lease_expires_at = NULL, version = version + 1, updated_at = ? WHERE id = ? AND lease_owner = ? AND version = ?").bind(nowIso, job.id, workerId, job.version).run();
+      return apiError("JOB_TRANSCRIPT_UNAVAILABLE", "人工校正版不存在或范围不匹配。", 409);
+    }
     await db.prepare("INSERT INTO analysis_job_events (id, organization_id, project_id, job_id, video_id, event_type, to_status, progress, worker_id, details_json, created_at) VALUES (?, ?, ?, ?, ?, 'claimed', ?, ?, ?, ?, ?)")
       .bind(crypto.randomUUID(), job.organization_id, job.project_id, job.id, job.video_id, job.status, job.progress, workerId, JSON.stringify({ attempt: job.attempt_count, leaseExpiresAt }), nowIso).run();
-    return Response.json({ job: { ...job, source } });
+    let manualTranscript: { id: string; version: number; language: string; segments: unknown[] } | null = null;
+    if (source.transcript_id && source.transcript_language && source.transcript_segments_json) {
+      try {
+        const segments = JSON.parse(source.transcript_segments_json) as unknown;
+        if (!Array.isArray(segments)) throw new Error("segments must be an array");
+        manualTranscript = { id: source.transcript_id, version: source.transcript_version ?? 1, language: source.transcript_language, segments };
+      } catch {
+        return apiError("JOB_TRANSCRIPT_INVALID", "人工校正版内容损坏，无法重新分析。", 409);
+      }
+    }
+    const safeSource = {
+      source_url: source.source_url,
+      media_asset_id: source.media_asset_id,
+      r2_key: source.r2_key,
+      content_type: source.content_type,
+      filename: source.filename,
+      size_bytes: source.size_bytes,
+      sha256: source.sha256,
+    };
+    return Response.json({ job: { ...job, source: { ...safeSource, manual_transcript: manualTranscript } } });
   } catch (error) { return errorResponse(error); }
 }
