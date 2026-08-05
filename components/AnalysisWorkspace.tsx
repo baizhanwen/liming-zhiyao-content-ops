@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 
 type Organization = { id: string; name: string };
 type Project = { id: string; name: string };
@@ -18,22 +18,22 @@ export function AnalysisWorkspace() {
   const [videos, setVideos] = useState<Video[]>([]); const [jobs, setJobs] = useState<Job[]>([]); const [canWrite, setCanWrite] = useState(false);
   const [loading, setLoading] = useState(true); const [submitting, setSubmitting] = useState(false); const [error, setError] = useState("");
 
-  async function loadVideos(orgId: string, projId: string) {
+  const loadVideos = useCallback(async (orgId: string, projId: string) => {
     if (!orgId || !projId) { setVideos([]); setJobs([]); return; }
     const response = await fetch(`/api/videos?organizationId=${encodeURIComponent(orgId)}&projectId=${encodeURIComponent(projId)}`);
     if (!response.ok) throw new Error(await readError(response));
     const body = await response.json() as { videos: Video[]; jobs: Job[]; canWrite: boolean };
     setVideos(body.videos); setJobs(body.jobs); setCanWrite(body.canWrite);
-  }
+  }, []);
 
-  async function loadProjects(orgId: string) {
+  const loadProjects = useCallback(async (orgId: string) => {
     const response = await fetch(`/api/projects?organizationId=${encodeURIComponent(orgId)}`);
     if (!response.ok) throw new Error(await readError(response));
     const body = await response.json() as { projects: Project[] };
     setProjects(body.projects); const first = body.projects[0]?.id ?? ""; setProjectId(first); await loadVideos(orgId, first);
-  }
+  }, [loadVideos]);
 
-  useEffect(() => { let active = true; (async () => { try { const response = await fetch("/api/organizations"); if (!response.ok) throw new Error(await readError(response)); const body = await response.json() as { organizations: Organization[] }; if (!active) return; setOrganizations(body.organizations); const first = body.organizations[0]?.id ?? ""; setOrganizationId(first); if (first) await loadProjects(first); } catch (reason) { if (active) setError(reason instanceof Error ? reason.message : "加载失败"); } finally { if (active) setLoading(false); } })(); return () => { active = false; }; }, []);
+  useEffect(() => { let active = true; (async () => { try { const response = await fetch("/api/organizations"); if (!response.ok) throw new Error(await readError(response)); const body = await response.json() as { organizations: Organization[] }; if (!active) return; setOrganizations(body.organizations); const first = body.organizations[0]?.id ?? ""; setOrganizationId(first); if (first) await loadProjects(first); } catch (reason) { if (active) setError(reason instanceof Error ? reason.message : "加载失败"); } finally { if (active) setLoading(false); } })(); return () => { active = false; }; }, [loadProjects]);
 
   function appendCreated(body: { video: Video; job: Job }) { setVideos((current) => [body.video, ...current]); setJobs((current) => [body.job, ...current]); }
 

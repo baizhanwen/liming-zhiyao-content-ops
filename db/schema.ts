@@ -85,8 +85,20 @@ export const analysisJobs = sqliteTable("analysis_jobs", {
   sourceType: text("source_type", { enum: ["url", "upload"] }).notNull(), sourceRef: text("source_ref").notNull(), idempotencyKey: text("idempotency_key").notNull(),
   status: text("status", { enum: ["pending", "queued", "downloading", "processing", "transcribing", "extracting", "analyzing", "completed", "failed", "cancelled"] }).notNull().default("pending"),
   progress: integer("progress").notNull().default(0), currentStage: text("current_stage"), errorCode: text("error_code"), errorMessage: text("error_message"), retryCount: integer("retry_count").notNull().default(0),
+  leaseOwner: text("lease_owner"), leaseExpiresAt: text("lease_expires_at"), lastHeartbeatAt: text("last_heartbeat_at"), attemptCount: integer("attempt_count").notNull().default(0), version: integer("version").notNull().default(0), resultKey: text("result_key"),
   createdBy: text("created_by").notNull(), updatedBy: text("updated_by").notNull(), completedAt: text("completed_at"), ...timestamps,
-}, (table) => [uniqueIndex("idx_analysis_jobs_org_idempotency").on(table.organizationId, table.idempotencyKey), index("idx_analysis_jobs_project_status_created").on(table.organizationId, table.projectId, table.status, table.createdAt)]);
+}, (table) => [
+  uniqueIndex("idx_analysis_jobs_org_idempotency").on(table.organizationId, table.idempotencyKey),
+  index("idx_analysis_jobs_project_status_created").on(table.organizationId, table.projectId, table.status, table.createdAt),
+  index("idx_analysis_jobs_claimable").on(table.status, table.leaseExpiresAt, table.createdAt),
+]);
+
+export const analysisJobEvents = sqliteTable("analysis_job_events", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id),
+  jobId: text("job_id").notNull().references(() => analysisJobs.id), videoId: text("video_id").references(() => videos.id),
+  eventType: text("event_type", { enum: ["claimed", "heartbeat", "stage_changed", "completed", "failed", "lease_expired"] }).notNull(),
+  fromStatus: text("from_status"), toStatus: text("to_status"), progress: integer("progress"), workerId: text("worker_id"), detailsJson: text("details_json"), createdAt: text("created_at").notNull(),
+}, (table) => [index("idx_analysis_job_events_job_created").on(table.jobId, table.createdAt), index("idx_analysis_job_events_tenant_created").on(table.organizationId, table.projectId, table.createdAt)]);
 
 export const auditLogs = sqliteTable("audit_logs", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").references(() => projects.id),

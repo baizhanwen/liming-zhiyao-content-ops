@@ -15,6 +15,13 @@
       "when": 1785900529359,
       "tag": "0001_fat_impossible_man",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1785901482421,
+      "tag": "0002_gifted_karnak",
+      "breakpoints": true
     }
   ]
 }

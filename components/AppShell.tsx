@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import Link from "next/link";
 
 const navGroups = [
   { label: "运营工作", items: [
@@ -26,8 +27,8 @@ export function AppShell({ children, activePath, projectName = "澄川管理咨�
   return (
     <div className="app-shell">
       <header className="topbar">
-        <a className="brand" href="/" aria-label="利明智耀工作台首页"><span className="brand-mark" aria-hidden="true">利</span><span>利明智耀</span></a>
-        <a className="project-switcher" href="/projects" aria-label="切换客户项目"><span className="project-logo">{projectName.slice(0, 1)}</span><span className="project-copy"><small>当前客户项目</small><strong>{projectName}</strong></span><span aria-hidden="true">⌄</span></a>
+        <Link className="brand" href="/" aria-label="利明智耀工作台首页"><span className="brand-mark" aria-hidden="true">利</span><span>利明智耀</span></Link>
+        <Link className="project-switcher" href="/projects" aria-label="切换客户项目"><span className="project-logo">{projectName.slice(0, 1)}</span><span className="project-copy"><small>当前客户项目</small><strong>{projectName}</strong></span><span aria-hidden="true">⌄</span></Link>
         <div className="top-actions">
           <button className="search-button" type="button" aria-label="全局搜索"><span aria-hidden="true">⌕</span><span>搜索内容、视频或成员</span><kbd>⌘ K</kbd></button>
           <button className="icon-button notification" type="button" aria-label="通知"><span aria-hidden="true">◌</span><i /></button>
@@ -36,8 +37,8 @@ export function AppShell({ children, activePath, projectName = "澄川管理咨�
       </header>
 
       <aside className="sidebar" aria-label="主导航">
-        <nav>{navGroups.map((group) => <div className="nav-group" key={group.label}><p>{group.label}</p>{group.items.map((item) => <a className={activePath === item.href ? "nav-item active" : "nav-item"} href={item.href} key={item.href} aria-current={activePath === item.href ? "page" : undefined}><span aria-hidden="true">{item.icon}</span><strong>{item.label}</strong>{item.count && <em>{item.count}</em>}</a>)}</div>)}</nav>
-        <div className="sidebar-footer"><a className={activePath === "/members" ? "nav-item active" : "nav-item"} href="/members"><span aria-hidden="true">♙</span><strong>成员与权限</strong></a><a className="nav-item" href="/#系统设置"><span aria-hidden="true">⚙</span><strong>系统设置</strong></a></div>
+        <nav>{navGroups.map((group) => <div className="nav-group" key={group.label}><p>{group.label}</p>{group.items.map((item) => <Link className={activePath === item.href ? "nav-item active" : "nav-item"} href={item.href} key={item.href} aria-current={activePath === item.href ? "page" : undefined}><span aria-hidden="true">{item.icon}</span><strong>{item.label}</strong>{item.count && <em>{item.count}</em>}</Link>)}</div>)}</nav>
+        <div className="sidebar-footer"><Link className={activePath === "/members" ? "nav-item active" : "nav-item"} href="/members"><span aria-hidden="true">♙</span><strong>成员与权限</strong></Link><Link className="nav-item" href="/#系统设置"><span aria-hidden="true">⚙</span><strong>系统设置</strong></Link></div>
       </aside>
 
       <main id="main" className="workspace">{children}</main>

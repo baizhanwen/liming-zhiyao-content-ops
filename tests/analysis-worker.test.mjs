@@ -1,0 +1,45 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { readFile } from "node:fs/promises";
+
+test("worker claim is atomic and only selects tenant-owned videos", async () => {
+  const claim = await readFile(new URL("../app/api/internal/analysis-jobs/claim/route.ts", import.meta.url), "utf8");
+  assert.match(claim, /UPDATE analysis_jobs/);
+  assert.match(claim, /RETURNING id, organization_id/);
+  assert.match(claim, /v\.organization_id = j\.organization_id AND v\.project_id = j\.project_id/);
+  assert.match(claim, /j\.lease_expires_at <= \?/);
+  assert.match(claim, /attempt_count = attempt_count \+ 1/);
+});
+
+test("heartbeats use lease owner and optimistic job versions", async () => {
+  const heartbeat = await readFile(new URL("../app/api/internal/analysis-jobs/[jobId]/heartbeat/route.ts", import.meta.url), "utf8");
+  assert.match(heartbeat, /lease_owner = \?/);
+  assert.match(heartbeat, /version = \?/);
+  assert.match(heartbeat, /lease_expires_at > \?/);
+  assert.match(heartbeat, /validateHeartbeatTransition/);
+});
+
+test("result submission is idempotent and scopes artifacts through the job tenant", async () => {
+  const [complete, fail, retry, schema] = await Promise.all([
+    readFile(new URL("../app/api/internal/analysis-jobs/[jobId]/complete/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/internal/analysis-jobs/[jobId]/fail/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/analysis-jobs/[jobId]/retry/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(complete, /job\.result_key === payload\.resultKey/);
+  assert.match(complete, /INNER JOIN videos v ON v\.id = j\.video_id AND v\.organization_id = j\.organization_id AND v\.project_id = j\.project_id/);
+  assert.match(complete, /INSERT INTO video_analyses/);
+  assert.match(fail, /job\.result_key === payload\.resultKey/);
+  assert.match(retry, /lease_owner = NULL/);
+  assert.match(retry, /result_key = NULL/);
+  assert.match(schema, /analysis_job_events/);
+  assert.match(schema, /idx_analysis_jobs_claimable/);
+});
+
+test("internal APIs require a separate service bearer credential", async () => {
+  const auth = await readFile(new URL("../lib/service-auth.ts", import.meta.url), "utf8");
+  assert.match(auth, /ANALYZER_SERVICE_TOKEN/);
+  assert.match(auth, /Authorization|authorization/);
+  assert.match(auth, /crypto\.subtle\.digest/);
+  assert.doesNotMatch(auth, /oai-authenticated-user-id/);
+});
