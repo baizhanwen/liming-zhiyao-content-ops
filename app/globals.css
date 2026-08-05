@@ -212,6 +212,7 @@ td small { display: block; margin-top: 2px; color: var(--subtle); }
 .invitation-card > p:not(.section-kicker) { margin: 0 auto 24px; color: var(--muted); line-height: 1.75; }
 .invitation-card .inline-alert { margin-top: 14px; }
 .analysis-layout { max-width: 1440px; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 20px; align-items: start; }
+.analysis-layout.single-view { grid-template-columns: minmax(0, 1fr); }
 .analysis-main, .analysis-ingest { min-width: 0; display: grid; gap: 16px; }
 .analysis-toolbar { justify-content: flex-start; }
 .analysis-toolbar label { flex: 1; }.analysis-toolbar select { width: 100%; min-width: 0; }

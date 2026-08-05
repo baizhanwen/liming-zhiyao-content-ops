@@ -12,9 +12,9 @@ const navGroups = [
   ] },
   { label: "研究与资产", items: [
     { label: "视频分析", icon: "▣", href: "/analysis" },
-    { label: "对标内容库", icon: "◈", href: "/analysis" },
+    { label: "对标内容库", icon: "◈", href: "/analysis?view=benchmark" },
     { label: "品牌知识库", icon: "▤", href: "/knowledge" },
-    { label: "素材中心", icon: "▥", href: "/analysis" },
+    { label: "素材中心", icon: "▥", href: "/analysis?view=assets" },
   ] },
   { label: "增长复盘", items: [
     { label: "发布管理", icon: "↗", href: "/workflow?view=publish" },
