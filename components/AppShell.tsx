@@ -3,23 +3,23 @@ import Link from "next/link";
 
 const navGroups = [
   { label: "运营工作", items: [
-    { label: "工作台", icon: "⌂", href: "/" },
-    { label: "客户项目", icon: "◈", href: "/projects" },
+    { label: "工作台", icon: "◫", href: "/" },
+    { label: "客户项目", icon: "◆", href: "/projects" },
     { label: "选题中心", icon: "◇", href: "/topics" },
     { label: "内容生产", icon: "✦", href: "/content" },
-    { label: "审核中心", icon: "✓", href: "/#审核中心", count: "6" },
-    { label: "内容日历", icon: "▦", href: "/#内容日历" },
+    { label: "审核中心", icon: "✓", href: "/workflow?view=review" },
+    { label: "内容日历", icon: "▦", href: "/workflow?view=calendar" },
   ] },
   { label: "研究与资产", items: [
-    { label: "视频分析", icon: "▷", href: "/analysis" },
-    { label: "对标内容库", icon: "◫", href: "/#对标内容库" },
+    { label: "视频分析", icon: "▣", href: "/analysis" },
+    { label: "对标内容库", icon: "◈", href: "/#对标内容库" },
     { label: "品牌知识库", icon: "▤", href: "/knowledge" },
-    { label: "素材中心", icon: "□", href: "/#素材中心" },
+    { label: "素材中心", icon: "▥", href: "/#素材中心" },
   ] },
   { label: "增长复盘", items: [
-    { label: "发布管理", icon: "↗", href: "/#发布管理" },
-    { label: "数据复盘", icon: "⌁", href: "/#数据复盘" },
-    { label: "报告中心", icon: "≡", href: "/#报告中心" },
+    { label: "发布管理", icon: "↗", href: "/workflow?view=publish" },
+    { label: "数据复盘", icon: "◫", href: "/#数据复盘" },
+    { label: "报告中心", icon: "≋", href: "/#报告中心" },
   ] },
 ];
 
@@ -37,7 +37,7 @@ export function AppShell({ children, activePath, projectName = "澄川管理咨�
       </header>
 
       <aside className="sidebar" aria-label="主导航">
-        <nav>{navGroups.map((group) => <div className="nav-group" key={group.label}><p>{group.label}</p>{group.items.map((item) => <Link className={activePath === item.href ? "nav-item active" : "nav-item"} href={item.href} key={item.href} aria-current={activePath === item.href ? "page" : undefined}><span aria-hidden="true">{item.icon}</span><strong>{item.label}</strong>{item.count && <em>{item.count}</em>}</Link>)}</div>)}</nav>
+        <nav>{navGroups.map((group) => <div className="nav-group" key={group.label}><p>{group.label}</p>{group.items.map((item) => <Link className={activePath === item.href ? "nav-item active" : "nav-item"} href={item.href} key={`${group.label}:${item.href}`} aria-current={activePath === item.href ? "page" : undefined}><span aria-hidden="true">{item.icon}</span><strong>{item.label}</strong></Link>)}</div>)}</nav>
         <div className="sidebar-footer"><Link className={activePath === "/members" ? "nav-item active" : "nav-item"} href="/members"><span aria-hidden="true">♙</span><strong>成员与权限</strong></Link><Link className="nav-item" href="/#系统设置"><span aria-hidden="true">⚙</span><strong>系统设置</strong></Link></div>
       </aside>
 
