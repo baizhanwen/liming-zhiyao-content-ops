@@ -1,8 +1,4 @@
-const navGroups = [
-  { label: "运营工作", items: [["工作台", "⌂", true], ["选题中心", "◇", false], ["内容生产", "✦", false], ["审核中心", "✓", false, "6"], ["内容日历", "▦", false]] },
-  { label: "研究与资产", items: [["视频分析", "▷", false], ["对标内容库", "◫", false], ["品牌知识库", "▤", false], ["素材中心", "□", false]] },
-  { label: "增长复盘", items: [["发布管理", "↗", false], ["数据复盘", "⌁", false], ["报告中心", "≡", false]] },
-] as const;
+import { AppShell } from "../components/AppShell";
 
 const tasks = [
   { title: "确认《老板为什么总在招错人》终稿", meta: "客户审核 · 今天 18:00", type: "审核", tone: "danger" },
@@ -18,23 +14,7 @@ const reviewItems = [
 
 export default function Home() {
   return (
-    <div className="app-shell">
-      <header className="topbar">
-        <a className="brand" href="#main" aria-label="利明智耀工作台首页"><span className="brand-mark" aria-hidden="true">利</span><span>利明智耀</span></a>
-        <button className="project-switcher" type="button" aria-label="切换客户项目"><span className="project-logo">澄</span><span className="project-copy"><small>当前客户项目</small><strong>澄川管理咨询</strong></span><span aria-hidden="true">⌄</span></button>
-        <div className="top-actions">
-          <button className="search-button" type="button" aria-label="全局搜索"><span aria-hidden="true">⌕</span><span>搜索内容、视频或成员</span><kbd>⌘ K</kbd></button>
-          <button className="icon-button notification" type="button" aria-label="通知"><span aria-hidden="true">◌</span><i /></button>
-          <button className="avatar" type="button" aria-label="打开个人菜单">LX</button>
-        </div>
-      </header>
-
-      <aside className="sidebar" aria-label="主导航">
-        <nav>{navGroups.map((group) => <div className="nav-group" key={group.label}><p>{group.label}</p>{group.items.map(([label, icon, active, count]) => <a className={active ? "nav-item active" : "nav-item"} href={active ? "#main" : `#${label}`} key={label} aria-current={active ? "page" : undefined}><span aria-hidden="true">{icon}</span><strong>{label}</strong>{count && <em>{count}</em>}</a>)}</div>)}</nav>
-        <div className="sidebar-footer"><a className="nav-item" href="#成员与权限"><span aria-hidden="true">♙</span><strong>成员与权限</strong></a><a className="nav-item" href="#系统设置"><span aria-hidden="true">⚙</span><strong>系统设置</strong></a></div>
-      </aside>
-
-      <main id="main" className="workspace">
+    <AppShell activePath="/">
         <section className="page-heading"><div><p>2026 年 8 月 5 日，星期三</p><h1>上午好，林溪</h1><span>这里是澄川管理咨询今天最需要推进的工作。</span></div><button className="primary-button" type="button"><span aria-hidden="true">＋</span> 新建内容</button></section>
 
         <section className="attention-grid" aria-label="今日工作概览">
@@ -46,7 +26,7 @@ export default function Home() {
 
         <section className="content-grid">
           <div className="main-column">
-            <article className="panel task-panel"><div className="panel-heading"><div><p className="section-kicker">今日待办</p><h2>先把关键节点向前推</h2></div><button type="button" className="text-button">查看全部 9 项</button></div><div className="task-list">{tasks.map((task) => <label className="task-row" key={task.title}><input type="checkbox" /><span className="checkmark" aria-hidden="true" /><span className="task-main"><strong>{task.title}</strong><small>{task.meta}</small></span><span className={`status ${task.tone}`}>{task.type}</span><button type="button" aria-label={`打开${task.title}`}><span aria-hidden="true">›</span></button></label>)}</div></article>
+            <article className="panel task-panel"><div className="panel-heading"><div><p className="section-kicker">今日待办</p><h2>先把关键节点向前推</h2></div><button type="button" className="text-button">查看全部 9 项</button></div><div className="task-list">{tasks.map((task) => <div className="task-row" key={task.title}><label className="task-check" aria-label={`完成${task.title}`}><input type="checkbox" /><span className="checkmark" aria-hidden="true" /></label><span className="task-main"><strong>{task.title}</strong><small>{task.meta}</small></span><span className={`status ${task.tone}`}>{task.type}</span><button type="button" aria-label={`打开${task.title}`}><span aria-hidden="true">›</span></button></div>)}</div></article>
 
             <article id="审核中心" className="panel review-panel"><div className="panel-heading"><div><p className="section-kicker">待审核内容</p><h2>6 条内容等待决定</h2></div><div className="avatar-stack" aria-label="3 位审核参与者"><span>陈</span><span>林</span><span>周</span></div></div><div className="table-wrap"><table><caption className="sr-only">待审核内容列表</caption><thead><tr><th>内容</th><th>当前阶段</th><th>负责人</th><th>截止</th><th><span className="sr-only">操作</span></th></tr></thead><tbody>{reviewItems.map((item) => <tr key={item.title}><td><strong>{item.title}</strong><small>短视频 · 口播</small></td><td><span className="status neutral">{item.stage}</span></td><td>{item.owner}</td><td className={item.due.includes("小时") ? "due" : ""}>{item.due}</td><td><button className="row-action" type="button" aria-label={`审核${item.title}`}>审核</button></td></tr>)}</tbody></table></div></article>
           </div>
@@ -59,7 +39,6 @@ export default function Home() {
         </section>
 
         <footer className="product-note"><span>首版工作台原型</span><span>数据为演示样例</span><span>最近更新 10:42</span></footer>
-      </main>
-    </div>
+    </AppShell>
   );
 }

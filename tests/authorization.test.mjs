@@ -23,3 +23,21 @@ test("tenant schema carries organization and project scope", async () => {
   assert.match(schema, /idempotency_key/);
   assert.match(schema, /audit_logs/);
 });
+
+test("write APIs authenticate and re-check tenant scope on the server", async () => {
+  const [organizations, projects, members, accept, runtime] = await Promise.all([
+    readFile(new URL("../app/api/organizations/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/projects/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/members/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/invitations/accept/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../db/runtime.ts", import.meta.url), "utf8"),
+  ]);
+  for (const route of [organizations, projects, members, accept]) assert.match(route, /readRequestIdentity/);
+  assert.match(projects, /getOrganizationAccess/);
+  assert.match(projects, /organizationRole !== "admin"/);
+  assert.match(members, /只有公司管理员可以查看公司级成员与邀请/);
+  assert.match(members, /hashInvitationToken/);
+  assert.match(accept, /EMAIL_MISMATCH/);
+  assert.match(runtime, /om\.organization_id = \?/);
+  assert.match(runtime, /project_id = \?/);
+});
