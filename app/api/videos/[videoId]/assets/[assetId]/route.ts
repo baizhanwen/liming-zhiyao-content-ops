@@ -4,7 +4,7 @@ import { readRequestIdentity } from "../../../../../../lib/request-auth";
 import { privateR2Response } from "../../../../../../lib/r2-response";
 
 export async function GET(request: Request, context: { params: Promise<{ videoId: string; assetId: string }> }) {
-  const identity = readRequestIdentity(request);
+  const identity = await readRequestIdentity(request);
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再读取分析产物。", 401);
   const url = new URL(request.url);
   const organizationId = url.searchParams.get("organizationId")?.trim() ?? "";

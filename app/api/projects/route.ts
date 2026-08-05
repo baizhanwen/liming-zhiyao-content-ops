@@ -6,7 +6,7 @@ import { checkOrganizationQuota } from "../../../lib/operations";
 function organizationIdFrom(request: Request) { return new URL(request.url).searchParams.get("organizationId")?.trim() ?? ""; }
 
 export async function GET(request: Request) {
-  const identity = readRequestIdentity(request);
+  const identity = await readRequestIdentity(request);
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再访问客户项目。", 401);
   const organizationId = organizationIdFrom(request);
   if (!organizationId) return apiError("ORGANIZATION_REQUIRED", "缺少公司范围。", 400);
@@ -36,7 +36,7 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const identity = readRequestIdentity(request);
+  const identity = await readRequestIdentity(request);
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再创建项目。", 401);
   try {
     const payload = await request.json() as { organizationId?: string; name?: string; clientName?: string; serviceStartsAt?: string; serviceEndsAt?: string; contentTarget?: number };
@@ -65,7 +65,7 @@ export async function POST(request: Request) {
 }
 
 export async function PATCH(request: Request) {
-  const identity = readRequestIdentity(request);
+  const identity = await readRequestIdentity(request);
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再管理项目。", 401);
   try {
     const payload = await request.json() as { organizationId?: string; projectId?: string; status?: string };

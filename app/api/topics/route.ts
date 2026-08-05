@@ -7,7 +7,7 @@ function analysisQuote(reportJson: string) {
 }
 
 export async function GET(request: Request) {
-  const identity = readRequestIdentity(request); if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再访问选题中心。", 401);
+  const identity = await readRequestIdentity(request); if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再访问选题中心。", 401);
   const url = new URL(request.url); const organizationId = url.searchParams.get("organizationId")?.trim() ?? ""; const projectId = url.searchParams.get("projectId")?.trim() ?? "";
   if (!organizationId || !projectId) return apiError("PROJECT_SCOPE_REQUIRED", "缺少公司或项目范围。", 400);
   try {
@@ -21,7 +21,7 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const identity = readRequestIdentity(request); if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再创建选题。", 401);
+  const identity = await readRequestIdentity(request); if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再创建选题。", 401);
   try {
     const payload = await request.json() as Record<string, unknown>; const organizationId = typeof payload.organizationId === "string" ? payload.organizationId.trim() : ""; const projectId = typeof payload.projectId === "string" ? payload.projectId.trim() : "";
     const title = typeof payload.title === "string" ? payload.title.trim() : ""; const angle = typeof payload.angle === "string" && payload.angle.trim() ? payload.angle.trim().slice(0, 2000) : null;

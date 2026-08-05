@@ -3,7 +3,7 @@ import { apiError, errorResponse } from "../../../lib/api-response";
 import { readRequestIdentity } from "../../../lib/request-auth";
 
 export async function GET(request: Request) {
-  const identity = readRequestIdentity(request);
+  const identity = await readRequestIdentity(request);
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再搜索。", 401);
   const url = new URL(request.url); const organizationId = url.searchParams.get("organizationId")?.trim() ?? ""; const query = url.searchParams.get("q")?.trim() ?? "";
   if (!organizationId) return apiError("ORGANIZATION_REQUIRED", "缺少公司范围。", 400);

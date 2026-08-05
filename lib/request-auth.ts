@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { readLocalSessionIdentity } from "./local-auth";
 
 export type RequestIdentity = {
   authSubject: string;
@@ -37,9 +38,12 @@ function readForwardedIdentity(request: Request): RequestIdentity | null {
   return { authSubject, email, displayName: fullName?.trim() || email };
 }
 
-export function readRequestIdentity(request: Request): RequestIdentity | null {
+export async function readRequestIdentity(request: Request): Promise<RequestIdentity | null> {
   const forwarded = readForwardedIdentity(request);
   if (forwarded) return forwarded;
+
+  const localSession = await readLocalSessionIdentity(request);
+  if (localSession) return localSession;
 
   const runtime = env as LocalAuthEnv;
   if (runtime.LOCAL_DEV_AUTH?.trim() !== "1" || !isLoopbackRequest(request)) return null;

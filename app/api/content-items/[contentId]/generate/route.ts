@@ -12,7 +12,7 @@ type Source = { sourceType: "topic" | "knowledge" | "video_analysis" | "strategy
 function normalized(value: string) { return value.replace(/\s+/g, " ").trim(); }
 
 export async function POST(request: Request, context: { params: Promise<{ contentId: string }> }) {
-  const identity = readRequestIdentity(request);
+  const identity = await readRequestIdentity(request);
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再生成内容。", 401);
   let modelCallId: string | null = null;
   try {

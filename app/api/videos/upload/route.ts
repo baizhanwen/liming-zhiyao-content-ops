@@ -9,7 +9,7 @@ const allowedTypes = new Set(["video/mp4", "video/quicktime", "video/webm", "aud
 function safeExtension(filename: string) { const match = filename.toLowerCase().match(/\.([a-z0-9]{1,8})$/); return match ? `.${match[1]}` : ""; }
 
 export async function POST(request: Request) {
-  const identity = readRequestIdentity(request);
+  const identity = await readRequestIdentity(request);
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再上传媒体。", 401);
   let storedKey: string | null = null;
   try {

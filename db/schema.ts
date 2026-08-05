@@ -9,6 +9,17 @@ export const users = sqliteTable("users", {
   status: text("status", { enum: ["active", "suspended"] }).notNull().default("active"), ...timestamps,
 }, (table) => [uniqueIndex("idx_users_auth_subject").on(table.authSubject), uniqueIndex("idx_users_email").on(table.email)]);
 
+export const localCredentials = sqliteTable("local_credentials", {
+  userId: text("user_id").primaryKey().references(() => users.id),
+  passwordSalt: text("password_salt").notNull(), passwordHash: text("password_hash").notNull(), iterations: integer("iterations").notNull().default(210000),
+  createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull(),
+});
+
+export const localSessions = sqliteTable("local_sessions", {
+  id: id(), userId: text("user_id").notNull().references(() => users.id), tokenHash: text("token_hash").notNull(),
+  expiresAt: text("expires_at").notNull(), lastSeenAt: text("last_seen_at").notNull(), createdAt: text("created_at").notNull(),
+}, (table) => [uniqueIndex("idx_local_sessions_token_hash").on(table.tokenHash), index("idx_local_sessions_user_expiry").on(table.userId, table.expiresAt)]);
+
 export const organizations = sqliteTable("organizations", {
   id: id(), name: text("name").notNull(), slug: text("slug").notNull(), status: text("status", { enum: ["active", "suspended"] }).notNull().default("active"),
   createdBy: text("created_by").notNull(), ...timestamps,

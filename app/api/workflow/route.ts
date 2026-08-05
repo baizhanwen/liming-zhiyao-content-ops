@@ -14,7 +14,7 @@ function clientReviewPack(value: unknown) {
 }
 
 export async function GET(request: Request) {
-  const identity = readRequestIdentity(request);
+  const identity = await readRequestIdentity(request);
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再访问协作工作台。", 401);
   const url = new URL(request.url);
   const organizationId = url.searchParams.get("organizationId")?.trim() ?? "";

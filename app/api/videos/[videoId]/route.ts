@@ -8,7 +8,7 @@ function parseStoredJson(value: string | null) {
 }
 
 export async function GET(request: Request, context: { params: Promise<{ videoId: string }> }) {
-  const identity = readRequestIdentity(request); if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再访问分析结果。", 401);
+  const identity = await readRequestIdentity(request); if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再访问分析结果。", 401);
   const url = new URL(request.url); const organizationId = url.searchParams.get("organizationId")?.trim() ?? ""; const projectId = url.searchParams.get("projectId")?.trim() ?? "";
   if (!organizationId || !projectId) return apiError("PROJECT_SCOPE_REQUIRED", "缺少公司或项目范围。", 400);
   try {

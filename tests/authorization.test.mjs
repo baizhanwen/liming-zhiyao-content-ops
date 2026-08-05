@@ -34,12 +34,13 @@ test("write APIs authenticate and re-check tenant scope on the server", async ()
     readFile(new URL("../app/api/invitations/accept/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../db/runtime.ts", import.meta.url), "utf8"),
   ]);
-  for (const route of [organizations, projects, members, accept]) assert.match(route, /readRequestIdentity/);
+  for (const route of [organizations, projects, members]) assert.match(route, /await readRequestIdentity/);
   assert.match(projects, /getOrganizationAccess/);
   assert.match(projects, /organizationRole !== "admin"/);
   assert.match(members, /只有公司管理员可以查看公司级成员与邀请/);
   assert.match(members, /hashInvitationToken/);
-  assert.match(accept, /EMAIL_MISMATCH/);
+  assert.match(accept, /setLocalPassword/);
+  assert.match(accept, /createLocalSession/);
   assert.match(runtime, /om\.organization_id = \?/);
   assert.match(runtime, /project_id = \?/);
 });

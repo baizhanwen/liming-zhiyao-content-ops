@@ -4,7 +4,7 @@ import { canManageProjectKnowledge } from "../../../../../lib/content-ops";
 import { readRequestIdentity } from "../../../../../lib/request-auth";
 
 export async function POST(request: Request, context: { params: Promise<{ strategyId: string }> }) {
-  const identity = readRequestIdentity(request); if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再启用内容策略。", 401);
+  const identity = await readRequestIdentity(request); if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再启用内容策略。", 401);
   try {
     const payload = await request.json() as { organizationId?: string; projectId?: string }; const organizationId = payload.organizationId?.trim() ?? ""; const projectId = payload.projectId?.trim() ?? ""; const { strategyId } = await context.params;
     if (!organizationId || !projectId) return apiError("PROJECT_SCOPE_REQUIRED", "缺少公司或项目范围。", 400);

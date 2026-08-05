@@ -4,7 +4,7 @@ import { canManageProjectKnowledge, cleanStringList, parseJsonValue } from "../.
 import { readRequestIdentity } from "../../../lib/request-auth";
 
 export async function GET(request: Request) {
-  const identity = readRequestIdentity(request); if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再访问内容策略。", 401);
+  const identity = await readRequestIdentity(request); if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再访问内容策略。", 401);
   const url = new URL(request.url); const organizationId = url.searchParams.get("organizationId")?.trim() ?? ""; const projectId = url.searchParams.get("projectId")?.trim() ?? "";
   if (!organizationId || !projectId) return apiError("PROJECT_SCOPE_REQUIRED", "缺少公司或项目范围。", 400);
   try {
@@ -15,7 +15,7 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const identity = readRequestIdentity(request); if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再创建内容策略。", 401);
+  const identity = await readRequestIdentity(request); if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再创建内容策略。", 401);
   try {
     const payload = await request.json() as Record<string, unknown>; const organizationId = typeof payload.organizationId === "string" ? payload.organizationId.trim() : ""; const projectId = typeof payload.projectId === "string" ? payload.projectId.trim() : "";
     const name = typeof payload.name === "string" ? payload.name.trim() : ""; const positioning = typeof payload.positioning === "string" ? payload.positioning.trim() : ""; const targetAudience = typeof payload.targetAudience === "string" ? payload.targetAudience.trim() : "";

@@ -6,7 +6,7 @@ import { readRequestIdentity } from "../../../../../lib/request-auth";
 export const dynamic = "force-dynamic";
 
 export async function PUT(request: Request, context: { params: Promise<{ contentId: string }> }) {
-  const identity = readRequestIdentity(request);
+  const identity = await readRequestIdentity(request);
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再安排内容日历。", 401);
   try {
     const parsed = scheduleContentSchema.safeParse(await request.json());

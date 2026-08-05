@@ -6,7 +6,7 @@ import { readRequestIdentity } from "../../../../lib/request-auth";
 export const dynamic = "force-dynamic";
 
 export async function PATCH(request: Request, context: { params: Promise<{ commentId: string }> }) {
-  const identity = readRequestIdentity(request);
+  const identity = await readRequestIdentity(request);
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再处理评论。", 401);
   try {
     const parsed = resolveContentCommentSchema.safeParse(await request.json());

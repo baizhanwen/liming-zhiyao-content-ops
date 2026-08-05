@@ -1,3 +1,4 @@
+import { env } from "cloudflare:workers";
 import { ensureUser, getD1, getOrganizationAccess, hashInvitationToken } from "../../../db/runtime";
 import { apiError, errorResponse } from "../../../lib/api-response";
 import { organizationRoles, projectRoles } from "../../../lib/authorization";
@@ -5,7 +6,7 @@ import { readRequestIdentity } from "../../../lib/request-auth";
 import { checkOrganizationQuota } from "../../../lib/operations";
 
 export async function GET(request: Request) {
-  const identity = readRequestIdentity(request);
+  const identity = await readRequestIdentity(request);
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再访问成员数据。", 401);
   const organizationId = new URL(request.url).searchParams.get("organizationId")?.trim() ?? "";
   if (!organizationId) return apiError("ORGANIZATION_REQUIRED", "缺少公司范围。", 400);
@@ -23,7 +24,7 @@ export async function GET(request: Request) {
 }
 
 export async function PATCH(request: Request) {
-  const identity = readRequestIdentity(request);
+  const identity = await readRequestIdentity(request);
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再管理成员。", 401);
   try {
     const payload = await request.json() as { organizationId?: string; memberId?: string; invitationId?: string; role?: string; status?: string };
@@ -56,7 +57,7 @@ export async function PATCH(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const identity = readRequestIdentity(request);
+  const identity = await readRequestIdentity(request);
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再邀请成员。", 401);
   try {
     const payload = await request.json() as { organizationId?: string; email?: string; organizationRole?: string; projectId?: string; projectRole?: string };
@@ -88,6 +89,8 @@ export async function POST(request: Request) {
       db.prepare("INSERT INTO invitations (id, organization_id, project_id, email, organization_role, project_role, token_hash, status, expires_at, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)").bind(invitationId, organizationId, projectId, email, payload.organizationRole, projectRole, tokenHash, expiresAt, user.id, user.id, now.toISOString(), now.toISOString()),
       db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'invitation.created', 'invitation', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, invitationId, JSON.stringify({ email, organizationRole: payload.organizationRole, projectRole }), now.toISOString()),
     ]);
-    return Response.json({ invitation: { id: invitationId, email, status: "pending", expires_at: expiresAt, accept_url: `/accept-invitation?token=${token}` } }, { status: 201 });
+    const relativeAcceptUrl = `/accept-invitation?token=${token}`;
+    const configuredOrigin = ((env as typeof env & { LAN_ACCESS_ORIGIN?: string }).LAN_ACCESS_ORIGIN ?? "").trim().replace(/\/$/u, "");
+    return Response.json({ invitation: { id: invitationId, email, status: "pending", expires_at: expiresAt, accept_url: configuredOrigin ? `${configuredOrigin}${relativeAcceptUrl}` : relativeAcceptUrl } }, { status: 201 });
   } catch (error) { return errorResponse(error); }
 }

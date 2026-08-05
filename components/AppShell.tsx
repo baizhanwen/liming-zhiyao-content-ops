@@ -3,7 +3,7 @@
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Bell, BookOpenText, BriefcaseBusiness, CalendarDays, ChartNoAxesCombined, ChevronDown, ClipboardCheck, FileChartColumn, FilePenLine, FolderOpen, LayoutDashboard, LibraryBig, Lightbulb, Search, Send, Settings, UsersRound, Video } from "lucide-react";
+import { Bell, BookOpenText, BriefcaseBusiness, CalendarDays, ChartNoAxesCombined, ChevronDown, ClipboardCheck, FileChartColumn, FilePenLine, FolderOpen, LayoutDashboard, LibraryBig, Lightbulb, LogOut, Search, Send, Settings, UsersRound, Video } from "lucide-react";
 import { preferredOrganizationId, preferredProjectId, scopeChangeEvent } from "../lib/client-scope";
 
 const navGroups = [
@@ -50,6 +50,11 @@ export function AppShell({ children, activePath }: { children: ReactNode; active
     async function loadContext(requestedOrganizationId = "", requestedProjectId = "") {
       const version = ++requestVersion;
       const organizationResponse = await fetch("/api/organizations");
+      if (organizationResponse.status === 401) {
+        const returnTo = `${window.location.pathname}${window.location.search}`;
+        window.location.replace(`/login?returnTo=${encodeURIComponent(returnTo)}`);
+        return;
+      }
       if (!organizationResponse.ok) return;
       const body = await organizationResponse.json() as { organizations: Organization[]; currentUser: CurrentUser };
       const nextOrganizationId = preferredOrganizationId(body.organizations, requestedOrganizationId);
@@ -79,6 +84,7 @@ export function AppShell({ children, activePath }: { children: ReactNode; active
         <div className="top-actions">
           <Link className="search-button" href="/search" aria-label="全局搜索"><Search className="top-icon" aria-hidden="true" /><span>搜索内容、视频或成员</span><kbd>⌘ K</kbd></Link>
           <Link className="icon-button notification" href="/settings#alerts" aria-label="查看运行告警"><Bell className="top-icon" aria-hidden="true" /><i /></Link>
+          <button className="icon-button signout-button" type="button" aria-label="退出当前账号" title="退出登录" onClick={async () => { await fetch("/api/auth/session", { method: "DELETE" }); window.location.replace("/login"); }}><LogOut className="top-icon" aria-hidden="true" /></button>
           <Link className="avatar" href="/settings" aria-label={user ? `打开${user.displayName}的设置` : "打开成员设置"} title={user?.displayName || undefined}>{avatarText(user?.displayName || "")}</Link>
         </div>
       </header>

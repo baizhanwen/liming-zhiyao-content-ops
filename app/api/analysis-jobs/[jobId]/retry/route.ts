@@ -5,7 +5,7 @@ import { readRequestIdentity } from "../../../../../lib/request-auth";
 type JobRow = { id: string; organization_id: string; project_id: string; status: string; retry_count: number };
 
 export async function POST(request: Request, context: { params: Promise<{ jobId: string }> }) {
-  const identity = readRequestIdentity(request);
+  const identity = await readRequestIdentity(request);
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再重试任务。", 401);
   try {
     const { jobId } = await context.params; const db = getD1();

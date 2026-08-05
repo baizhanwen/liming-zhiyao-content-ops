@@ -12,7 +12,7 @@ const updateSchema = z.object({
 });
 
 export async function GET(request: Request) {
-  const identity = readRequestIdentity(request);
+  const identity = await readRequestIdentity(request);
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再访问系统运营中心。", 401);
   const organizationId = new URL(request.url).searchParams.get("organizationId")?.trim() ?? "";
   if (!organizationId) return apiError("ORGANIZATION_REQUIRED", "缺少公司范围。", 400);
@@ -71,7 +71,7 @@ export async function GET(request: Request) {
 }
 
 export async function PATCH(request: Request) {
-  const identity = readRequestIdentity(request);
+  const identity = await readRequestIdentity(request);
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再修改公司设置。", 401);
   try {
     const parsed = updateSchema.safeParse(await request.json());

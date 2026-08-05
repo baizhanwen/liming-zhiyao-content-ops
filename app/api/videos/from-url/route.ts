@@ -15,7 +15,7 @@ function normalizeDouyinUrl(value: string) {
 }
 
 export async function POST(request: Request) {
-  const identity = readRequestIdentity(request);
+  const identity = await readRequestIdentity(request);
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再提交视频链接。", 401);
   try {
     const payload = await request.json() as { organizationId?: string; projectId?: string; url?: string; title?: string };

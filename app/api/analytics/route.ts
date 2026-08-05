@@ -6,7 +6,7 @@ import { readRequestIdentity } from "../../../lib/request-auth";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
-  const identity = readRequestIdentity(request);
+  const identity = await readRequestIdentity(request);
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再访问数据复盘。", 401);
   const url = new URL(request.url); const organizationId = url.searchParams.get("organizationId")?.trim() || ""; const projectId = url.searchParams.get("projectId")?.trim() || ""; const days = Math.min(365, Math.max(7, Number(url.searchParams.get("days") || 30) || 30));
   if (!organizationId || !projectId) return apiError("PROJECT_SCOPE_REQUIRED", "缺少公司或项目范围。", 400);

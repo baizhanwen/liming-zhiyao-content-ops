@@ -6,7 +6,7 @@ import { readRequestIdentity } from "../../../lib/request-auth";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
-  const identity = readRequestIdentity(request);
+  const identity = await readRequestIdentity(request);
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再访问内容生产。", 401);
   const url = new URL(request.url);
   const organizationId = url.searchParams.get("organizationId")?.trim() ?? "";
@@ -32,7 +32,7 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const identity = readRequestIdentity(request);
+  const identity = await readRequestIdentity(request);
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再创建内容。", 401);
   try {
     const parsed = createContentItemSchema.safeParse(await request.json());

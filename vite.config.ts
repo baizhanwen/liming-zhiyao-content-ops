@@ -21,6 +21,9 @@ const ignoredWatchPaths = [
   "**/services/analyzer/model-cache/**",
 ];
 
+const lanMode = process.env.LAN_MODE === "1";
+const lanAccessOrigin = process.env.LAN_ACCESS_ORIGIN?.trim() ?? "";
+
 const localBindingConfig = {
   main: "./worker/index.ts",
   compatibility_flags: ["nodejs_compat"],
@@ -41,6 +44,7 @@ const localBindingConfig = {
         },
       ]
     : [],
+  vars: lanAccessOrigin ? { LAN_ACCESS_ORIGIN: lanAccessOrigin } : {},
 };
 
 export default defineConfig(async () => {
@@ -55,9 +59,9 @@ export default defineConfig(async () => {
 
   return {
     server: {
-      // The team build is intentionally local-only. This also makes the local
-      // identity fallback impossible to reach from another device.
-      host: "127.0.0.1",
+      // Normal local mode remains loopback-only. start-lan.bat opts into LAN
+      // listening; remote visitors still need a database-backed login session.
+      host: lanMode ? "0.0.0.0" : "127.0.0.1",
       watch: isCodexSeatbeltSandbox
         ? { useFsEvents: false, usePolling: true, ignored: ignoredWatchPaths }
         : { ignored: ignoredWatchPaths },

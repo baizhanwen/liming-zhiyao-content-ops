@@ -4,7 +4,7 @@ import { readRequestIdentity } from "../../../lib/request-auth";
 import { planPresets } from "../../../lib/operations";
 
 export async function GET(request: Request) {
-  const identity = readRequestIdentity(request);
+  const identity = await readRequestIdentity(request);
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再访问公司数据。", 401);
   try {
     const user = await ensureUser(identity);
@@ -20,7 +20,7 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const identity = readRequestIdentity(request);
+  const identity = await readRequestIdentity(request);
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再创建公司。", 401);
   try {
     const payload = await request.json() as { name?: string };
