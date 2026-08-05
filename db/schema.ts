@@ -143,6 +143,37 @@ export const topicCitations = sqliteTable("topic_citations", {
   citationType: text("citation_type", { enum: ["knowledge", "video_analysis", "metric", "external"] }).notNull(), citationId: text("citation_id").notNull(), quote: text("quote"), createdBy: text("created_by").notNull(), createdAt: text("created_at").notNull(),
 }, (table) => [uniqueIndex("idx_topic_citations_topic_source").on(table.topicId, table.citationType, table.citationId), index("idx_topic_citations_tenant_topic").on(table.organizationId, table.projectId, table.topicId)]);
 
+export const promptTemplates = sqliteTable("prompt_templates", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id),
+  taskType: text("task_type", { enum: ["content_draft"] }).notNull(), version: text("version").notNull(), name: text("name").notNull(), status: text("status", { enum: ["active", "retired"] }).notNull().default("active"),
+  systemPrompt: text("system_prompt").notNull(), outputSchemaJson: text("output_schema_json").notNull(), createdBy: text("created_by").notNull(), updatedBy: text("updated_by").notNull(), ...timestamps,
+}, (table) => [
+  uniqueIndex("idx_prompt_templates_project_task_version").on(table.projectId, table.taskType, table.version),
+  uniqueIndex("idx_prompt_templates_one_active").on(table.organizationId, table.projectId, table.taskType).where(sql`${table.status} = 'active'`),
+]);
+
+export const modelCalls = sqliteTable("model_calls", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), topicId: text("topic_id").references(() => topicIdeas.id),
+  promptTemplateId: text("prompt_template_id").references(() => promptTemplates.id), taskType: text("task_type").notNull(), provider: text("provider").notNull(), modelName: text("model_name").notNull(), modelProfile: text("model_profile").notNull(), promptVersion: text("prompt_version").notNull(),
+  status: text("status", { enum: ["started", "completed", "failed"] }).notNull(), inputHash: text("input_hash").notNull(), inputJson: text("input_json").notNull(), outputJson: text("output_json"), latencyMs: integer("latency_ms"), errorCode: text("error_code"), errorMessage: text("error_message"), createdBy: text("created_by").notNull(), createdAt: text("created_at").notNull(), completedAt: text("completed_at"),
+}, (table) => [index("idx_model_calls_project_created").on(table.organizationId, table.projectId, table.createdAt), index("idx_model_calls_topic_created").on(table.topicId, table.createdAt)]);
+
+export const contentItems = sqliteTable("content_items", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), topicId: text("topic_id").notNull().references(() => topicIdeas.id),
+  title: text("title").notNull(), status: text("status", { enum: ["draft", "internal_revision", "internal_review", "client_review", "shooting_ready", "shot", "editing", "publish_ready", "published", "reviewed", "archived"] }).notNull().default("draft"), currentVersion: integer("current_version").notNull().default(1), assigneeUserId: text("assignee_user_id").references(() => users.id), dueAt: text("due_at"),
+  createdBy: text("created_by").notNull(), updatedBy: text("updated_by").notNull(), deletedAt: text("deleted_at"), ...timestamps,
+}, (table) => [uniqueIndex("idx_content_items_topic").on(table.topicId), index("idx_content_items_project_status_updated").on(table.organizationId, table.projectId, table.status, table.updatedAt)]);
+
+export const contentVersions = sqliteTable("content_versions", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), contentItemId: text("content_item_id").notNull().references(() => contentItems.id),
+  version: integer("version").notNull(), generationMode: text("generation_mode", { enum: ["scaffold", "ai", "manual"] }).notNull(), packJson: text("pack_json").notNull(), fullScript: text("full_script").notNull(), shortScript: text("short_script").notNull(), changeSummary: text("change_summary"), promptVersion: text("prompt_version"), modelCallId: text("model_call_id").references(() => modelCalls.id), createdBy: text("created_by").notNull(), createdAt: text("created_at").notNull(),
+}, (table) => [uniqueIndex("idx_content_versions_item_version").on(table.contentItemId, table.version), index("idx_content_versions_tenant_item").on(table.organizationId, table.projectId, table.contentItemId)]);
+
+export const contentCitations = sqliteTable("content_citations", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), contentItemId: text("content_item_id").notNull().references(() => contentItems.id), contentVersionId: text("content_version_id").notNull().references(() => contentVersions.id),
+  citationType: text("citation_type", { enum: ["topic", "knowledge", "video_analysis", "strategy"] }).notNull(), citationId: text("citation_id").notNull(), quote: text("quote"), createdBy: text("created_by").notNull(), createdAt: text("created_at").notNull(),
+}, (table) => [uniqueIndex("idx_content_citations_version_source").on(table.contentVersionId, table.citationType, table.citationId), index("idx_content_citations_tenant_item").on(table.organizationId, table.projectId, table.contentItemId)]);
+
 export const auditLogs = sqliteTable("audit_logs", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").references(() => projects.id),
   actorUserId: text("actor_user_id").notNull().references(() => users.id), action: text("action").notNull(), targetType: text("target_type").notNull(), targetId: text("target_id").notNull(),

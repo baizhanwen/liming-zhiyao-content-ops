@@ -18,7 +18,7 @@
 | 工具 | 关系 | 用途 |
 |---|---|---|
 | [Drizzle ORM](https://github.com/drizzle-team/drizzle-orm) | 已采用 | D1/SQLite 类型化表结构和迁移；继续保留。 |
-| [Zod](https://github.com/colinhacks/zod) | 下一批采用 | 统一 API 输入、环境配置和共享类型校验，逐步替换分散的手工判断。 |
+| [Zod](https://github.com/colinhacks/zod) | 已采用 | 校验内容生产输入、口播稿生产包和多模型结构化输出；后续逐步覆盖其他 API。 |
 | [Playwright](https://github.com/microsoft/playwright) | 验收采用 | 登录、邀请、跨租户隔离、角色权限和移动端关键路径测试。 |
 
 不引入另一套应用登录框架：当前站点身份由托管平台提供，服务端继续执行项目授权。

@@ -6,7 +6,7 @@ const navGroups = [
     { label: "工作台", icon: "⌂", href: "/" },
     { label: "客户项目", icon: "◈", href: "/projects" },
     { label: "选题中心", icon: "◇", href: "/topics" },
-    { label: "内容生产", icon: "✦", href: "/#内容生产" },
+    { label: "内容生产", icon: "✦", href: "/content" },
     { label: "审核中心", icon: "✓", href: "/#审核中心", count: "6" },
     { label: "内容日历", icon: "▦", href: "/#内容日历" },
   ] },
