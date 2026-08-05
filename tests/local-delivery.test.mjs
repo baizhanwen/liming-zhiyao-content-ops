@@ -35,3 +35,11 @@ test("team launch scripts install, migrate, and expose a health check", async ()
   assert.match(health, /SELECT 1 AS ready/);
   assert.doesNotMatch(health, /ANALYZER_SERVICE_TOKEN|CONTENT_MODEL_API_KEY/);
 });
+
+test("Windows batch entry points are ASCII-only and checked out with CRLF", async () => {
+  const files = ["setup-local.bat", "start-local.bat", "setup-analyzer.bat", "start-analyzer.bat", "backup-local.bat", "restore-local.bat"];
+  const contents = await Promise.all(files.map((file) => readFile(new URL(`../${file}`, import.meta.url), "utf8")));
+  for (const [index, content] of contents.entries()) assert.equal(Array.from(content).every((character) => character.codePointAt(0) <= 127), true, `${files[index]} must stay ASCII-safe for cmd.exe`);
+  const attributes = await readFile(new URL("../.gitattributes", import.meta.url), "utf8");
+  assert.match(attributes, /\*\.bat text eol=crlf/);
+});

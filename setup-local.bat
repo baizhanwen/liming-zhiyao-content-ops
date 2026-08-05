@@ -1,9 +1,8 @@
 @echo off
 setlocal
-chcp 65001 >nul
 cd /d "%~dp0"
 
-echo [利明智耀] 正在检查本地运行环境...
+echo [Liming Zhiyao] Checking the local runtime...
 where node >nul 2>nul || goto :missing_node
 where npm >nul 2>nul || goto :missing_node
 
@@ -12,39 +11,39 @@ if %NODE_MAJOR% LSS 22 goto :old_node
 
 if not exist ".dev.vars" (
   copy /Y ".dev.vars.example" ".dev.vars" >nul
-  echo [利明智耀] 已创建 .dev.vars，本地身份已启用。
+  echo [Liming Zhiyao] Created .dev.vars with local identity enabled.
 ) else (
-  echo [利明智耀] 保留现有 .dev.vars，不覆盖任何密钥。
+  echo [Liming Zhiyao] Keeping the existing .dev.vars file.
 )
 
-echo [利明智耀] 正在安装网页依赖...
+echo [Liming Zhiyao] Installing web dependencies...
 call npm ci
 if errorlevel 1 goto :failed
 
-echo [利明智耀] 正在初始化本地数据库...
+echo [Liming Zhiyao] Initializing the local database...
 set "CI=1"
 call npm run db:local:migrate
 set "CI="
 if errorlevel 1 goto :failed
 
 echo.
-echo [利明智耀] 网页端安装完成。
-echo 双击 start-local.bat 即可启动；视频分析服务请另行运行 setup-analyzer.bat。
+echo [Liming Zhiyao] Web setup completed.
+echo Run start-local.bat to start the app. Video analysis is installed separately with setup-analyzer.bat.
 pause
 exit /b 0
 
 :missing_node
-echo [错误] 未找到 Node.js/npm。请安装 Node.js 22.13 或更高版本。
+echo [ERROR] Node.js or npm was not found. Install Node.js 22.13 or newer.
 pause
 exit /b 1
 
 :old_node
-echo [错误] 当前 Node.js 主版本为 %NODE_MAJOR%，需要 22.13 或更高版本。
+echo [ERROR] Node.js major version %NODE_MAJOR% is too old. Version 22.13 or newer is required.
 pause
 exit /b 1
 
 :failed
 echo.
-echo [错误] 安装未完成，请保留本窗口中的报错信息。
+echo [ERROR] Setup did not complete. Review the error shown above.
 pause
 exit /b 1

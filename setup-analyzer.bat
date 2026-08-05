@@ -1,33 +1,32 @@
 @echo off
 setlocal
-chcp 65001 >nul
 cd /d "%~dp0"
 
 py -3.11 --version >nul 2>nul || goto :missing_python
-where ffmpeg >nul 2>nul || echo [提醒] 未找到 FFmpeg。安装后请确认 ffmpeg 和 ffprobe 已加入 PATH。
-where ffprobe >nul 2>nul || echo [提醒] 未找到 ffprobe。它通常随 FFmpeg 一起安装。
+where ffmpeg >nul 2>nul || echo [NOTICE] FFmpeg was not found. Add ffmpeg and ffprobe to PATH before analysis.
+where ffprobe >nul 2>nul || echo [NOTICE] ffprobe was not found. It is normally included with FFmpeg.
 
 if not exist ".dev.vars" copy /Y ".dev.vars.example" ".dev.vars" >nul
 if not exist "services\analyzer\.venv\Scripts\python.exe" (
-  echo [利明智耀] 正在创建 Python 3.11 环境...
+  echo [Liming Zhiyao] Creating the Python 3.11 environment...
   py -3.11 -m venv "services\analyzer\.venv"
   if errorlevel 1 goto :failed
 )
 
-echo [利明智耀] 正在安装视频分析依赖，首次安装时间较长...
+echo [Liming Zhiyao] Installing video analysis dependencies. The first install can take a while...
 "services\analyzer\.venv\Scripts\python.exe" -m pip install -e "services\analyzer[media]"
 if errorlevel 1 goto :failed
 
-echo [利明智耀] 视频分析服务安装完成。请先在 .dev.vars 填写模型密钥，再双击 start-analyzer.bat。
+echo [Liming Zhiyao] Analyzer setup completed. Add model credentials to .dev.vars, then run start-analyzer.bat.
 pause
 exit /b 0
 
 :missing_python
-echo [错误] 未找到 Python 3.11。请安装 64 位 Python 3.11，并启用 py 启动器。
+echo [ERROR] Python 3.11 was not found. Install 64-bit Python 3.11 with the py launcher.
 pause
 exit /b 1
 
 :failed
-echo [错误] 视频分析服务安装失败，请保留本窗口中的报错信息。
+echo [ERROR] Analyzer setup failed. Review the error shown above.
 pause
 exit /b 1
