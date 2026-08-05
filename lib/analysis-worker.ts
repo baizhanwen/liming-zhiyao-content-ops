@@ -53,8 +53,32 @@ export function parseCompletionPayload(value: unknown) {
     const segmentsJson = JSON.stringify(segments); if (segmentsJson.length > 1_000_000) return null;
     transcript = { language, fullText, segmentsJson, confidence: transcriptConfidence };
   }
+  let sourceMetadata: null | {
+    platformWorkId: string | null; title: string | null; authorName: string | null;
+    publishedAt: string | null; durationSec: number | null;
+    metrics: { plays: number | null; likes: number | null; comments: number | null; favorites: number | null; shares: number | null };
+  } = null;
+  if (value.sourceMetadata !== undefined && value.sourceMetadata !== null) {
+    if (!isPlainRecord(value.sourceMetadata)) return null;
+    const source = value.sourceMetadata;
+    const optionalString = (key: string, maximum: number) => {
+      if (source[key] === null || source[key] === undefined) return null;
+      if (typeof source[key] !== "string") return undefined;
+      const text = source[key].trim();
+      return text.length === 0 ? null : text.length <= maximum ? text : undefined;
+    };
+    const platformWorkId = optionalString("platformWorkId", 200); const title = optionalString("title", 500); const authorName = optionalString("authorName", 300); const publishedAt = optionalString("publishedAt", 64);
+    const durationSec = source.durationSec === null || source.durationSec === undefined ? null : typeof source.durationSec === "number" && Number.isSafeInteger(source.durationSec) && source.durationSec >= 0 && source.durationSec <= 86400 ? source.durationSec : undefined;
+    const metricsValue = source.metrics === null || source.metrics === undefined ? {} : isPlainRecord(source.metrics) ? source.metrics : null;
+    if (platformWorkId === undefined || title === undefined || authorName === undefined || publishedAt === undefined || durationSec === undefined || !metricsValue) return null;
+    if (publishedAt !== null && Number.isNaN(Date.parse(publishedAt))) return null;
+    const metric = (key: string) => metricsValue[key] === null || metricsValue[key] === undefined ? null : typeof metricsValue[key] === "number" && Number.isSafeInteger(metricsValue[key]) && metricsValue[key] >= 0 ? metricsValue[key] as number : undefined;
+    const metrics = { plays: metric("plays"), likes: metric("likes"), comments: metric("comments"), favorites: metric("favorites"), shares: metric("shares") };
+    if (Object.values(metrics).some((item) => item === undefined)) return null;
+    sourceMetadata = { platformWorkId, title, authorName, publishedAt, durationSec, metrics: metrics as Record<keyof typeof metrics, number | null> };
+  }
   const optionalText = (key: "modelProvider" | "modelName" | "promptVersion") => typeof analysis[key] === "string" && analysis[key].length <= 160 ? analysis[key] as string : null;
-  return { workerId, resultKey, version, transcript, analysis: { schemaVersion, reportJson, confidence, modelProvider: optionalText("modelProvider"), modelName: optionalText("modelName"), promptVersion: optionalText("promptVersion") } };
+  return { workerId, resultKey, version, transcript, sourceMetadata, analysis: { schemaVersion, reportJson, confidence, modelProvider: optionalText("modelProvider"), modelName: optionalText("modelName"), promptVersion: optionalText("promptVersion") } };
 }
 
 export function parseFailurePayload(value: unknown) {

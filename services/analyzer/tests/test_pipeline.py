@@ -1,6 +1,4 @@
-import tempfile
 import unittest
-from pathlib import Path
 
 from liming_analyzer.adapters import (
     Keyframe,

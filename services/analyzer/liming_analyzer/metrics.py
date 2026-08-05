@@ -62,7 +62,7 @@ def high_performance_summary(values: Iterable[int | float | None]) -> dict[str, 
     }
 
 
-def safe_ratio(numerator: int | float | None, denominator: int | float | None) -> float | None:
+def safe_ratio(numerator: float | None, denominator: float | None) -> float | None:
     if numerator is None or denominator is None:
         return None
     numerator_value = float(numerator)

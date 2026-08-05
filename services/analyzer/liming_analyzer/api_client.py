@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import urllib.error
 import urllib.request
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from typing import Any, Callable, Mapping, Protocol
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from .adapters import SourceMetadata
 
 
 class AnalyzerApiError(RuntimeError):
@@ -49,6 +53,7 @@ class AnalysisResult:
     model_provider: str | None = None
     model_name: str | None = None
     prompt_version: str | None = None
+    source_metadata: SourceMetadata | None = None
 
 
 def _urllib_transport(method: str, url: str, headers: Mapping[str, str], body: bytes) -> tuple[int, bytes]:
@@ -119,9 +124,65 @@ class AnalyzerApiClient:
         if result.transcript is not None:
             payload["transcript"] = {"language": result.transcript.language, "fullText": result.transcript.full_text,
                                      "segments": result.transcript.segments, "confidence": result.transcript.confidence}
+        if result.source_metadata is not None:
+            payload["sourceMetadata"] = {
+                "platformWorkId": result.source_metadata.platform_work_id,
+                "title": result.source_metadata.title,
+                "authorName": result.source_metadata.author_name,
+                "publishedAt": result.source_metadata.published_at,
+                "durationSec": result.source_metadata.duration_sec,
+                "metrics": {
+                    "plays": result.source_metadata.plays,
+                    "likes": result.source_metadata.likes,
+                    "comments": result.source_metadata.comments,
+                    "favorites": result.source_metadata.favorites,
+                    "shares": result.source_metadata.shares,
+                },
+            }
         response = self._post(f"/api/internal/analysis-jobs/{job.id}/complete", payload)
         assert response is not None
         return response
+
+    def upload_artifact(
+        self,
+        job: ClaimedJob,
+        *,
+        kind: str,
+        path: Path,
+        content_type: str,
+        timestamp_ms: int | None = None,
+        ocr_text: str | None = None,
+        confidence: int | None = None,
+    ) -> Mapping[str, Any]:
+        if kind not in {"keyframe", "subtitle", "report"}:
+            raise ValueError("unsupported analysis artifact kind")
+        body = path.read_bytes()
+        headers = {
+            "Authorization": f"Bearer {self._token}",
+            "Content-Type": content_type,
+            "Accept": "application/json",
+            "X-Worker-Id": self.worker_id,
+            "X-Job-Version": str(job.version),
+            "X-Artifact-Kind": kind,
+            "X-Artifact-Filename": path.name,
+        }
+        if timestamp_ms is not None:
+            headers["X-Artifact-Timestamp-Ms"] = str(timestamp_ms)
+        if confidence is not None:
+            headers["X-Artifact-Confidence"] = str(confidence)
+        status, raw = self._transport(
+            "POST",
+            f"{self.base_url}/api/internal/analysis-jobs/{job.id}/artifacts",
+            headers,
+            body,
+        )
+        data = json.loads(raw.decode("utf-8")) if raw else {}
+        if not 200 <= status < 300:
+            error = data.get("error", {}) if isinstance(data, dict) else {}
+            raise AnalyzerApiError(status, str(error.get("code", "ARTIFACT_UPLOAD_FAILED")), str(error.get("message", "artifact upload failed")))
+        if not isinstance(data, dict) or not isinstance(data.get("asset"), dict):
+            raise AnalyzerApiError(status, "INVALID_RESPONSE", "artifact response is malformed")
+        return data["asset"]
 
     def fail(self, job: ClaimedJob, result_key: str, error_code: str, error_message: str, stage: str, progress: int) -> Mapping[str, Any]:
         response = self._post(f"/api/internal/analysis-jobs/{job.id}/fail", {

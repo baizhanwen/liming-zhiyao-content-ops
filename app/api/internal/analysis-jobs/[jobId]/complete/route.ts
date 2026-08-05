@@ -33,6 +33,28 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
         WHERE j.id = ? AND j.status = 'completed' AND j.result_key = ? AND j.version = ?
       `).bind(crypto.randomUUID(), payload.transcript.language, payload.transcript.fullText, payload.transcript.segmentsJson, payload.transcript.confidence, actor, nowIso, nowIso, jobId, payload.resultKey, finalVersion));
     }
+    if (payload.sourceMetadata) {
+      const source = payload.sourceMetadata;
+      statements.push(db.prepare(`
+        UPDATE videos SET
+          platform_work_id = COALESCE(?, platform_work_id),
+          title = COALESCE(title, ?),
+          author_name = COALESCE(?, author_name),
+          published_at = COALESCE(?, published_at),
+          duration_sec = COALESCE(?, duration_sec),
+          updated_by = ?, updated_at = ?
+        WHERE id = ? AND organization_id = ? AND project_id = ?
+          AND EXISTS (SELECT 1 FROM analysis_jobs j WHERE j.id = ? AND j.video_id = videos.id AND j.status = 'completed' AND j.result_key = ? AND j.version = ?)
+      `).bind(source.platformWorkId, source.title, source.authorName, source.publishedAt, source.durationSec, actor, nowIso, job.video_id, job.organization_id, job.project_id, jobId, payload.resultKey, finalVersion));
+      if (Object.values(source.metrics).some((value) => value !== null)) {
+        statements.push(db.prepare(`
+          INSERT INTO video_metric_snapshots (id, organization_id, project_id, video_id, source, plays, likes, comments, favorites, shares, followers_gained, collected_at, created_by, created_at)
+          SELECT ?, j.organization_id, j.project_id, j.video_id, 'public', ?, ?, ?, ?, ?, NULL, ?, ?, ?
+          FROM analysis_jobs j
+          WHERE j.id = ? AND j.status = 'completed' AND j.result_key = ? AND j.version = ?
+        `).bind(crypto.randomUUID(), source.metrics.plays, source.metrics.likes, source.metrics.comments, source.metrics.favorites, source.metrics.shares, nowIso, actor, nowIso, jobId, payload.resultKey, finalVersion));
+      }
+    }
     statements.push(
       db.prepare(`
         INSERT INTO video_analyses (id, organization_id, project_id, video_id, schema_version, report_json, confidence, model_provider, model_name, prompt_version, created_by, created_at, updated_at)
@@ -43,7 +65,7 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
       db.prepare("UPDATE videos SET status = 'ready', error_message = NULL, updated_by = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND EXISTS (SELECT 1 FROM analysis_jobs j WHERE j.id = ? AND j.video_id = videos.id AND j.status = 'completed' AND j.result_key = ? AND j.version = ?)")
         .bind(actor, nowIso, job.video_id, job.organization_id, job.project_id, jobId, payload.resultKey, finalVersion),
       db.prepare("INSERT INTO analysis_job_events (id, organization_id, project_id, job_id, video_id, event_type, from_status, to_status, progress, worker_id, details_json, created_at) SELECT ?, organization_id, project_id, id, video_id, 'completed', ?, 'completed', 100, ?, ?, ? FROM analysis_jobs WHERE id = ? AND result_key = ? AND version = ?")
-        .bind(crypto.randomUUID(), job.status, payload.workerId, JSON.stringify({ schemaVersion: payload.analysis.schemaVersion, hasTranscript: Boolean(payload.transcript) }), nowIso, jobId, payload.resultKey, finalVersion),
+        .bind(crypto.randomUUID(), job.status, payload.workerId, JSON.stringify({ schemaVersion: payload.analysis.schemaVersion, hasTranscript: Boolean(payload.transcript), hasSourceMetadata: Boolean(payload.sourceMetadata) }), nowIso, jobId, payload.resultKey, finalVersion),
     );
     const results = await db.batch(statements); if (!results[0].meta.changes) return apiError("JOB_STATE_CHANGED", "任务状态已变化，结果未写入。", 409);
     return Response.json({ job: { id: jobId, status: "completed", progress: 100, version: finalVersion }, idempotent: false });

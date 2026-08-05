@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, sqliteTable, text, uniqueIndex, type AnySQLiteColumn } from "drizzle-orm/sqlite-core";
 
 const id = () => text("id").primaryKey();
 const timestamps = { createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull() };
@@ -48,10 +48,15 @@ export const socialAccounts = sqliteTable("social_accounts", {
 
 export const mediaAssets = sqliteTable("media_assets", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id),
+  videoId: text("video_id").references((): AnySQLiteColumn => videos.id),
   kind: text("kind", { enum: ["source_video", "source_audio", "keyframe", "subtitle", "report"] }).notNull(), r2Key: text("r2_key").notNull(),
   filename: text("filename").notNull(), contentType: text("content_type").notNull(), sizeBytes: integer("size_bytes").notNull(), sha256: text("sha256").notNull(),
   status: text("status", { enum: ["active", "deleted"] }).notNull().default("active"), createdBy: text("created_by").notNull(), updatedBy: text("updated_by").notNull(), ...timestamps,
-}, (table) => [uniqueIndex("idx_media_assets_r2_key").on(table.r2Key), index("idx_media_assets_project_kind").on(table.organizationId, table.projectId, table.kind)]);
+}, (table) => [
+  uniqueIndex("idx_media_assets_r2_key").on(table.r2Key),
+  index("idx_media_assets_project_kind").on(table.organizationId, table.projectId, table.kind),
+  index("idx_media_assets_video_kind").on(table.organizationId, table.projectId, table.videoId, table.kind),
+]);
 
 export const videos = sqliteTable("videos", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id),

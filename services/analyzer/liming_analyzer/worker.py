@@ -21,7 +21,7 @@ def process_once(client: AnalyzerApiClient, processor: Processor) -> bool:
     result_key = f"result:{job.id}:{uuid.uuid4().hex}"
     try:
         result: AnalysisResult = processor(job, heartbeat)
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - worker boundary converts failures into job state
         client.fail(current, result_key, "WORKER_PROCESSING_FAILED", str(error)[:1000] or "analysis failed", "分析失败", current.progress)
         return True
     # Transport or lease errors during completion must remain retryable; they are not

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol, Sequence
+from typing import Any, Protocol
 
 from .api_client import AnalysisResult, ClaimedJob
 
@@ -21,6 +22,26 @@ class NormalizedMedia:
     source_path: Path
     audio_path: Path | None
     info: MediaInfo
+
+
+@dataclass(frozen=True)
+class SourceMetadata:
+    platform_work_id: str | None = None
+    title: str | None = None
+    author_name: str | None = None
+    published_at: str | None = None
+    duration_sec: int | None = None
+    plays: int | None = None
+    likes: int | None = None
+    comments: int | None = None
+    favorites: int | None = None
+    shares: int | None = None
+
+
+@dataclass(frozen=True)
+class AcquiredSource:
+    path: Path
+    metadata: SourceMetadata | None = None
 
 
 @dataclass(frozen=True)
@@ -52,6 +73,7 @@ class Keyframe:
     path: Path
     ocr_text: str | None = None
     confidence: int | None = None
+    asset_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -80,7 +102,7 @@ class StructureOutput:
 
 
 class SourceProvider(Protocol):
-    def acquire(self, job: ClaimedJob, destination: Path) -> Path: ...
+    def acquire(self, job: ClaimedJob, destination: Path) -> AcquiredSource | Path: ...
 
 
 class MediaProcessor(Protocol):
@@ -99,10 +121,24 @@ class StructureAnalyzer(Protocol):
     def analyze(self, job: ClaimedJob, media: NormalizedMedia, transcript: TranscriptOutput, visuals: VisualOutput) -> StructureOutput: ...
 
 
+class AnalysisArtifactStore(Protocol):
+    def persist(
+        self,
+        job: ClaimedJob,
+        transcript: TranscriptOutput,
+        visuals: VisualOutput,
+        workspace: Path,
+    ) -> VisualOutput: ...
+
+
 Heartbeat = Callable[[str, int, str], ClaimedJob]
 
 
-def build_analysis_result(transcript: TranscriptOutput, structure: StructureOutput) -> AnalysisResult:
+def build_analysis_result(
+    transcript: TranscriptOutput,
+    structure: StructureOutput,
+    source_metadata: SourceMetadata | None = None,
+) -> AnalysisResult:
     from .api_client import TranscriptResult
 
     segments = [
@@ -117,4 +153,5 @@ def build_analysis_result(transcript: TranscriptOutput, structure: StructureOutp
         model_provider=structure.model_provider,
         model_name=structure.model_name,
         prompt_version=structure.prompt_version,
+        source_metadata=source_metadata,
     )

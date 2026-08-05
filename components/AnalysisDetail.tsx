@@ -9,7 +9,8 @@ type Transcript = { language: string; source: string; full_text: string; confide
 type Analysis = { schema_version: string; report: unknown; confidence: number | null; model_provider: string | null; model_name: string | null; prompt_version: string | null; created_at: string };
 type Metric = { source: string; plays: number | null; likes: number | null; comments: number | null; favorites: number | null; shares: number | null; followers_gained: number | null; collected_at: string };
 type EventRow = { event_type: string; from_status: string | null; to_status: string | null; progress: number | null; created_at: string };
-type DetailResponse = { video: Video; job: Job | null; transcript: Transcript | null; analysis: Analysis | null; metrics: Metric[]; events: EventRow[] };
+type Asset = { id: string; kind: "keyframe" | "subtitle" | "report"; filename: string; content_type: string; size_bytes: number; url: string };
+type DetailResponse = { video: Video; job: Job | null; transcript: Transcript | null; analysis: Analysis | null; metrics: Metric[]; assets: Asset[]; events: EventRow[] };
 type Segment = { startMs: number; endMs: number; text: string };
 type Evidence = { startMs: number | null; text: string; source: string; confidence: number | null };
 
@@ -75,6 +76,7 @@ export function AnalysisDetail({ videoId, organizationId, projectId }: { videoId
   const captionTrack = useMemo(() => `data:text/vtt;charset=utf-8,${encodeURIComponent(`WEBVTT\n\n${segments.map((segment, index) => `${index + 1}\n${vttTime(segment.startMs)} --> ${vttTime(Math.max(segment.endMs, segment.startMs + 500))}\n${segment.text.replaceAll("\n", " ")}\n`).join("\n")}`)}`, [segments]);
   const report = asRecord(detail?.analysis?.report); const reportSections = report ? Object.entries(report).filter(([key]) => key !== "evidence") : [];
   const evidence = normalizeEvidence(report?.evidence);
+  const keyframes = detail?.assets.filter((asset) => asset.kind === "keyframe") ?? [];
   const latestMetric = detail?.metrics[0] ?? null;
   function seek(startMs: number) { if (!mediaRef.current) return; mediaRef.current.currentTime = startMs / 1000; void mediaRef.current.play(); }
 
@@ -93,6 +95,7 @@ export function AnalysisDetail({ videoId, organizationId, projectId }: { videoId
           <div className="timeline-heading"><strong>时间轴文案</strong><span>{detail.transcript ? `${detail.transcript.language} · 置信度 ${detail.transcript.confidence ?? "—"}` : "等待转写"}</span></div>
           {segments.length > 0 ? <ol>{segments.map((segment, index) => <li key={`${segment.startMs}-${index}`}><button type="button" onClick={() => seek(segment.startMs)} disabled={!detail.video.media_url}><time>{timeLabel(segment.startMs)}</time><span>{segment.text}</span></button></li>)}</ol> : <div className="timeline-empty">{detail.transcript?.full_text || "转写完成后，这里会按时间点展示原文。"}</div>}
         </div></div>
+        {keyframes.length > 0 && <div className="keyframe-strip"><div className="timeline-heading"><strong>镜头关键帧</strong><span>{keyframes.length} 个可追溯画面</span></div><div>{keyframes.map((asset, index) => <a key={asset.id} href={asset.url} target="_blank" rel="noreferrer"><span className="keyframe-image" style={{ backgroundImage: `url(${JSON.stringify(asset.url)})` }} role="img" aria-label={`关键帧 ${index + 1}`} /><span>{asset.filename}</span></a>)}</div></div>}
       </article>
 
       <article className="panel report-panel"><div className="panel-heading"><div><p className="section-kicker">结构化分析与证据</p><h2>{detail.analysis ? `报告 ${detail.analysis.schema_version}` : "尚未生成结构化报告"}</h2></div>{detail.analysis && <span className="confidence-chip">整体置信度 {detail.analysis.confidence ?? "—"}</span>}</div>

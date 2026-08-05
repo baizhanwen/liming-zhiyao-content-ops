@@ -43,6 +43,8 @@ yarn-error.log*
 # python
 __pycache__/
 *.py[cod]
+*.egg-info/
 .pytest_cache/
 .ruff_cache/
 .venv/
+services/analyzer/model-cache/

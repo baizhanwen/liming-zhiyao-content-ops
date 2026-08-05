@@ -2,8 +2,32 @@
 name = "liming-zhiyao-analyzer"
 version = "0.1.0"
 description = "Deterministic media and performance analysis service for Liming Zhiyao"
-requires-python = ">=3.11"
-dependencies = []
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "instructor>=1.15,<2",
+  "openai>=2.8,<3",
+  "pydantic>=2.12,<3",
+  "yt-dlp>=2026.7.4",
+]
+
+[project.scripts]
+liming-analyzer = "liming_analyzer.__main__:main"
+
+[project.optional-dependencies]
+media = [
+  "funasr>=1.4,<2",
+  "torch>=2.11,<2.12",
+  "torchaudio>=2.11,<2.12",
+  "paddleocr>=3.7,<4",
+  "paddlepaddle>=3.2,<4",
+  "scenedetect>=0.7.1,<0.8",
+  "opencv-python==4.10.0.84",
+]
+dev = ["ruff>=0.12,<1"]
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
 
 [tool.ruff]
 line-length = 100

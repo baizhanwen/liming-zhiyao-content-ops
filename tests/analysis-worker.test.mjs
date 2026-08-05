@@ -43,3 +43,21 @@ test("internal APIs require a separate service bearer credential", async () => {
   assert.match(auth, /crypto\.subtle\.digest/);
   assert.doesNotMatch(auth, /oai-authenticated-user-id/);
 });
+
+test("worker artifacts are lease-bound, tenant-scoped, and persisted through R2 metadata", async () => {
+  const [artifacts, assetRoute, schema] = await Promise.all([
+    readFile(new URL("../app/api/internal/analysis-jobs/[jobId]/artifacts/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/videos/[videoId]/assets/[assetId]/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(artifacts, /j\.lease_owner = \?/);
+  assert.match(artifacts, /j\.version = \?/);
+  assert.match(artifacts, /j\.lease_expires_at > \?/);
+  assert.match(artifacts, /getMediaBucket\(\)\.put/);
+  assert.match(artifacts, /organization_id, project_id, video_id/);
+  assert.match(assetRoute, /a\.organization_id = \?/);
+  assert.match(assetRoute, /a\.project_id = \?/);
+  assert.match(assetRoute, /a\.video_id = \?/);
+  assert.match(schema, /videoId: text\("video_id"\)/);
+  assert.match(schema, /idx_media_assets_video_kind/);
+});

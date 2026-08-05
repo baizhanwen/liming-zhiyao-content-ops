@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Callable, Sequence
 
 from .adapters import Keyframe, MediaInfo, NormalizedMedia
 

@@ -11,8 +11,12 @@ class OcrEngine(Protocol):
     def recognize(self, image: Path) -> tuple[str, int | None]: ...
 
 
+class FrameExtractor(Protocol):
+    def extract(self, media: NormalizedMedia, output_dir: Path) -> list[Keyframe]: ...
+
+
 class KeyframeVisualAnalyzer:
-    def __init__(self, extractor: FfmpegFrameExtractor, ocr: OcrEngine) -> None:
+    def __init__(self, extractor: FrameExtractor | FfmpegFrameExtractor, ocr: OcrEngine) -> None:
         self.extractor = extractor
         self.ocr = ocr
 
