@@ -4,12 +4,14 @@ import { readFile } from "node:fs/promises";
 
 test("dashboard replaces the disposable starter", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const dashboard = await readFile(new URL("../components/DashboardWorkspace.tsx", import.meta.url), "utf8");
   const layout = await readFile(new URL("../app/layout.tsx", import.meta.url), "utf8");
   const packageJson = await readFile(new URL("../package.json", import.meta.url), "utf8");
-  assert.match(page, /上午好，林溪/);
-  assert.match(page, /今日待办/);
-  assert.match(page, /待审核内容/);
-  assert.match(page, /下一步建议/);
+  assert.match(page, /DashboardWorkspace/);
+  assert.match(dashboard, /运营工作台/);
+  assert.match(dashboard, /待审核内容/);
+  assert.match(dashboard, /真实业务记录/);
+  assert.doesNotMatch(dashboard, /数据为演示样例/);
   assert.match(layout, /lang="zh-CN"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
 });

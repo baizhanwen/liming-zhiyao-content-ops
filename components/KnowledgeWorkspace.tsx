@@ -60,7 +60,7 @@ export function KnowledgeWorkspace({ initialOrganizationId = "", initialProjectI
   }
 
   if (loading) return <div className="management-state" role="status">正在载入品牌知识空间…</div>;
-  if (error && organizations.length === 0) return <div className="management-state error-state"><strong>暂时无法进入知识库</strong><p>{error}</p><small>本地预览不会伪造登录身份；请在私有站点登录后使用真实项目数据。</small></div>;
+  if (error && organizations.length === 0) return <div className="management-state error-state"><strong>暂时无法进入知识库</strong><p>{error}</p><small>请确认本地身份已启用，并先创建公司与客户项目。</small></div>;
   if (!organizationId || !projectId) return <div className="empty-panel"><span aria-hidden="true">▤</span><h2>请先创建客户项目</h2><p>品牌知识和内容策略必须归属于明确的客户项目。</p></div>;
 
   return <div className="knowledge-workspace">

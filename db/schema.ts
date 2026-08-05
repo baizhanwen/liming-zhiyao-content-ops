@@ -14,6 +14,15 @@ export const organizations = sqliteTable("organizations", {
   createdBy: text("created_by").notNull(), ...timestamps,
 }, (table) => [uniqueIndex("idx_organizations_slug").on(table.slug)]);
 
+export const organizationSettings = sqliteTable("organization_settings", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id),
+  planCode: text("plan_code", { enum: ["starter", "team", "scale"] }).notNull().default("team"),
+  projectQuota: integer("project_quota").notNull().default(20), memberQuota: integer("member_quota").notNull().default(50),
+  monthlyAnalysisQuota: integer("monthly_analysis_quota").notNull().default(500), monthlyModelCallQuota: integer("monthly_model_call_quota").notNull().default(2000),
+  storageQuotaBytes: integer("storage_quota_bytes").notNull().default(21474836480), retentionDays: integer("retention_days").notNull().default(365),
+  failedJobAlertThreshold: integer("failed_job_alert_threshold").notNull().default(3), createdBy: text("created_by").notNull(), updatedBy: text("updated_by").notNull(), ...timestamps,
+}, (table) => [uniqueIndex("idx_organization_settings_org").on(table.organizationId)]);
+
 export const organizationMembers = sqliteTable("organization_members", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), userId: text("user_id").notNull().references(() => users.id),
   role: text("role", { enum: ["admin", "member", "readonly"] }).notNull(), status: text("status", { enum: ["active", "suspended", "removed"] }).notNull().default("active"),

@@ -2,6 +2,7 @@ import { ensureUser, getD1, getOrganizationAccess, hashInvitationToken } from ".
 import { apiError, errorResponse } from "../../../lib/api-response";
 import { organizationRoles, projectRoles } from "../../../lib/authorization";
 import { readRequestIdentity } from "../../../lib/request-auth";
+import { checkOrganizationQuota } from "../../../lib/operations";
 
 export async function GET(request: Request) {
   const identity = readRequestIdentity(request);
@@ -17,7 +18,40 @@ export async function GET(request: Request) {
       db.prepare(`SELECT u.id, u.email, u.display_name, om.role, om.status, om.created_at FROM organization_members om INNER JOIN users u ON u.id = om.user_id WHERE om.organization_id = ? AND om.status != 'removed' ORDER BY om.created_at ASC`).bind(organizationId).all(),
       db.prepare(`SELECT id, email, organization_role, project_id, project_role, status, expires_at, created_at FROM invitations WHERE organization_id = ? AND status = 'pending' ORDER BY created_at DESC`).bind(organizationId).all(),
     ]);
-    return Response.json({ members: members.results, invitations: invitations.results, organizationRole: access.organizationRole });
+    return Response.json({ members: members.results, invitations: invitations.results, organizationRole: access.organizationRole, currentUserId: access.userId });
+  } catch (error) { return errorResponse(error); }
+}
+
+export async function PATCH(request: Request) {
+  const identity = readRequestIdentity(request);
+  if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再管理成员。", 401);
+  try {
+    const payload = await request.json() as { organizationId?: string; memberId?: string; invitationId?: string; role?: string; status?: string };
+    const organizationId = payload.organizationId?.trim() ?? "";
+    if (!organizationId) return apiError("ORGANIZATION_REQUIRED", "缺少公司范围。", 400);
+    const access = await getOrganizationAccess(identity.authSubject, organizationId);
+    if (!access || access.organizationRole !== "admin") return apiError("ADMIN_REQUIRED", "只有公司管理员可以管理成员。", 403);
+    const user = await ensureUser(identity); const db = getD1(); const now = new Date().toISOString();
+    if (payload.invitationId) {
+      const result = await db.prepare("UPDATE invitations SET status = 'revoked', updated_by = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND status = 'pending'").bind(user.id, now, payload.invitationId, organizationId).run();
+      if (!result.meta.changes) return apiError("INVITATION_NOT_PENDING", "邀请不存在或已经处理。", 409);
+      await db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, created_at) VALUES (?, ?, NULL, ?, 'invitation.revoked', 'invitation', ?, ?)").bind(crypto.randomUUID(), organizationId, user.id, payload.invitationId, now).run();
+      return Response.json({ invitation: { id: payload.invitationId, status: "revoked" } });
+    }
+    const memberId = payload.memberId?.trim() ?? "";
+    if (!memberId || !organizationRoles.includes(payload.role as never) || !["active", "suspended", "removed"].includes(payload.status ?? "")) return apiError("INVALID_MEMBER_UPDATE", "成员角色或状态无效。", 400);
+    const target = await db.prepare("SELECT role, status FROM organization_members WHERE organization_id = ? AND user_id = ? AND status != 'removed'").bind(organizationId, memberId).first<{ role: string; status: string }>();
+    if (!target) return apiError("MEMBER_NOT_FOUND", "成员不存在。", 404);
+    if (memberId === access.userId && payload.status !== "active") return apiError("CANNOT_DISABLE_SELF", "管理员不能暂停或移除自己。", 409);
+    if (target.role === "admin" && (payload.role !== "admin" || payload.status !== "active")) {
+      const admins = await db.prepare("SELECT COUNT(*) AS value FROM organization_members WHERE organization_id = ? AND role = 'admin' AND status = 'active'").bind(organizationId).first<{ value: number }>();
+      if ((admins?.value ?? 0) <= 1) return apiError("LAST_ADMIN_REQUIRED", "公司必须保留至少一位有效管理员。", 409);
+    }
+    await db.batch([
+      db.prepare("UPDATE organization_members SET role = ?, status = ?, updated_by = ?, updated_at = ? WHERE organization_id = ? AND user_id = ?").bind(payload.role, payload.status, user.id, now, organizationId, memberId),
+      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, NULL, ?, 'organization.member_updated', 'user', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, user.id, memberId, JSON.stringify({ role: payload.role, status: payload.status }), now),
+    ]);
+    return Response.json({ member: { id: memberId, role: payload.role, status: payload.status } });
   } catch (error) { return errorResponse(error); }
 }
 
@@ -43,6 +77,8 @@ export async function POST(request: Request) {
       if (!project) return apiError("PROJECT_NOT_FOUND", "指定项目不存在。", 404);
     }
     const user = await ensureUser(identity);
+    const quota = await checkOrganizationQuota(organizationId, user.id, "members");
+    if (!quota.allowed) return apiError("MEMBER_QUOTA_EXCEEDED", `当前套餐最多允许 ${quota.limit} 位有效成员。`, 429, { usage: quota.current, limit: quota.limit });
     const invitationId = crypto.randomUUID();
     const token = `${crypto.randomUUID().replaceAll("-", "")}${crypto.randomUUID().replaceAll("-", "")}`;
     const tokenHash = await hashInvitationToken(token);

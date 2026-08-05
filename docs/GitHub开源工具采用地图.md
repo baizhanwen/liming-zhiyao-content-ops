@@ -72,4 +72,4 @@
 | [OpenTelemetry Python](https://github.com/open-telemetry/opentelemetry-python) | 计划评估 | 分析 Worker、FFmpeg、ASR、OCR 和模型调用耗时与错误率。 |
 | [Playwright](https://github.com/microsoft/playwright) | 持续采用 | 发布前核心业务回归和故障 Trace。 |
 
-监控、支付、邮件和短信等外部能力应先确认供应商、隐私与费用，再决定托管服务或开源自建。
+当前本地版先使用 D1 业务事件、分析任务心跳、配额查询和健康端点完成供应商无关的监控基础，不提前引入遥测后端。OpenTelemetry 保留为接入外部监控平台时的标准适配层。支付、邮件和短信等外部能力仍需先确认供应商、隐私与费用。

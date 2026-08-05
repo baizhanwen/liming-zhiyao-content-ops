@@ -3,6 +3,7 @@ import { apiError, errorResponse } from "../../../../../lib/api-response";
 import { CONTENT_OUTPUT_SCHEMA, CONTENT_PROMPT_NAME, CONTENT_PROMPT_VERSION, CONTENT_SYSTEM_PROMPT, generateContentSchema, parseModelJson, productionPackSchema } from "../../../../../lib/content-production";
 import { invokeContentModel, ModelConfigurationError, ModelRequestError, readContentModelConfig } from "../../../../../lib/model-adapter";
 import { readRequestIdentity } from "../../../../../lib/request-auth";
+import { checkOrganizationQuota } from "../../../../../lib/operations";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +21,9 @@ export async function POST(request: Request, context: { params: Promise<{ conten
     const { organizationId, projectId, modelProfile } = parsed.data;
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
     if (!access || !canWriteProjectAccess(access)) return apiError("WRITE_ACCESS_REQUIRED", "当前角色不能生成内容。", 403);
+    const user = await ensureUser(identity);
+    const quota = await checkOrganizationQuota(organizationId, user.id, "modelCalls");
+    if (!quota.allowed) return apiError("MODEL_QUOTA_EXCEEDED", `本月模型调用已达到 ${quota.limit} 次套餐上限。`, 429, { usage: quota.current, limit: quota.limit });
     const config = readContentModelConfig(modelProfile);
     const { contentId } = await context.params; const db = getD1();
     const item = await db.prepare(`
@@ -54,7 +58,7 @@ export async function POST(request: Request, context: { params: Promise<{ conten
     }
     const sourceList = Array.from(sources.values());
     const generationInput = { topic: { id: item.topic_id, title: item.topic_title, angle: item.angle, pillar: item.pillar, audience: item.audience, objective: item.objective, hook: item.hook, rationale: item.rationale }, sources: sourceList, outputSchema: CONTENT_OUTPUT_SCHEMA };
-    const inputJson = JSON.stringify(generationInput); const inputHash = await sha256Hex(new TextEncoder().encode(inputJson)); const user = await ensureUser(identity); const now = new Date().toISOString(); const promptTemplateId = crypto.randomUUID();
+    const inputJson = JSON.stringify(generationInput); const inputHash = await sha256Hex(new TextEncoder().encode(inputJson)); const now = new Date().toISOString(); const promptTemplateId = crypto.randomUUID();
     let prompt = await db.prepare("SELECT id FROM prompt_templates WHERE organization_id = ? AND project_id = ? AND task_type = 'content_draft' AND version = ?").bind(organizationId, projectId, CONTENT_PROMPT_VERSION).first<{ id: string }>();
     if (!prompt) {
       await db.batch([

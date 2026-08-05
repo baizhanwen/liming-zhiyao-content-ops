@@ -1,6 +1,7 @@
 import { canWriteProjectAccess, ensureUser, getD1, getMediaBucket, getProjectAccess, sha256Hex } from "../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../lib/api-response";
 import { readRequestIdentity } from "../../../../lib/request-auth";
+import { checkOrganizationQuota } from "../../../../lib/operations";
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const allowedTypes = new Set(["video/mp4", "video/quicktime", "video/webm", "audio/mpeg", "audio/mp4", "audio/wav", "audio/x-wav"]);
@@ -20,7 +21,14 @@ export async function POST(request: Request) {
     if (!(file instanceof File)) return apiError("FILE_REQUIRED", "请选择视频或音频文件。", 400);
     if (!allowedTypes.has(file.type)) return apiError("UNSUPPORTED_MEDIA_TYPE", "仅支持 MP4、MOV、WebM、MP3、M4A 和 WAV。", 415);
     if (file.size <= 0 || file.size > MAX_UPLOAD_BYTES) return apiError("INVALID_FILE_SIZE", "文件大小需要在 1 字节至 50 MB 之间。", 413);
-    const user = await ensureUser(identity); const db = getD1(); const bytes = await file.arrayBuffer(); const sha256 = await sha256Hex(bytes);
+    const user = await ensureUser(identity);
+    const [analysisQuota, storageQuota] = await Promise.all([
+      checkOrganizationQuota(organizationId, user.id, "analyses"),
+      checkOrganizationQuota(organizationId, user.id, "storageBytes", file.size),
+    ]);
+    if (!analysisQuota.allowed) return apiError("ANALYSIS_QUOTA_EXCEEDED", `本月分析任务已达到 ${analysisQuota.limit} 次套餐上限。`, 429, { usage: analysisQuota.current, limit: analysisQuota.limit });
+    if (!storageQuota.allowed) return apiError("STORAGE_QUOTA_EXCEEDED", "本次上传会超过公司的媒体存储配额。", 429, { usage: storageQuota.current, limit: storageQuota.limit });
+    const db = getD1(); const bytes = await file.arrayBuffer(); const sha256 = await sha256Hex(bytes);
     const duplicate = await db.prepare("SELECT id FROM videos WHERE organization_id = ? AND project_id = ? AND source_hash = ? AND deleted_at IS NULL").bind(organizationId, projectId, sha256).first<{ id: string }>();
     if (duplicate) return apiError("VIDEO_ALREADY_EXISTS", "相同媒体已经进入当前项目。", 409, { videoId: duplicate.id });
     const videoId = crypto.randomUUID(); const assetId = crypto.randomUUID(); const jobId = crypto.randomUUID(); const now = new Date().toISOString();

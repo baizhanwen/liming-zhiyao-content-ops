@@ -1,6 +1,7 @@
 import { getD1, ensureUser, makeSlug } from "../../../db/runtime";
 import { apiError, errorResponse } from "../../../lib/api-response";
 import { readRequestIdentity } from "../../../lib/request-auth";
+import { planPresets } from "../../../lib/operations";
 
 export async function GET(request: Request) {
   const identity = readRequestIdentity(request);
@@ -33,6 +34,7 @@ export async function POST(request: Request) {
     await db.batch([
       db.prepare("INSERT INTO organizations (id, name, slug, status, created_by, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?, ?)").bind(organizationId, name, makeSlug(name, organizationId), user.id, now, now),
       db.prepare("INSERT INTO organization_members (id, organization_id, user_id, role, status, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, 'admin', 'active', ?, ?, ?, ?)").bind(crypto.randomUUID(), organizationId, user.id, user.id, user.id, now, now),
+      db.prepare("INSERT INTO organization_settings (id, organization_id, plan_code, project_quota, member_quota, monthly_analysis_quota, monthly_model_call_quota, storage_quota_bytes, retention_days, failed_job_alert_threshold, created_by, updated_by, created_at, updated_at) VALUES (?, ?, 'team', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), organizationId, planPresets.team.projectQuota, planPresets.team.memberQuota, planPresets.team.monthlyAnalysisQuota, planPresets.team.monthlyModelCallQuota, planPresets.team.storageQuotaBytes, planPresets.team.retentionDays, planPresets.team.failedJobAlertThreshold, user.id, user.id, now, now),
       db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, NULL, ?, 'organization.created', 'organization', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, user.id, organizationId, JSON.stringify({ name }), now),
     ]);
     return Response.json({ organization: { id: organizationId, name, role: "admin", status: "active" } }, { status: 201 });
