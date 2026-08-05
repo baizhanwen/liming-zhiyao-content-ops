@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 const id = () => text("id").primaryKey();
@@ -99,6 +100,43 @@ export const analysisJobEvents = sqliteTable("analysis_job_events", {
   eventType: text("event_type", { enum: ["claimed", "heartbeat", "stage_changed", "completed", "failed", "lease_expired"] }).notNull(),
   fromStatus: text("from_status"), toStatus: text("to_status"), progress: integer("progress"), workerId: text("worker_id"), detailsJson: text("details_json"), createdAt: text("created_at").notNull(),
 }, (table) => [index("idx_analysis_job_events_job_created").on(table.jobId, table.createdAt), index("idx_analysis_job_events_tenant_created").on(table.organizationId, table.projectId, table.createdAt)]);
+
+export const knowledgeItems = sqliteTable("knowledge_items", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id),
+  category: text("category", { enum: ["brand_story", "founder", "case_study", "customer_question", "sales_script", "high_performing_copy", "industry_term", "compliance", "brand_voice", "client_preference", "other"] }).notNull(),
+  title: text("title").notNull(), status: text("status", { enum: ["draft", "confirmed", "archived"] }).notNull().default("draft"), currentVersion: integer("current_version").notNull().default(1),
+  createdBy: text("created_by").notNull(), updatedBy: text("updated_by").notNull(), confirmedBy: text("confirmed_by"), confirmedAt: text("confirmed_at"), deletedAt: text("deleted_at"), ...timestamps,
+}, (table) => [index("idx_knowledge_items_project_status_category").on(table.organizationId, table.projectId, table.status, table.category), index("idx_knowledge_items_project_updated").on(table.organizationId, table.projectId, table.updatedAt)]);
+
+export const knowledgeItemVersions = sqliteTable("knowledge_item_versions", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), itemId: text("item_id").notNull().references(() => knowledgeItems.id),
+  version: integer("version").notNull(), body: text("body").notNull(), sourceType: text("source_type", { enum: ["manual", "document", "url", "client_feedback", "analysis"] }).notNull(), sourceRef: text("source_ref"), changeSummary: text("change_summary"),
+  createdBy: text("created_by").notNull(), createdAt: text("created_at").notNull(),
+}, (table) => [uniqueIndex("idx_knowledge_versions_item_version").on(table.itemId, table.version), index("idx_knowledge_versions_tenant_item").on(table.organizationId, table.projectId, table.itemId)]);
+
+export const contentStrategies = sqliteTable("content_strategies", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id),
+  version: integer("version").notNull(), name: text("name").notNull(), status: text("status", { enum: ["draft", "active", "retired"] }).notNull().default("draft"),
+  positioning: text("positioning").notNull(), persona: text("persona"), targetAudience: text("target_audience").notNull(), painPointsJson: text("pain_points_json").notNull(), pillarsJson: text("pillars_json").notNull(), topicMixJson: text("topic_mix_json").notNull(),
+  styleNotes: text("style_notes"), cadence: text("cadence"), conversionPath: text("conversion_path"), objectivesJson: text("objectives_json").notNull(), effectiveFrom: text("effective_from"), effectiveTo: text("effective_to"),
+  createdBy: text("created_by").notNull(), updatedBy: text("updated_by").notNull(), ...timestamps,
+}, (table) => [
+  uniqueIndex("idx_content_strategies_project_version").on(table.projectId, table.version),
+  uniqueIndex("idx_content_strategies_one_active").on(table.organizationId, table.projectId).where(sql`${table.status} = 'active'`),
+  index("idx_content_strategies_project_status").on(table.organizationId, table.projectId, table.status),
+]);
+
+export const topicIdeas = sqliteTable("topic_ideas", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id),
+  title: text("title").notNull(), angle: text("angle"), sourceType: text("source_type", { enum: ["knowledge", "video_analysis", "performance", "trend", "comment", "manual"] }).notNull(), sourceRef: text("source_ref"),
+  pillar: text("pillar"), audience: text("audience"), objective: text("objective"), hook: text("hook"), rationale: text("rationale"), priority: integer("priority").notNull().default(50),
+  status: text("status", { enum: ["idea", "selected", "drafting", "archived"] }).notNull().default("idea"), createdBy: text("created_by").notNull(), updatedBy: text("updated_by").notNull(), deletedAt: text("deleted_at"), ...timestamps,
+}, (table) => [index("idx_topic_ideas_project_status_priority").on(table.organizationId, table.projectId, table.status, table.priority), index("idx_topic_ideas_project_created").on(table.organizationId, table.projectId, table.createdAt)]);
+
+export const topicCitations = sqliteTable("topic_citations", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), topicId: text("topic_id").notNull().references(() => topicIdeas.id),
+  citationType: text("citation_type", { enum: ["knowledge", "video_analysis", "metric", "external"] }).notNull(), citationId: text("citation_id").notNull(), quote: text("quote"), createdBy: text("created_by").notNull(), createdAt: text("created_at").notNull(),
+}, (table) => [uniqueIndex("idx_topic_citations_topic_source").on(table.topicId, table.citationType, table.citationId), index("idx_topic_citations_tenant_topic").on(table.organizationId, table.projectId, table.topicId)]);
 
 export const auditLogs = sqliteTable("audit_logs", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").references(() => projects.id),

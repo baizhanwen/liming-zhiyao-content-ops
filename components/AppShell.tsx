@@ -5,7 +5,7 @@ const navGroups = [
   { label: "运营工作", items: [
     { label: "工作台", icon: "⌂", href: "/" },
     { label: "客户项目", icon: "◈", href: "/projects" },
-    { label: "选题中心", icon: "◇", href: "/#选题中心" },
+    { label: "选题中心", icon: "◇", href: "/topics" },
     { label: "内容生产", icon: "✦", href: "/#内容生产" },
     { label: "审核中心", icon: "✓", href: "/#审核中心", count: "6" },
     { label: "内容日历", icon: "▦", href: "/#内容日历" },
@@ -13,7 +13,7 @@ const navGroups = [
   { label: "研究与资产", items: [
     { label: "视频分析", icon: "▷", href: "/analysis" },
     { label: "对标内容库", icon: "◫", href: "/#对标内容库" },
-    { label: "品牌知识库", icon: "▤", href: "/#品牌知识库" },
+    { label: "品牌知识库", icon: "▤", href: "/knowledge" },
     { label: "素材中心", icon: "□", href: "/#素材中心" },
   ] },
   { label: "增长复盘", items: [
