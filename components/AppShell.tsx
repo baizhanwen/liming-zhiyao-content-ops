@@ -18,8 +18,8 @@ const navGroups = [
   ] },
   { label: "增长复盘", items: [
     { label: "发布管理", icon: "↗", href: "/workflow?view=publish" },
-    { label: "数据复盘", icon: "◫", href: "/#数据复盘" },
-    { label: "报告中心", icon: "≋", href: "/#报告中心" },
+    { label: "数据复盘", icon: "◫", href: "/insights?view=overview" },
+    { label: "报告中心", icon: "≋", href: "/insights?view=reports" },
   ] },
 ];
 

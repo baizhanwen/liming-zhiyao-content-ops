@@ -50,6 +50,13 @@
       "when": 1785915558127,
       "tag": "0006_sweet_logan",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1785916309581,
+      "tag": "0007_slim_quasimodo",
+      "breakpoints": true
     }
   ]
 }

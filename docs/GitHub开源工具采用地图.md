@@ -58,8 +58,9 @@
 
 | 工具 | 关系 | 用途 |
 |---|---|---|
-| [Apache ECharts](https://github.com/apache/echarts) | 计划采用 | 账号趋势、内容结构、互动率和周/月报可视化。 |
-| [Polars](https://github.com/pola-rs/polars) | 批量分析时采用 | Python 批量快照、分组统计、时间序列和报告数据加工。 |
+| [Apache ECharts](https://github.com/apache/echarts) | 已采用 | 账号趋势、平台构成、互动率和周/月报可视化；指标由服务端先计算。 |
+| [Papa Parse](https://github.com/mholt/PapaParse) | 已采用 | 浏览器本地解析标准 CSV、字段映射和导入预览；服务器执行第二次严格校验。 |
+| [Polars](https://github.com/pola-rs/polars) | 批量分析时采用 | 数据规模超过在线请求适合范围后，再用于 Python 批量快照、分组统计和时间序列加工。 |
 
 统计口径仍由项目代码冻结并回归测试，不让图表库或大模型决定指标含义。
 
