@@ -37,9 +37,9 @@ export function KnowledgeWorkspace({ initialOrganizationId = "", initialProjectI
   useEffect(() => { let active = true; (async () => { try { const response = await fetch("/api/organizations"); if (!response.ok) throw new Error(await readError(response)); const body = await response.json() as { organizations: Organization[] }; if (!active) return; setOrganizations(body.organizations); const selected = body.organizations.some((organization) => organization.id === initialOrganizationId) ? initialOrganizationId : body.organizations[0]?.id ?? ""; setOrganizationId(selected); if (selected) await loadProjects(selected, initialProjectId); } catch (reason) { if (active) setError(reason instanceof Error ? reason.message : "加载失败"); } finally { if (active) setLoading(false); } })(); return () => { active = false; }; }, [initialOrganizationId, initialProjectId, loadProjects]);
 
   async function createKnowledge(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setSaving(true); setError(""); const form = new FormData(event.currentTarget);
+    event.preventDefault(); setSaving(true); setError(""); const formElement = event.currentTarget; const form = new FormData(formElement);
     const response = await fetch("/api/knowledge", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, title: form.get("title"), category: form.get("category"), body: form.get("body"), sourceType: form.get("sourceType"), sourceRef: form.get("sourceRef") }) });
-    if (!response.ok) { setError(await readError(response)); setSaving(false); return; } const body = await response.json() as { item: KnowledgeItem }; setItems((current) => [body.item, ...current]); event.currentTarget.reset(); setSaving(false);
+    if (!response.ok) { setError(await readError(response)); setSaving(false); return; } const body = await response.json() as { item: KnowledgeItem }; setItems((current) => [body.item, ...current]); formElement.reset(); setSaving(false);
   }
 
   async function confirmKnowledge(itemId: string) {
@@ -48,10 +48,10 @@ export function KnowledgeWorkspace({ initialOrganizationId = "", initialProjectI
   }
 
   async function createStrategy(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setSaving(true); setError(""); const form = new FormData(event.currentTarget);
+    event.preventDefault(); setSaving(true); setError(""); const formElement = event.currentTarget; const form = new FormData(formElement);
     const pillars = splitList(form.get("pillars"));
     const response = await fetch("/api/strategies", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, name: form.get("name"), positioning: form.get("positioning"), persona: form.get("persona"), targetAudience: form.get("targetAudience"), painPoints: splitList(form.get("painPoints")), pillars, objectives: splitList(form.get("objectives")), cadence: form.get("cadence"), conversionPath: form.get("conversionPath"), styleNotes: form.get("styleNotes"), topicMix: equalTopicMix(pillars) }) });
-    if (!response.ok) { setError(await readError(response)); setSaving(false); return; } const body = await response.json() as { strategy: Strategy }; setStrategies((current) => [body.strategy, ...current]); event.currentTarget.reset(); setSaving(false);
+    if (!response.ok) { setError(await readError(response)); setSaving(false); return; } const body = await response.json() as { strategy: Strategy }; setStrategies((current) => [body.strategy, ...current]); formElement.reset(); setSaving(false);
   }
 
   async function activateStrategy(strategyId: string) {

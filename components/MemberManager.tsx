@@ -34,11 +34,11 @@ export function MemberManager() {
 
   async function invite(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setError(""); setInviteUrl("");
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget; const form = new FormData(formElement);
     const response = await fetch("/api/members", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, email: form.get("email"), organizationRole: form.get("organizationRole"), projectId: form.get("projectId") || undefined, projectRole: form.get("projectRole") || undefined }) });
     if (!response.ok) { setError(await responseMessage(response)); return; }
     const body = await response.json() as { invitation: Invitation & { accept_url: string } };
-    setInvitations((current) => [body.invitation, ...current]); setInviteUrl(`${window.location.origin}${body.invitation.accept_url}`); event.currentTarget.reset();
+    setInvitations((current) => [body.invitation, ...current]); setInviteUrl(`${window.location.origin}${body.invitation.accept_url}`); formElement.reset();
   }
 
   async function updateMember(member: Member, next: { role?: string; status?: string }) {

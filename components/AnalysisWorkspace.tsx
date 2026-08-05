@@ -39,17 +39,17 @@ export function AnalysisWorkspace({ initialView = "videos" }: { initialView?: "v
   function appendCreated(body: { video: Video; job: Job }) { setVideos((current) => [body.video, ...current]); setJobs((current) => [body.job, ...current]); }
 
   async function submitUrl(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setSubmitting(true); setError(""); const form = new FormData(event.currentTarget);
+    event.preventDefault(); setSubmitting(true); setError(""); const formElement = event.currentTarget; const form = new FormData(formElement);
     const response = await fetch("/api/videos/from-url", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, url: form.get("url"), title: form.get("title") }) });
     if (!response.ok) { setError(await readError(response)); setSubmitting(false); return; }
-    appendCreated(await response.json()); event.currentTarget.reset(); setSubmitting(false);
+    appendCreated(await response.json()); formElement.reset(); setSubmitting(false);
   }
 
   async function uploadFile(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setSubmitting(true); setError(""); const form = new FormData(event.currentTarget); form.set("organizationId", organizationId); form.set("projectId", projectId);
+    event.preventDefault(); setSubmitting(true); setError(""); const formElement = event.currentTarget; const form = new FormData(formElement); form.set("organizationId", organizationId); form.set("projectId", projectId);
     const response = await fetch("/api/videos/upload", { method: "POST", headers: { "x-organization-id": organizationId, "x-project-id": projectId }, body: form });
     if (!response.ok) { setError(await readError(response)); setSubmitting(false); return; }
-    appendCreated(await response.json()); event.currentTarget.reset(); setSubmitting(false);
+    appendCreated(await response.json()); formElement.reset(); setSubmitting(false);
   }
 
   async function retry(jobId: string) {

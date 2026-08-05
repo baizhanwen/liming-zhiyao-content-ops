@@ -58,11 +58,11 @@ export function ProjectManager() {
 
   async function createProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setSaving(true); setError("");
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget; const form = new FormData(formElement);
     const response = await fetch("/api/projects", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, name: form.get("name"), clientName: form.get("clientName"), serviceStartsAt: form.get("serviceStartsAt"), serviceEndsAt: form.get("serviceEndsAt"), contentTarget: Number(form.get("contentTarget")) }) });
     if (!response.ok) { setError(await messageFrom(response)); setSaving(false); return; }
     const body = await response.json() as { project: Project };
-    setProjects((current) => [body.project, ...current]); event.currentTarget.reset(); setSaving(false);
+    setProjects((current) => [body.project, ...current]); formElement.reset(); setSaving(false);
   }
 
   async function updateProjectStatus(project: Project, status: string) {
