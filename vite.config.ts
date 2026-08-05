@@ -10,6 +10,16 @@ const { d1, r2 } = hostingConfig;
 
 // macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
+const ignoredWatchPaths = [
+  "**/.git/**",
+  "**/.vinext/**",
+  "**/.wrangler/**",
+  "**/dist/**",
+  "**/node_modules/**",
+  "**/outputs/**",
+  "**/services/analyzer/.venv/**",
+  "**/services/analyzer/model-cache/**",
+];
 
 const localBindingConfig = {
   main: "./worker/index.ts",
@@ -44,9 +54,14 @@ export default defineConfig(async () => {
   const { cloudflare } = await import("@cloudflare/vite-plugin");
 
   return {
-    server: isCodexSeatbeltSandbox
-      ? { watch: { useFsEvents: false, usePolling: true } }
-      : undefined,
+    server: {
+      // The team build is intentionally local-only. This also makes the local
+      // identity fallback impossible to reach from another device.
+      host: "127.0.0.1",
+      watch: isCodexSeatbeltSandbox
+        ? { useFsEvents: false, usePolling: true, ignored: ignoredWatchPaths }
+        : { ignored: ignoredWatchPaths },
+    },
     plugins: [
       vinext(),
       sites(),
