@@ -1,0 +1,10 @@
+[project]
+name = "liming-zhiyao-analyzer"
+version = "0.1.0"
+description = "Deterministic media and performance analysis service for Liming Zhiyao"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

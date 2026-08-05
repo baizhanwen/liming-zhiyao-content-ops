@@ -15,6 +15,7 @@
 - 服务端公司/项目范围复核与客户成员隔离；
 - 抖音链接登记、本地媒体直传、R2 私有对象前缀与重复内容拦截；
 - 分阶段分析任务、状态进度与失败/取消任务重试；
+- Python 确定性统计内核：互动率、P80/MAD 高表现阈值、样本门槛与任务状态契约；
 
 ## 本地开发
 
@@ -30,6 +31,13 @@ npm run dev
 ```bash
 npm run db:generate
 npm test
+```
+
+Python 分析内核：
+
+```bash
+cd services/analyzer
+python -m unittest discover -s tests -v
 ```
 
 详细范围、假设和旧项目迁移结论见 `docs/`。产品总说明见 `项目施工说明.md`。
