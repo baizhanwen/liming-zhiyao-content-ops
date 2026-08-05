@@ -19,10 +19,22 @@ try {
     }
 } catch {}
 
+function Test-PrivateLanAddress([string]$Address) {
+    if ($Address -match '^10\.') { return $true }
+    if ($Address -match '^192\.168\.') { return $true }
+    if ($Address -match '^172\.(\d+)\.') {
+        $secondOctet = [int]$Matches[1]
+        return $secondOctet -ge 16 -and $secondOctet -le 31
+    }
+    return $false
+}
+
 $configuration = Get-NetIPConfiguration | Where-Object {
-    $_.IPv4DefaultGateway -and $_.IPv4Address -and $_.NetAdapter.Status -eq "Up"
-} | Select-Object -First 1
-$lanIp = $configuration.IPv4Address.IPAddress
+    $privateAddress = $_.IPv4Address | Where-Object { Test-PrivateLanAddress $_.IPAddress }
+    $_.IPv4DefaultGateway -and $privateAddress -and $_.NetAdapter.Status -eq "Up" -and
+        $_.InterfaceDescription -notmatch 'Meta|Tunnel|Virtual|Hyper-V|WSL|Wintun'
+} | Sort-Object @{ Expression = { if ($_.InterfaceAlias -match 'WLAN|Wi-Fi|Ethernet') { 0 } else { 1 } } } | Select-Object -First 1
+$lanIp = ($configuration.IPv4Address | Where-Object { Test-PrivateLanAddress $_.IPAddress } | Select-Object -First 1).IPAddress
 if (-not $lanIp) {
     Write-Host "[ERROR] No active LAN IPv4 address was found. Connect to the office Wi-Fi or network cable first."
     exit 1
@@ -48,4 +60,3 @@ Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @(
 )
 & npm.cmd run dev
 exit $LASTEXITCODE
-

@@ -17,6 +17,8 @@ test("normal startup stays on loopback while LAN mode is an explicit opt-in", as
   assert.match(vite, /host: lanMode \? "0\.0\.0\.0" : "127\.0\.0\.1"/);
   assert.match(lanStart, /LAN_MODE = "1"/);
   assert.match(lanStart, /LAN_ACCESS_ORIGIN/);
+  assert.match(lanStart, /Test-PrivateLanAddress/);
+  assert.match(lanStart, /Meta\|Tunnel\|Virtual/);
   assert.match(vite, /services\/analyzer\/\.venv/);
   assert.match(vite, /services\/analyzer\/model-cache/);
 });
