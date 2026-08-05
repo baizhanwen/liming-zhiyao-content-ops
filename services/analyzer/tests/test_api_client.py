@@ -1,5 +1,8 @@
 import json
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from liming_analyzer.api_client import AnalysisResult, AnalyzerApiClient, AnalyzerApiError, ClaimedJob
 
@@ -43,6 +46,29 @@ class ApiClientTests(unittest.TestCase):
         client = AnalyzerApiClient("https://example.test", "secret", "worker-01", transport)
         with self.assertRaisesRegex(AnalyzerApiError, "LEASE_EXPIRED"):
             client.claim()
+
+    def test_uploaded_source_uses_worker_lease_endpoint_and_streams_to_file(self):
+        class Stream:
+            headers = {"Content-Length": "5"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self, _size):
+                chunk, self.chunk = getattr(self, "chunk", b"media"), b""
+                return chunk
+
+        client = AnalyzerApiClient("https://example.test", "secret", "worker-01")
+        job = ClaimedJob("job-1", "org-1", "project-1", "video-1", "upload", "queued", 1, 3, {})
+        with tempfile.TemporaryDirectory() as temporary, patch("liming_analyzer.api_client.urllib.request.urlopen", return_value=Stream()) as opener:
+            destination = Path(temporary) / "source.bin"
+            self.assertEqual(client.download_upload_source(job, destination).read_bytes(), b"media")
+        request = opener.call_args.args[0]
+        self.assertEqual(request.get_header("Authorization"), "Bearer secret")
+        self.assertEqual(request.get_header("X-worker-id"), "worker-01")
 
 
 if __name__ == "__main__":

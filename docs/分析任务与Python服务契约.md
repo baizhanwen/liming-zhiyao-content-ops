@@ -15,6 +15,8 @@ Python 服务使用独立的 `ANALYZER_SERVICE_TOKEN`，不得复用浏览器用
 
 领取接口只会选择 `analysis_jobs` 与 `videos` 的公司、项目归属完全一致的记录。上传来源返回 R2 对象键和媒体元数据；链接来源返回已校验的公开抖音链接。
 
+上传媒体的实际字节通过 `GET /api/internal/analysis-jobs/{jobId}/source` 读取。接口同时校验服务令牌、`x-worker-id`、租约所有者和租约有效期，并支持范围请求。浏览器使用独立的项目成员鉴权媒体接口，不得复用服务令牌。
+
 ## 状态机
 
 ```text
@@ -48,3 +50,7 @@ pending → queued → downloading/processing
 ## Python 客户端
 
 `services/analyzer/liming_analyzer/api_client.py` 封装领取、心跳、完成和失败请求；`worker.py` 提供单次执行与持续轮询骨架。当前尚未绑定具体 FFmpeg、ASR、OCR 或模型供应商，后续适配器只需实现处理函数，并在耗时阶段持续调用心跳回调。
+
+`AnalysisPipeline` 已固定媒体获取、规范化、ASR、关键帧/OCR、证据整理和结构分析的合法阶段顺序。FFmpeg 使用无 Shell 的参数数组执行；ASR、OCR、抖音公开视频解析器和结构化模型均通过协议注入。未配置供应商时任务不得伪造完成结果。
+
+用户侧 `analysis/{videoId}` 详情页通过公司与项目权限重新读取最新转写、分析、指标快照和任务事件。上传媒体保持 R2 私有并通过成员鉴权流式播放；时间轴与报告证据可以定位到媒体时间点。

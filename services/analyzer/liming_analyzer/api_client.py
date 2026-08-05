@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, replace
@@ -129,6 +130,39 @@ class AnalyzerApiClient:
         })
         assert response is not None
         return response
+
+    def download_upload_source(self, job: ClaimedJob, destination: Path, max_bytes: int = 2_000_000_000) -> Path:
+        if job.source_type != "upload":
+            raise ValueError("only uploaded jobs use the private source endpoint")
+        request = urllib.request.Request(
+            f"{self.base_url}/api/internal/analysis-jobs/{job.id}/source",
+            headers={"Authorization": f"Bearer {self._token}", "X-Worker-Id": self.worker_id, "Accept": "application/octet-stream"},
+            method="GET",
+        )
+        destination.parent.mkdir(parents=True, exist_ok=True); partial = destination.with_name(f"{destination.name}.part"); written = 0
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response, partial.open("wb") as output:
+                content_length = response.headers.get("Content-Length")
+                if content_length and int(content_length) > max_bytes:
+                    raise AnalyzerApiError(413, "SOURCE_TOO_LARGE", "source exceeds worker limit")
+                while chunk := response.read(1024 * 1024):
+                    written += len(chunk)
+                    if written > max_bytes:
+                        raise AnalyzerApiError(413, "SOURCE_TOO_LARGE", "source exceeds worker limit")
+                    output.write(chunk)
+        except urllib.error.HTTPError as error:
+            partial.unlink(missing_ok=True)
+            payload = json.loads(error.read().decode("utf-8")) if error.fp else {}
+            detail = payload.get("error", {}) if isinstance(payload, dict) else {}
+            raise AnalyzerApiError(error.code, str(detail.get("code", "SOURCE_DOWNLOAD_FAILED")), str(detail.get("message", "source download failed"))) from error
+        except Exception:
+            partial.unlink(missing_ok=True)
+            raise
+        if written == 0:
+            partial.unlink(missing_ok=True)
+            raise AnalyzerApiError(502, "EMPTY_SOURCE", "source media is empty")
+        partial.replace(destination)
+        return destination
 
 
 Processor = Callable[[ClaimedJob, Callable[[str, int, str], ClaimedJob]], AnalysisResult]
