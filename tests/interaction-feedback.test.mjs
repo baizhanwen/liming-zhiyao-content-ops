@@ -19,3 +19,11 @@ test("the whole app acknowledges clicks, navigation, form submits, and pending w
   assert.match(styles, /button\[aria-busy="true"\]::before/);
   assert.match(workflow, /aria-busy=\{pending\}/);
 });
+
+test("invitation links still copy on insecure LAN origins", async () => {
+  const members = await readFile(new URL("../components/MemberManager.tsx", import.meta.url), "utf8");
+  assert.match(members, /navigator\.clipboard\?\.writeText/);
+  assert.match(members, /document\.execCommand\("copy"\)/);
+  assert.match(members, /catch \{/);
+  assert.doesNotMatch(members, /onClick=\{\(\) => navigator\.clipboard\.writeText/);
+});
