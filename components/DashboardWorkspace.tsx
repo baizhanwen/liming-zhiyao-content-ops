@@ -30,9 +30,8 @@ export function DashboardWorkspace() {
 
   useEffect(() => { let active = true; (async () => { try { const response = await fetch("/api/organizations"); if (!response.ok) throw new Error(await errorMessage(response)); const body = await response.json() as { organizations: Organization[] }; if (!active) return; setOrganizations(body.organizations); const first = body.organizations[0]?.id ?? ""; setOrganizationId(first); if (first) await loadDashboard(first); else setLoading(false); } catch (reason) { if (active) { setError(reason instanceof Error ? reason.message : "工作台加载失败。"); setLoading(false); } } })(); return () => { active = false; }; }, []);
 
-  const organization = organizations.find((item) => item.id === organizationId);
   const publishedProgress = dashboard?.summary.monthlyContentTarget ? Math.min(100, Math.round(dashboard.summary.publishedMonth / dashboard.summary.monthlyContentTarget * 100)) : 0;
-  return <AppShell activePath="/" projectName={organization?.name || "公司工作台"}>
+  return <AppShell activePath="/">
     <section className="page-heading"><div><p>{new Date().toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric", weekday: "long" })}</p><h1>运营工作台</h1><span>所有数字均来自当前公司真实业务记录。</span></div><Link className="primary-button link-button" href="/content"><span aria-hidden="true">＋</span> 新建内容</Link></section>
     {organizations.length > 1 && <div className="management-toolbar dashboard-scope"><label>公司空间<select value={organizationId} onChange={async (event) => { setOrganizationId(event.target.value); await loadDashboard(event.target.value); }}>{organizations.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label></div>}
     {loading && <div className="management-state" role="status">正在汇总真实运营数据…</div>}

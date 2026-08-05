@@ -1,6 +1,10 @@
+"use client";
+
 import type { ReactNode } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Bell, BookOpenText, BriefcaseBusiness, CalendarDays, ChartNoAxesCombined, ChevronDown, ClipboardCheck, FileChartColumn, FilePenLine, FolderOpen, LayoutDashboard, LibraryBig, Lightbulb, Search, Send, Settings, UsersRound, Video } from "lucide-react";
+import { preferredOrganizationId, preferredProjectId, scopeChangeEvent } from "../lib/client-scope";
 
 const navGroups = [
   { label: "运营工作", items: [
@@ -24,16 +28,58 @@ const navGroups = [
   ] },
 ];
 
-export function AppShell({ children, activePath, projectName = "澄川管理咨询" }: { children: ReactNode; activePath: string; projectName?: string }) {
+type Organization = { id: string; name: string };
+type Project = { id: string; name: string; client_name: string };
+type CurrentUser = { id: string; email: string; displayName: string };
+
+function avatarText(name: string) {
+  const value = name.trim();
+  if (!value) return "…";
+  if (/^[\u3400-\u9fff]/u.test(value)) return value.slice(0, 1);
+  const words = value.replace(/@.*$/, "").split(/[\s._-]+/).filter(Boolean);
+  return (words.length > 1 ? `${words[0][0]}${words.at(-1)?.[0] ?? ""}` : words[0]?.slice(0, 2) ?? value.slice(0, 2)).toUpperCase();
+}
+
+export function AppShell({ children, activePath }: { children: ReactNode; activePath: string }) {
+  const [project, setProject] = useState<Project | null>(null);
+  const [organizationId, setOrganizationId] = useState("");
+  const [user, setUser] = useState<CurrentUser | null>(null);
+
+  useEffect(() => {
+    let active = true; let requestVersion = 0;
+    async function loadContext(requestedOrganizationId = "", requestedProjectId = "") {
+      const version = ++requestVersion;
+      const organizationResponse = await fetch("/api/organizations");
+      if (!organizationResponse.ok) return;
+      const body = await organizationResponse.json() as { organizations: Organization[]; currentUser: CurrentUser };
+      const nextOrganizationId = preferredOrganizationId(body.organizations, requestedOrganizationId);
+      if (!active || version !== requestVersion) return;
+      setUser(body.currentUser); setOrganizationId(nextOrganizationId); setProject(null);
+      if (!nextOrganizationId) { setProject(null); return; }
+      const projectResponse = await fetch(`/api/projects?organizationId=${encodeURIComponent(nextOrganizationId)}`);
+      if (!projectResponse.ok) return;
+      const projectBody = await projectResponse.json() as { projects: Project[] };
+      const nextProjectId = preferredProjectId(projectBody.projects, requestedProjectId);
+      if (active && version === requestVersion) setProject(projectBody.projects.find((item) => item.id === nextProjectId) ?? null);
+    }
+    const query = new URLSearchParams(window.location.search);
+    void loadContext(query.get("organizationId") ?? "", query.get("projectId") ?? "");
+    const onScopeChange = (event: Event) => { const detail = (event as CustomEvent<{ organizationId?: string; projectId?: string }>).detail; void loadContext(detail?.organizationId, detail?.projectId); };
+    window.addEventListener(scopeChangeEvent, onScopeChange);
+    return () => { active = false; window.removeEventListener(scopeChangeEvent, onScopeChange); };
+  }, []);
+
+  const projectName = project?.name || "尚未选择客户项目";
+  const projectHref = organizationId && project ? `/projects?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(project.id)}` : "/projects";
   return (
     <div className="app-shell">
       <header className="topbar">
         <Link className="brand" href="/" aria-label="利明智耀工作台首页"><span className="brand-mark" aria-hidden="true">利</span><span>利明智耀</span></Link>
-        <Link className="project-switcher" href="/projects" aria-label="切换客户项目"><span className="project-logo">{projectName.slice(0, 1)}</span><span className="project-copy"><small>当前客户项目</small><strong>{projectName}</strong></span><ChevronDown className="project-chevron" aria-hidden="true" /></Link>
+        <Link className="project-switcher" href={projectHref} aria-label={`切换客户项目，当前为${projectName}`}><span className="project-logo">{project ? projectName.slice(0, 1) : "—"}</span><span className="project-copy"><small>当前客户项目</small><strong>{projectName}</strong></span><ChevronDown className="project-chevron" aria-hidden="true" /></Link>
         <div className="top-actions">
           <Link className="search-button" href="/search" aria-label="全局搜索"><Search className="top-icon" aria-hidden="true" /><span>搜索内容、视频或成员</span><kbd>⌘ K</kbd></Link>
           <Link className="icon-button notification" href="/settings#alerts" aria-label="查看运行告警"><Bell className="top-icon" aria-hidden="true" /><i /></Link>
-          <Link className="avatar" href="/settings" aria-label="打开公司与个人设置">LX</Link>
+          <Link className="avatar" href="/settings" aria-label={user ? `打开${user.displayName}的设置` : "打开成员设置"} title={user?.displayName || undefined}>{avatarText(user?.displayName || "")}</Link>
         </div>
       </header>
 

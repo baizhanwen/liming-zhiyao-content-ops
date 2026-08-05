@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
+import { preferredOrganizationId, preferredProjectId, rememberCurrentScope } from "../lib/client-scope";
 
 type Organization = { id: string; name: string; role: string };
 type Project = { id: string; name: string; client_name: string; status: string; service_starts_at: string | null; service_ends_at: string | null; content_target: number; member_count: number };
@@ -25,7 +26,7 @@ export function ProjectManager() {
     const response = await fetch(`/api/projects?organizationId=${encodeURIComponent(id)}`);
     if (!response.ok) throw new Error(await messageFrom(response));
     const body = await response.json() as { projects: Project[]; organizationRole: string };
-    setProjects(body.projects);
+    setProjects(body.projects); rememberCurrentScope(id, preferredProjectId(body.projects));
     setOrganizationRole(body.organizationRole);
   }, []);
 
@@ -38,7 +39,7 @@ export function ProjectManager() {
         const body = await response.json() as { organizations: Organization[] };
         if (!active) return;
         setOrganizations(body.organizations);
-        const first = body.organizations[0]?.id ?? "";
+        const first = preferredOrganizationId(body.organizations);
         setOrganizationId(first);
         if (first) await loadProjects(first);
       } catch (reason) { if (active) setError(reason instanceof Error ? reason.message : "加载失败"); }
@@ -53,7 +54,7 @@ export function ProjectManager() {
     const response = await fetch("/api/organizations", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: form.get("name") }) });
     if (!response.ok) { setError(await messageFrom(response)); setSaving(false); return; }
     const body = await response.json() as { organization: Organization };
-    setOrganizations([body.organization]); setOrganizationId(body.organization.id); setOrganizationRole("admin"); setProjects([]); setSaving(false);
+    setOrganizations([body.organization]); setOrganizationId(body.organization.id); setOrganizationRole("admin"); setProjects([]); rememberCurrentScope(body.organization.id); setSaving(false);
   }
 
   async function createProject(event: FormEvent<HTMLFormElement>) {
@@ -62,7 +63,7 @@ export function ProjectManager() {
     const response = await fetch("/api/projects", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, name: form.get("name"), clientName: form.get("clientName"), serviceStartsAt: form.get("serviceStartsAt"), serviceEndsAt: form.get("serviceEndsAt"), contentTarget: Number(form.get("contentTarget")) }) });
     if (!response.ok) { setError(await messageFrom(response)); setSaving(false); return; }
     const body = await response.json() as { project: Project };
-    setProjects((current) => [body.project, ...current]); formElement.reset(); setSaving(false);
+    setProjects((current) => [body.project, ...current]); rememberCurrentScope(organizationId, body.project.id); formElement.reset(); setSaving(false);
   }
 
   async function updateProjectStatus(project: Project, status: string) {

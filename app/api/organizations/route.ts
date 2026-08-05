@@ -15,7 +15,7 @@ export async function GET(request: Request) {
       WHERE om.user_id = ? AND om.status = 'active' AND o.status = 'active'
       ORDER BY o.created_at ASC
     `).bind(user.id).all();
-    return Response.json({ organizations: rows.results });
+    return Response.json({ organizations: rows.results, currentUser: { id: user.id, email: user.email, displayName: user.display_name || user.email } });
   } catch (error) { return errorResponse(error); }
 }
 

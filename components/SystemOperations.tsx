@@ -28,7 +28,7 @@ export function SystemOperations() {
   const quotas = data ? [
     ["运行中项目", data.usage.projects, data.capacity.project_quota, String], ["有效成员与待接受邀请", data.usage.members, data.capacity.member_quota, String], ["本月分析任务", data.usage.analyses, data.capacity.monthly_analysis_quota, String], ["本月模型调用", data.usage.modelCalls, data.capacity.monthly_model_call_quota, String], ["媒体存储", data.usage.storageBytes, data.capacity.storage_quota_bytes, bytes],
   ] as const : [];
-  return <AppShell activePath="/settings" projectName={data?.organization.name || "系统设置"}><section className="page-heading"><div><p>稳定运行与商业化基础</p><h1>系统运营中心</h1><span>监控健康、用量、配额、审计和本地数据保护。</span></div><button className="secondary-button" onClick={() => organizationId && load(organizationId)}>刷新状态</button></section>
+  return <AppShell activePath="/settings"><section className="page-heading"><div><p>稳定运行与商业化基础</p><h1>系统运营中心</h1><span>监控健康、用量、配额、审计和本地数据保护。</span></div><button className="secondary-button" onClick={() => organizationId && load(organizationId)}>刷新状态</button></section>
     {organizations.length > 0 && <div className="management-toolbar"><label>公司空间<select value={organizationId} onChange={async (event) => { setOrganizationId(event.target.value); await load(event.target.value); }}>{organizations.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label><span>{data ? plans[data.capacity.plan_code] : "加载中"}</span></div>}
     {loading && <div className="management-state">正在检查系统状态…</div>}{error && <div className="inline-alert" role="alert">{error}</div>}
     {!loading && !organizationId && <div className="empty-panel"><h2>请先创建公司空间</h2><Link className="primary-button link-button" href="/projects">前往初始化</Link></div>}
