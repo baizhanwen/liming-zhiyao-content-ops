@@ -10,7 +10,7 @@ const navGroups = [
     { label: "内容日历", icon: "▦", href: "/#内容日历" },
   ] },
   { label: "研究与资产", items: [
-    { label: "视频分析", icon: "▷", href: "/#视频分析" },
+    { label: "视频分析", icon: "▷", href: "/analysis" },
     { label: "对标内容库", icon: "◫", href: "/#对标内容库" },
     { label: "品牌知识库", icon: "▤", href: "/#品牌知识库" },
     { label: "素材中心", icon: "□", href: "/#素材中心" },

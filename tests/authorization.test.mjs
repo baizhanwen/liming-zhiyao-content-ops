@@ -41,3 +41,30 @@ test("write APIs authenticate and re-check tenant scope on the server", async ()
   assert.match(runtime, /om\.organization_id = \?/);
   assert.match(runtime, /project_id = \?/);
 });
+
+test("analysis job state machine only allows explicit forward transitions and retries", async () => {
+  const jobs = await import("../lib/analysis-jobs.ts");
+  assert.equal(jobs.canTransitionAnalysisJob("pending", "queued"), true);
+  assert.equal(jobs.canTransitionAnalysisJob("pending", "completed"), false);
+  assert.equal(jobs.canTransitionAnalysisJob("completed", "pending"), false);
+  assert.equal(jobs.canRetryAnalysisJob("failed"), true);
+  assert.equal(jobs.canRetryAnalysisJob("cancelled"), true);
+  assert.equal(jobs.canRetryAnalysisJob("analyzing"), false);
+});
+
+test("video ingestion checks project access before media buffering and uses private tenant prefixes", async () => {
+  const [upload, fromUrl, retry, runtime] = await Promise.all([
+    readFile(new URL("../app/api/videos/upload/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/videos/from-url/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/analysis-jobs/[jobId]/retry/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../db/runtime.ts", import.meta.url), "utf8"),
+  ]);
+  assert.ok(upload.indexOf("getProjectAccess") < upload.indexOf("request.formData"));
+  assert.match(upload, /organizations\/\$\{organizationId\}\/projects\/\$\{projectId\}/);
+  assert.match(upload, /sha256Hex\(bytes\)/);
+  assert.match(upload, /best-effort rollback/);
+  assert.match(fromUrl, /endsWith\("\.douyin\.com"\)/);
+  assert.match(fromUrl, /VIDEO_ALREADY_EXISTS/);
+  assert.match(retry, /status IN \('failed', 'cancelled'\)/);
+  assert.match(runtime, /R2 binding MEDIA is unavailable/);
+});

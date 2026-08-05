@@ -11,6 +11,11 @@ export function getD1() {
   return env.DB;
 }
 
+export function getMediaBucket() {
+  if (!env.MEDIA) throw new Error("R2 binding MEDIA is unavailable");
+  return env.MEDIA;
+}
+
 export async function ensureUser(identity: RequestIdentity): Promise<UserRow> {
   const db = getD1();
   const now = new Date().toISOString();
@@ -66,8 +71,17 @@ export async function getProjectAccess(authSubject: string, organizationId: stri
 }
 
 export async function hashInvitationToken(token: string) {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+  return sha256Hex(new TextEncoder().encode(token));
+}
+
+export async function sha256Hex(input: ArrayBuffer | ArrayBufferView) {
+  const digest = await crypto.subtle.digest("SHA-256", input);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export function canWriteProjectAccess(access: ProjectAccess) {
+  if (access.organizationRole === "admin") return true;
+  return access.organizationRole !== "readonly" && access.projectRole !== null && !["reviewer", "client", "readonly"].includes(access.projectRole);
 }
 
 export function makeSlug(name: string, id: string) {
