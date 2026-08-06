@@ -67,3 +67,31 @@ test("content input helpers reject malformed lists and protect management roles"
   assert.equal(helpers.canManageProjectKnowledge({ organizationRole: "member", projectRole: "planner" }), true);
   assert.equal(helpers.canManageProjectKnowledge({ organizationRole: "member", projectRole: "creator" }), false);
 });
+
+test("content lineage flows from analysis through production, publishing, and performance", async () => {
+  const [topicsApi, contentApi, workflowApi, detail, topics, production, workflow, styles] = await Promise.all([
+    readFile(new URL("../app/api/topics/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/content-items/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/workflow/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../components/AnalysisDetail.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../components/TopicWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../components/ContentProductionWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../components/WorkflowWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(topicsApi, /spoken_script/);
+  assert.match(topicsApi, /viral_points/);
+  assert.match(contentApi, /inheritedCitations/);
+  assert.match(contentApi, /topic_source_type/);
+  assert.match(workflowApi, /citation_count/);
+  assert.match(detail, /素材中心/);
+  assert.match(detail, /对标内容库/);
+  assert.match(topics, /moveTopicToProduction/);
+  assert.match(production, /submitForReview/);
+  assert.match(production, /提交审核/);
+  assert.match(workflow, /workflow-lineage/);
+  assert.match(workflow, /进入数据复盘/);
+  assert.match(styles, /production-lineage/);
+  assert.match(styles, /publication-next-step/);
+});

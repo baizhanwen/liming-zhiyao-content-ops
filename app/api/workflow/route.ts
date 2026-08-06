@@ -28,9 +28,12 @@ export async function GET(request: Request) {
     const [items, reviews, comments, schedules, publications] = await Promise.all([
       db.prepare(`
         SELECT c.id, c.topic_id, c.title, c.status, c.current_version, c.assignee_user_id, c.due_at, c.updated_at,
-          v.id AS version_id, v.generation_mode, v.pack_json, v.full_script, v.short_script, v.change_summary, v.created_at AS version_created_at
+          v.id AS version_id, v.generation_mode, v.pack_json, v.full_script, v.short_script, v.change_summary, v.created_at AS version_created_at,
+          t.source_type AS topic_source_type, t.source_ref AS topic_source_ref,
+          (SELECT COUNT(*) FROM content_citations cc WHERE cc.organization_id = c.organization_id AND cc.project_id = c.project_id AND cc.content_item_id = c.id AND cc.content_version_id = v.id) AS citation_count
         FROM content_items c
         INNER JOIN content_versions v ON v.content_item_id = c.id AND v.version = c.current_version AND v.organization_id = c.organization_id AND v.project_id = c.project_id
+        INNER JOIN topic_ideas t ON t.id = c.topic_id AND t.organization_id = c.organization_id AND t.project_id = c.project_id
         WHERE c.organization_id = ? AND c.project_id = ? AND c.deleted_at IS NULL AND c.status != 'archived'
         ORDER BY c.updated_at DESC LIMIT 300
       `).bind(organizationId, projectId).all(),

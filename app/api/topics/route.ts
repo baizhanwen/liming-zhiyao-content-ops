@@ -3,7 +3,18 @@ import { apiError, errorResponse } from "../../../lib/api-response";
 import { readRequestIdentity } from "../../../lib/request-auth";
 
 function analysisQuote(reportJson: string) {
-  try { const report = JSON.parse(reportJson) as Record<string, unknown>; return typeof report.summary === "string" ? report.summary.slice(0, 500) : null; } catch { return null; }
+  try {
+    const report = JSON.parse(reportJson) as Record<string, unknown>;
+    const list = (key: string) => Array.isArray(report[key]) ? (report[key] as unknown[]).filter((item): item is string => typeof item === "string") : [];
+    const parts = [
+      typeof report.summary === "string" ? `核心结论：${report.summary}` : "",
+      ...list("spoken_script").map((item) => `口播段落：${item}`),
+      ...list("hook_analysis").map((item) => `钩子：${item}`),
+      ...list("viral_points").map((item) => `爆点：${item}`),
+      ...list("recommendations").map((item) => `复用建议：${item}`),
+    ].filter(Boolean);
+    return parts.length ? parts.join("\n").slice(0, 4_000) : null;
+  } catch { return null; }
 }
 
 export async function GET(request: Request) {
