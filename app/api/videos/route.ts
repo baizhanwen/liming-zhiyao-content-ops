@@ -15,8 +15,32 @@ export async function GET(request: Request) {
     if (!access) return apiError("ACCESS_DENIED", "无权访问该项目的视频。", 403);
     const db = getD1();
     const [videos, jobs, lastWorkerHeartbeat] = await Promise.all([
-      db.prepare(`SELECT v.id, v.platform, v.source_type, v.source_url, v.title, v.author_name, v.status, v.error_message, v.created_at, a.filename, a.size_bytes FROM videos v LEFT JOIN media_assets a ON a.id = v.media_asset_id WHERE v.organization_id = ? AND v.project_id = ? AND v.deleted_at IS NULL ORDER BY v.created_at DESC LIMIT 100`).bind(organizationId, projectId).all(),
-      db.prepare(`SELECT id, video_id, status, progress, current_stage, error_code, error_message, retry_count, created_at, updated_at FROM analysis_jobs WHERE organization_id = ? AND project_id = ? ORDER BY created_at DESC LIMIT 100`).bind(organizationId, projectId).all(),
+      db.prepare(`
+        SELECT * FROM (
+          SELECT v.id, v.platform, v.source_type, v.source_url, v.title, v.author_name, v.status, v.error_message, v.created_at, a.filename, a.size_bytes,
+            0 AS is_reference, (SELECT library.id FROM video_library_entries library WHERE library.organization_id = v.organization_id AND library.source_video_id = v.id LIMIT 1) AS library_entry_id
+          FROM videos v LEFT JOIN media_assets a ON a.id = v.media_asset_id
+          WHERE v.organization_id = ? AND v.project_id = ? AND v.deleted_at IS NULL
+          UNION ALL
+          SELECT v.id, v.platform, v.source_type, v.source_url, v.title, v.author_name, v.status, v.error_message, refs.created_at, a.filename, a.size_bytes,
+            1 AS is_reference, library.id AS library_entry_id
+          FROM project_video_references refs
+          INNER JOIN video_library_entries library ON library.id = refs.library_entry_id AND library.organization_id = refs.organization_id
+          INNER JOIN videos v ON v.id = library.source_video_id AND v.organization_id = library.organization_id
+          LEFT JOIN media_assets a ON a.id = v.media_asset_id
+          WHERE refs.organization_id = ? AND refs.project_id = ? AND refs.purpose = 'analysis' AND v.deleted_at IS NULL
+            AND NOT EXISTS (SELECT 1 FROM videos own WHERE own.organization_id = refs.organization_id AND own.project_id = refs.project_id AND own.id = v.id AND own.deleted_at IS NULL)
+        ) ORDER BY created_at DESC LIMIT 100
+      `).bind(organizationId, projectId, organizationId, projectId).all(),
+      db.prepare(`
+        SELECT id, video_id, status, progress, current_stage, error_code, error_message, retry_count, created_at, updated_at
+        FROM analysis_jobs
+        WHERE organization_id = ? AND (project_id = ? OR video_id IN (
+          SELECT library.source_video_id FROM project_video_references refs
+          INNER JOIN video_library_entries library ON library.id = refs.library_entry_id AND library.organization_id = refs.organization_id
+          WHERE refs.organization_id = ? AND refs.project_id = ? AND refs.purpose = 'analysis'
+        )) ORDER BY created_at DESC LIMIT 150
+      `).bind(organizationId, projectId, organizationId, projectId).all(),
       db.prepare("SELECT MAX(last_heartbeat_at) AS value FROM analysis_jobs WHERE organization_id = ?").bind(organizationId).first<{ value: string | null }>(),
     ]);
     const runtime = env as typeof env & { ANALYZER_SERVICE_TOKEN?: string; ANALYZER_LLM_API_KEY?: string; ANALYZER_LLM_BASE_URL?: string; ANALYZER_LLM_MODEL?: string; ANALYZER_LLM_PROVIDER?: string; ANALYZER_YTDLP_COOKIES_FROM_BROWSER?: string; ANALYZER_YTDLP_COOKIE_FILE?: string };

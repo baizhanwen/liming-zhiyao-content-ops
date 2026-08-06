@@ -87,6 +87,25 @@ export const videos = sqliteTable("videos", {
   createdBy: text("created_by").notNull(), updatedBy: text("updated_by").notNull(), deletedAt: text("deleted_at"), ...timestamps,
 }, (table) => [uniqueIndex("idx_videos_project_source_hash").on(table.organizationId, table.projectId, table.sourceHash), index("idx_videos_project_status_created").on(table.organizationId, table.projectId, table.status, table.createdAt)]);
 
+export const videoLibraryEntries = sqliteTable("video_library_entries", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), sourceVideoId: text("source_video_id").notNull().references(() => videos.id),
+  category: text("category", { enum: ["benchmark", "industry", "case", "trend", "creative", "other"] }).notNull().default("other"),
+  tagsJson: text("tags_json").notNull().default("[]"), notes: text("notes"), createdBy: text("created_by").notNull(), updatedBy: text("updated_by").notNull(), ...timestamps,
+}, (table) => [
+  uniqueIndex("idx_video_library_org_source").on(table.organizationId, table.sourceVideoId),
+  index("idx_video_library_org_category_updated").on(table.organizationId, table.category, table.updatedAt),
+]);
+
+export const projectVideoReferences = sqliteTable("project_video_references", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id),
+  libraryEntryId: text("library_entry_id").notNull().references(() => videoLibraryEntries.id), purpose: text("purpose", { enum: ["analysis", "benchmark"] }).notNull().default("benchmark"),
+  createdBy: text("created_by").notNull(), createdAt: text("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("idx_project_video_refs_unique").on(table.projectId, table.libraryEntryId, table.purpose),
+  index("idx_project_video_refs_project_purpose_created").on(table.organizationId, table.projectId, table.purpose, table.createdAt),
+  index("idx_project_video_refs_library").on(table.organizationId, table.libraryEntryId),
+]);
+
 export const videoMetricSnapshots = sqliteTable("video_metric_snapshots", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), videoId: text("video_id").notNull().references(() => videos.id),
   source: text("source", { enum: ["public", "client_backend", "manual"] }).notNull(), plays: integer("plays"), likes: integer("likes"), comments: integer("comments"), favorites: integer("favorites"), shares: integer("shares"), followersGained: integer("followers_gained"),

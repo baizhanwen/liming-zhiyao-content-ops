@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-type Video = { id: string; source_type: "url" | "upload"; source_url: string | null; media_url: string | null; title: string | null; author_name: string | null; duration_sec: number | null; status: string; content_type: string | null; filename: string | null };
+type Video = { id: string; source_type: "url" | "upload"; source_url: string | null; media_url: string | null; title: string | null; author_name: string | null; duration_sec: number | null; status: string; content_type: string | null; filename: string | null; is_shared_reference?: boolean };
 type Job = { status: string; progress: number; current_stage: string | null; error_code: string | null; error_message: string | null; completed_at: string | null };
 type Transcript = { id: string; version: number; language: string; source: string; full_text: string; confidence: number | null; segments: unknown };
 type Analysis = { schema_version: string; report: unknown; confidence: number | null; model_provider: string | null; model_name: string | null; prompt_version: string | null; created_at: string };
@@ -126,7 +126,7 @@ export function AnalysisDetail({ videoId, organizationId, projectId }: { videoId
       <article className="panel report-panel"><div className="panel-heading"><div><p className="section-kicker">结构化分析与证据</p><h2>{detail.analysis ? `报告 ${detail.analysis.schema_version}` : "尚未生成结构化报告"}</h2></div>{detail.analysis && <span className="confidence-chip">整体置信度 {detail.analysis.confidence ?? "—"}</span>}</div>
         {reportSections.length > 0 ? <div className="report-sections">{reportSections.map(([key, value]) => <section key={key}><h3>{sectionNames[key] ?? key}</h3><p>{renderValue(value)}</p></section>)}</div> : <div className="list-empty">分析服务完成结构化输出后，结论、证据与复用建议会显示在这里。</div>}
         {evidence.length > 0 && <div className="evidence-list"><h3>结论证据</h3>{evidence.map((item, index) => <button type="button" key={`${item.startMs}-${index}`} onClick={() => item.startMs !== null && seek(item.startMs)} disabled={item.startMs === null || !detail.video.media_url}><span>{item.startMs === null ? "证据" : timeLabel(item.startMs)}</span><strong>{item.text}</strong><small>{item.source} · 置信度 {item.confidence ?? "—"}</small></button>)}</div>}
-        {detail.analysis && <footer className="report-provenance"><span>模型：{[detail.analysis.model_provider, detail.analysis.model_name].filter(Boolean).join(" / ") || "规则与适配器"}</span><span>提示词版本：{detail.analysis.prompt_version || "—"}</span><span>生成：{dateLabel(detail.analysis.created_at)}</span><Link href={`/topics?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}&sourceVideoId=${encodeURIComponent(videoId)}`}>从此分析创建选题 →</Link></footer>}
+        {detail.analysis && <footer className="report-provenance"><span>模型：{[detail.analysis.model_provider, detail.analysis.model_name].filter(Boolean).join(" / ") || "规则与适配器"}</span><span>提示词版本：{detail.analysis.prompt_version || "—"}</span><span>生成：{dateLabel(detail.analysis.created_at)}</span>{detail.video.is_shared_reference ? <span>共享素材 · 原分析只读</span> : <Link href={`/topics?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}&sourceVideoId=${encodeURIComponent(videoId)}`}>从此分析创建选题 →</Link>}</footer>}
       </article>
     </section>
 

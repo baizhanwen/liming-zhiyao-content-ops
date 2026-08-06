@@ -84,6 +84,36 @@ export function canWriteProjectAccess(access: ProjectAccess) {
   return access.organizationRole !== "readonly" && access.projectRole !== null && !["reviewer", "client", "readonly"].includes(access.projectRole);
 }
 
+export async function canAccessOrganizationVideoLibrary(access: OrganizationAccess) {
+  if (access.organizationRole === "admin") return true;
+  if (access.organizationRole === "readonly") return false;
+  const membership = await getD1().prepare(`
+    SELECT 1 AS allowed
+    FROM project_members pm
+    INNER JOIN projects p ON p.id = pm.project_id AND p.organization_id = pm.organization_id
+    WHERE pm.organization_id = ? AND pm.user_id = ? AND pm.status = 'active'
+      AND pm.role IN ('owner', 'planner', 'creator', 'reviewer')
+      AND p.deleted_at IS NULL AND p.status != 'archived'
+    LIMIT 1
+  `).bind(access.organizationId, access.userId).first<{ allowed: number }>();
+  return Boolean(membership?.allowed);
+}
+
+export async function canManageOrganizationVideoLibrary(access: OrganizationAccess) {
+  if (access.organizationRole === "admin") return true;
+  if (access.organizationRole === "readonly") return false;
+  const membership = await getD1().prepare(`
+    SELECT 1 AS allowed
+    FROM project_members pm
+    INNER JOIN projects p ON p.id = pm.project_id AND p.organization_id = pm.organization_id
+    WHERE pm.organization_id = ? AND pm.user_id = ? AND pm.status = 'active'
+      AND pm.role IN ('owner', 'planner', 'creator')
+      AND p.deleted_at IS NULL AND p.status != 'archived'
+    LIMIT 1
+  `).bind(access.organizationId, access.userId).first<{ allowed: number }>();
+  return Boolean(membership?.allowed);
+}
+
 export function makeSlug(name: string, id: string) {
   const base = name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 36) || "organization";
   return `${base}-${id.replaceAll("-", "").slice(0, 8)}`;
