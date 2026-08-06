@@ -330,6 +330,9 @@ class InstructorStructureAnalyzer:
             }
             for row in visuals.observations
         ]
+        provider_options: dict[str, Any] = {}
+        if self.provider.strip().lower() == "deepseek":
+            provider_options["extra_body"] = {"thinking": {"type": "disabled"}}
         response = self.client.chat.completions.create(
             model=self.model,
             response_model=self.report_model,
@@ -356,6 +359,7 @@ class InstructorStructureAnalyzer:
                     )[:300_000],
                 },
             ],
+            **provider_options,
         )
         report = response.model_dump(mode="json") if hasattr(response, "model_dump") else dict(response)
         confidence = report.pop("confidence", None)

@@ -70,7 +70,10 @@ class FakeReport:
 
 
 class FakeCompletions:
+    last_kwargs = None
+
     def create(self, **_kwargs):
+        type(self).last_kwargs = _kwargs
         return FakeReport()
 
 
@@ -162,6 +165,29 @@ class ProviderTests(unittest.TestCase):
         result = analyzer.analyze(job, media, transcript, visual)
         self.assertEqual(result.report["evidence"][0]["text"], "先说问题")
         self.assertEqual(result.confidence, 90)
+
+    def test_deepseek_structured_analysis_disables_thinking_mode(self):
+        transcript = TranscriptOutput(
+            "zh-CN", (TranscriptSegment(100, 900, "先说问题", 94),), 94
+        )
+        visual = VisualOutput((), (VisualObservation("ocr", 0, 0, "管理增长", 91),))
+        analyzer = InstructorStructureAnalyzer(
+            api_key="",
+            base_url="https://api.deepseek.com",
+            model="deepseek-v4-flash",
+            provider="deepseek",
+            client=FakeClient(),
+            report_model=object,
+        )
+        job = ClaimedJob("job", "org", "project", "video", "upload", "analyzing", 84, 4, {})
+        media = NormalizedMedia(
+            Path("video.mp4"), None, MediaInfo(6000, 1080, 1920, "h264", "aac")
+        )
+        analyzer.analyze(job, media, transcript, visual)
+        self.assertEqual(
+            FakeCompletions.last_kwargs["extra_body"],
+            {"thinking": {"type": "disabled"}},
+        )
 
     def test_public_resolver_returns_metadata_and_metrics(self):
         captured = {}
