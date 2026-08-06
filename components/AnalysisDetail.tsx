@@ -15,8 +15,13 @@ type Segment = { startMs: number; endMs: number; text: string };
 type Evidence = { startMs: number | null; text: string; source: string; confidence: number | null };
 type AnalysisProfile = "economy" | "standard" | "deep";
 
-const sectionNames: Record<string, string> = { summary: "核心结论", hook: "开场钩子", structure: "内容结构", audience: "目标受众", visual: "画面表达", visuals: "画面表达", language: "语言与节奏", highlights: "有效亮点", risks: "风险与缺口", recommendations: "复用建议", evidence: "证据" };
-const reportSectionOrder = ["summary", "hook", "audience", "structure", "highlights", "recommendations", "visual", "visuals", "language", "risks"];
+const sectionNames: Record<string, string> = {
+  summary: "核心结论", hook: "开场钩子", hook_analysis: "钩子拆解", viral_points: "传播爆点",
+  structure: "内容结构", audience: "目标受众", rhythm_analysis: "节奏设计", emotion_curve: "情绪曲线",
+  conversion_design: "转化设计", visual: "画面表达", visuals: "画面表达", language: "语言与节奏",
+  highlights: "有效亮点", risks: "风险与缺口", recommendations: "复用建议", spoken_script: "整理后的口播稿", evidence: "证据",
+};
+const reportSectionOrder = ["summary", "hook", "hook_analysis", "viral_points", "audience", "structure", "rhythm_analysis", "emotion_curve", "conversion_design", "highlights", "recommendations", "visual", "visuals", "language", "risks"];
 const analysisProfileNames: Record<string, string> = { economy: "经济模式", standard: "标准模式", deep: "深度模式" };
 const eventNames: Record<string, string> = { claimed: "任务已领取", heartbeat: "任务心跳", stage_changed: "阶段推进", completed: "分析完成", failed: "分析失败", lease_expired: "租约过期" };
 
@@ -48,6 +53,11 @@ function normalizeEvidence(value: unknown): Evidence[] {
     const source = typeof row.source === "string" ? row.source : startMs === null ? "分析产物" : "时间轴原文";
     return [{ startMs, text, source, confidence }];
   });
+}
+
+function normalizeStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
 }
 
 function renderValue(value: unknown, key = "") {
@@ -105,23 +115,34 @@ export function AnalysisDetail({ videoId, organizationId, projectId }: { videoId
   const transcriptVtt = useMemo(() => `WEBVTT\n\n${segments.map((segment, index) => `${index + 1}\n${vttTime(segment.startMs)} --> ${vttTime(Math.max(segment.endMs, segment.startMs + 500))}\n${segment.text.replaceAll("\n", " ")}\n`).join("\n")}`, [segments]);
   const captionTrack = useMemo(() => `data:text/vtt;charset=utf-8,${encodeURIComponent(transcriptVtt)}`, [transcriptVtt]);
   const visibleSegments = useMemo(() => { const query = transcriptQuery.trim().toLocaleLowerCase("zh-CN"); return query ? segments.filter((segment) => segment.text.toLocaleLowerCase("zh-CN").includes(query)) : segments; }, [segments, transcriptQuery]);
-  const report = asRecord(detail?.analysis?.report); const analysisMeta = asRecord(report?.analysis_meta); const reportSections = report ? Object.entries(report).filter(([key]) => key !== "evidence" && key !== "analysis_meta").sort(([left], [right]) => { const leftIndex = reportSectionOrder.indexOf(left); const rightIndex = reportSectionOrder.indexOf(right); return (leftIndex < 0 ? 999 : leftIndex) - (rightIndex < 0 ? 999 : rightIndex); }) : [];
+  const report = asRecord(detail?.analysis?.report); const analysisMeta = asRecord(report?.analysis_meta); const spokenScript = normalizeStringList(report?.spoken_script); const reportSections = report ? Object.entries(report).filter(([key]) => key !== "evidence" && key !== "analysis_meta" && key !== "spoken_script").sort(([left], [right]) => { const leftIndex = reportSectionOrder.indexOf(left); const rightIndex = reportSectionOrder.indexOf(right); return (leftIndex < 0 ? 999 : leftIndex) - (rightIndex < 0 ? 999 : rightIndex); }) : [];
   const evidence = normalizeEvidence(report?.evidence);
   const keyframes = detail?.assets.filter((asset) => asset.kind === "keyframe") ?? [];
   const coverFrame = keyframes[0] ?? null;
   const latestMetric = detail?.metrics[0] ?? null;
   function seek(startMs: number) { if (!mediaRef.current) return; mediaRef.current.currentTime = startMs / 1000; void mediaRef.current.play(); }
-  async function copyReport() {
-    if (!reportSections.length) return;
+  async function copySpokenScript() {
+    if (!spokenScript.length) return;
     setCopyMessage("");
     try {
-      await copyText(reportSections.map(([key, value]) => `${sectionNames[key] ?? key}\n${renderValue(value, key)}`).join("\n\n"));
+      await copyText(spokenScript.join("\n\n"));
+      setCopyMessage("整理后的口播稿已复制，可以直接进入内容生产继续修改。");
+    } catch { setCopyMessage("口播稿复制失败，请重新点击一次。"); }
+  }
+  async function copyReport() {
+    if (!reportSections.length && !spokenScript.length) return;
+    setCopyMessage("");
+    try {
+      const sections = reportSections.map(([key, value]) => `${sectionNames[key] ?? key}\n${renderValue(value, key)}`);
+      if (spokenScript.length) sections.splice(1, 0, `${sectionNames.spoken_script}\n${spokenScript.join("\n\n")}`);
+      await copyText(sections.join("\n\n"));
       setCopyMessage("分析报告已复制，可以直接粘贴到文档或群聊。" );
     } catch { setCopyMessage("复制没有成功，请重新点击一次。" ); }
   }
   function exportMarkdown() {
     const title = detail?.video.title || detail?.video.filename || "视频分析";
     const lines = [`# ${title}`, "", `- 生成时间：${dateLabel(detail?.analysis?.created_at ?? null)}`, `- 模型：${[detail?.analysis?.model_provider, detail?.analysis?.model_name].filter(Boolean).join(" / ") || "规则与适配器"}`];
+    if (spokenScript.length) lines.push("", `## ${sectionNames.spoken_script}`, "", spokenScript.join("\n\n"));
     for (const [key, value] of reportSections) lines.push("", `## ${sectionNames[key] ?? key}`, "", renderValue(value, key));
     if (evidence.length) { lines.push("", "## 结论证据", ""); for (const item of evidence) lines.push(`- ${item.startMs === null ? "[证据]" : `[${timeLabel(item.startMs)}]`} ${item.text}（${item.source}）`); }
     if (segments.length) { lines.push("", "## 时间轴转写", ""); for (const segment of segments) lines.push(`- [${timeLabel(segment.startMs)}] ${segment.text}`); }
@@ -184,6 +205,7 @@ export function AnalysisDetail({ videoId, organizationId, projectId }: { videoId
         {copyMessage && <p className="report-copy-message" role="status">{copyMessage}</p>}
         {analysisMeta && <div className="analysis-cost-summary"><div><small>{typeof analysisMeta.actual_total_tokens === "number" ? "实际模型消耗" : "模型输入预估"}</small><strong>{numberLabel(typeof analysisMeta.actual_total_tokens === "number" ? analysisMeta.actual_total_tokens : typeof analysisMeta.estimated_model_input_tokens === "number" ? analysisMeta.estimated_model_input_tokens : null)} Token</strong>{typeof analysisMeta.actual_total_tokens === "number" && <span>输入 {numberLabel(typeof analysisMeta.actual_input_tokens === "number" ? analysisMeta.actual_input_tokens : null)} · 输出 {numberLabel(typeof analysisMeta.actual_output_tokens === "number" ? analysisMeta.actual_output_tokens : null)}</span>}</div><div><small>分析覆盖率</small><strong>{typeof analysisMeta.coverage_percent === "number" ? `${analysisMeta.coverage_percent}%` : "—"}</strong>{typeof analysisMeta.analyzed_segments === "number" && typeof analysisMeta.source_segments === "number" && <span>{analysisMeta.analyzed_segments} / {analysisMeta.source_segments} 个片段</span>}</div><div><small>长视频处理</small><strong>{analysisMeta.processing_mode === "segmented" ? "分段分析后汇总" : typeof analysisMeta.duration_minutes === "number" ? `${analysisMeta.duration_minutes} 分钟` : "单次分析"}</strong><span>{analysisMeta.processing_mode === "segmented" && typeof analysisMeta.segment_analysis_count === "number" ? `${analysisMeta.segment_analysis_count} 个时间段 · ${analysisMeta.analysis_passes} 次调用` : typeof analysisMeta.chunk_count === "number" ? `${analysisMeta.chunk_count} 个证据窗口` : ""}</span></div><div><small>预算策略</small><strong>{analysisMeta.mode === "budgeted" ? "预算内抽样" : "完整分析"}</strong><span>{analysisProfileNames[String(analysisMeta.analysis_profile)] || "标准模式"}{typeof analysisMeta.maximum_total_tokens === "number" ? ` · 总上限 ${numberLabel(analysisMeta.maximum_total_tokens)}` : typeof analysisMeta.maximum_source_tokens === "number" ? ` · 输入上限 ${numberLabel(analysisMeta.maximum_source_tokens)}` : ""}</span></div></div>}
         {detail.canWrite && !detail.video.is_shared_reference && <div className="analysis-rerun-bar"><div><strong>按不同深度重新分析</strong><span>保留原视频；有人工校正版时优先沿用校正版。</span></div><select aria-label="重新分析模式" value={reanalyzeProfile} onChange={(event) => setReanalyzeProfile(event.target.value as AnalysisProfile)}><option value="economy">经济 · 约 8k</option><option value="standard">标准 · 约 18k</option><option value="deep">深度 · 约 32k</option></select><button type="button" disabled={reanalyzing} onClick={reanalyze}>{reanalyzing ? "正在创建…" : "重新分析"}</button></div>}
+        {spokenScript.length > 0 && <section className="spoken-script-panel"><div><div><span>语义整理成稿</span><h3>可以直接修改和使用的口播稿</h3></div><button type="button" onClick={copySpokenScript}>复制口播稿</button></div><article>{spokenScript.map((paragraph, index) => <p key={`${index}-${paragraph.slice(0, 12)}`}>{paragraph}</p>)}</article><small>内容仅整理自原始转写；已去除重复、语气词和无效停顿，不额外补写事实。</small></section>}
         {reportSections.length > 0 ? <div className="report-sections">{reportSections.map(([key, value]) => <section className={key === "summary" || key === "recommendations" ? "report-section-wide" : undefined} key={key}><h3>{sectionNames[key] ?? key}</h3><p>{renderValue(value, key)}</p></section>)}</div> : <div className="list-empty">分析服务完成结构化输出后，结论、证据与复用建议会显示在这里。</div>}
         {evidence.length > 0 && <div className="evidence-list"><h3>结论证据</h3>{evidence.map((item, index) => <button type="button" key={`${item.startMs}-${index}`} onClick={() => item.startMs !== null && seek(item.startMs)} disabled={item.startMs === null || !detail.video.media_url}><span>{item.startMs === null ? "证据" : timeLabel(item.startMs)}</span><strong>{item.text}</strong><small>{item.source} · 置信度 {item.confidence ?? "—"}</small></button>)}</div>}
         {detail.analysis && <footer className="report-provenance"><span>模型：{[detail.analysis.model_provider, detail.analysis.model_name].filter(Boolean).join(" / ") || "规则与适配器"}</span><span>提示词版本：{detail.analysis.prompt_version || "—"}</span><span>生成：{dateLabel(detail.analysis.created_at)}</span>{detail.video.is_shared_reference ? <span>共享素材 · 原分析只读</span> : <Link href={`/topics?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}&sourceVideoId=${encodeURIComponent(videoId)}`}>从此分析创建选题 →</Link>}</footer>}

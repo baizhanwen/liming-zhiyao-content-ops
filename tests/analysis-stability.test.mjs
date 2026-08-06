@@ -165,3 +165,24 @@ test("thirty minute videos use bounded multi-pass analysis and cleaned evidence"
   assert.match(pipeline, /clean_transcript/);
   assert.match(detail, /分段分析后汇总/);
 });
+
+test("analysis reports produce a reusable spoken script and specialist operating insights", async () => {
+  const [provider, detail, styles] = await Promise.all([
+    readFile(new URL("../services/analyzer/liming_analyzer/providers.py", import.meta.url), "utf8"),
+    readFile(new URL("../components/AnalysisDetail.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(provider, /video-analysis\.v4/);
+  assert.match(provider, /spoken_script/);
+  assert.match(provider, /hook_analysis/);
+  assert.match(provider, /viral_points/);
+  assert.match(provider, /rhythm_analysis/);
+  assert.match(provider, /emotion_curve/);
+  assert.match(provider, /conversion_design/);
+  assert.match(provider, /SegmentReport/);
+  assert.match(detail, /copySpokenScript/);
+  assert.match(detail, /整理后的口播稿/);
+  assert.match(detail, /传播爆点/);
+  assert.match(styles, /spoken-script-panel/);
+});

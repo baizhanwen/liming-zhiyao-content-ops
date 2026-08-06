@@ -63,6 +63,12 @@ class FakeReport:
             "hook": "先说问题",
             "structure": ["问题", "方法"],
             "audience": "管理者",
+            "spoken_script": ["先把问题讲清楚，再给出能够执行的方法。"],
+            "hook_analysis": ["以目标人群正在经历的问题直接开场。"],
+            "viral_points": ["问题与解决方法形成清晰反差。"],
+            "rhythm_analysis": ["开场快，方法部分逐步展开。"],
+            "emotion_curve": ["从问题压力推进到解决希望。"],
+            "conversion_design": ["结尾用明确行动建议完成转化。"],
             "visual": ["大字标题"],
             "language": ["短句"],
             "highlights": ["开场直接"],
@@ -278,7 +284,7 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(deep.report["analysis_meta"]["maximum_source_tokens"], 32_000)
         self.assertEqual(deep.report["analysis_meta"]["maximum_output_tokens"], 6_000)
         self.assertEqual(FakeCompletions.last_kwargs["max_tokens"], 6_000)
-        self.assertEqual(deep.schema_version, "analysis.v3")
+        self.assertEqual(deep.schema_version, "analysis.v4")
 
     def test_public_resolver_returns_metadata_and_metrics(self):
         captured = {}

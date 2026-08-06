@@ -328,7 +328,7 @@ class InstructorStructureAnalyzer:
         base_url: str,
         model: str,
         provider: str,
-        prompt_version: str = "video-analysis.v3",
+        prompt_version: str = "video-analysis.v4",
         max_source_tokens: int = 32_000,
         max_output_tokens: int = 6_000,
         window_tokens: int = 6_000,
@@ -358,6 +358,12 @@ class InstructorStructureAnalyzer:
                 hook: str = Field(min_length=1, max_length=2000)
                 structure: list[str] = Field(min_length=1, max_length=20)
                 audience: str = Field(min_length=1, max_length=2000)
+                spoken_script: list[str] = Field(min_length=1, max_length=12)
+                hook_analysis: list[str] = Field(default_factory=list, max_length=12)
+                viral_points: list[str] = Field(default_factory=list, max_length=12)
+                rhythm_analysis: list[str] = Field(default_factory=list, max_length=12)
+                emotion_curve: list[str] = Field(default_factory=list, max_length=12)
+                conversion_design: list[str] = Field(default_factory=list, max_length=12)
                 visual: list[str] = Field(default_factory=list, max_length=30)
                 language: list[str] = Field(default_factory=list, max_length=30)
                 highlights: list[str] = Field(default_factory=list, max_length=30)
@@ -366,8 +372,21 @@ class InstructorStructureAnalyzer:
                 evidence: list[Evidence] = Field(min_length=1, max_length=50)
                 confidence: int = Field(ge=0, le=100)
 
+            class SegmentReport(BaseModel):
+                model_config = ConfigDict(extra="forbid")
+                summary: str = Field(min_length=1, max_length=2000)
+                hook: str = Field(min_length=1, max_length=1000)
+                structure: list[str] = Field(min_length=1, max_length=12)
+                spoken_script: list[str] = Field(min_length=1, max_length=4)
+                highlights: list[str] = Field(default_factory=list, max_length=12)
+                evidence: list[Evidence] = Field(min_length=1, max_length=20)
+                confidence: int = Field(ge=0, le=100)
+
             report_model = Report
+            self.segment_report_model = SegmentReport
             client = instructor.from_openai(OpenAI(api_key=api_key, base_url=base_url))
+        else:
+            self.segment_report_model = report_model
         self.client = client
         self.report_model = report_model
         self.model = model
@@ -424,19 +443,36 @@ class InstructorStructureAnalyzer:
         system_prompt = (
             "你是短视频内容分析员。统计数字只能使用输入值，不能猜测。"
             "每条 evidence.text 必须逐字引用转写或 OCR，start_ms 必须来自同一证据。"
-            "输出结构、受众、画面、语言、亮点、风险和可执行复用建议。"
+            "最终报告必须包含按语义整理的 spoken_script：保留原意与事实，删除口头重复、语气词和无效停顿，"
+            "整理成不超过 8 个可以直接朗读的自然段，禁止补写来源中没有的事实。"
+            "hook_analysis、viral_points、rhythm_analysis、emotion_curve、conversion_design "
+            "分别分析开场钩子、传播爆点、节奏、情绪推进和转化设计，结论要简洁、具体、可执行。"
+            "同时输出结构、受众、画面、语言、亮点、风险和复用建议。"
         )
 
-        def request_report(payload: Mapping[str, Any], output_tokens: int, *, synthesis: bool = False) -> tuple[dict[str, Any], Any]:
+        def request_report(
+            payload: Mapping[str, Any],
+            output_tokens: int,
+            *,
+            synthesis: bool = False,
+            compact: bool = False,
+        ) -> tuple[dict[str, Any], Any]:
             nonlocal actual_input_tokens, actual_output_tokens, actual_total_tokens
             request_kwargs = {
                 "model": self.model,
-                "response_model": self.report_model,
+                "response_model": self.segment_report_model if compact else self.report_model,
                 "max_retries": 1,
                 "max_tokens": output_tokens,
                 "temperature": 0.2,
                 "messages": [
-                    {"role": "system", "content": system_prompt + ("请汇总分段报告，消除重复结论并保持证据原文。" if synthesis else "")},
+                    {
+                        "role": "system",
+                        "content": (
+                            "你正在分析长视频的一个时间段。只输出本段摘要、结构、亮点、按原意精简的口播段落和逐字证据。"
+                            if compact
+                            else system_prompt + ("请汇总分段报告，消除重复结论，生成完整口播稿并保持证据原文。" if synthesis else "")
+                        ),
+                    },
                     {"role": "user", "content": str(payload)},
                 ],
                 **provider_options,
@@ -461,7 +497,7 @@ class InstructorStructureAnalyzer:
         segment_limit = {"economy": 2, "standard": 4, "deep": 6}[profile]
         windows = _merge_chunks(candidate_windows, segment_limit) if duration_is_long else candidate_windows
         segmented = duration_is_long and len(windows) > 1 and effective_output_tokens >= 1_600
-        partial_output_tokens = min(600, max(400, (effective_output_tokens - 800) // max(1, len(windows)))) if segmented else 0
+        partial_output_tokens = min(500, max(300, (effective_output_tokens - 1_200) // max(1, len(windows)))) if segmented else 0
         final_output_tokens = effective_output_tokens - partial_output_tokens * len(windows) if segmented else effective_output_tokens
         partial_output_budget = partial_output_tokens * len(windows)
         analysis_passes = len(windows) + 1 if segmented else 1
@@ -483,6 +519,7 @@ class InstructorStructureAnalyzer:
                         "visual_evidence": window_visuals,
                     },
                     partial_output_tokens,
+                    compact=True,
                 )
                 allowed_partial_evidence = {str(row.get("text") or "") for row in window + window_visuals}
                 partial_report["evidence"] = [row for row in partial_report.get("evidence", []) if isinstance(row, dict) and row.get("text") in allowed_partial_evidence]
@@ -546,7 +583,7 @@ class InstructorStructureAnalyzer:
                 "actual_total_tokens": actual_total_tokens,
             })
         return StructureOutput(
-            "analysis.v3",
+            "analysis.v4",
             report,
             _confidence(confidence),
             self.provider,

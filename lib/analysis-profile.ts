@@ -26,7 +26,7 @@ export function estimateAnalysisMaximumTokens(durationSeconds: number, profile: 
   const budget = analysisProfileBudgets[profile];
   if (durationSeconds < 1_800) return budget.sourceTokens + budget.promptTokens + budget.outputTokens;
   const segments = Math.min(analysisProfileSegmentLimits[profile], Math.max(2, Math.ceil(durationSeconds / 600)));
-  const partialOutputPerSegment = Math.min(600, Math.max(400, Math.floor((budget.outputTokens - 800) / segments)));
+  const partialOutputPerSegment = Math.min(500, Math.max(300, Math.floor((budget.outputTokens - 1_200) / segments)));
   return budget.sourceTokens + budget.promptTokens * (segments + 1) + partialOutputPerSegment * segments + budget.outputTokens;
 }
 
