@@ -29,7 +29,9 @@ test("operations center monitors failures, heartbeats, overdue reviews, audit, a
   assert.match(route, /FAILED_MODEL_CALLS/);
   assert.match(route, /OVERDUE_REVIEWS/);
   assert.match(route, /recentAudit/);
-  assert.match(route, /Boolean\(runtime\.CONTENT_MODEL_API_KEY/);
+  assert.match(route, /runtime\.CONTENT_MODEL_API_KEY \|\| runtime\.ANALYZER_LLM_API_KEY/);
+  assert.match(route, /analyzerOnline/);
+  assert.match(route, /analyzer_workers/);
   assert.doesNotMatch(route, /CONTENT_MODEL_API_KEY[^\n]*return Response\.json/);
 });
 

@@ -41,17 +41,19 @@ export async function GET(request: Request) {
           WHERE refs.organization_id = ? AND refs.project_id = ? AND refs.purpose = 'analysis'
         )) ORDER BY created_at DESC LIMIT 150
       `).bind(organizationId, projectId, organizationId, projectId).all(),
-      db.prepare("SELECT MAX(last_heartbeat_at) AS value FROM analysis_jobs WHERE organization_id = ?").bind(organizationId).first<{ value: string | null }>(),
+      db.prepare("SELECT MAX(last_seen_at) AS value FROM analyzer_workers WHERE status = 'online'").first<{ value: string | null }>(),
     ]);
     const runtime = env as typeof env & { ANALYZER_SERVICE_TOKEN?: string; ANALYZER_LLM_API_KEY?: string; ANALYZER_LLM_BASE_URL?: string; ANALYZER_LLM_MODEL?: string; ANALYZER_LLM_PROVIDER?: string; ANALYZER_YTDLP_COOKIES_FROM_BROWSER?: string; ANALYZER_YTDLP_COOKIE_FILE?: string };
     const token = runtime.ANALYZER_SERVICE_TOKEN?.trim() ?? "";
+    const workerLastSeen = lastWorkerHeartbeat?.value ?? null;
     return Response.json({
       videos: videos.results, jobs: jobs.results, canWrite: canWriteProjectAccess(access),
       service: {
         credentialConfigured: Boolean(token && !/change-me|replace-with/i.test(token)),
         modelConfigured: Boolean(runtime.ANALYZER_LLM_API_KEY?.trim() && runtime.ANALYZER_LLM_BASE_URL?.trim() && runtime.ANALYZER_LLM_MODEL?.trim() && runtime.ANALYZER_LLM_PROVIDER?.trim()),
         publicLinkCookieConfigured: Boolean(runtime.ANALYZER_YTDLP_COOKIE_FILE?.trim() || runtime.ANALYZER_YTDLP_COOKIES_FROM_BROWSER?.trim()),
-        lastWorkerHeartbeat: lastWorkerHeartbeat?.value ?? null,
+        analyzerOnline: Boolean(workerLastSeen && new Date(workerLastSeen).getTime() >= Date.now() - 20_000),
+        lastWorkerHeartbeat: workerLastSeen,
       },
     });
   } catch (error) { return errorResponse(error); }

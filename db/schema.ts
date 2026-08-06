@@ -139,6 +139,11 @@ export const analysisJobs = sqliteTable("analysis_jobs", {
   index("idx_analysis_jobs_claimable").on(table.status, table.leaseExpiresAt, table.createdAt),
 ]);
 
+export const analyzerWorkers = sqliteTable("analyzer_workers", {
+  workerId: text("worker_id").primaryKey(), status: text("status", { enum: ["online", "stopped", "error"] }).notNull().default("online"),
+  startedAt: text("started_at").notNull(), lastSeenAt: text("last_seen_at").notNull(), lastError: text("last_error"), updatedAt: text("updated_at").notNull(),
+}, (table) => [index("idx_analyzer_workers_last_seen").on(table.lastSeenAt)]);
+
 export const analysisJobEvents = sqliteTable("analysis_job_events", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id),
   jobId: text("job_id").notNull().references(() => analysisJobs.id), videoId: text("video_id").references(() => videos.id),

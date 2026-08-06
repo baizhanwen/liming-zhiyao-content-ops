@@ -20,8 +20,40 @@ function Get-ProcessRecord([int]$processId) {
     return Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction Stop
 }
 
+function Stop-AnalyzerProcess {
+    $pidPath = Join-Path $projectRoot ".local\analyzer.pid"
+    if (-not (Test-Path -LiteralPath $pidPath)) { return }
+    $savedId = 0
+    [void][int]::TryParse((Get-Content -Raw -LiteralPath $pidPath).Trim(), [ref]$savedId)
+    if ($savedId -le 0) {
+        Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
+        return
+    }
+    try { $analyzer = Get-ProcessRecord $savedId }
+    catch {
+        Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
+        return
+    }
+    $expectedPython = Join-Path $projectRoot "services\analyzer\.venv\Scripts\python.exe"
+    $commandLine = [string]$analyzer.CommandLine
+    if ($analyzer.Name -ne "python.exe" -or
+        $commandLine.IndexOf($expectedPython, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
+        $commandLine -notmatch '(?i)-m\s+liming_analyzer') {
+        Write-Error "The saved analyzer PID belongs to another program. It was not stopped."
+    }
+    if ($CheckOnly) {
+        Write-Host "[Liming Zhiyao] Verified the background video analyzer process."
+        return
+    }
+    Write-Host "[Liming Zhiyao] Stopping the background video analyzer..."
+    & taskkill.exe /PID $savedId /T /F | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "taskkill failed for the video analyzer with exit code $LASTEXITCODE" }
+    Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
+}
+
 $listenerIds = @(Get-ListenerProcessIds)
 if ($listenerIds.Count -eq 0) {
+    Stop-AnalyzerProcess
     Write-Host "[Liming Zhiyao] The local web app is already stopped."
     exit 0
 }
@@ -62,6 +94,7 @@ foreach ($listenerId in $listenerIds) {
     if ($LASTEXITCODE -ne 0) { throw "taskkill failed with exit code $LASTEXITCODE" }
 }
 
+Stop-AnalyzerProcess
 if ($CheckOnly) { exit 0 }
 
 for ($attempt = 0; $attempt -lt 20; $attempt += 1) {

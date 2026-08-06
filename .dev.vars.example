@@ -16,7 +16,8 @@ ANALYZER_YTDLP_COOKIES_FROM_BROWSER=edge
 # Preferred on Windows: import a Douyin-only Netscape file with the refresh script.
 ANALYZER_YTDLP_COOKIE_FILE=.local/douyin-cookies.txt
 
-# Optional OpenAI-compatible generation/analysis provider.
+# OpenAI-compatible analysis provider. Content generation reuses these values
+# unless the optional CONTENT_MODEL_* overrides below are filled in.
 CONTENT_MODEL_PROVIDER=deepseek
 CONTENT_MODEL_BASE_URL=https://api.deepseek.com/v1
 CONTENT_MODEL_NAME=

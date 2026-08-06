@@ -38,7 +38,8 @@ if errorlevel 1 (
 )
 
 echo [Liming Zhiyao] Starting http://127.0.0.1:3000
-echo The browser will open when the app is ready. Press Ctrl+C to stop the app.
+echo The browser and video analyzer will start automatically when ready.
+echo Press Ctrl+C or run stop-local.bat to stop everything.
 start "" /b powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0scripts\open-local.ps1"
 call npm run dev
 if errorlevel 1 (

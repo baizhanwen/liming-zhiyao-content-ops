@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import urllib.error
 import uuid
 from collections.abc import Callable
 
@@ -33,5 +34,9 @@ def process_once(client: AnalyzerApiClient, processor: Processor) -> bool:
 def run_forever(client: AnalyzerApiClient, processor: Processor, idle_seconds: float = 5.0, stop: Callable[[], bool] | None = None) -> None:
     should_stop = stop or (lambda: False)
     while not should_stop():
-        if not process_once(client, processor):
+        try:
+            processed = process_once(client, processor)
+        except urllib.error.URLError:
+            processed = False
+        if not processed:
             time.sleep(idle_seconds)

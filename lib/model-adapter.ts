@@ -6,6 +6,10 @@ type ModelRuntimeEnv = typeof env & {
   CONTENT_MODEL_BASE_URL?: string;
   CONTENT_MODEL_NAME?: string;
   CONTENT_MODEL_PROVIDER?: string;
+  ANALYZER_LLM_API_KEY?: string;
+  ANALYZER_LLM_BASE_URL?: string;
+  ANALYZER_LLM_MODEL?: string;
+  ANALYZER_LLM_PROVIDER?: string;
 };
 
 export class ModelConfigurationError extends Error {}
@@ -24,11 +28,11 @@ export type ModelInvocation = {
 
 export function readContentModelConfig(profile: ModelProfile) {
   const runtime = env as ModelRuntimeEnv;
-  const apiKey = runtime.CONTENT_MODEL_API_KEY?.trim();
-  const baseUrl = runtime.CONTENT_MODEL_BASE_URL?.trim().replace(/\/+$/, "");
-  const model = runtime.CONTENT_MODEL_NAME?.trim();
-  const provider = runtime.CONTENT_MODEL_PROVIDER?.trim() || "openai-compatible";
-  if (!apiKey || !baseUrl || !model) throw new ModelConfigurationError("内容生成模型尚未配置。请设置供应商地址、模型名称和密钥。");
+  const apiKey = (runtime.CONTENT_MODEL_API_KEY || runtime.ANALYZER_LLM_API_KEY)?.trim();
+  const baseUrl = (runtime.CONTENT_MODEL_BASE_URL || runtime.ANALYZER_LLM_BASE_URL)?.trim().replace(/\/+$/, "");
+  const model = (runtime.CONTENT_MODEL_NAME || runtime.ANALYZER_LLM_MODEL)?.trim();
+  const provider = (runtime.CONTENT_MODEL_PROVIDER || runtime.ANALYZER_LLM_PROVIDER)?.trim() || "openai-compatible";
+  if (!apiKey || !baseUrl || !model) throw new ModelConfigurationError("模型尚未配置。请在本地配置中填写模型地址、名称和密钥。");
   return { apiKey, baseUrl, model, provider, profile };
 }
 

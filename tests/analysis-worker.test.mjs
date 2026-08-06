@@ -9,6 +9,8 @@ test("worker claim is atomic and only selects tenant-owned videos", async () => 
   assert.match(claim, /v\.organization_id = j\.organization_id AND v\.project_id = j\.project_id/);
   assert.match(claim, /j\.lease_expires_at <= \?/);
   assert.match(claim, /attempt_count = attempt_count \+ 1/);
+  assert.match(claim, /INSERT INTO analyzer_workers/);
+  assert.match(claim, /ON CONFLICT\(worker_id\) DO UPDATE/);
 });
 
 test("heartbeats use lease owner and optimistic job versions", async () => {

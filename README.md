@@ -29,8 +29,8 @@
 
 1. 双击 `setup-local.bat`，等待依赖安装和本地数据库初始化完成；
 2. 双击 `start-local.bat`；
-3. 保持弹出的终端窗口开启，浏览器会自动打开 `http://127.0.0.1:3000`；
-4. 需要停止时，在终端按 `Ctrl+C`；如果终端不可见或网站已在后台运行，双击 `stop-local.bat`，它只会关闭经过校验的本项目网页进程并释放 3000 端口。
+3. 保持弹出的终端窗口开启，浏览器和视频分析服务会自动启动；在网页粘贴抖音链接后即可一键开始分析；
+4. 需要停止时，在终端按 `Ctrl+C`，或双击 `stop-local.bat` 同时关闭网页和后台视频分析服务。
 
 本地数据保存在项目的 `.wrangler/` 目录中，重启后仍然存在。首次进入业务功能时可在“公司与项目”页面创建自己的公司和客户项目。
 
@@ -58,9 +58,9 @@
 - 分析详情允许有写权限的成员校正转写、保存新版本，并可基于校正版重新生成结构分析；重新分析会跳过 ASR，但仍会重新提取画面和生成报告。
 - 抖音链接使用本机 Cookie 快照。Windows 新版 Edge 的 Cookie 受应用绑定加密保护，不能由 yt-dlp 直接解密；请安装 yt-dlp 官方文档推荐的 `Get cookies.txt LOCALLY` 扩展，在抖音页导出 Netscape 格式文件，再双击 `refresh-douyin-cookies.bat` 选择该文件。脚本只保留抖音域名 Cookie 到被 Git 忽略的 `.local/`，不会上传或写入数据库；导入成功后请删除下载目录中的原始导出文件。解析期间可以一直打开 Edge，Cookie 失效时重新导出即可。
 
-1. 双击 `setup-analyzer.bat` 安装体积较大的媒体依赖；
-2. 编辑 `.dev.vars`，填写 `ANALYZER_LLM_*`；如需内容生成，同时填写 `CONTENT_MODEL_*`；
-3. 先启动网页端，再双击 `start-analyzer.bat`。
+1. 首次使用时双击 `setup-analyzer.bat` 安装体积较大的媒体依赖；
+2. 编辑 `.dev.vars`，填写 `ANALYZER_LLM_*`；内容生成默认复用这套模型配置，只有确需使用不同模型时才填写 `CONTENT_MODEL_*`；
+3. 后续只需双击 `start-local.bat` 或 `start-lan.bat`，网页和视频分析服务会一起启动，无需再运行 `start-analyzer.bat`。
 
 网站基础页面、公司/项目、内容流转与数据报告不依赖 Python 服务，可以单独运行。
 

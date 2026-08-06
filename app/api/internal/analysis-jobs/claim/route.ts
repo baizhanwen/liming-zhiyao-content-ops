@@ -15,6 +15,11 @@ export async function POST(request: Request) {
     const workerId = normalizeWorkerId(payload.workerId); if (!workerId) return apiError("INVALID_WORKER_ID", "workerId 格式无效。", 400);
     const leaseSeconds = normalizeLeaseSeconds(payload.leaseSeconds); const now = new Date(); const nowIso = now.toISOString();
     const leaseExpiresAt = new Date(now.getTime() + leaseSeconds * 1000).toISOString(); const actor = `service:${workerId}`; const db = getD1();
+    await db.prepare(`
+      INSERT INTO analyzer_workers (worker_id, status, started_at, last_seen_at, updated_at)
+      VALUES (?, 'online', ?, ?, ?)
+      ON CONFLICT(worker_id) DO UPDATE SET status = 'online', last_seen_at = excluded.last_seen_at, last_error = NULL, updated_at = excluded.updated_at
+    `).bind(workerId, nowIso, nowIso, nowIso).run();
     const job = await db.prepare(`
       UPDATE analysis_jobs
       SET status = CASE WHEN status = 'pending' THEN 'queued' ELSE status END,

@@ -37,7 +37,7 @@ export async function GET(request: Request) {
       db.prepare(`SELECT a.id, a.action, a.target_type, a.target_id, a.project_id, a.metadata_json, a.created_at, u.email AS actor_email, p.name AS project_name
         FROM audit_logs a INNER JOIN users u ON u.id = a.actor_user_id LEFT JOIN projects p ON p.id = a.project_id
         WHERE a.organization_id = ? ORDER BY a.created_at DESC LIMIT 30`).bind(organizationId).all(),
-      db.prepare("SELECT MAX(last_heartbeat_at) AS value FROM analysis_jobs WHERE organization_id = ?").bind(organizationId).first<{ value: string | null }>(),
+      db.prepare("SELECT MAX(last_seen_at) AS value FROM analyzer_workers WHERE status = 'online'").first<{ value: string | null }>(),
     ]);
 
     const alerts: Array<{ code: string; severity: "warning" | "critical"; title: string; message: string }> = [];
@@ -56,14 +56,22 @@ export async function GET(request: Request) {
     ] as const;
     for (const [code, label, current, limit] of quotaPairs) if (limit > 0 && current / limit >= 0.8) alerts.push({ code, severity: current >= limit ? "critical" : "warning", title: `${label}接近配额`, message: `已使用 ${current} / ${limit}，请清理数据或调整套餐。` });
 
-    const runtime = env as typeof env & { ANALYZER_SERVICE_TOKEN?: string; CONTENT_MODEL_API_KEY?: string; CONTENT_MODEL_BASE_URL?: string; CONTENT_MODEL_NAME?: string };
+    const runtime = env as typeof env & { ANALYZER_SERVICE_TOKEN?: string; CONTENT_MODEL_API_KEY?: string; CONTENT_MODEL_BASE_URL?: string; CONTENT_MODEL_NAME?: string; ANALYZER_LLM_API_KEY?: string; ANALYZER_LLM_BASE_URL?: string; ANALYZER_LLM_MODEL?: string };
+    const workerLastSeen = lastWorkerHeartbeat?.value ?? null;
+    const analyzerOnline = Boolean(workerLastSeen && new Date(workerLastSeen).getTime() >= Date.now() - 20_000);
+    const contentModelConfigured = Boolean(
+      (runtime.CONTENT_MODEL_API_KEY || runtime.ANALYZER_LLM_API_KEY)?.trim()
+      && (runtime.CONTENT_MODEL_BASE_URL || runtime.ANALYZER_LLM_BASE_URL)?.trim()
+      && (runtime.CONTENT_MODEL_NAME || runtime.ANALYZER_LLM_MODEL)?.trim()
+    );
     return Response.json({
       organization, organizationRole: access.organizationRole, capacity, usage, alerts,
       services: {
         database: "ready",
         analyzerCredentialConfigured: Boolean(runtime.ANALYZER_SERVICE_TOKEN?.trim()),
-        contentModelConfigured: Boolean(runtime.CONTENT_MODEL_API_KEY?.trim() && runtime.CONTENT_MODEL_BASE_URL?.trim() && runtime.CONTENT_MODEL_NAME?.trim()),
-        lastWorkerHeartbeat: lastWorkerHeartbeat?.value ?? null,
+        analyzerOnline,
+        contentModelConfigured,
+        lastWorkerHeartbeat: workerLastSeen,
       },
       recentAudit: recentAudit.results,
     });

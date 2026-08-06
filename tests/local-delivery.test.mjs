@@ -23,12 +23,14 @@ test("normal startup stays on loopback while LAN mode is an explicit opt-in", as
   assert.match(vite, /services\/analyzer\/model-cache/);
 });
 
-test("team launch scripts install, migrate, stop safely, and expose a health check", async () => {
-  const [setup, start, stop, stopScript, packageJson, migrations, health, config] = await Promise.all([
+test("team launch scripts install, migrate, start analysis automatically, stop safely, and expose a health check", async () => {
+  const [setup, start, stop, stopScript, analyzerStart, openLocal, packageJson, migrations, health, config] = await Promise.all([
     readFile(new URL("../setup-local.bat", import.meta.url), "utf8"),
     readFile(new URL("../start-local.bat", import.meta.url), "utf8"),
     readFile(new URL("../stop-local.bat", import.meta.url), "utf8"),
     readFile(new URL("../scripts/stop-local.ps1", import.meta.url), "utf8"),
+    readFile(new URL("../scripts/start-analyzer-background.ps1", import.meta.url), "utf8"),
+    readFile(new URL("../scripts/open-local.ps1", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
     readFile(new URL("../scripts/run-local-migrations.mjs", import.meta.url), "utf8"),
     readFile(new URL("../app/api/health/route.ts", import.meta.url), "utf8"),
@@ -46,6 +48,12 @@ test("team launch scripts install, migrate, stop safely, and expose a health che
   assert.match(stopScript, /Port 3000 belongs to another program/);
   assert.match(stopScript, /vinext\.\+dev/);
   assert.match(stopScript, /taskkill\.exe \/PID \$targetId \/T \/F/);
+  assert.match(stopScript, /analyzer\.pid/);
+  assert.match(stopScript, /liming_analyzer/);
+  assert.match(analyzerStart, /Start-Process -FilePath \$python/);
+  assert.match(analyzerStart, /RedirectStandardOutput/);
+  assert.match(analyzerStart, /analyzer\.pid/);
+  assert.match(openLocal, /start-analyzer-background\.ps1/);
   assert.match(packageJson, /db:local:migrate/);
   assert.match(migrations, /WRANGLER_WRITE_LOGS/);
   assert.match(config, /"migrations_dir": "drizzle"/);

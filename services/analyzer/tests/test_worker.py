@@ -1,7 +1,8 @@
 import unittest
+import urllib.error
 
 from liming_analyzer.api_client import AnalysisResult, ClaimedJob
-from liming_analyzer.worker import process_once
+from liming_analyzer.worker import process_once, run_forever
 
 
 class FakeClient:
@@ -47,6 +48,20 @@ class WorkerTests(unittest.TestCase):
         self.assertTrue(process_once(client, lambda *_: AnalysisResult("analysis.v1", {"summary": "ok"})))
         self.assertEqual(client.completed, 1)
         self.assertEqual(client.failed, 0)
+
+    def test_worker_survives_a_temporary_web_server_restart(self):
+        calls = 0
+
+        class ReconnectingClient(FakeClient):
+            def claim(self):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise urllib.error.URLError("server restarting")
+                return None
+
+        run_forever(ReconnectingClient(None), lambda *_: AnalysisResult("analysis.v1", {}), idle_seconds=0, stop=lambda: calls >= 2)
+        self.assertEqual(calls, 2)
 
 
 if __name__ == "__main__":

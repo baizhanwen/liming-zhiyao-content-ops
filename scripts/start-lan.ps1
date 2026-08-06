@@ -53,7 +53,8 @@ Write-Host "[Liming Zhiyao] LAN team mode is starting."
 Write-Host "Host access:      http://127.0.0.1:3000"
 Write-Host "Colleague access: $env:LAN_ACCESS_ORIGIN"
 Write-Host "If Windows asks, allow Node.js on Private networks."
-Write-Host "Keep this window open. Press Ctrl+C to stop the app."
+Write-Host "The browser and video analyzer will start automatically."
+Write-Host "Keep this window open. Press Ctrl+C or run stop-local.bat to stop everything."
 
 Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @(
     "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "$PSScriptRoot\open-lan.ps1", "-Url", $env:LAN_ACCESS_ORIGIN
