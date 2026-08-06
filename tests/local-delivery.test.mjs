@@ -34,6 +34,10 @@ test("team launch scripts install, migrate, and expose a health check", async ()
   ]);
   assert.match(setup, /npm ci/);
   assert.match(start, /db:local:migrate/);
+  assert.match(start, /start "" "http:\/\/127\.0\.0\.1:3000"/);
+  assert.match(start, /findstr "LISTENING"/);
+  assert.match(start, /Port 3000 is occupied by an unhealthy process/);
+  assert.match(start, /The web app stopped unexpectedly/);
   assert.match(packageJson, /db:local:migrate/);
   assert.match(migrations, /WRANGLER_WRITE_LOGS/);
   assert.match(config, /"migrations_dir": "drizzle"/);
