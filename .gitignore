@@ -43,6 +43,7 @@ yarn-error.log*
 /outputs/
 /work/
 /backups/
+/.local/
 
 # python
 __pycache__/

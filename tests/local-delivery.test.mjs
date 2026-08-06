@@ -54,7 +54,7 @@ test("team launch scripts install, migrate, stop safely, and expose a health che
 });
 
 test("Windows batch entry points are ASCII-only and checked out with CRLF", async () => {
-  const files = ["setup-local.bat", "start-local.bat", "stop-local.bat", "start-lan.bat", "setup-analyzer.bat", "start-analyzer.bat", "backup-local.bat", "restore-local.bat"];
+  const files = ["setup-local.bat", "start-local.bat", "stop-local.bat", "start-lan.bat", "setup-analyzer.bat", "start-analyzer.bat", "refresh-douyin-cookies.bat", "backup-local.bat", "restore-local.bat"];
   const contents = await Promise.all(files.map((file) => readFile(new URL(`../${file}`, import.meta.url), "utf8")));
   for (const [index, content] of contents.entries()) assert.equal(Array.from(content).every((character) => character.codePointAt(0) <= 127), true, `${files[index]} must stay ASCII-safe for cmd.exe`);
   const attributes = await readFile(new URL("../.gitattributes", import.meta.url), "utf8");

@@ -41,6 +41,7 @@ class AnalyzerSettings:
     ffprobe: str = "ffprobe"
     model_cache: str = field(default_factory=_default_model_cache)
     yt_dlp_cookies_from_browser: str = ""
+    yt_dlp_cookie_file: str = ".local/douyin-cookies.txt"
 
     @classmethod
     def from_environment(cls) -> AnalyzerSettings:
@@ -72,6 +73,9 @@ class AnalyzerSettings:
             model_cache=os.environ.get("ANALYZER_MODEL_CACHE", _default_model_cache()).strip(),
             yt_dlp_cookies_from_browser=os.environ.get(
                 "ANALYZER_YTDLP_COOKIES_FROM_BROWSER", ""
+            ).strip(),
+            yt_dlp_cookie_file=os.environ.get(
+                "ANALYZER_YTDLP_COOKIE_FILE", ".local/douyin-cookies.txt"
             ).strip(),
         )
 
@@ -110,6 +114,7 @@ def build_analyzer(settings: AnalyzerSettings) -> tuple[AnalyzerApiClient, Analy
             client,
             YtDlpPublicVideoResolver(
                 cookies_from_browser=settings.yt_dlp_cookies_from_browser,
+                cookie_file=settings.yt_dlp_cookie_file,
             ),
         ),
         media,

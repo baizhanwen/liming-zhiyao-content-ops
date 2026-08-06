@@ -77,6 +77,7 @@ class YtDlpPublicVideoResolver:
         factory: Callable[[Mapping[str, Any]], Any] | None = None,
         *,
         cookies_from_browser: str = "",
+        cookie_file: str = "",
     ) -> None:
         if factory is None:
             try:
@@ -86,6 +87,7 @@ class YtDlpPublicVideoResolver:
             factory = YoutubeDL
         self._factory = factory
         self._cookies_from_browser = parse_browser_cookie_spec(cookies_from_browser)
+        self._cookie_file = Path(cookie_file).expanduser().resolve() if cookie_file else None
 
     def download(self, url: str, destination: Path) -> AcquiredSource:
         if not is_allowed_douyin_url(url):
@@ -102,48 +104,54 @@ class YtDlpPublicVideoResolver:
             "socket_timeout": 30,
             "retries": 2,
         }
-        if self._cookies_from_browser is not None:
+        using_cookie_file = self._cookie_file is not None and self._cookie_file.is_file()
+        if using_cookie_file:
+            options["cookiefile"] = str(self._cookie_file)
+        elif self._cookies_from_browser is not None:
             options["cookiesfrombrowser"] = self._cookies_from_browser
-        with self._factory(options) as downloader:
-            try:
+        try:
+            with self._factory(options) as downloader:
                 info = downloader.extract_info(url, download=True)
-            except Exception as error:
-                message = str(error)
-                if "cookie" in message.lower():
-                    if self._cookies_from_browser is None:
-                        raise RuntimeError(
-                            "抖音要求使用新鲜浏览器 Cookie。请配置 "
-                            "ANALYZER_YTDLP_COOKIES_FROM_BROWSER=edge 后重启分析服务，或改用本地上传。"
-                        ) from error
-                    browser = self._cookies_from_browser[0]
+        except Exception as error:
+            message = str(error)
+            if "cookie" in message.lower():
+                if using_cookie_file:
                     raise RuntimeError(
-                        f"抖音 Cookie 已失效或无法从 {browser} 读取。请用该浏览器打开并刷新目标视频，"
-                        "完全退出浏览器后重试；仍失败时请改用本地上传。"
+                        "抖音 Cookie 快照已失效。请重新运行 refresh-douyin-cookies.bat；"
+                        "快照完成后，解析期间可以正常打开 Edge。"
                     ) from error
-                raise
-            if not isinstance(info, dict):
-                raise TypeError("public resolver returned invalid metadata")
-            candidates: list[Path] = []
-            requested = info.get("requested_downloads")
-            if isinstance(requested, list):
-                candidates.extend(Path(item["filepath"]) for item in requested if isinstance(item, dict) and isinstance(item.get("filepath"), str))
-            for key in ("filepath", "_filename"):
-                if isinstance(info.get(key), str):
-                    candidates.append(Path(info[key]))
-            candidates.extend(destination.parent.glob(f"{destination.name}.*"))
-            source_path = next((path for path in candidates if path.is_file()), None)
-            if source_path is None:
-                raise RuntimeError("public resolver did not produce a media file")
-            metadata = SourceMetadata(
-                platform_work_id=str(info["id"])[:200] if info.get("id") is not None else None,
-                title=str(info["title"])[:500] if info.get("title") is not None else None,
-                author_name=str(info.get("uploader") or info.get("channel"))[:300] if info.get("uploader") or info.get("channel") else None,
-                published_at=_published_at(info.get("timestamp")),
-                duration_sec=_integer(info.get("duration")),
-                plays=_integer(info.get("view_count")),
-                likes=_integer(info.get("like_count")),
-                comments=_integer(info.get("comment_count")),
-                favorites=_integer(info.get("collect_count") or info.get("favorite_count")),
-                shares=_integer(info.get("share_count")),
-            )
-            return AcquiredSource(source_path, metadata)
+                if self._cookies_from_browser is None:
+                    raise RuntimeError(
+                        "抖音要求新鲜 Cookie。请运行 refresh-douyin-cookies.bat，或改用本地上传。"
+                    ) from error
+                raise RuntimeError(
+                    "浏览器 Cookie 数据库正在使用中。请完全关闭 Edge，运行 "
+                    "refresh-douyin-cookies.bat 生成快照；之后解析时可以保持 Edge 打开。"
+                ) from error
+            raise
+        if not isinstance(info, dict):
+            raise TypeError("public resolver returned invalid metadata")
+        candidates: list[Path] = []
+        requested = info.get("requested_downloads")
+        if isinstance(requested, list):
+            candidates.extend(Path(item["filepath"]) for item in requested if isinstance(item, dict) and isinstance(item.get("filepath"), str))
+        for key in ("filepath", "_filename"):
+            if isinstance(info.get(key), str):
+                candidates.append(Path(info[key]))
+        candidates.extend(destination.parent.glob(f"{destination.name}.*"))
+        source_path = next((path for path in candidates if path.is_file()), None)
+        if source_path is None:
+            raise RuntimeError("public resolver did not produce a media file")
+        metadata = SourceMetadata(
+            platform_work_id=str(info["id"])[:200] if info.get("id") is not None else None,
+            title=str(info["title"])[:500] if info.get("title") is not None else None,
+            author_name=str(info.get("uploader") or info.get("channel"))[:300] if info.get("uploader") or info.get("channel") else None,
+            published_at=_published_at(info.get("timestamp")),
+            duration_sec=_integer(info.get("duration")),
+            plays=_integer(info.get("view_count")),
+            likes=_integer(info.get("like_count")),
+            comments=_integer(info.get("comment_count")),
+            favorites=_integer(info.get("collect_count") or info.get("favorite_count")),
+            shares=_integer(info.get("share_count")),
+        )
+        return AcquiredSource(source_path, metadata)

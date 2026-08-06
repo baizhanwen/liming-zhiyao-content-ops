@@ -13,6 +13,8 @@ ANALYZER_WORKER_ID=analyzer-01
 # Read fresh Douyin cookies from this browser on the analyzer host.
 # Optional profile syntax: edge:Default. Leave empty when only using uploads.
 ANALYZER_YTDLP_COOKIES_FROM_BROWSER=edge
+# Local Douyin-only snapshot. Run refresh-douyin-cookies.bat to create it.
+ANALYZER_YTDLP_COOKIE_FILE=.local/douyin-cookies.txt
 
 # Optional OpenAI-compatible generation/analysis provider.
 CONTENT_MODEL_PROVIDER=deepseek

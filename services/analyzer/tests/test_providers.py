@@ -183,6 +183,27 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(result.metadata.duration_sec, 12)
         self.assertEqual(captured["cookiesfrombrowser"], ("edge", "Default", None, None))
 
+    def test_public_resolver_prefers_cookie_snapshot_while_browser_is_open(self):
+        captured = {}
+
+        def factory(options):
+            captured.update(options)
+            return FakeDownloader(options)
+
+        with tempfile.TemporaryDirectory() as directory:
+            cookie_file = Path(directory) / "cookies.txt"
+            cookie_file.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+            YtDlpPublicVideoResolver(
+                factory,
+                cookies_from_browser="edge",
+                cookie_file=str(cookie_file),
+            ).download(
+                "https://www.douyin.com/video/1",
+                Path(directory) / "source",
+            )
+        self.assertEqual(captured["cookiefile"], str(cookie_file.resolve()))
+        self.assertNotIn("cookiesfrombrowser", captured)
+
     def test_artifact_store_persists_subtitles_and_keyframes(self):
         client = ArtifactClient()
         store = ApiArtifactStore(client)
