@@ -45,6 +45,23 @@ test("topic citations only use tenant-owned analyses or confirmed knowledge", as
   assert.match(topics, /topic_citations/);
 });
 
+test("new topics can cite multiple confirmed brand knowledge items", async () => {
+  const [workspace, topics, generate, styles] = await Promise.all([
+    readFile(new URL("../components/TopicWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/topics/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/topics/generate/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(workspace, /selectedKnowledgeIds/);
+  assert.match(workspace, /sourceKnowledgeItemIds/);
+  assert.match(workspace, /可多选/);
+  assert.match(topics, /MAX_KNOWLEDGE_SOURCES/);
+  assert.match(topics, /citations: citationRecords/);
+  assert.match(generate, /MAX_KNOWLEDGE_CONTEXT_CHARS/);
+  assert.match(generate, /selectedKnowledge: knowledge\.map/);
+  assert.match(styles, /topic-knowledge-picker/);
+});
+
 test("analysis results and navigation expose the knowledge-to-topic workflow", async () => {
   const [detail, shell, knowledgePage, topicsPage] = await Promise.all([
     readFile(new URL("../components/AnalysisDetail.tsx", import.meta.url), "utf8"),

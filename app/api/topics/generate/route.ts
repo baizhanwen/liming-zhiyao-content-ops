@@ -9,9 +9,17 @@ export const dynamic = "force-dynamic";
 
 const allowedFields = new Set<string>(topicGeneratedFields);
 const maximums: Record<string, number> = { title: 160, angle: 2_000, pillar: 200, priority: 3, audience: 1_000, objective: 1_000, hook: 500, rationale: 2_000 };
+const MAX_KNOWLEDGE_SOURCES = 20;
+const MAX_KNOWLEDGE_CONTEXT_CHARS = 24_000;
 
 function text(value: unknown, maximum: number) {
   return typeof value === "string" ? value.trim().slice(0, maximum) : "";
+}
+
+function knowledgeSourceIds(payload: Record<string, unknown>) {
+  const legacy = text(payload.sourceKnowledgeItemId, 100);
+  const raw = Array.isArray(payload.sourceKnowledgeItemIds) ? payload.sourceKnowledgeItemIds : legacy ? [legacy] : [];
+  return Array.from(new Set(raw.filter((value): value is string => typeof value === "string").map((value) => value.trim().slice(0, 100)).filter(Boolean)));
 }
 
 function compactAnalysis(reportJson: string) {
@@ -42,20 +50,27 @@ export async function POST(request: Request) {
     const quota = await checkOrganizationQuota(organizationId, user.id, "modelCalls");
     if (!quota.allowed) return apiError("MODEL_QUOTA_EXCEEDED", `本月模型调用已达到 ${quota.limit} 次套餐上限。`, 429, { usage: quota.current, limit: quota.limit });
     const config = readContentModelConfig("fast"); const db = getD1();
-    const sourceVideoId = text(payload.sourceVideoId, 100); const sourceKnowledgeItemId = text(payload.sourceKnowledgeItemId, 100);
-    const [strategy, analysis, knowledge] = await Promise.all([
+    const sourceVideoId = text(payload.sourceVideoId, 100); const sourceKnowledgeItemIds = knowledgeSourceIds(payload);
+    if (sourceKnowledgeItemIds.length > MAX_KNOWLEDGE_SOURCES) return apiError("TOO_MANY_KNOWLEDGE_SOURCES", `一次最多使用 ${MAX_KNOWLEDGE_SOURCES} 条品牌知识。`, 400);
+    const [strategy, analysis] = await Promise.all([
       db.prepare("SELECT name, positioning, persona, target_audience, pain_points_json, pillars_json, objectives_json, style_notes, conversion_path FROM content_strategies WHERE organization_id = ? AND project_id = ? AND status = 'active' ORDER BY version DESC LIMIT 1").bind(organizationId, projectId).first<Record<string, string | null>>(),
       sourceVideoId ? db.prepare("SELECT a.report_json FROM video_analyses a INNER JOIN videos v ON v.id = a.video_id AND v.organization_id = a.organization_id AND v.project_id = a.project_id WHERE a.organization_id = ? AND a.project_id = ? AND a.video_id = ? AND v.deleted_at IS NULL ORDER BY a.created_at DESC LIMIT 1").bind(organizationId, projectId, sourceVideoId).first<{ report_json: string }>() : null,
-      sourceKnowledgeItemId ? db.prepare("SELECT k.title, v.body FROM knowledge_items k INNER JOIN knowledge_item_versions v ON v.item_id = k.id AND v.version = k.current_version AND v.organization_id = k.organization_id AND v.project_id = k.project_id WHERE k.id = ? AND k.organization_id = ? AND k.project_id = ? AND k.status = 'confirmed' AND k.deleted_at IS NULL").bind(sourceKnowledgeItemId, organizationId, projectId).first<{ title: string; body: string }>() : null,
     ]);
     if (sourceVideoId && !analysis) return apiError("ANALYSIS_SOURCE_NOT_FOUND", "未找到可用于生成的关联视频分析。", 409);
-    if (sourceKnowledgeItemId && !knowledge) return apiError("CONFIRMED_KNOWLEDGE_REQUIRED", "只能使用当前项目已确认的品牌知识。", 409);
+    let knowledge: { id: string; title: string; body: string }[] = [];
+    if (!sourceVideoId && sourceKnowledgeItemIds.length) {
+      const placeholders = sourceKnowledgeItemIds.map(() => "?").join(", ");
+      const rows = await db.prepare(`SELECT k.id, k.title, v.body FROM knowledge_items k INNER JOIN knowledge_item_versions v ON v.item_id = k.id AND v.version = k.current_version AND v.organization_id = k.organization_id AND v.project_id = k.project_id WHERE k.id IN (${placeholders}) AND k.organization_id = ? AND k.project_id = ? AND k.status = 'confirmed' AND k.deleted_at IS NULL`).bind(...sourceKnowledgeItemIds, organizationId, projectId).all<{ id: string; title: string; body: string }>();
+      if (rows.results.length !== sourceKnowledgeItemIds.length) return apiError("CONFIRMED_KNOWLEDGE_REQUIRED", "只能使用当前项目已确认的品牌知识。", 409);
+      const byId = new Map(rows.results.map((item) => [item.id, item])); knowledge = sourceKnowledgeItemIds.map((id) => byId.get(id)!);
+    }
+    const perKnowledgeLimit = knowledge.length ? Math.min(5_000, Math.floor(MAX_KNOWLEDGE_CONTEXT_CHARS / knowledge.length)) : 0;
     const context = {
       draft,
       targets,
       activeStrategy: strategy ?? null,
       sourceVideoAnalysis: analysis ? compactAnalysis(analysis.report_json) : null,
-      selectedKnowledge: knowledge ? { title: knowledge.title, body: knowledge.body.slice(0, 5_000) } : null,
+      selectedKnowledge: knowledge.map((item) => ({ id: item.id, title: item.title, body: item.body.slice(0, perKnowledgeLimit) })),
     };
     const inputJson = JSON.stringify(context); const inputHash = await sha256Hex(new TextEncoder().encode(inputJson)); const now = new Date().toISOString();
     modelCallId = crypto.randomUUID();

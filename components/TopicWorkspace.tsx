@@ -11,6 +11,7 @@ type KnowledgeItem = { id: string; title: string; status: string; category: stri
 type GeneratedField = "angle" | "pillar" | "priority" | "audience" | "objective" | "hook" | "rationale";
 
 const sourceLabels: Record<string, string> = { manual: "人工策划", knowledge: "品牌知识", video_analysis: "视频分析", performance: "历史表现", trend: "行业热点", comment: "评论需求" };
+const knowledgeCategoryLabels: Record<string, string> = { brand_story: "品牌故事", founder: "创始人/出镜人", case_study: "成功案例", customer_question: "客户问题", sales_script: "销售话术", high_performing_copy: "优质文案", industry_term: "行业术语", compliance: "合规红线", brand_voice: "品牌语气", client_preference: "修改偏好", other: "其他" };
 const generatedFields: GeneratedField[] = ["angle", "pillar", "priority", "audience", "objective", "hook", "rationale"];
 const generatedFieldLabels: Record<GeneratedField, string> = { angle: "切入角度", pillar: "内容支柱", priority: "优先级", audience: "目标人群", objective: "内容目标", hook: "开场钩子", rationale: "选题理由" };
 async function readError(response: Response) { const body = await response.json().catch(() => null) as { error?: { message?: string } } | null; return body?.error?.message ?? "请求没有完成，请稍后重试。"; }
@@ -20,10 +21,11 @@ export function TopicWorkspace({ initialOrganizationId = "", initialProjectId = 
   const [topics, setTopics] = useState<Topic[]>([]); const [citations, setCitations] = useState<Citation[]>([]); const [knowledge, setKnowledge] = useState<KnowledgeItem[]>([]); const [canWrite, setCanWrite] = useState(false);
   const [loading, setLoading] = useState(true); const [saving, setSaving] = useState(false); const [error, setError] = useState("");
   const [movingTopicId, setMovingTopicId] = useState("");
+  const [selectedKnowledgeIds, setSelectedKnowledgeIds] = useState<string[]>([]);
   const [generatingFields, setGeneratingFields] = useState<GeneratedField[]>([]); const [generationMessage, setGenerationMessage] = useState(""); const topicFormRef = useRef<HTMLFormElement>(null);
 
   const loadWorkspace = useCallback(async (orgId: string, projId: string) => {
-    if (!orgId || !projId) return; const query = `organizationId=${encodeURIComponent(orgId)}&projectId=${encodeURIComponent(projId)}`;
+    setSelectedKnowledgeIds([]); if (!orgId || !projId) return; const query = `organizationId=${encodeURIComponent(orgId)}&projectId=${encodeURIComponent(projId)}`;
     const [topicResponse, knowledgeResponse] = await Promise.all([fetch(`/api/topics?${query}`), fetch(`/api/knowledge?${query}`)]);
     if (!topicResponse.ok) throw new Error(await readError(topicResponse)); if (!knowledgeResponse.ok) throw new Error(await readError(knowledgeResponse));
     const topicBody = await topicResponse.json() as { topics: Topic[]; citations: Citation[]; canWrite: boolean }; const knowledgeBody = await knowledgeResponse.json() as { items: KnowledgeItem[] };
@@ -33,10 +35,10 @@ export function TopicWorkspace({ initialOrganizationId = "", initialProjectId = 
   useEffect(() => { let active = true; (async () => { try { const response = await fetch("/api/organizations"); if (!response.ok) throw new Error(await readError(response)); const body = await response.json() as { organizations: Organization[] }; if (!active) return; setOrganizations(body.organizations); const selected = preferredOrganizationId(body.organizations, initialOrganizationId); setOrganizationId(selected); if (selected) await loadProjects(selected, initialProjectId); } catch (reason) { if (active) setError(reason instanceof Error ? reason.message : "加载失败"); } finally { if (active) setLoading(false); } })(); return () => { active = false; }; }, [initialOrganizationId, initialProjectId, loadProjects]);
 
   async function createTopic(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setSaving(true); setError(""); const formElement = event.currentTarget; const form = new FormData(formElement); const sourceKnowledgeItemId = sourceVideoId ? "" : String(form.get("sourceKnowledgeItemId") || "");
+    event.preventDefault(); setSaving(true); setError(""); const formElement = event.currentTarget; const form = new FormData(formElement); const sourceKnowledgeItemIds = sourceVideoId ? [] : selectedKnowledgeIds;
     const priority = String(form.get("priority") || "").trim();
-    const response = await fetch("/api/topics", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, sourceVideoId, sourceKnowledgeItemId, title: form.get("title"), angle: form.get("angle"), pillar: form.get("pillar"), audience: form.get("audience"), objective: form.get("objective"), hook: form.get("hook"), rationale: form.get("rationale"), priority: priority ? Number(priority) : 50 }) });
-    if (!response.ok) { setError(await readError(response)); setSaving(false); return; } const body = await response.json() as { topic: Topic; citation: Citation | null }; setTopics((current) => [body.topic, ...current]); if (body.citation) setCitations((current) => [{ ...body.citation!, topic_id: body.topic.id }, ...current]); formElement.reset(); setGenerationMessage(""); setSaving(false);
+    const response = await fetch("/api/topics", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, sourceVideoId, sourceKnowledgeItemIds, title: form.get("title"), angle: form.get("angle"), pillar: form.get("pillar"), audience: form.get("audience"), objective: form.get("objective"), hook: form.get("hook"), rationale: form.get("rationale"), priority: priority ? Number(priority) : 50 }) });
+    if (!response.ok) { setError(await readError(response)); setSaving(false); return; } const body = await response.json() as { topic: Topic; citation: Citation | null; citations?: Citation[] }; const createdCitations = body.citations ?? (body.citation ? [body.citation] : []); setTopics((current) => [body.topic, ...current]); if (createdCitations.length) setCitations((current) => [...createdCitations, ...current]); formElement.reset(); setSelectedKnowledgeIds([]); setGenerationMessage(""); setSaving(false);
   }
 
   async function moveTopicToProduction(topic: Topic) {
@@ -62,7 +64,7 @@ export function TopicWorkspace({ initialOrganizationId = "", initialProjectId = 
     setGeneratingFields(targets); setGenerationMessage(""); setError("");
     try {
       const draft = { title, angle: formValue("angle"), pillar: formValue("pillar"), priority: formValue("priority"), audience: formValue("audience"), objective: formValue("objective"), hook: formValue("hook"), rationale: formValue("rationale") };
-      const response = await fetch("/api/topics/generate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, sourceVideoId, sourceKnowledgeItemId: sourceVideoId ? "" : formValue("sourceKnowledgeItemId"), draft, targets }) });
+      const response = await fetch("/api/topics/generate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, sourceVideoId, sourceKnowledgeItemIds: sourceVideoId ? [] : selectedKnowledgeIds, draft, targets }) });
       if (!response.ok) throw new Error(await readError(response));
       const body = await response.json() as { generated: Partial<Record<GeneratedField, string | number>> };
       for (const field of targets) {
@@ -85,6 +87,12 @@ export function TopicWorkspace({ initialOrganizationId = "", initialProjectId = 
     return <button type="button" disabled={busy || saving} onClick={() => void generateTopicFields([field])}>{generatingFields.includes(field) ? "生成中…" : "单独生成"}</button>;
   }
 
+  function toggleKnowledge(itemId: string) {
+    if (selectedKnowledgeIds.includes(itemId)) { setSelectedKnowledgeIds((current) => current.filter((id) => id !== itemId)); return; }
+    if (selectedKnowledgeIds.length >= 20) { setError("一次最多引用 20 条品牌知识。"); return; }
+    setError(""); setSelectedKnowledgeIds((current) => [...current, itemId]);
+  }
+
   if (loading) return <div className="management-state" role="status">正在载入选题中心…</div>;
   if (error && organizations.length === 0) return <div className="management-state error-state"><strong>暂时无法进入选题中心</strong><p>{error}</p><small>请确认本地身份已启用，并先创建公司与客户项目。</small></div>;
   if (!organizationId || !projectId) return <div className="empty-panel"><span aria-hidden="true">◇</span><h2>请先创建客户项目</h2><p>选题必须归属于明确的客户项目。</p></div>;
@@ -95,7 +103,7 @@ export function TopicWorkspace({ initialOrganizationId = "", initialProjectId = 
         {sourceVideoId && <div className="source-banner"><strong>已关联分析结果</strong><span>创建时会由服务端确认该视频属于当前项目。</span></div>}
         <form ref={topicFormRef} className="stack-form" onSubmit={createTopic}>
           <label><span className="topic-field-heading"><span>选题标题</span><em className="topic-required-note">必填</em></span><input name="title" required minLength={2} maxLength={160} placeholder="明确讲什么，而不是宽泛关键词" /></label>
-          {!sourceVideoId && <label>引用品牌知识<select name="sourceKnowledgeItemId" defaultValue=""><option value="">不引用</option>{knowledge.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label>}
+          {!sourceVideoId && <fieldset className="topic-knowledge-picker"><legend><span>引用品牌知识</span><em>可多选 · 已选 {selectedKnowledgeIds.length} 条</em></legend><div className="topic-knowledge-actions"><span>选中的知识会参与 AI 补全并随选题进入内容生产</span><div><button type="button" disabled={!knowledge.length || selectedKnowledgeIds.length === Math.min(knowledge.length, 20)} onClick={() => { setError(""); setSelectedKnowledgeIds(knowledge.slice(0, 20).map((item) => item.id)); }}>全选</button><button type="button" disabled={!selectedKnowledgeIds.length} onClick={() => setSelectedKnowledgeIds([])}>清空</button></div></div>{knowledge.length ? <div className="topic-knowledge-options">{knowledge.map((item) => <label className="topic-knowledge-option" key={item.id}><input type="checkbox" name="sourceKnowledgeItemIds" value={item.id} checked={selectedKnowledgeIds.includes(item.id)} onChange={() => toggleKnowledge(item.id)} /><span><strong>{item.title}</strong><small>{knowledgeCategoryLabels[item.category] || item.category}</small></span></label>)}</div> : <p className="topic-knowledge-empty">还没有已确认的品牌知识。</p>}</fieldset>}
           <div className="topic-ai-toolbar"><div><strong>AI 智能补全</strong><span>只填写空白项，不覆盖你已经输入的内容</span></div><button type="button" disabled={generatingFields.length > 0 || saving} onClick={generateEmptyTopicFields}>{generatingFields.length > 1 ? `正在补全 ${generatingFields.length} 项…` : "一键补全空白内容"}</button></div>
           {generationMessage && <p className="topic-generation-message" role="status">{generationMessage}</p>}
           <label><span className="topic-field-heading"><span>切入角度</span>{fieldGenerateButton("angle")}</span><textarea name="angle" rows={3} maxLength={2000} /></label>
