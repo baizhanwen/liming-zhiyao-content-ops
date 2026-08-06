@@ -10,10 +10,10 @@ LOCAL_DEV_USER_NAME=本地管理员
 ANALYZER_SERVICE_TOKEN=local-change-me-before-using-analyzer
 ANALYZER_BASE_URL=http://127.0.0.1:3000
 ANALYZER_WORKER_ID=analyzer-01
-# Read fresh Douyin cookies from this browser on the analyzer host.
-# Optional profile syntax: edge:Default. Leave empty when only using uploads.
+# Browser fallback. Chromium browsers on Windows may block direct decryption.
+# Optional profile syntax: edge:Default. Firefox is the reliable direct option.
 ANALYZER_YTDLP_COOKIES_FROM_BROWSER=edge
-# Local Douyin-only snapshot. Run refresh-douyin-cookies.bat to create it.
+# Preferred on Windows: import a Douyin-only Netscape file with the refresh script.
 ANALYZER_YTDLP_COOKIE_FILE=.local/douyin-cookies.txt
 
 # Optional OpenAI-compatible generation/analysis provider.

@@ -56,7 +56,7 @@
 - 视频分析页会显示服务凭证、模型配置和 Worker 最近心跳，便于区分“任务处理中”和“服务尚未启动”；
 - 本地视频支持一次选择多个文件，系统会逐个上传并保留每个文件的成功或失败结果；
 - 分析详情允许有写权限的成员校正转写、保存新版本，并可基于校正版重新生成结构分析；重新分析会跳过 ASR，但仍会重新提取画面和生成报告。
-- 抖音链接使用本机 Cookie 快照：先在 Edge 打开一次抖音，再双击 `refresh-douyin-cookies.bat`，按提示完全关闭 Edge 并生成快照；完成后解析期间可以一直打开 Edge。快照只保留抖音域名 Cookie，位于被 Git 忽略的 `.local/`，不会上传或写入数据库。Cookie 失效时重新刷新即可；平台限制变化时，本地文件上传仍是稳定入口。
+- 抖音链接使用本机 Cookie 快照。Windows 新版 Edge 的 Cookie 受应用绑定加密保护，不能由 yt-dlp 直接解密；请安装 yt-dlp 官方文档推荐的 `Get cookies.txt LOCALLY` 扩展，在抖音页导出 Netscape 格式文件，再双击 `refresh-douyin-cookies.bat` 选择该文件。脚本只保留抖音域名 Cookie 到被 Git 忽略的 `.local/`，不会上传或写入数据库；导入成功后请删除下载目录中的原始导出文件。解析期间可以一直打开 Edge，Cookie 失效时重新导出即可。
 
 1. 双击 `setup-analyzer.bat` 安装体积较大的媒体依赖；
 2. 编辑 `.dev.vars`，填写 `ANALYZER_LLM_*`；如需内容生成，同时填写 `CONTENT_MODEL_*`；

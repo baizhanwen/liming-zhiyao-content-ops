@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 
-echo [Liming Zhiyao] Refreshing the local Douyin cookie snapshot...
+echo [Liming Zhiyao] Importing a Douyin cookie snapshot exported from Edge...
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\refresh-douyin-cookies.ps1"
 if errorlevel 1 (
   echo [ERROR] Cookie refresh failed. Review the message above.

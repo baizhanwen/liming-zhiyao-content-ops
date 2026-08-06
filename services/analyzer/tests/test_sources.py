@@ -3,7 +3,11 @@ import unittest
 from http.cookiejar import Cookie
 from pathlib import Path
 
-from liming_analyzer.cookie_snapshot import is_douyin_cookie, snapshot_browser_cookies
+from liming_analyzer.cookie_snapshot import (
+    import_cookie_file,
+    is_douyin_cookie,
+    snapshot_browser_cookies,
+)
 from liming_analyzer.sources import (
     YtDlpPublicVideoResolver,
     is_allowed_douyin_url,
@@ -80,6 +84,22 @@ class SourceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "cookies.txt"
             count = snapshot_browser_cookies("edge", output, SnapshotDownloader)
+            contents = output.read_text(encoding="utf-8")
+        self.assertEqual(count, 1)
+        self.assertIn("sessionid", contents)
+        self.assertNotIn("unrelated", contents)
+
+    def test_cookie_file_import_keeps_only_douyin_domains(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "exported.txt"
+            output = Path(directory) / "snapshot.txt"
+            source.write_text(
+                "# Netscape HTTP Cookie File\n"
+                ".douyin.com\tTRUE\t/\tTRUE\t0\tsessionid\tvalue\n"
+                ".example.com\tTRUE\t/\tTRUE\t0\tunrelated\tvalue\n",
+                encoding="utf-8",
+            )
+            count = import_cookie_file(source, output)
             contents = output.read_text(encoding="utf-8")
         self.assertEqual(count, 1)
         self.assertIn("sessionid", contents)
