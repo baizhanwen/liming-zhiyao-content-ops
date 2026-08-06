@@ -219,6 +219,27 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(meta["actual_output_tokens"], 180)
         self.assertEqual(meta["actual_total_tokens"], 900)
 
+    def test_analysis_profiles_apply_distinct_token_budgets(self):
+        transcript = TranscriptOutput(
+            "zh-CN", (TranscriptSegment(100, 900, FakeReport().model_dump()["evidence"][0]["text"], 94),), 94
+        )
+        analyzer = InstructorStructureAnalyzer(
+            api_key="", base_url="https://example.invalid/v1", model="fixture", provider="test",
+            client=FakeClient(), report_model=object,
+        )
+        media = NormalizedMedia(Path("video.mp4"), None, MediaInfo(6000, 1080, 1920, "h264", "aac"))
+        economy = analyzer.analyze(
+            ClaimedJob("job-1", "org", "project", "video", "upload", "analyzing", 84, 4, {}, analysis_profile="economy"),
+            media, transcript, VisualOutput(),
+        )
+        deep = analyzer.analyze(
+            ClaimedJob("job-2", "org", "project", "video", "upload", "analyzing", 84, 4, {}, analysis_profile="deep"),
+            media, transcript, VisualOutput(),
+        )
+        self.assertEqual(economy.report["analysis_meta"]["maximum_source_tokens"], 8_000)
+        self.assertEqual(deep.report["analysis_meta"]["maximum_source_tokens"], 32_000)
+        self.assertEqual(deep.schema_version, "analysis.v3")
+
     def test_public_resolver_returns_metadata_and_metrics(self):
         captured = {}
 

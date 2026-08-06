@@ -3,6 +3,7 @@ import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess } from "../.
 import { apiError, errorResponse } from "../../../../../lib/api-response";
 import { checkOrganizationQuota } from "../../../../../lib/operations";
 import { readRequestIdentity } from "../../../../../lib/request-auth";
+import { normalizeAnalysisProfile } from "../../../../../lib/analysis-profile";
 
 const segmentSchema = z.object({
   startMs: z.number().int().min(0).max(86_400_000),
@@ -49,12 +50,14 @@ export async function POST(request: Request, context: { params: Promise<{ videoI
     if (reanalyze) {
       const sourceRef = video.source_type === "upload" ? video.media_asset_id : video.source_url;
       if (!sourceRef) return apiError("SOURCE_UNAVAILABLE", "原始媒体来源不存在，无法重新分析。", 409);
+      const previousJob = await db.prepare("SELECT analysis_profile FROM analysis_jobs WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY created_at DESC LIMIT 1").bind(organizationId, projectId, videoId).first<{ analysis_profile: string }>();
+      const analysisProfile = normalizeAnalysisProfile(previousJob?.analysis_profile);
       const jobId = crypto.randomUUID();
       statements.push(
-        db.prepare("INSERT INTO analysis_jobs (id, organization_id, project_id, video_id, input_transcript_id, source_type, source_ref, idempotency_key, status, progress, current_stage, retry_count, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, '等待使用人工校正版重新分析', 0, ?, ?, ?, ?)").bind(jobId, organizationId, projectId, videoId, transcriptId, video.source_type, sourceRef, `manual:${transcriptId}`, user.id, user.id, now, now),
+        db.prepare("INSERT INTO analysis_jobs (id, organization_id, project_id, video_id, input_transcript_id, source_type, source_ref, idempotency_key, status, analysis_profile, progress, current_stage, retry_count, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 0, '等待使用人工校正版重新分析', 0, ?, ?, ?, ?)").bind(jobId, organizationId, projectId, videoId, transcriptId, video.source_type, sourceRef, `manual:${transcriptId}`, analysisProfile, user.id, user.id, now, now),
         db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'analysis_job.manual_reanalysis_created', 'analysis_job', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, jobId, JSON.stringify({ videoId, transcriptId, transcriptVersion: version }), now),
       );
-      job = { id: jobId, video_id: videoId, status: "pending", progress: 0, current_stage: "等待使用人工校正版重新分析", retry_count: 0, created_at: now, updated_at: now };
+      job = { id: jobId, video_id: videoId, status: "pending", analysis_profile: analysisProfile, progress: 0, current_stage: "等待使用人工校正版重新分析", retry_count: 0, created_at: now, updated_at: now };
     }
     await db.batch(statements);
     return Response.json({ transcript: { id: transcriptId, version, language, source: "manual", full_text: fullText, segments, confidence: null, created_at: now, updated_at: now }, job }, { status: 201 });

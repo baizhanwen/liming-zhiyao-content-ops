@@ -305,8 +305,8 @@ class InstructorStructureAnalyzer:
         base_url: str,
         model: str,
         provider: str,
-        prompt_version: str = "video-analysis.v2",
-        max_source_tokens: int = 18_000,
+        prompt_version: str = "video-analysis.v3",
+        max_source_tokens: int = 32_000,
         window_tokens: int = 6_000,
         client: Any | None = None,
         report_model: Any | None = None,
@@ -380,9 +380,12 @@ class InstructorStructureAnalyzer:
         transcript_rows = _deduplicate_rows(raw_transcript_rows)
         visual_rows = _deduplicate_rows(raw_visual_rows)
         original_tokens = sum(_row_tokens(row) for row in transcript_rows + visual_rows)
-        visual_budget = min(3_000, max(1_000, self.max_source_tokens // 5))
+        profile = job.analysis_profile if job.analysis_profile in {"economy", "standard", "deep"} else "standard"
+        profile_budget = {"economy": 8_000, "standard": 18_000, "deep": 32_000}[profile]
+        effective_source_tokens = min(self.max_source_tokens, profile_budget)
+        visual_budget = min(3_000, max(1_000, effective_source_tokens // 5))
         selected_visuals = _select_evenly(visual_rows, visual_budget)
-        transcript_budget = max(1_000, self.max_source_tokens - sum(_row_tokens(row) for row in selected_visuals))
+        transcript_budget = max(1_000, effective_source_tokens - sum(_row_tokens(row) for row in selected_visuals))
         selected_transcript = _select_evenly(transcript_rows, transcript_budget)
         windows = _chunk_rows(selected_transcript, self.window_tokens)
         selected_tokens = sum(_row_tokens(row) for row in selected_transcript + selected_visuals)
@@ -414,7 +417,7 @@ class InstructorStructureAnalyzer:
                             "input_budget": {
                                 "estimated_source_tokens": original_tokens,
                                 "estimated_model_input_tokens": selected_tokens + 1_200,
-                                "maximum_source_tokens": self.max_source_tokens,
+                                "maximum_source_tokens": effective_source_tokens,
                                 "coverage_percent": 100 if original_tokens == 0 else round(selected_tokens / original_tokens * 100),
                             },
                         }
@@ -443,7 +446,8 @@ class InstructorStructureAnalyzer:
             "mode": "full" if selected_tokens >= original_tokens else "budgeted",
             "estimated_source_tokens": original_tokens,
             "estimated_model_input_tokens": selected_tokens + 1_200,
-            "maximum_source_tokens": self.max_source_tokens,
+            "maximum_source_tokens": effective_source_tokens,
+            "analysis_profile": profile,
             "source_segments": len(raw_transcript_rows),
             "analyzed_segments": len(selected_transcript),
             "deduplicated_segments": len(transcript_rows),
@@ -463,7 +467,7 @@ class InstructorStructureAnalyzer:
                     "actual_total_tokens": total_tokens,
                 })
         return StructureOutput(
-            "analysis.v2",
+            "analysis.v3",
             report,
             _confidence(confidence),
             self.provider,

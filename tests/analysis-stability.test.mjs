@@ -79,3 +79,28 @@ test("long analysis reports can be searched, navigated and exported locally", as
   assert.match(styles, /transcript-search/);
   assert.match(styles, /report-heading-actions/);
 });
+
+test("analysis quality profiles persist from submission through worker budgets", async () => {
+  const [schema, migration, profiles, fromUrl, upload, claim, reanalyze, workspace, provider] = await Promise.all([
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0013_analysis_profiles.sql", import.meta.url), "utf8"),
+    readFile(new URL("../lib/analysis-profile.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/videos/from-url/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/videos/upload/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/internal/analysis-jobs/claim/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/videos/[videoId]/reanalyze/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../components/AnalysisWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../services/analyzer/liming_analyzer/providers.py", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(schema, /analysisProfile: text\("analysis_profile"/);
+  assert.match(migration, /ADD `analysis_profile`/);
+  assert.match(profiles, /economy.*standard.*deep/);
+  assert.match(fromUrl, /normalizeAnalysisProfile/);
+  assert.match(upload, /analysisProfile/);
+  assert.match(claim, /analysis_profile/);
+  assert.match(reanalyze, /reanalysis_created/);
+  assert.match(workspace, /profileHints/);
+  assert.match(provider, /8_000/);
+  assert.match(provider, /32_000/);
+});

@@ -31,6 +31,17 @@ class ApiClientTests(unittest.TestCase):
         self.assertIsNone(client.claim())
         self.assertEqual(transport.requests[0][2]["Authorization"], "Bearer secret")
 
+    def test_claim_preserves_analysis_profile(self):
+        transport = FakeTransport([(200, {"job": {
+            "id": "job-1", "organization_id": "org-1", "project_id": "project-1", "video_id": "video-1",
+            "source_type": "url", "status": "queued", "progress": 1, "version": 2, "source": {},
+            "analysis_profile": "deep",
+        }})])
+        client = AnalyzerApiClient("https://example.test", "secret", "worker-01", transport)
+        job = client.claim()
+        self.assertIsNotNone(job)
+        self.assertEqual(job.analysis_profile, "deep")
+
     def test_heartbeat_carries_version_and_returns_next_version(self):
         transport = FakeTransport([(200, {"job": {"status": "processing", "progress": 20, "version": 4}})])
         client = AnalyzerApiClient("https://example.test", "secret", "worker-01", transport)

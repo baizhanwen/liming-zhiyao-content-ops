@@ -13,9 +13,11 @@ type Asset = { id: string; kind: "keyframe" | "subtitle" | "report"; filename: s
 type DetailResponse = { video: Video; job: Job | null; transcript: Transcript | null; analysis: Analysis | null; metrics: Metric[]; assets: Asset[]; events: EventRow[]; canWrite: boolean };
 type Segment = { startMs: number; endMs: number; text: string };
 type Evidence = { startMs: number | null; text: string; source: string; confidence: number | null };
+type AnalysisProfile = "economy" | "standard" | "deep";
 
 const sectionNames: Record<string, string> = { summary: "核心结论", hook: "开场钩子", structure: "内容结构", audience: "目标受众", visual: "画面表达", visuals: "画面表达", language: "语言与节奏", highlights: "有效亮点", risks: "风险与缺口", recommendations: "复用建议", evidence: "证据" };
 const reportSectionOrder = ["summary", "hook", "audience", "structure", "highlights", "recommendations", "visual", "visuals", "language", "risks"];
+const analysisProfileNames: Record<string, string> = { economy: "经济模式", standard: "标准模式", deep: "深度模式" };
 const eventNames: Record<string, string> = { claimed: "任务已领取", heartbeat: "任务心跳", stage_changed: "阶段推进", completed: "分析完成", failed: "分析失败", lease_expired: "租约过期" };
 
 async function readError(response: Response) { const body = await response.json().catch(() => null) as { error?: { message?: string } } | null; return body?.error?.message ?? "分析结果暂时无法读取。"; }
@@ -78,6 +80,7 @@ export function AnalysisDetail({ videoId, organizationId, projectId }: { videoId
   const [detail, setDetail] = useState<DetailResponse | null>(null); const [loading, setLoading] = useState(true); const [error, setError] = useState("");
   const [editingTranscript, setEditingTranscript] = useState(false); const [savingTranscript, setSavingTranscript] = useState(false); const [draftSegments, setDraftSegments] = useState<Segment[]>([]); const [editMessage, setEditMessage] = useState("");
   const [copyMessage, setCopyMessage] = useState(""); const [transcriptQuery, setTranscriptQuery] = useState("");
+  const [reanalyzeProfile, setReanalyzeProfile] = useState<AnalysisProfile>("standard"); const [reanalyzing, setReanalyzing] = useState(false);
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
   const requestUrl = useMemo(() => `/api/videos/${encodeURIComponent(videoId)}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`, [organizationId, projectId, videoId]);
   const load = useCallback(async () => {
@@ -128,6 +131,15 @@ export function AnalysisDetail({ videoId, organizationId, projectId }: { videoId
     const title = detail?.video.title || detail?.video.filename || "视频分析";
     downloadText(`${safeFilename(title)}-时间轴字幕.vtt`, transcriptVtt, "text/vtt"); setEditMessage("时间轴字幕已下载到浏览器下载目录。" );
   }
+  async function reanalyze() {
+    setReanalyzing(true); setCopyMessage("");
+    try {
+      const response = await fetch(`/api/videos/${encodeURIComponent(videoId)}/reanalyze`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, analysisProfile: reanalyzeProfile }) });
+      if (!response.ok) { setCopyMessage(await readError(response)); return; }
+      setCopyMessage(`${analysisProfileNames[reanalyzeProfile]}任务已创建，可返回视频分析页查看进度。`);
+    } catch (reason) { setCopyMessage(reason instanceof Error ? reason.message : "重新分析任务没有创建成功。"); }
+    finally { setReanalyzing(false); }
+  }
   function startTranscriptEdit() {
     if (!detail?.transcript) return;
     setDraftSegments(segments.length ? segments : [{ startMs: 0, endMs: Math.max(500, (detail.video.duration_sec ?? 1) * 1000), text: detail.transcript.full_text }]);
@@ -170,7 +182,8 @@ export function AnalysisDetail({ videoId, organizationId, projectId }: { videoId
 
       <article className="panel report-panel" id="analysis-report"><div className="panel-heading"><div><p className="section-kicker">结构化分析与证据</p><h2>{detail.analysis ? `报告 ${detail.analysis.schema_version}` : "尚未生成结构化报告"}</h2></div>{detail.analysis && <div className="report-heading-actions"><span className="confidence-chip">整体置信度 {detail.analysis.confidence ?? "—"}</span><button type="button" onClick={copyReport}>复制报告</button><button type="button" onClick={exportMarkdown}>导出 Markdown</button></div>}</div>
         {copyMessage && <p className="report-copy-message" role="status">{copyMessage}</p>}
-        {analysisMeta && <div className="analysis-cost-summary"><div><small>{typeof analysisMeta.actual_total_tokens === "number" ? "实际模型消耗" : "模型输入预估"}</small><strong>{numberLabel(typeof analysisMeta.actual_total_tokens === "number" ? analysisMeta.actual_total_tokens : typeof analysisMeta.estimated_model_input_tokens === "number" ? analysisMeta.estimated_model_input_tokens : null)} Token</strong>{typeof analysisMeta.actual_total_tokens === "number" && <span>输入 {numberLabel(typeof analysisMeta.actual_input_tokens === "number" ? analysisMeta.actual_input_tokens : null)} · 输出 {numberLabel(typeof analysisMeta.actual_output_tokens === "number" ? analysisMeta.actual_output_tokens : null)}</span>}</div><div><small>分析覆盖率</small><strong>{typeof analysisMeta.coverage_percent === "number" ? `${analysisMeta.coverage_percent}%` : "—"}</strong>{typeof analysisMeta.analyzed_segments === "number" && typeof analysisMeta.source_segments === "number" && <span>{analysisMeta.analyzed_segments} / {analysisMeta.source_segments} 个片段</span>}</div><div><small>长视频分段</small><strong>{typeof analysisMeta.chunk_count === "number" ? `${analysisMeta.chunk_count} 段` : "—"}</strong></div><div><small>预算策略</small><strong>{analysisMeta.mode === "budgeted" ? "预算内抽样" : "完整分析"}</strong></div></div>}
+        {analysisMeta && <div className="analysis-cost-summary"><div><small>{typeof analysisMeta.actual_total_tokens === "number" ? "实际模型消耗" : "模型输入预估"}</small><strong>{numberLabel(typeof analysisMeta.actual_total_tokens === "number" ? analysisMeta.actual_total_tokens : typeof analysisMeta.estimated_model_input_tokens === "number" ? analysisMeta.estimated_model_input_tokens : null)} Token</strong>{typeof analysisMeta.actual_total_tokens === "number" && <span>输入 {numberLabel(typeof analysisMeta.actual_input_tokens === "number" ? analysisMeta.actual_input_tokens : null)} · 输出 {numberLabel(typeof analysisMeta.actual_output_tokens === "number" ? analysisMeta.actual_output_tokens : null)}</span>}</div><div><small>分析覆盖率</small><strong>{typeof analysisMeta.coverage_percent === "number" ? `${analysisMeta.coverage_percent}%` : "—"}</strong>{typeof analysisMeta.analyzed_segments === "number" && typeof analysisMeta.source_segments === "number" && <span>{analysisMeta.analyzed_segments} / {analysisMeta.source_segments} 个片段</span>}</div><div><small>长视频分段</small><strong>{typeof analysisMeta.chunk_count === "number" ? `${analysisMeta.chunk_count} 段` : "—"}</strong></div><div><small>预算策略</small><strong>{analysisMeta.mode === "budgeted" ? "预算内抽样" : "完整分析"}</strong><span>{analysisProfileNames[String(analysisMeta.analysis_profile)] || "标准模式"}{typeof analysisMeta.maximum_source_tokens === "number" ? ` · 上限 ${numberLabel(analysisMeta.maximum_source_tokens)}` : ""}</span></div></div>}
+        {detail.canWrite && !detail.video.is_shared_reference && <div className="analysis-rerun-bar"><div><strong>按不同深度重新分析</strong><span>保留原视频；有人工校正版时优先沿用校正版。</span></div><select aria-label="重新分析模式" value={reanalyzeProfile} onChange={(event) => setReanalyzeProfile(event.target.value as AnalysisProfile)}><option value="economy">经济 · 约 8k</option><option value="standard">标准 · 约 18k</option><option value="deep">深度 · 约 32k</option></select><button type="button" disabled={reanalyzing} onClick={reanalyze}>{reanalyzing ? "正在创建…" : "重新分析"}</button></div>}
         {reportSections.length > 0 ? <div className="report-sections">{reportSections.map(([key, value]) => <section className={key === "summary" || key === "recommendations" ? "report-section-wide" : undefined} key={key}><h3>{sectionNames[key] ?? key}</h3><p>{renderValue(value, key)}</p></section>)}</div> : <div className="list-empty">分析服务完成结构化输出后，结论、证据与复用建议会显示在这里。</div>}
         {evidence.length > 0 && <div className="evidence-list"><h3>结论证据</h3>{evidence.map((item, index) => <button type="button" key={`${item.startMs}-${index}`} onClick={() => item.startMs !== null && seek(item.startMs)} disabled={item.startMs === null || !detail.video.media_url}><span>{item.startMs === null ? "证据" : timeLabel(item.startMs)}</span><strong>{item.text}</strong><small>{item.source} · 置信度 {item.confidence ?? "—"}</small></button>)}</div>}
         {detail.analysis && <footer className="report-provenance"><span>模型：{[detail.analysis.model_provider, detail.analysis.model_name].filter(Boolean).join(" / ") || "规则与适配器"}</span><span>提示词版本：{detail.analysis.prompt_version || "—"}</span><span>生成：{dateLabel(detail.analysis.created_at)}</span>{detail.video.is_shared_reference ? <span>共享素材 · 原分析只读</span> : <Link href={`/topics?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}&sourceVideoId=${encodeURIComponent(videoId)}`}>从此分析创建选题 →</Link>}</footer>}

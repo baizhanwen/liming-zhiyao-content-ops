@@ -34,6 +34,7 @@ class ClaimedJob:
     progress: int
     version: int
     source: Mapping[str, Any]
+    analysis_profile: str = "standard"
 
 
 @dataclass(frozen=True)
@@ -104,6 +105,7 @@ class AnalyzerApiClient:
             id=str(job["id"]), organization_id=str(job["organization_id"]), project_id=str(job["project_id"]),
             video_id=str(job["video_id"]), source_type=str(job["source_type"]), status=str(job["status"]),
             progress=int(job["progress"]), version=int(job["version"]), source=job["source"],
+            analysis_profile=str(job.get("analysis_profile") or "standard"),
         )
 
     def heartbeat(self, job: ClaimedJob, status: str, progress: int, stage: str, lease_seconds: int = 300) -> ClaimedJob:

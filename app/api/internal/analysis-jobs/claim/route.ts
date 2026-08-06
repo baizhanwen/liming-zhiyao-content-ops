@@ -3,7 +3,7 @@ import { apiError, errorResponse } from "../../../../../lib/api-response";
 import { normalizeLeaseSeconds, normalizeWorkerId, requireAnalyzerService } from "../../../../../lib/service-auth";
 import type { WorkerJobRow } from "../../../../../lib/analysis-worker";
 
-type ClaimedJob = WorkerJobRow & { source_type: "url" | "upload"; source_ref: string; input_transcript_id: string | null };
+type ClaimedJob = WorkerJobRow & { source_type: "url" | "upload"; source_ref: string; input_transcript_id: string | null; analysis_profile: "economy" | "standard" | "deep" };
 type JobSource = { source_url: string | null; media_asset_id: string | null; r2_key: string | null; content_type: string | null; filename: string | null; size_bytes: number | null; sha256: string | null; transcript_id: string | null; transcript_version: number | null; transcript_language: string | null; transcript_segments_json: string | null };
 
 export const dynamic = "force-dynamic";
@@ -37,7 +37,7 @@ export async function POST(request: Request) {
         ORDER BY CASE WHEN j.status = 'pending' THEN 0 ELSE 1 END, j.created_at ASC
         LIMIT 1
       )
-      RETURNING id, organization_id, project_id, video_id, input_transcript_id, source_type, source_ref, status, progress, current_stage,
+      RETURNING id, organization_id, project_id, video_id, input_transcript_id, source_type, source_ref, analysis_profile, status, progress, current_stage,
         lease_owner, lease_expires_at, attempt_count, version, result_key
     `).bind(workerId, leaseExpiresAt, nowIso, actor, nowIso, nowIso).first<ClaimedJob>();
     if (!job) return new Response(null, { status: 204 });
