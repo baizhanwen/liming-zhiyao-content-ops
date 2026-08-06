@@ -43,20 +43,22 @@ export async function GET(request: Request, context: { params: Promise<{ videoId
     if (!libraryEntryId) {
       libraryEntryId = (await db.prepare("SELECT id FROM video_library_entries WHERE organization_id = ? AND source_video_id = ? LIMIT 1").bind(organizationId, videoId).first<{ id: string }>())?.id ?? null;
     }
-    const [job, transcript, analysis, metrics, events, assets] = await Promise.all([
+    const [job, transcript, analyses, metrics, events, assets] = await Promise.all([
       db.prepare("SELECT id, status, progress, current_stage, error_code, error_message, retry_count, created_at, updated_at, completed_at FROM analysis_jobs WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY created_at DESC LIMIT 1").bind(organizationId, sourceProjectId, videoId).first<Record<string, unknown>>(),
       db.prepare("SELECT id, version, language, source, full_text, segments_json, confidence, created_at, updated_at FROM video_transcripts WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY version DESC LIMIT 1").bind(organizationId, sourceProjectId, videoId).first<{ segments_json: string } & Record<string, unknown>>(),
-      db.prepare("SELECT id, schema_version, report_json, confidence, model_provider, model_name, prompt_version, created_at FROM video_analyses WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY created_at DESC LIMIT 1").bind(organizationId, sourceProjectId, videoId).first<{ report_json: string } & Record<string, unknown>>(),
+      db.prepare("SELECT id, schema_version, report_json, confidence, model_provider, model_name, prompt_version, created_at FROM video_analyses WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY created_at DESC LIMIT 8").bind(organizationId, sourceProjectId, videoId).all<{ report_json: string } & Record<string, unknown>>(),
       db.prepare("SELECT source, plays, likes, comments, favorites, shares, followers_gained, collected_at FROM video_metric_snapshots WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY collected_at DESC LIMIT 10").bind(organizationId, sourceProjectId, videoId).all(),
       db.prepare("SELECT event_type, from_status, to_status, progress, details_json, created_at FROM analysis_job_events WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY created_at DESC LIMIT 50").bind(organizationId, sourceProjectId, videoId).all(),
       db.prepare("SELECT id, kind, filename, content_type, size_bytes, created_at FROM media_assets WHERE organization_id = ? AND project_id = ? AND video_id = ? AND kind IN ('keyframe', 'subtitle', 'report') AND status = 'active' ORDER BY created_at ASC").bind(organizationId, sourceProjectId, videoId).all(),
     ]);
     const libraryQuery = `organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`;
+    const analysisVersions = analyses.results.map((analysis) => ({ ...analysis, report: parseStoredJson(analysis.report_json), report_json: undefined }));
     return Response.json({
       video: { ...video, is_shared_reference: sharedReference, library_entry_id: libraryEntryId, media_url: video.source_type === "upload" ? (sharedReference && libraryEntryId ? `/api/video-library/${libraryEntryId}/media?${libraryQuery}` : `/api/videos/${videoId}/media?${libraryQuery}`) : null },
       job: job ?? null,
       transcript: transcript ? { ...transcript, segments: parseStoredJson(transcript.segments_json), segments_json: undefined } : null,
-      analysis: analysis ? { ...analysis, report: parseStoredJson(analysis.report_json), report_json: undefined } : null,
+      analysis: analysisVersions[0] ?? null,
+      analyses: analysisVersions,
       metrics: metrics.results,
       assets: assets.results.map((asset) => ({ ...asset, url: sharedReference && libraryEntryId ? `/api/video-library/${libraryEntryId}/assets/${asset.id}?${libraryQuery}` : `/api/videos/${videoId}/assets/${asset.id}?${libraryQuery}` })),
       events: events.results.map((event) => ({ ...event, details: parseStoredJson(typeof event.details_json === "string" ? event.details_json : null), details_json: undefined })),

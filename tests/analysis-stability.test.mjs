@@ -173,16 +173,20 @@ test("analysis reports produce a reusable spoken script and specialist operating
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(provider, /video-analysis\.v4/);
+  assert.match(provider, /video-analysis\.v5/);
   assert.match(provider, /spoken_script/);
   assert.match(provider, /hook_analysis/);
   assert.match(provider, /viral_points/);
   assert.match(provider, /rhythm_analysis/);
   assert.match(provider, /emotion_curve/);
   assert.match(provider, /conversion_design/);
+  assert.match(provider, /insight_evidence/);
   assert.match(provider, /SegmentReport/);
   assert.match(detail, /copySpokenScript/);
   assert.match(detail, /整理后的口播稿/);
   assert.match(detail, /传播爆点/);
+  assert.match(detail, /analysis-comparison-panel/);
+  assert.match(detail, /linked-insight-list/);
   assert.match(styles, /spoken-script-panel/);
+  assert.match(styles, /analysis-comparison-panel/);
 });

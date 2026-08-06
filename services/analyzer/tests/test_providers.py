@@ -69,6 +69,7 @@ class FakeReport:
             "rhythm_analysis": ["开场快，方法部分逐步展开。"],
             "emotion_curve": ["从问题压力推进到解决希望。"],
             "conversion_design": ["结尾用明确行动建议完成转化。"],
+            "insight_evidence": [{"section": "hook_analysis", "item_index": 0, "evidence_text": "先说问题"}],
             "visual": ["大字标题"],
             "language": ["短句"],
             "highlights": ["开场直接"],
@@ -208,6 +209,7 @@ class ProviderTests(unittest.TestCase):
         media = NormalizedMedia(Path("video.mp4"), None, MediaInfo(6000, 1080, 1920, "h264", "aac"))
         result = analyzer.analyze(job, media, transcript, visual)
         self.assertEqual(result.report["evidence"][0]["text"], "先说问题")
+        self.assertEqual(result.report["insight_evidence"][0]["section"], "hook_analysis")
         self.assertEqual(result.confidence, 90)
 
     def test_deepseek_structured_analysis_disables_thinking_mode(self):
@@ -284,7 +286,7 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(deep.report["analysis_meta"]["maximum_source_tokens"], 32_000)
         self.assertEqual(deep.report["analysis_meta"]["maximum_output_tokens"], 6_000)
         self.assertEqual(FakeCompletions.last_kwargs["max_tokens"], 6_000)
-        self.assertEqual(deep.schema_version, "analysis.v4")
+        self.assertEqual(deep.schema_version, "analysis.v5")
 
     def test_public_resolver_returns_metadata_and_metrics(self):
         captured = {}

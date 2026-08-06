@@ -328,7 +328,7 @@ class InstructorStructureAnalyzer:
         base_url: str,
         model: str,
         provider: str,
-        prompt_version: str = "video-analysis.v4",
+        prompt_version: str = "video-analysis.v5",
         max_source_tokens: int = 32_000,
         max_output_tokens: int = 6_000,
         window_tokens: int = 6_000,
@@ -352,6 +352,12 @@ class InstructorStructureAnalyzer:
                 source: str = Field(min_length=1, max_length=80)
                 confidence: int | None = Field(default=None, ge=0, le=100)
 
+            class InsightEvidenceLink(BaseModel):
+                model_config = ConfigDict(extra="forbid")
+                section: str = Field(min_length=1, max_length=40)
+                item_index: int = Field(ge=0, le=29)
+                evidence_text: str = Field(min_length=1, max_length=1000)
+
             class Report(BaseModel):
                 model_config = ConfigDict(extra="forbid")
                 summary: str = Field(min_length=1, max_length=4000)
@@ -364,6 +370,7 @@ class InstructorStructureAnalyzer:
                 rhythm_analysis: list[str] = Field(default_factory=list, max_length=12)
                 emotion_curve: list[str] = Field(default_factory=list, max_length=12)
                 conversion_design: list[str] = Field(default_factory=list, max_length=12)
+                insight_evidence: list[InsightEvidenceLink] = Field(default_factory=list, max_length=60)
                 visual: list[str] = Field(default_factory=list, max_length=30)
                 language: list[str] = Field(default_factory=list, max_length=30)
                 highlights: list[str] = Field(default_factory=list, max_length=30)
@@ -447,6 +454,8 @@ class InstructorStructureAnalyzer:
             "整理成不超过 8 个可以直接朗读的自然段，禁止补写来源中没有的事实。"
             "hook_analysis、viral_points、rhythm_analysis、emotion_curve、conversion_design "
             "分别分析开场钩子、传播爆点、节奏、情绪推进和转化设计，结论要简洁、具体、可执行。"
+            "为这些专项结论以及 highlights、risks、recommendations 生成 insight_evidence：section 是字段名，"
+            "item_index 是该数组从 0 开始的序号，evidence_text 必须逐字等于 evidence 中的一条原文。"
             "同时输出结构、受众、画面、语言、亮点、风险和复用建议。"
         )
 
@@ -555,6 +564,16 @@ class InstructorStructureAnalyzer:
         ]
         if not report["evidence"]:
             raise RuntimeError("model report did not preserve exact source evidence")
+        report_evidence_text = {str(row.get("text") or "") for row in report["evidence"]}
+        linkable_sections = {"hook_analysis", "viral_points", "rhythm_analysis", "emotion_curve", "conversion_design", "highlights", "risks", "recommendations"}
+        report["insight_evidence"] = [
+            link for link in report.get("insight_evidence", [])
+            if isinstance(link, dict)
+            and link.get("section") in linkable_sections
+            and isinstance(link.get("item_index"), int)
+            and 0 <= link["item_index"] < len(report.get(str(link["section"]), []))
+            and link.get("evidence_text") in report_evidence_text
+        ]
         estimated_model_input_tokens = selected_tokens + analysis_passes * 1_200 + (partial_output_budget if segmented else 0)
         maximum_model_input_tokens = effective_source_tokens + analysis_passes * 1_200 + (partial_output_budget if segmented else 0)
         report["analysis_meta"] = {
@@ -583,7 +602,7 @@ class InstructorStructureAnalyzer:
                 "actual_total_tokens": actual_total_tokens,
             })
         return StructureOutput(
-            "analysis.v4",
+            "analysis.v5",
             report,
             _confidence(confidence),
             self.provider,

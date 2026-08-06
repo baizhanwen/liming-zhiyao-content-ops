@@ -6,13 +6,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 type Video = { id: string; source_type: "url" | "upload"; source_url: string | null; media_url: string | null; title: string | null; author_name: string | null; duration_sec: number | null; status: string; content_type: string | null; filename: string | null; is_shared_reference?: boolean };
 type Job = { status: string; progress: number; current_stage: string | null; error_code: string | null; error_message: string | null; completed_at: string | null };
 type Transcript = { id: string; version: number; language: string; source: string; full_text: string; confidence: number | null; segments: unknown };
-type Analysis = { schema_version: string; report: unknown; confidence: number | null; model_provider: string | null; model_name: string | null; prompt_version: string | null; created_at: string };
+type Analysis = { id: string; schema_version: string; report: unknown; confidence: number | null; model_provider: string | null; model_name: string | null; prompt_version: string | null; created_at: string };
 type Metric = { source: string; plays: number | null; likes: number | null; comments: number | null; favorites: number | null; shares: number | null; followers_gained: number | null; collected_at: string };
 type EventRow = { event_type: string; from_status: string | null; to_status: string | null; progress: number | null; created_at: string };
 type Asset = { id: string; kind: "keyframe" | "subtitle" | "report"; filename: string; content_type: string; size_bytes: number; url: string };
-type DetailResponse = { video: Video; job: Job | null; transcript: Transcript | null; analysis: Analysis | null; metrics: Metric[]; assets: Asset[]; events: EventRow[]; canWrite: boolean };
+type DetailResponse = { video: Video; job: Job | null; transcript: Transcript | null; analysis: Analysis | null; analyses?: Analysis[]; metrics: Metric[]; assets: Asset[]; events: EventRow[]; canWrite: boolean };
 type Segment = { startMs: number; endMs: number; text: string };
 type Evidence = { startMs: number | null; text: string; source: string; confidence: number | null };
+type InsightEvidenceLink = { section: string; itemIndex: number; evidenceText: string };
 type AnalysisProfile = "economy" | "standard" | "deep";
 
 const sectionNames: Record<string, string> = {
@@ -60,6 +61,22 @@ function normalizeStringList(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
 }
 
+function normalizeInsightEvidenceLinks(value: unknown): InsightEvidenceLink[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const row = asRecord(item);
+    if (!row || typeof row.section !== "string" || typeof row.item_index !== "number" || typeof row.evidence_text !== "string") return [];
+    return [{ section: row.section, itemIndex: row.item_index, evidenceText: row.evidence_text }];
+  });
+}
+
+function analysisVersionLabel(analysis: Analysis) {
+  const report = asRecord(analysis.report); const meta = asRecord(report?.analysis_meta);
+  const profile = analysisProfileNames[String(meta?.analysis_profile)] || "默认模式";
+  const model = [analysis.model_provider, analysis.model_name].filter(Boolean).join(" / ") || "规则分析";
+  return `${dateLabel(analysis.created_at)} · ${model} · ${profile}`;
+}
+
 function renderValue(value: unknown, key = "") {
   if (typeof value === "string" || typeof value === "number") return String(value);
   if (Array.isArray(value)) return value.map((item, index) => `${key === "structure" ? `${index + 1}.` : "•"} ${typeof item === "string" ? item : JSON.stringify(item)}`).join("\n");
@@ -91,6 +108,7 @@ export function AnalysisDetail({ videoId, organizationId, projectId }: { videoId
   const [editingTranscript, setEditingTranscript] = useState(false); const [savingTranscript, setSavingTranscript] = useState(false); const [draftSegments, setDraftSegments] = useState<Segment[]>([]); const [editMessage, setEditMessage] = useState("");
   const [copyMessage, setCopyMessage] = useState(""); const [transcriptQuery, setTranscriptQuery] = useState("");
   const [reanalyzeProfile, setReanalyzeProfile] = useState<AnalysisProfile>("standard"); const [reanalyzing, setReanalyzing] = useState(false);
+  const [selectedAnalysisId, setSelectedAnalysisId] = useState(""); const [compareAnalysisId, setCompareAnalysisId] = useState("");
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
   const requestUrl = useMemo(() => `/api/videos/${encodeURIComponent(videoId)}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`, [organizationId, projectId, videoId]);
   const load = useCallback(async () => {
@@ -111,16 +129,44 @@ export function AnalysisDetail({ videoId, organizationId, projectId }: { videoId
     }).then((body) => { if (active) { setDetail(body); setLoading(false); } }).catch((reason) => { if (active) { setError(reason instanceof Error ? reason.message : "分析结果暂时无法读取。"); setLoading(false); } });
     return () => { active = false; };
   }, [requestUrl]);
+  const analysisVersions = useMemo(() => detail?.analyses?.length ? detail.analyses : detail?.analysis ? [detail.analysis] : [], [detail?.analyses, detail?.analysis]);
+  useEffect(() => {
+    if (!analysisVersions.length) { setSelectedAnalysisId(""); setCompareAnalysisId(""); return; }
+    setSelectedAnalysisId((current) => analysisVersions.some((analysis) => analysis.id === current) ? current : analysisVersions[0].id);
+    setCompareAnalysisId((current) => analysisVersions.some((analysis) => analysis.id === current) ? current : "");
+  }, [analysisVersions]);
+  const analysis = analysisVersions.find((item) => item.id === selectedAnalysisId) ?? analysisVersions[0] ?? null;
+  const compareAnalysis = analysisVersions.find((item) => item.id === compareAnalysisId) ?? null;
+  useEffect(() => { if (selectedAnalysisId && selectedAnalysisId === compareAnalysisId) setCompareAnalysisId(""); }, [compareAnalysisId, selectedAnalysisId]);
   const segments = useMemo(() => normalizeSegments(detail?.transcript?.segments), [detail?.transcript?.segments]);
   const transcriptVtt = useMemo(() => `WEBVTT\n\n${segments.map((segment, index) => `${index + 1}\n${vttTime(segment.startMs)} --> ${vttTime(Math.max(segment.endMs, segment.startMs + 500))}\n${segment.text.replaceAll("\n", " ")}\n`).join("\n")}`, [segments]);
   const captionTrack = useMemo(() => `data:text/vtt;charset=utf-8,${encodeURIComponent(transcriptVtt)}`, [transcriptVtt]);
   const visibleSegments = useMemo(() => { const query = transcriptQuery.trim().toLocaleLowerCase("zh-CN"); return query ? segments.filter((segment) => segment.text.toLocaleLowerCase("zh-CN").includes(query)) : segments; }, [segments, transcriptQuery]);
-  const report = asRecord(detail?.analysis?.report); const analysisMeta = asRecord(report?.analysis_meta); const spokenScript = normalizeStringList(report?.spoken_script); const reportSections = report ? Object.entries(report).filter(([key]) => key !== "evidence" && key !== "analysis_meta" && key !== "spoken_script").sort(([left], [right]) => { const leftIndex = reportSectionOrder.indexOf(left); const rightIndex = reportSectionOrder.indexOf(right); return (leftIndex < 0 ? 999 : leftIndex) - (rightIndex < 0 ? 999 : rightIndex); }) : [];
+  const report = asRecord(analysis?.report); const analysisMeta = asRecord(report?.analysis_meta); const spokenScript = normalizeStringList(report?.spoken_script); const reportSections = report ? Object.entries(report).filter(([key]) => key !== "evidence" && key !== "analysis_meta" && key !== "spoken_script" && key !== "insight_evidence").sort(([left], [right]) => { const leftIndex = reportSectionOrder.indexOf(left); const rightIndex = reportSectionOrder.indexOf(right); return (leftIndex < 0 ? 999 : leftIndex) - (rightIndex < 0 ? 999 : rightIndex); }) : [];
   const evidence = normalizeEvidence(report?.evidence);
+  const insightEvidenceLinks = normalizeInsightEvidenceLinks(report?.insight_evidence);
+  const compareReport = asRecord(compareAnalysis?.report);
+  const comparisonKeys = ["summary", "hook", "viral_points", "recommendations"];
   const keyframes = detail?.assets.filter((asset) => asset.kind === "keyframe") ?? [];
   const coverFrame = keyframes[0] ?? null;
   const latestMetric = detail?.metrics[0] ?? null;
   function seek(startMs: number) { if (!mediaRef.current) return; mediaRef.current.currentTime = startMs / 1000; void mediaRef.current.play(); }
+  function locateEvidence(item: Evidence) {
+    if (item.startMs !== null && detail.video.media_url) { seek(item.startMs); return; }
+    const index = evidence.findIndex((candidate) => candidate === item || candidate.text === item.text);
+    const target = index >= 0 ? document.getElementById(`analysis-evidence-${index}`) : null;
+    target?.scrollIntoView({ behavior: "smooth", block: "center" }); target?.focus({ preventScroll: true });
+  }
+  function evidenceForInsight(section: string, itemIndex: number) {
+    const link = insightEvidenceLinks.find((item) => item.section === section && item.itemIndex === itemIndex);
+    return link ? evidence.find((item) => item.text === link.evidenceText) ?? null : null;
+  }
+  function renderReportSection(value: unknown, key: string) {
+    if (!Array.isArray(value)) return <p>{renderValue(value, key)}</p>;
+    const items = value.filter((item): item is string => typeof item === "string");
+    if (!items.some((_item, index) => evidenceForInsight(key, index))) return <p>{renderValue(value, key)}</p>;
+    return <ol className="linked-insight-list">{items.map((item, index) => { const linked = evidenceForInsight(key, index); return <li key={`${key}-${index}`}><button type="button" onClick={() => linked && locateEvidence(linked)} disabled={!linked}><span>{item}</span>{linked && <time>{linked.startMs === null ? "查看原文证据" : `${timeLabel(linked.startMs)} 定位证据`}</time>}</button></li>; })}</ol>;
+  }
   async function copySpokenScript() {
     if (!spokenScript.length) return;
     setCopyMessage("");
@@ -141,7 +187,7 @@ export function AnalysisDetail({ videoId, organizationId, projectId }: { videoId
   }
   function exportMarkdown() {
     const title = detail?.video.title || detail?.video.filename || "视频分析";
-    const lines = [`# ${title}`, "", `- 生成时间：${dateLabel(detail?.analysis?.created_at ?? null)}`, `- 模型：${[detail?.analysis?.model_provider, detail?.analysis?.model_name].filter(Boolean).join(" / ") || "规则与适配器"}`];
+    const lines = [`# ${title}`, "", `- 生成时间：${dateLabel(analysis?.created_at ?? null)}`, `- 模型：${[analysis?.model_provider, analysis?.model_name].filter(Boolean).join(" / ") || "规则与适配器"}`];
     if (spokenScript.length) lines.push("", `## ${sectionNames.spoken_script}`, "", spokenScript.join("\n\n"));
     for (const [key, value] of reportSections) lines.push("", `## ${sectionNames[key] ?? key}`, "", renderValue(value, key));
     if (evidence.length) { lines.push("", "## 结论证据", ""); for (const item of evidence) lines.push(`- ${item.startMs === null ? "[证据]" : `[${timeLabel(item.startMs)}]`} ${item.text}（${item.source}）`); }
@@ -201,14 +247,16 @@ export function AnalysisDetail({ videoId, organizationId, projectId }: { videoId
         {keyframes.length > 0 && <div className="keyframe-strip"><div className="timeline-heading"><strong>镜头关键帧</strong><span>{keyframes.length} 个可追溯画面</span></div><div>{keyframes.map((asset, index) => <a key={asset.id} href={asset.url} target="_blank" rel="noreferrer"><span className="keyframe-image" style={{ backgroundImage: `url(${JSON.stringify(asset.url)})` }} role="img" aria-label={`关键帧 ${index + 1}`} /><span>{asset.filename}</span></a>)}</div></div>}
       </article>
 
-      <article className="panel report-panel" id="analysis-report"><div className="panel-heading"><div><p className="section-kicker">结构化分析与证据</p><h2>{detail.analysis ? `报告 ${detail.analysis.schema_version}` : "尚未生成结构化报告"}</h2></div>{detail.analysis && <div className="report-heading-actions"><span className="confidence-chip">整体置信度 {detail.analysis.confidence ?? "—"}</span><button type="button" onClick={copyReport}>复制报告</button><button type="button" onClick={exportMarkdown}>导出 Markdown</button></div>}</div>
+      <article className="panel report-panel" id="analysis-report"><div className="panel-heading"><div><p className="section-kicker">结构化分析与证据</p><h2>{analysis ? `报告 ${analysis.schema_version}` : "尚未生成结构化报告"}</h2></div>{analysis && <div className="report-heading-actions"><span className="confidence-chip">整体置信度 {analysis.confidence ?? "—"}</span><button type="button" onClick={copyReport}>复制报告</button><button type="button" onClick={exportMarkdown}>导出 Markdown</button></div>}</div>
         {copyMessage && <p className="report-copy-message" role="status">{copyMessage}</p>}
+        {analysisVersions.length > 0 && <div className="analysis-version-toolbar"><label><span>当前查看</span><select value={analysis?.id || ""} onChange={(event) => setSelectedAnalysisId(event.target.value)}>{analysisVersions.map((item) => <option key={item.id} value={item.id}>{analysisVersionLabel(item)}</option>)}</select></label><label><span>对比版本</span><select value={compareAnalysisId} onChange={(event) => setCompareAnalysisId(event.target.value)} disabled={analysisVersions.length < 2}><option value="">{analysisVersions.length < 2 ? "重新分析后可对比" : "选择另一份报告"}</option>{analysisVersions.filter((item) => item.id !== analysis?.id).map((item) => <option key={item.id} value={item.id}>{analysisVersionLabel(item)}</option>)}</select></label><p>人工校正时间轴并重新分析后，旧报告会保留在这里，不会被覆盖。</p></div>}
+        {analysis && compareAnalysis && compareAnalysis.id !== analysis.id && <section className="analysis-comparison-panel"><div><div><span>版本对比</span><h3>快速核对两个模型或两次分析的差异</h3></div><button type="button" onClick={() => setCompareAnalysisId("")}>关闭对比</button></div><div className="comparison-headings"><strong>{analysisVersionLabel(analysis)}</strong><strong>{analysisVersionLabel(compareAnalysis)}</strong></div>{comparisonKeys.map((key) => <article key={key}><h4>{sectionNames[key] ?? key}</h4><div><p>{report?.[key] === undefined ? "该版本未生成此项" : renderValue(report[key], key)}</p><p>{compareReport?.[key] === undefined ? "该版本未生成此项" : renderValue(compareReport[key], key)}</p></div></article>)}</section>}
         {analysisMeta && <div className="analysis-cost-summary"><div><small>{typeof analysisMeta.actual_total_tokens === "number" ? "实际模型消耗" : "模型输入预估"}</small><strong>{numberLabel(typeof analysisMeta.actual_total_tokens === "number" ? analysisMeta.actual_total_tokens : typeof analysisMeta.estimated_model_input_tokens === "number" ? analysisMeta.estimated_model_input_tokens : null)} Token</strong>{typeof analysisMeta.actual_total_tokens === "number" && <span>输入 {numberLabel(typeof analysisMeta.actual_input_tokens === "number" ? analysisMeta.actual_input_tokens : null)} · 输出 {numberLabel(typeof analysisMeta.actual_output_tokens === "number" ? analysisMeta.actual_output_tokens : null)}</span>}</div><div><small>分析覆盖率</small><strong>{typeof analysisMeta.coverage_percent === "number" ? `${analysisMeta.coverage_percent}%` : "—"}</strong>{typeof analysisMeta.analyzed_segments === "number" && typeof analysisMeta.source_segments === "number" && <span>{analysisMeta.analyzed_segments} / {analysisMeta.source_segments} 个片段</span>}</div><div><small>长视频处理</small><strong>{analysisMeta.processing_mode === "segmented" ? "分段分析后汇总" : typeof analysisMeta.duration_minutes === "number" ? `${analysisMeta.duration_minutes} 分钟` : "单次分析"}</strong><span>{analysisMeta.processing_mode === "segmented" && typeof analysisMeta.segment_analysis_count === "number" ? `${analysisMeta.segment_analysis_count} 个时间段 · ${analysisMeta.analysis_passes} 次调用` : typeof analysisMeta.chunk_count === "number" ? `${analysisMeta.chunk_count} 个证据窗口` : ""}</span></div><div><small>预算策略</small><strong>{analysisMeta.mode === "budgeted" ? "预算内抽样" : "完整分析"}</strong><span>{analysisProfileNames[String(analysisMeta.analysis_profile)] || "标准模式"}{typeof analysisMeta.maximum_total_tokens === "number" ? ` · 总上限 ${numberLabel(analysisMeta.maximum_total_tokens)}` : typeof analysisMeta.maximum_source_tokens === "number" ? ` · 输入上限 ${numberLabel(analysisMeta.maximum_source_tokens)}` : ""}</span></div></div>}
         {detail.canWrite && !detail.video.is_shared_reference && <div className="analysis-rerun-bar"><div><strong>按不同深度重新分析</strong><span>保留原视频；有人工校正版时优先沿用校正版。</span></div><select aria-label="重新分析模式" value={reanalyzeProfile} onChange={(event) => setReanalyzeProfile(event.target.value as AnalysisProfile)}><option value="economy">经济 · 约 8k</option><option value="standard">标准 · 约 18k</option><option value="deep">深度 · 约 32k</option></select><button type="button" disabled={reanalyzing} onClick={reanalyze}>{reanalyzing ? "正在创建…" : "重新分析"}</button></div>}
         {spokenScript.length > 0 && <section className="spoken-script-panel"><div><div><span>语义整理成稿</span><h3>可以直接修改和使用的口播稿</h3></div><button type="button" onClick={copySpokenScript}>复制口播稿</button></div><article>{spokenScript.map((paragraph, index) => <p key={`${index}-${paragraph.slice(0, 12)}`}>{paragraph}</p>)}</article><small>内容仅整理自原始转写；已去除重复、语气词和无效停顿，不额外补写事实。</small></section>}
-        {reportSections.length > 0 ? <div className="report-sections">{reportSections.map(([key, value]) => <section className={key === "summary" || key === "recommendations" ? "report-section-wide" : undefined} key={key}><h3>{sectionNames[key] ?? key}</h3><p>{renderValue(value, key)}</p></section>)}</div> : <div className="list-empty">分析服务完成结构化输出后，结论、证据与复用建议会显示在这里。</div>}
-        {evidence.length > 0 && <div className="evidence-list"><h3>结论证据</h3>{evidence.map((item, index) => <button type="button" key={`${item.startMs}-${index}`} onClick={() => item.startMs !== null && seek(item.startMs)} disabled={item.startMs === null || !detail.video.media_url}><span>{item.startMs === null ? "证据" : timeLabel(item.startMs)}</span><strong>{item.text}</strong><small>{item.source} · 置信度 {item.confidence ?? "—"}</small></button>)}</div>}
-        {detail.analysis && <footer className="report-provenance"><span>模型：{[detail.analysis.model_provider, detail.analysis.model_name].filter(Boolean).join(" / ") || "规则与适配器"}</span><span>提示词版本：{detail.analysis.prompt_version || "—"}</span><span>生成：{dateLabel(detail.analysis.created_at)}</span>{detail.video.is_shared_reference ? <span>共享素材 · 原分析只读</span> : <Link href={`/topics?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}&sourceVideoId=${encodeURIComponent(videoId)}`}>从此分析创建选题 →</Link>}</footer>}
+        {reportSections.length > 0 ? <div className="report-sections">{reportSections.map(([key, value]) => <section className={key === "summary" || key === "recommendations" ? "report-section-wide" : undefined} key={key}><h3>{sectionNames[key] ?? key}</h3>{renderReportSection(value, key)}</section>)}</div> : <div className="list-empty">分析服务完成结构化输出后，结论、证据与复用建议会显示在这里。</div>}
+        {evidence.length > 0 && <div className="evidence-list"><h3>结论证据</h3>{evidence.map((item, index) => <button id={`analysis-evidence-${index}`} type="button" key={`${item.startMs}-${index}`} onClick={() => item.startMs !== null && detail.video.media_url && seek(item.startMs)} disabled={item.startMs === null || !detail.video.media_url}><span>{item.startMs === null ? "证据" : timeLabel(item.startMs)}</span><strong>{item.text}</strong><small>{item.source} · 置信度 {item.confidence ?? "—"}</small></button>)}</div>}
+        {analysis && <footer className="report-provenance"><span>模型：{[analysis.model_provider, analysis.model_name].filter(Boolean).join(" / ") || "规则与适配器"}</span><span>提示词版本：{analysis.prompt_version || "—"}</span><span>生成：{dateLabel(analysis.created_at)}</span>{detail.video.is_shared_reference ? <span>共享素材 · 原分析只读</span> : <Link href={`/topics?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}&sourceVideoId=${encodeURIComponent(videoId)}`}>从此分析创建选题 →</Link>}</footer>}
       </article>
     </section>
 

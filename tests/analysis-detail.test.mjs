@@ -8,6 +8,8 @@ test("analysis detail re-checks project access and scopes every result query", a
   assert.match(route, /v\.id = \? AND v\.organization_id = \? AND v\.project_id = \?/);
   assert.match(route, /video_transcripts WHERE organization_id = \? AND project_id = \? AND video_id = \?/);
   assert.match(route, /video_analyses WHERE organization_id = \? AND project_id = \? AND video_id = \?/);
+  assert.match(route, /ORDER BY created_at DESC LIMIT 8/);
+  assert.match(route, /analyses: analysisVersions/);
   assert.match(route, /analysis_job_events WHERE organization_id = \? AND project_id = \? AND video_id = \?/);
 });
 
@@ -36,5 +38,9 @@ test("detail UI links transcript evidence to protected media time", async () => 
   assert.match(detail, /const coverFrame = keyframes\[0\]/);
   assert.match(detail, /本地分析封面/);
   assert.match(detail, /打开原始抖音链接/);
+  assert.match(detail, /analysisVersions/);
+  assert.match(detail, /对比版本/);
+  assert.match(detail, /evidenceForInsight/);
+  assert.match(detail, /定位证据/);
   assert.doesNotMatch(detail, /dangerouslySetInnerHTML/);
 });
