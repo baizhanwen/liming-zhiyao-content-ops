@@ -71,7 +71,7 @@ class SourceTests(unittest.TestCase):
         )
         with (
             tempfile.TemporaryDirectory() as directory,
-            self.assertRaisesRegex(RuntimeError, r"refresh-douyin-cookies\.bat"),
+            self.assertRaisesRegex(RuntimeError, r"更新 Cookie"),
         ):
             resolver.download(
                 "https://www.douyin.com/video/1",

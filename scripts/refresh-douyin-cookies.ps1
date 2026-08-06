@@ -37,7 +37,7 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-Host ""
 Write-Host "[OK] Cookie snapshot refreshed. Edge may stay open throughout analysis."
 Write-Host "[SECURITY] Delete the exported cookies.txt from Downloads after this succeeds."
-Write-Host "[NEXT] Press Ctrl+C in the old analyzer window, then run start-analyzer.bat once."
+Write-Host "[NEXT] Return to video analysis and retry the failed task. No analyzer restart is required."
 try {
     $health = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:3000/api/health" -TimeoutSec 2
     if ($health.StatusCode -eq 200) {

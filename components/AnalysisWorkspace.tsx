@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { ChangeEvent, FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { preferredOrganizationId, preferredProjectId, rememberCurrentScope } from "../lib/client-scope";
 import { VideoLibraryWorkspace } from "./VideoLibraryWorkspace";
@@ -9,7 +9,7 @@ type Organization = { id: string; name: string };
 type Project = { id: string; name: string };
 type Video = { id: string; platform: string; source_type: string; source_url: string | null; title: string | null; status: string; error_message: string | null; created_at: string; filename?: string | null; size_bytes?: number | null; is_reference?: number | boolean };
 type Job = { id: string; video_id: string; status: string; progress: number; current_stage: string | null; error_code: string | null; error_message: string | null; retry_count: number; created_at: string; updated_at: string };
-type ServiceStatus = { credentialConfigured: boolean; modelConfigured: boolean; publicLinkCookieConfigured: boolean; analyzerOnline: boolean; lastWorkerHeartbeat: string | null };
+type ServiceStatus = { credentialConfigured: boolean; modelConfigured: boolean; publicLinkCookieConfigured: boolean; cookieUpdatedAt: string | null; canManageCookies: boolean; analyzerOnline: boolean; lastWorkerHeartbeat: string | null };
 
 const stages = ["媒体入库", "音频处理", "语音转写", "字幕与关键帧", "结构化分析", "生成报告"];
 const statusLabels: Record<string, string> = { pending: "等待中", queued: "已排队", downloading: "获取媒体", processing: "处理媒体", transcribing: "语音转写", extracting: "提取画面", analyzing: "结构分析", completed: "已完成", failed: "失败", cancelled: "已取消" };
@@ -22,6 +22,7 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
   const [videos, setVideos] = useState<Video[]>([]); const [jobs, setJobs] = useState<Job[]>([]); const [canWrite, setCanWrite] = useState(false);
   const [loading, setLoading] = useState(true); const [submitting, setSubmitting] = useState(false); const [error, setError] = useState("");
   const [service, setService] = useState<ServiceStatus | null>(null); const [uploadProgress, setUploadProgress] = useState(""); const [submitMessage, setSubmitMessage] = useState("");
+  const [cookieUpdating, setCookieUpdating] = useState(false); const [cookieMessage, setCookieMessage] = useState(""); const cookieFileRef = useRef<HTMLInputElement>(null);
 
   const loadVideos = useCallback(async (orgId: string, projId: string) => {
     if (!orgId || !projId) { setVideos([]); setJobs([]); return; }
@@ -56,6 +57,21 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
       setSubmitMessage(body.reused ? "该视频已有分析记录，已直接复用到当前项目。" : "分析已经开始。页面会自动更新进度，完成后可直接查看结果。");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "链接入库失败，请稍后重试。"); }
     finally { setSubmitting(false); }
+  }
+
+  async function updateDouyinCookies(event: ChangeEvent<HTMLInputElement>) {
+    const input = event.currentTarget; const file = input.files?.[0]; if (!file) return;
+    setCookieUpdating(true); setCookieMessage(""); setError("");
+    try {
+      if (file.size > 1024 * 1024) throw new Error("Cookie 文件不能超过 1 MB。");
+      const form = new FormData(); form.set("file", file);
+      const response = await fetch("/api/analyzer/cookies", { method: "POST", headers: { "x-organization-id": organizationId, "x-project-id": projectId }, body: form });
+      if (!response.ok) throw new Error(await readError(response));
+      const body = await response.json() as { configured: boolean; updatedAt: string; cookieCount: number };
+      setService((current) => current ? { ...current, publicLinkCookieConfigured: body.configured, cookieUpdatedAt: body.updatedAt } : current);
+      setCookieMessage(`Cookie 已更新，共导入 ${body.cookieCount} 条抖音记录。请删除下载目录中的原始 cookies.txt。`);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Cookie 更新失败，请重新导出后再试。"); }
+    finally { input.value = ""; setCookieUpdating(false); }
   }
 
   async function uploadFile(event: FormEvent<HTMLFormElement>) {
@@ -94,7 +110,8 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
     <section className="analysis-main">
       <div className="management-toolbar analysis-toolbar"><label>公司<select value={organizationId} onChange={async (event) => { const id = event.target.value; setOrganizationId(id); await loadProjects(id); }}>{organizations.map((organization) => <option key={organization.id} value={organization.id}>{organization.name}</option>)}</select></label><label>客户项目<select value={projectId} onChange={async (event) => { const id = event.target.value; setProjectId(id); rememberCurrentScope(organizationId, id); await loadVideos(organizationId, id); }}>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><button type="button" onClick={() => loadVideos(organizationId, projectId)}>刷新状态</button></div>
       {error && <div className="inline-alert" role="alert">{error}</div>}{submitMessage && <div className="analysis-submit-notice" role="status">{submitMessage}</div>}
-      {initialView === "videos" && service && <article className="panel analysis-readiness"><div><p className="section-kicker">分析服务就绪状态</p><h2>{service.analyzerOnline && service.credentialConfigured && service.modelConfigured ? "一键分析已就绪" : "分析服务正在准备"}</h2></div><dl><div><dt>自动分析服务</dt><dd className={service.analyzerOnline ? "ready" : "waiting"}>{service.analyzerOnline ? "运行中" : "启动中"}</dd></div><div><dt>结构分析模型</dt><dd className={service.modelConfigured ? "ready" : "waiting"}>{service.modelConfigured ? "已配置" : "待配置"}</dd></div><div><dt>抖音链接 Cookie</dt><dd className={service.publicLinkCookieConfigured ? "ready" : "waiting"}>{service.publicLinkCookieConfigured ? "已配置" : "需要更新"}</dd></div><div><dt>服务心跳</dt><dd>{service.lastWorkerHeartbeat ? new Date(service.lastWorkerHeartbeat).toLocaleTimeString("zh-CN") : "等待首次连接"}</dd></div></dl><Link href="/settings">查看系统设置 →</Link></article>}
+      {initialView === "videos" && service && <article className="panel analysis-readiness"><div><p className="section-kicker">分析服务就绪状态</p><h2>{service.analyzerOnline && service.credentialConfigured && service.modelConfigured ? "一键分析已就绪" : "分析服务正在准备"}</h2></div><dl><div><dt>自动分析服务</dt><dd className={service.analyzerOnline ? "ready" : "waiting"}>{service.analyzerOnline ? "运行中" : "启动中"}</dd></div><div><dt>结构分析模型</dt><dd className={service.modelConfigured ? "ready" : "waiting"}>{service.modelConfigured ? "已配置" : "待配置"}</dd></div><div><dt>抖音链接 Cookie</dt><dd className={service.publicLinkCookieConfigured ? "ready" : "waiting"}>{service.publicLinkCookieConfigured ? "已配置" : "需要更新"}</dd></div><div><dt>服务心跳</dt><dd>{service.lastWorkerHeartbeat ? new Date(service.lastWorkerHeartbeat).toLocaleTimeString("zh-CN") : "等待首次连接"}</dd></div></dl><div className="analysis-readiness-actions">{service.canManageCookies && <><input ref={cookieFileRef} className="sr-only" type="file" accept=".txt,text/plain" onChange={updateDouyinCookies} disabled={cookieUpdating} aria-label="选择抖音 cookies.txt" /><button type="button" disabled={cookieUpdating} onClick={() => cookieFileRef.current?.click()}>{cookieUpdating ? "正在更新…" : service.publicLinkCookieConfigured ? "更新 Cookie" : "选择 Cookie 文件"}</button><a href="https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc" target="_blank" rel="noreferrer">获取导出扩展</a></>}<Link href="/settings">系统设置 →</Link></div></article>}
+      {cookieMessage && <div className="analysis-submit-notice" role="status">{cookieMessage}</div>}
       {initialView === "videos" && <article className="panel pipeline-panel"><div className="panel-heading"><div><p className="section-kicker">异步分析流水线</p><h2>网页请求只负责入库，计算任务分阶段执行</h2></div><span className="status neutral">可重试 · 可追溯</span></div><ol>{stages.map((stage, index) => <li key={stage}><span>{index + 1}</span><strong>{stage}</strong>{index < stages.length - 1 && <i aria-hidden="true" />}</li>)}</ol></article>}
       <article className="panel video-list-panel"><div className="panel-heading"><div><p className="section-kicker">{initialView === "benchmark" ? "对标样本" : initialView === "assets" ? "分析资产" : "视频与任务"}</p><h2>{initialView === "assets" ? `${visibleVideos.length} 条内容已生成可用资产` : `${videos.length} 条内容已进入当前项目`}</h2></div></div>{visibleVideos.length === 0 ? <div className="list-empty">{initialView === "assets" ? "当前项目还没有已完成分析的可用资产。" : "提交一条抖音链接或上传本地媒体，开始建立分析样本。"}</div> : <div className="analysis-list">{visibleVideos.map((video) => { const job = jobs.find((item) => item.video_id === video.id); const failed = job?.status === "failed" || job?.status === "cancelled"; return <article className="analysis-row" key={video.id}><span className={`media-kind ${video.source_type}`}>{video.source_type === "url" ? "链" : "媒"}</span><div className="analysis-copy"><strong>{video.title || "待提取视频标题"}</strong><small>{video.is_reference ? "复用公司素材库分析" : video.source_type === "url" ? "抖音公开链接" : `${video.filename || "本地媒体"} · ${video.size_bytes ? `${(video.size_bytes / 1024 / 1024).toFixed(1)} MB` : ""}`}</small><div className="job-stage"><span>{job?.current_stage || "等待任务创建"}</span>{job && <div className="progress-track small"><i style={{ width: `${job.progress}%` }} /></div>}</div>{job?.error_message && <p>{job.error_message}</p>}</div><div className="analysis-status"><span className={`status ${failed ? "danger" : job?.status === "completed" ? "success" : "neutral"}`}>{statusLabels[job?.status || "pending"] || job?.status}</span><small>{job?.progress || 0}%</small>{job?.status === "completed" && <Link href={`/analysis/${video.id}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`}>{initialView === "assets" ? "查看资产" : "查看结果"}</Link>}{failed && job && canWrite && !video.is_reference && <button type="button" onClick={() => retry(job.id)}>重试</button>}</div></article>; })}</div>}</article>
     </section>

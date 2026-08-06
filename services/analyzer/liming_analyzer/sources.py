@@ -41,9 +41,10 @@ def is_allowed_douyin_url(value: str) -> bool:
 
 
 class PlatformSourceProvider:
-    def __init__(self, client: AnalyzerApiClient, public_video: PublicVideoResolver) -> None:
+    def __init__(self, client: AnalyzerApiClient, public_video: PublicVideoResolver, cookie_file: str = "") -> None:
         self.client = client
         self.public_video = public_video
+        self.cookie_file = Path(cookie_file).expanduser().resolve() if cookie_file else None
 
     def acquire(self, job: ClaimedJob, destination: Path) -> AcquiredSource:
         if job.source_type == "upload":
@@ -51,6 +52,8 @@ class PlatformSourceProvider:
         source_url = job.source.get("source_url")
         if not isinstance(source_url, str) or not is_allowed_douyin_url(source_url):
             raise ValueError("claimed public source is not an allowed Douyin URL")
+        if self.cookie_file is not None:
+            self.client.download_cookie_snapshot(job, self.cookie_file)
         resolved = self.public_video.download(source_url, destination)
         return resolved if isinstance(resolved, AcquiredSource) else AcquiredSource(resolved)
 
@@ -117,16 +120,16 @@ class YtDlpPublicVideoResolver:
             if "cookie" in message.lower():
                 if using_cookie_file:
                     raise RuntimeError(
-                        "抖音 Cookie 快照已失效。请重新运行 refresh-douyin-cookies.bat；"
-                        "快照完成后，解析期间可以正常打开 Edge。"
+                        "抖音 Cookie 快照已失效。请在视频分析页点击“更新 Cookie”，"
+                        "重新选择从抖音导出的 cookies.txt。"
                     ) from error
                 if self._cookies_from_browser is None:
                     raise RuntimeError(
-                        "抖音要求新鲜 Cookie。请运行 refresh-douyin-cookies.bat，或改用本地上传。"
+                        "抖音要求新鲜 Cookie。请在视频分析页点击“更新 Cookie”，或改用本地上传。"
                     ) from error
                 raise RuntimeError(
-                    "浏览器 Cookie 数据库正在使用中。请完全关闭 Edge，运行 "
-                    "refresh-douyin-cookies.bat 生成快照；之后解析时可以保持 Edge 打开。"
+                    "无法读取浏览器 Cookie。请从 Edge 扩展导出 cookies.txt，"
+                    "再到视频分析页点击“更新 Cookie”。"
                 ) from error
             raise
         if not isinstance(info, dict):

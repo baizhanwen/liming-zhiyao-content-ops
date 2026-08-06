@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
-import { canWriteProjectAccess, getD1, getProjectAccess } from "../../../db/runtime";
+import { canWriteProjectAccess, getD1, getMediaBucket, getProjectAccess } from "../../../db/runtime";
 import { apiError, errorResponse } from "../../../lib/api-response";
+import { douyinCookieObjectKey } from "../../../lib/douyin-cookie-snapshot";
 import { readRequestIdentity } from "../../../lib/request-auth";
 
 export async function GET(request: Request) {
@@ -14,7 +15,7 @@ export async function GET(request: Request) {
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
     if (!access) return apiError("ACCESS_DENIED", "无权访问该项目的视频。", 403);
     const db = getD1();
-    const [videos, jobs, lastWorkerHeartbeat] = await Promise.all([
+    const [videos, jobs, lastWorkerHeartbeat, cookieSnapshot] = await Promise.all([
       db.prepare(`
         SELECT * FROM (
           SELECT v.id, v.platform, v.source_type, v.source_url, v.title, v.author_name, v.status, v.error_message, v.created_at, a.filename, a.size_bytes,
@@ -42,6 +43,7 @@ export async function GET(request: Request) {
         )) ORDER BY created_at DESC LIMIT 150
       `).bind(organizationId, projectId, organizationId, projectId).all(),
       db.prepare("SELECT MAX(last_seen_at) AS value FROM analyzer_workers WHERE status = 'online'").first<{ value: string | null }>(),
+      getMediaBucket().head(douyinCookieObjectKey(organizationId)),
     ]);
     const runtime = env as typeof env & { ANALYZER_SERVICE_TOKEN?: string; ANALYZER_LLM_API_KEY?: string; ANALYZER_LLM_BASE_URL?: string; ANALYZER_LLM_MODEL?: string; ANALYZER_LLM_PROVIDER?: string; ANALYZER_YTDLP_COOKIES_FROM_BROWSER?: string; ANALYZER_YTDLP_COOKIE_FILE?: string };
     const token = runtime.ANALYZER_SERVICE_TOKEN?.trim() ?? "";
@@ -51,7 +53,9 @@ export async function GET(request: Request) {
       service: {
         credentialConfigured: Boolean(token && !/change-me|replace-with/i.test(token)),
         modelConfigured: Boolean(runtime.ANALYZER_LLM_API_KEY?.trim() && runtime.ANALYZER_LLM_BASE_URL?.trim() && runtime.ANALYZER_LLM_MODEL?.trim() && runtime.ANALYZER_LLM_PROVIDER?.trim()),
-        publicLinkCookieConfigured: Boolean(runtime.ANALYZER_YTDLP_COOKIE_FILE?.trim() || runtime.ANALYZER_YTDLP_COOKIES_FROM_BROWSER?.trim()),
+        publicLinkCookieConfigured: Boolean(cookieSnapshot || runtime.ANALYZER_YTDLP_COOKIE_FILE?.trim() || runtime.ANALYZER_YTDLP_COOKIES_FROM_BROWSER?.trim()),
+        cookieUpdatedAt: cookieSnapshot?.customMetadata?.updatedAt ?? null,
+        canManageCookies: access.organizationRole === "admin",
         analyzerOnline: Boolean(workerLastSeen && new Date(workerLastSeen).getTime() >= Date.now() - 20_000),
         lastWorkerHeartbeat: workerLastSeen,
       },

@@ -109,6 +109,31 @@ class ApiClientTests(unittest.TestCase):
         self.assertEqual(request.get_header("Authorization"), "Bearer secret")
         self.assertEqual(request.get_header("X-worker-id"), "worker-01")
 
+    def test_cookie_snapshot_uses_worker_lease_endpoint_and_replaces_local_file(self):
+        class Stream:
+            def __init__(self):
+                self.headers = {"Content-Length": "28"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self, _size):
+                chunk, self.chunk = getattr(self, "chunk", b"# Netscape HTTP Cookie File\n"), b""
+                return chunk
+
+        client = AnalyzerApiClient("https://example.test", "secret", "worker-01")
+        job = ClaimedJob("job-1", "org-1", "project-1", "video-1", "url", "queued", 1, 3, {})
+        with tempfile.TemporaryDirectory() as temporary, patch("liming_analyzer.api_client.urllib.request.urlopen", return_value=Stream()) as opener:
+            destination = Path(temporary) / "cookies.txt"
+            self.assertTrue(client.download_cookie_snapshot(job, destination))
+            self.assertIn(b"Netscape", destination.read_bytes())
+        request = opener.call_args.args[0]
+        self.assertTrue(request.full_url.endswith("/api/internal/analysis-jobs/job-1/cookies"))
+        self.assertEqual(request.get_header("X-worker-id"), "worker-01")
+
 
 if __name__ == "__main__":
     unittest.main()

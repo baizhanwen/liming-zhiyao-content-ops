@@ -116,6 +116,7 @@ def build_analyzer(settings: AnalyzerSettings) -> tuple[AnalyzerApiClient, Analy
                 cookies_from_browser=settings.yt_dlp_cookies_from_browser,
                 cookie_file=settings.yt_dlp_cookie_file,
             ),
+            cookie_file=settings.yt_dlp_cookie_file,
         ),
         media,
         speech,

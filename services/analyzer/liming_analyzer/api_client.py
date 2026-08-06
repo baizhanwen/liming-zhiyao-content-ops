@@ -225,5 +225,41 @@ class AnalyzerApiClient:
         partial.replace(destination)
         return destination
 
+    def download_cookie_snapshot(self, job: ClaimedJob, destination: Path, max_bytes: int = 1024 * 1024) -> bool:
+        if job.source_type != "url":
+            raise ValueError("only public URL jobs use the cookie snapshot endpoint")
+        request = urllib.request.Request(
+            f"{self.base_url}/api/internal/analysis-jobs/{job.id}/cookies",
+            headers={"Authorization": f"Bearer {self._token}", "X-Worker-Id": self.worker_id, "Accept": "text/plain"},
+            method="GET",
+        )
+        destination = destination.expanduser().resolve(); destination.parent.mkdir(parents=True, exist_ok=True)
+        partial = destination.with_name(f"{destination.name}.part"); written = 0
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response, partial.open("wb") as output:
+                content_length = response.headers.get("Content-Length")
+                if content_length and int(content_length) > max_bytes:
+                    raise AnalyzerApiError(413, "COOKIE_SNAPSHOT_TOO_LARGE", "cookie snapshot exceeds worker limit")
+                while chunk := response.read(64 * 1024):
+                    written += len(chunk)
+                    if written > max_bytes:
+                        raise AnalyzerApiError(413, "COOKIE_SNAPSHOT_TOO_LARGE", "cookie snapshot exceeds worker limit")
+                    output.write(chunk)
+        except urllib.error.HTTPError as error:
+            partial.unlink(missing_ok=True)
+            if error.code == 404:
+                return False
+            payload = json.loads(error.read().decode("utf-8")) if error.fp else {}
+            detail = payload.get("error", {}) if isinstance(payload, dict) else {}
+            raise AnalyzerApiError(error.code, str(detail.get("code", "COOKIE_DOWNLOAD_FAILED")), str(detail.get("message", "cookie snapshot download failed"))) from error
+        except Exception:
+            partial.unlink(missing_ok=True)
+            raise
+        if written == 0:
+            partial.unlink(missing_ok=True)
+            raise AnalyzerApiError(502, "EMPTY_COOKIE_SNAPSHOT", "cookie snapshot is empty")
+        partial.replace(destination)
+        return True
+
 
 Processor = Callable[[ClaimedJob, Callable[[str, int, str], ClaimedJob]], AnalysisResult]
