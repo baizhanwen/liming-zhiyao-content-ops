@@ -1,4 +1,5 @@
 import { canWriteProjectAccess, ensureUser, getD1, getMediaBucket, getProjectAccess, sha256Hex } from "../../../../db/runtime";
+import { analyzerReadinessError, readAnalyzerReadiness } from "../../../../lib/analyzer-readiness";
 import { apiError, errorResponse } from "../../../../lib/api-response";
 import { readRequestIdentity } from "../../../../lib/request-auth";
 import { checkOrganizationQuota } from "../../../../lib/operations";
@@ -17,6 +18,8 @@ export async function POST(request: Request) {
     if (!organizationId || !projectId) return apiError("PROJECT_SCOPE_REQUIRED", "缺少公司或项目范围。", 400);
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
     if (!access || !canWriteProjectAccess(access)) return apiError("WRITE_ACCESS_REQUIRED", "当前角色不能上传分析素材。", 403);
+    const readinessIssue = analyzerReadinessError(await readAnalyzerReadiness(organizationId), false);
+    if (readinessIssue) return apiError(readinessIssue.code, readinessIssue.message, 503);
     const form = await request.formData(); const file = form.get("file");
     if (!(file instanceof File)) return apiError("FILE_REQUIRED", "请选择视频或音频文件。", 400);
     if (!allowedTypes.has(file.type)) return apiError("UNSUPPORTED_MEDIA_TYPE", "仅支持 MP4、MOV、WebM、MP3、M4A 和 WAV。", 415);

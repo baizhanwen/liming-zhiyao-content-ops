@@ -1,0 +1,47 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+test("analysis preflight rejects work that cannot finish", async () => {
+  const [readiness, fromUrl, upload] = await Promise.all([
+    readFile(new URL("../lib/analyzer-readiness.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/videos/from-url/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/videos/upload/route.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(readiness, /ANALYZER_OFFLINE/);
+  assert.match(readiness, /DOUYIN_COOKIE_REQUIRED/);
+  assert.match(fromUrl, /analyzerReadinessError\(await readAnalyzerReadiness\(organizationId\), true\)/);
+  assert.match(upload, /analyzerReadinessError\(await readAnalyzerReadiness\(organizationId\), false\)/);
+});
+
+test("analysis jobs can be cancelled or recovered after an expired lease", async () => {
+  const [cancel, retry, workspace] = await Promise.all([
+    readFile(new URL("../app/api/analysis-jobs/[jobId]/cancel/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/analysis-jobs/[jobId]/retry/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../components/AnalysisWorkspace.tsx", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(cancel, /status = 'cancelled'/);
+  assert.match(cancel, /lease_owner = NULL,\s+lease_expires_at = NULL/);
+  assert.match(retry, /staleLease/);
+  assert.match(retry, /lease_expires_at/);
+  assert.match(workspace, /cancelJob/);
+  assert.match(workspace, /jobActionId/);
+});
+
+test("long videos use a bounded evidence budget and report coverage", async () => {
+  const [provider, detail, worker] = await Promise.all([
+    readFile(new URL("../services/analyzer/liming_analyzer/providers.py", import.meta.url), "utf8"),
+    readFile(new URL("../components/AnalysisDetail.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../services/analyzer/liming_analyzer/worker.py", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(provider, /max_source_tokens/);
+  assert.match(provider, /transcript_windows/);
+  assert.match(provider, /analysis_meta/);
+  assert.match(provider, /coverage_percent/);
+  assert.match(detail, /estimated_model_input_tokens/);
+  assert.match(worker, /MODEL_CONTEXT_LIMIT/);
+  assert.match(worker, /DOUYIN_COOKIE_EXPIRED/);
+});

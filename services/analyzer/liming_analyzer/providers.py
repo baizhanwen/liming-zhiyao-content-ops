@@ -41,6 +41,49 @@ def _timestamp_span(value: Any) -> tuple[int, int]:
     return start, max(start, round(float(valid[-1][1])))
 
 
+def estimate_text_tokens(value: str) -> int:
+    cjk = sum(1 for character in value if "\u3400" <= character <= "\u9fff")
+    return cjk + max(1, (len(value) - cjk + 3) // 4)
+
+
+def _deduplicate_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set(); unique: list[dict[str, Any]] = []
+    for row in rows:
+        text = str(row.get("text") or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text); unique.append(row)
+    return unique
+
+
+def _row_tokens(row: Mapping[str, Any]) -> int:
+    return estimate_text_tokens(str(row.get("text") or "")) + 12
+
+
+def _select_evenly(rows: list[dict[str, Any]], budget: int) -> list[dict[str, Any]]:
+    total = sum(_row_tokens(row) for row in rows)
+    if total <= budget or len(rows) <= 2:
+        return rows
+    average = max(1, total // len(rows)); target = max(2, min(len(rows), budget // average))
+    indices = sorted({round(index * (len(rows) - 1) / max(1, target - 1)) for index in range(target)})
+    selected = [rows[index] for index in indices]
+    while len(selected) > 1 and sum(_row_tokens(row) for row in selected) > budget:
+        selected.pop(-2 if len(selected) > 2 else -1)
+    return selected
+
+
+def _chunk_rows(rows: list[dict[str, Any]], budget: int) -> list[list[dict[str, Any]]]:
+    chunks: list[list[dict[str, Any]]] = []; current: list[dict[str, Any]] = []; used = 0
+    for row in rows:
+        cost = _row_tokens(row)
+        if current and used + cost > budget:
+            chunks.append(current); current = []; used = 0
+        current.append(row); used += cost
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 class FunAsrSpeechRecognizer:
     def __init__(
         self,
@@ -262,7 +305,9 @@ class InstructorStructureAnalyzer:
         base_url: str,
         model: str,
         provider: str,
-        prompt_version: str = "video-analysis.v1",
+        prompt_version: str = "video-analysis.v2",
+        max_source_tokens: int = 18_000,
+        window_tokens: int = 6_000,
         client: Any | None = None,
         report_model: Any | None = None,
     ) -> None:
@@ -304,6 +349,8 @@ class InstructorStructureAnalyzer:
         self.model = model
         self.provider = provider
         self.prompt_version = prompt_version
+        self.max_source_tokens = max_source_tokens
+        self.window_tokens = window_tokens
 
     def analyze(
         self,
@@ -312,7 +359,7 @@ class InstructorStructureAnalyzer:
         transcript: TranscriptOutput,
         visuals: VisualOutput,
     ) -> StructureOutput:
-        transcript_rows = [
+        raw_transcript_rows = [
             {
                 "start_ms": row.start_ms,
                 "end_ms": row.end_ms,
@@ -321,7 +368,7 @@ class InstructorStructureAnalyzer:
             }
             for row in transcript.segments
         ]
-        visual_rows = [
+        raw_visual_rows = [
             {
                 "start_ms": row.start_ms,
                 "end_ms": row.end_ms,
@@ -330,6 +377,15 @@ class InstructorStructureAnalyzer:
             }
             for row in visuals.observations
         ]
+        transcript_rows = _deduplicate_rows(raw_transcript_rows)
+        visual_rows = _deduplicate_rows(raw_visual_rows)
+        original_tokens = sum(_row_tokens(row) for row in transcript_rows + visual_rows)
+        visual_budget = min(3_000, max(1_000, self.max_source_tokens // 5))
+        selected_visuals = _select_evenly(visual_rows, visual_budget)
+        transcript_budget = max(1_000, self.max_source_tokens - sum(_row_tokens(row) for row in selected_visuals))
+        selected_transcript = _select_evenly(transcript_rows, transcript_budget)
+        windows = _chunk_rows(selected_transcript, self.window_tokens)
+        selected_tokens = sum(_row_tokens(row) for row in selected_transcript + selected_visuals)
         provider_options: dict[str, Any] = {}
         if self.provider.strip().lower() == "deepseek":
             provider_options["extra_body"] = {"thinking": {"type": "disabled"}}
@@ -353,10 +409,16 @@ class InstructorStructureAnalyzer:
                         {
                             "video_id": job.video_id,
                             "duration_ms": media.info.duration_ms,
-                            "transcript": transcript_rows,
-                            "visual_evidence": visual_rows,
+                            "transcript_windows": windows,
+                            "visual_evidence": selected_visuals,
+                            "input_budget": {
+                                "estimated_source_tokens": original_tokens,
+                                "estimated_model_input_tokens": selected_tokens + 1_200,
+                                "maximum_source_tokens": self.max_source_tokens,
+                                "coverage_percent": 100 if original_tokens == 0 else round(selected_tokens / original_tokens * 100),
+                            },
                         }
-                    )[:300_000],
+                    ),
                 },
             ],
             **provider_options,
@@ -370,8 +432,20 @@ class InstructorStructureAnalyzer:
         ]
         if not report["evidence"]:
             raise RuntimeError("model report did not preserve exact source evidence")
+        report["analysis_meta"] = {
+            "mode": "full" if selected_tokens >= original_tokens else "budgeted",
+            "estimated_source_tokens": original_tokens,
+            "estimated_model_input_tokens": selected_tokens + 1_200,
+            "maximum_source_tokens": self.max_source_tokens,
+            "source_segments": len(raw_transcript_rows),
+            "analyzed_segments": len(selected_transcript),
+            "deduplicated_segments": len(transcript_rows),
+            "chunk_count": len(windows),
+            "coverage_percent": 100 if original_tokens == 0 else min(100, round(selected_tokens / original_tokens * 100)),
+            "duration_minutes": round(media.info.duration_ms / 60_000, 1),
+        }
         return StructureOutput(
-            "analysis.v1",
+            "analysis.v2",
             report,
             _confidence(confidence),
             self.provider,

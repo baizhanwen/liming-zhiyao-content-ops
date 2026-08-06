@@ -189,6 +189,28 @@ class ProviderTests(unittest.TestCase):
             {"thinking": {"type": "disabled"}},
         )
 
+    def test_long_transcript_is_deduplicated_windowed_and_capped(self):
+        evidence_text = FakeReport().model_dump()["evidence"][0]["text"]
+        segments = [TranscriptSegment(0, 1000, evidence_text, 94)]
+        segments.extend(
+            TranscriptSegment(index * 1000, (index + 1) * 1000, f"segment-{index}-" + "content" * 8, 90)
+            for index in range(1, 40)
+        )
+        analyzer = InstructorStructureAnalyzer(
+            api_key="", base_url="https://example.invalid/v1", model="fixture", provider="test",
+            client=FakeClient(), report_model=object, max_source_tokens=240, window_tokens=90,
+        )
+        result = analyzer.analyze(
+            ClaimedJob("job", "org", "project", "video", "upload", "analyzing", 84, 4, {}),
+            NormalizedMedia(Path("video.mp4"), None, MediaInfo(1_800_000, 1080, 1920, "h264", "aac")),
+            TranscriptOutput("zh-CN", tuple(segments), 90), VisualOutput(),
+        )
+        meta = result.report["analysis_meta"]
+        self.assertEqual(meta["mode"], "budgeted")
+        self.assertLess(meta["analyzed_segments"], meta["source_segments"])
+        self.assertGreater(meta["chunk_count"], 1)
+        self.assertLessEqual(meta["coverage_percent"], 100)
+
     def test_public_resolver_returns_metadata_and_metrics(self):
         captured = {}
 

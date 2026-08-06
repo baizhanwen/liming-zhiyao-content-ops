@@ -2,7 +2,7 @@ import unittest
 import urllib.error
 
 from liming_analyzer.api_client import AnalysisResult, ClaimedJob
-from liming_analyzer.worker import process_once, run_forever
+from liming_analyzer.worker import classify_worker_error, process_once, run_forever
 
 
 class FakeClient:
@@ -42,6 +42,11 @@ class WorkerTests(unittest.TestCase):
         self.assertTrue(process_once(client, processor))
         self.assertEqual(client.failed, 1)
         self.assertEqual(client.completed, 0)
+
+    def test_failures_are_classified_into_actionable_codes(self):
+        self.assertEqual(classify_worker_error(RuntimeError("Fresh cookies are needed"))[0], "DOUYIN_COOKIE_EXPIRED")
+        self.assertEqual(classify_worker_error(RuntimeError("ffmpeg failed"))[0], "MEDIA_PROCESSING_FAILED")
+        self.assertEqual(classify_worker_error(RuntimeError("429 rate limit"))[0], "MODEL_RATE_LIMITED")
 
     def test_success_submits_completion_once(self):
         client = FakeClient(self.job)

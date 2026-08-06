@@ -1,4 +1,5 @@
 import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess, hashInvitationToken } from "../../../../db/runtime";
+import { analyzerReadinessError, readAnalyzerReadiness } from "../../../../lib/analyzer-readiness";
 import { apiError, errorResponse } from "../../../../lib/api-response";
 import { readRequestIdentity } from "../../../../lib/request-auth";
 import { checkOrganizationQuota } from "../../../../lib/operations";
@@ -39,6 +40,8 @@ export async function POST(request: Request) {
         job: canonical.job_id ? { id: canonical.job_id, video_id: canonical.id, status: canonical.job_status, progress: canonical.progress, current_stage: canonical.current_stage, error_code: canonical.error_code, error_message: canonical.error_message, retry_count: canonical.retry_count, created_at: canonical.job_created_at, updated_at: canonical.job_updated_at } : { id: `reused-${canonical.id}`, video_id: canonical.id, status: canonical.status === "ready" ? "completed" : "pending", progress: canonical.status === "ready" ? 100 : 0, current_stage: "复用公司素材库分析", retry_count: 0, created_at: canonical.created_at, updated_at: canonical.created_at },
       });
     }
+    const readinessIssue = analyzerReadinessError(await readAnalyzerReadiness(organizationId), true);
+    if (readinessIssue) return apiError(readinessIssue.code, readinessIssue.message, 503);
     const quota = await checkOrganizationQuota(organizationId, user.id, "analyses");
     if (!quota.allowed) return apiError("ANALYSIS_QUOTA_EXCEEDED", `本月分析任务已达到 ${quota.limit} 次套餐上限。`, 429, { usage: quota.current, limit: quota.limit });
     const videoId = crypto.randomUUID(); const jobId = crypto.randomUUID();

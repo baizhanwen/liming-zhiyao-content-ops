@@ -1,7 +1,6 @@
-import { env } from "cloudflare:workers";
-import { canWriteProjectAccess, getD1, getMediaBucket, getProjectAccess } from "../../../db/runtime";
+import { canWriteProjectAccess, getD1, getProjectAccess } from "../../../db/runtime";
+import { readAnalyzerReadiness } from "../../../lib/analyzer-readiness";
 import { apiError, errorResponse } from "../../../lib/api-response";
-import { douyinCookieObjectKey } from "../../../lib/douyin-cookie-snapshot";
 import { readRequestIdentity } from "../../../lib/request-auth";
 
 export async function GET(request: Request) {
@@ -15,7 +14,7 @@ export async function GET(request: Request) {
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
     if (!access) return apiError("ACCESS_DENIED", "无权访问该项目的视频。", 403);
     const db = getD1();
-    const [videos, jobs, lastWorkerHeartbeat, cookieSnapshot] = await Promise.all([
+    const [videos, jobs, readiness] = await Promise.all([
       db.prepare(`
         SELECT * FROM (
           SELECT v.id, v.platform, v.source_type, v.source_url, v.title, v.author_name, v.status, v.error_message, v.created_at, a.filename, a.size_bytes,
@@ -34,7 +33,7 @@ export async function GET(request: Request) {
         ) ORDER BY created_at DESC LIMIT 100
       `).bind(organizationId, projectId, organizationId, projectId).all(),
       db.prepare(`
-        SELECT id, video_id, status, progress, current_stage, error_code, error_message, retry_count, created_at, updated_at
+        SELECT id, video_id, status, progress, current_stage, error_code, error_message, retry_count, lease_expires_at, created_at, updated_at
         FROM analysis_jobs
         WHERE organization_id = ? AND (project_id = ? OR video_id IN (
           SELECT library.source_video_id FROM project_video_references refs
@@ -42,22 +41,19 @@ export async function GET(request: Request) {
           WHERE refs.organization_id = ? AND refs.project_id = ? AND refs.purpose = 'analysis'
         )) ORDER BY created_at DESC LIMIT 150
       `).bind(organizationId, projectId, organizationId, projectId).all(),
-      db.prepare("SELECT MAX(last_seen_at) AS value FROM analyzer_workers WHERE status = 'online'").first<{ value: string | null }>(),
-      getMediaBucket().head(douyinCookieObjectKey(organizationId)),
+      readAnalyzerReadiness(organizationId),
     ]);
-    const runtime = env as typeof env & { ANALYZER_SERVICE_TOKEN?: string; ANALYZER_LLM_API_KEY?: string; ANALYZER_LLM_BASE_URL?: string; ANALYZER_LLM_MODEL?: string; ANALYZER_LLM_PROVIDER?: string; ANALYZER_YTDLP_COOKIES_FROM_BROWSER?: string; ANALYZER_YTDLP_COOKIE_FILE?: string };
-    const token = runtime.ANALYZER_SERVICE_TOKEN?.trim() ?? "";
-    const workerLastSeen = lastWorkerHeartbeat?.value ?? null;
     return Response.json({
       videos: videos.results, jobs: jobs.results, canWrite: canWriteProjectAccess(access),
       service: {
-        credentialConfigured: Boolean(token && !/change-me|replace-with/i.test(token)),
-        modelConfigured: Boolean(runtime.ANALYZER_LLM_API_KEY?.trim() && runtime.ANALYZER_LLM_BASE_URL?.trim() && runtime.ANALYZER_LLM_MODEL?.trim() && runtime.ANALYZER_LLM_PROVIDER?.trim()),
-        publicLinkCookieConfigured: Boolean(cookieSnapshot || runtime.ANALYZER_YTDLP_COOKIE_FILE?.trim() || runtime.ANALYZER_YTDLP_COOKIES_FROM_BROWSER?.trim()),
-        cookieUpdatedAt: cookieSnapshot?.customMetadata?.updatedAt ?? null,
+        credentialConfigured: readiness.credentialConfigured,
+        modelConfigured: readiness.modelConfigured,
+        publicLinkCookieConfigured: readiness.publicLinkCookieConfigured,
+        cookieUpdatedAt: readiness.cookieUpdatedAt,
+        analyzerOnline: readiness.analyzerOnline,
+        lastWorkerHeartbeat: readiness.lastWorkerHeartbeat,
+        checkedAt: readiness.checkedAt,
         canManageCookies: access.organizationRole === "admin",
-        analyzerOnline: Boolean(workerLastSeen && new Date(workerLastSeen).getTime() >= Date.now() - 20_000),
-        lastWorkerHeartbeat: workerLastSeen,
       },
     });
   } catch (error) { return errorResponse(error); }

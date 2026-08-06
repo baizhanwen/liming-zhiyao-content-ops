@@ -93,7 +93,7 @@ class AnalyzerApiClient:
             raise AnalyzerApiError(status, "INVALID_RESPONSE", "response must be an object")
         return data
 
-    def claim(self, lease_seconds: int = 120) -> ClaimedJob | None:
+    def claim(self, lease_seconds: int = 300) -> ClaimedJob | None:
         response = self._post("/api/internal/analysis-jobs/claim", {"workerId": self.worker_id, "leaseSeconds": lease_seconds}, allow_empty=True)
         if response is None:
             return None
@@ -106,7 +106,7 @@ class AnalyzerApiClient:
             progress=int(job["progress"]), version=int(job["version"]), source=job["source"],
         )
 
-    def heartbeat(self, job: ClaimedJob, status: str, progress: int, stage: str, lease_seconds: int = 120) -> ClaimedJob:
+    def heartbeat(self, job: ClaimedJob, status: str, progress: int, stage: str, lease_seconds: int = 300) -> ClaimedJob:
         response = self._post(f"/api/internal/analysis-jobs/{job.id}/heartbeat", {
             "workerId": self.worker_id, "version": job.version, "status": status, "progress": progress,
             "stage": stage, "leaseSeconds": lease_seconds,

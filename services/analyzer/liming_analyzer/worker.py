@@ -5,7 +5,29 @@ import urllib.error
 import uuid
 from collections.abc import Callable
 
-from .api_client import AnalysisResult, AnalyzerApiClient, ClaimedJob, Processor
+from .api_client import AnalysisResult, AnalyzerApiClient, AnalyzerApiError, ClaimedJob, Processor
+
+
+def classify_worker_error(error: Exception) -> tuple[str, str]:
+    message = str(error).strip() or "分析失败"
+    lowered = message.lower()
+    if "cookie" in lowered:
+        return "DOUYIN_COOKIE_EXPIRED", message
+    if any(value in lowered for value in ("yt-dlp", "download", "http error", "source media")):
+        return "SOURCE_DOWNLOAD_FAILED", message
+    if any(value in lowered for value in ("ffmpeg", "ffprobe", "codec", "media processing")):
+        return "MEDIA_PROCESSING_FAILED", message
+    if any(value in lowered for value in ("funasr", "transcript", "speech recognition")):
+        return "TRANSCRIPTION_FAILED", message
+    if any(value in lowered for value in ("paddle", "ocr", "keyframe", "scene")):
+        return "VISUAL_EXTRACTION_FAILED", message
+    if any(value in lowered for value in ("context length", "maximum context", "token limit")):
+        return "MODEL_CONTEXT_LIMIT", message
+    if any(value in lowered for value in ("429", "rate limit", "too many requests")):
+        return "MODEL_RATE_LIMITED", message
+    if any(value in lowered for value in ("deepseek", "openai", "api call", "model report")):
+        return "MODEL_REQUEST_FAILED", message
+    return "WORKER_PROCESSING_FAILED", message
 
 
 def process_once(client: AnalyzerApiClient, processor: Processor) -> bool:
@@ -23,7 +45,12 @@ def process_once(client: AnalyzerApiClient, processor: Processor) -> bool:
     try:
         result: AnalysisResult = processor(job, heartbeat)
     except Exception as error:  # noqa: BLE001 - worker boundary converts failures into job state
-        client.fail(current, result_key, "WORKER_PROCESSING_FAILED", str(error)[:1000] or "analysis failed", "分析失败", current.progress)
+        error_code, error_message = classify_worker_error(error)
+        try:
+            client.fail(current, result_key, error_code, error_message[:1000], "分析失败", current.progress)
+        except AnalyzerApiError as failure_error:
+            if failure_error.status != 409:
+                raise
         return True
     # Transport or lease errors during completion must remain retryable; they are not
     # evidence that media analysis itself failed.
