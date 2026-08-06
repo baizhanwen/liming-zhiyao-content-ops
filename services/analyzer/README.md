@@ -35,6 +35,7 @@ Worker 需要以下环境变量：
 - `ANALYZER_LLM_BASE_URL`
 - `ANALYZER_LLM_MODEL`
 - `ANALYZER_LLM_PROVIDER`
+- `ANALYZER_YTDLP_COOKIES_FROM_BROWSER`：可选，公开视频链接建议设置为 `edge`、`chrome` 或 `firefox`；也可使用 `edge:Default` 指定配置文件。Worker 只在本机读取浏览器 Cookie，不会把 Cookie 上传到网站或数据库。
 - `ANALYZER_ASR_MODEL`，默认 `paraformer-zh`；可切换 `iic/SenseVoiceSmall`
 - `ANALYZER_ASR_DEVICE`，默认 `cpu`
 - `ANALYZER_PADDLE_OCR_DETECTION_MODEL`，默认 `PP-OCRv5_mobile_det`

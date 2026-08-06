@@ -40,6 +40,7 @@ class AnalyzerSettings:
     ffmpeg: str = "ffmpeg"
     ffprobe: str = "ffprobe"
     model_cache: str = field(default_factory=_default_model_cache)
+    yt_dlp_cookies_from_browser: str = ""
 
     @classmethod
     def from_environment(cls) -> AnalyzerSettings:
@@ -69,6 +70,9 @@ class AnalyzerSettings:
             ffmpeg=os.environ.get("ANALYZER_FFMPEG", "ffmpeg").strip(),
             ffprobe=os.environ.get("ANALYZER_FFPROBE", "ffprobe").strip(),
             model_cache=os.environ.get("ANALYZER_MODEL_CACHE", _default_model_cache()).strip(),
+            yt_dlp_cookies_from_browser=os.environ.get(
+                "ANALYZER_YTDLP_COOKIES_FROM_BROWSER", ""
+            ).strip(),
         )
 
 
@@ -102,7 +106,12 @@ def build_analyzer(settings: AnalyzerSettings) -> tuple[AnalyzerApiClient, Analy
         provider=settings.llm_provider,
     )
     pipeline = AnalysisPipeline(
-        PlatformSourceProvider(client, YtDlpPublicVideoResolver()),
+        PlatformSourceProvider(
+            client,
+            YtDlpPublicVideoResolver(
+                cookies_from_browser=settings.yt_dlp_cookies_from_browser,
+            ),
+        ),
         media,
         speech,
         visual,

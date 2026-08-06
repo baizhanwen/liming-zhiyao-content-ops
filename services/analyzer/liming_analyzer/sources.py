@@ -9,6 +9,24 @@ from urllib.parse import urlparse
 from .adapters import AcquiredSource, SourceMetadata
 from .api_client import AnalyzerApiClient, ClaimedJob
 
+SUPPORTED_COOKIE_BROWSERS = frozenset({
+    "brave", "chrome", "chromium", "edge", "firefox", "opera", "safari", "vivaldi", "whale",
+})
+
+
+def parse_browser_cookie_spec(value: str) -> tuple[str, str | None, None, None] | None:
+    clean = value.strip()
+    if not clean:
+        return None
+    if len(clean) > 500 or "\r" in clean or "\n" in clean:
+        raise ValueError("browser cookie configuration is invalid")
+    browser, separator, profile = clean.partition(":")
+    browser = browser.strip().lower()
+    if browser not in SUPPORTED_COOKIE_BROWSERS:
+        choices = ", ".join(sorted(SUPPORTED_COOKIE_BROWSERS))
+        raise ValueError(f"unsupported cookie browser: {browser}; choose one of {choices}")
+    return browser, profile.strip() if separator and profile.strip() else None, None, None
+
 
 class PublicVideoResolver(Protocol):
     def download(self, url: str, destination: Path) -> AcquiredSource | Path: ...
@@ -54,7 +72,12 @@ def _published_at(value: Any) -> str | None:
 class YtDlpPublicVideoResolver:
     """Best-effort public resolver kept behind an adapter because platform support changes."""
 
-    def __init__(self, factory: Callable[[Mapping[str, Any]], Any] | None = None) -> None:
+    def __init__(
+        self,
+        factory: Callable[[Mapping[str, Any]], Any] | None = None,
+        *,
+        cookies_from_browser: str = "",
+    ) -> None:
         if factory is None:
             try:
                 from yt_dlp import YoutubeDL
@@ -62,6 +85,7 @@ class YtDlpPublicVideoResolver:
                 raise RuntimeError("yt-dlp is required for public video links") from error
             factory = YoutubeDL
         self._factory = factory
+        self._cookies_from_browser = parse_browser_cookie_spec(cookies_from_browser)
 
     def download(self, url: str, destination: Path) -> AcquiredSource:
         if not is_allowed_douyin_url(url):
@@ -78,8 +102,25 @@ class YtDlpPublicVideoResolver:
             "socket_timeout": 30,
             "retries": 2,
         }
+        if self._cookies_from_browser is not None:
+            options["cookiesfrombrowser"] = self._cookies_from_browser
         with self._factory(options) as downloader:
-            info = downloader.extract_info(url, download=True)
+            try:
+                info = downloader.extract_info(url, download=True)
+            except Exception as error:
+                message = str(error)
+                if "cookie" in message.lower():
+                    if self._cookies_from_browser is None:
+                        raise RuntimeError(
+                            "抖音要求使用新鲜浏览器 Cookie。请配置 "
+                            "ANALYZER_YTDLP_COOKIES_FROM_BROWSER=edge 后重启分析服务，或改用本地上传。"
+                        ) from error
+                    browser = self._cookies_from_browser[0]
+                    raise RuntimeError(
+                        f"抖音 Cookie 已失效或无法从 {browser} 读取。请用该浏览器打开并刷新目标视频，"
+                        "完全退出浏览器后重试；仍失败时请改用本地上传。"
+                    ) from error
+                raise
             if not isinstance(info, dict):
                 raise TypeError("public resolver returned invalid metadata")
             candidates: list[Path] = []

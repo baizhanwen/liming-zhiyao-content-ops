@@ -48,4 +48,6 @@ test("analysis workspace reports readiness and uploads multiple files sequential
   assert.match(videos, /credentialConfigured/);
   assert.match(videos, /modelConfigured/);
   assert.match(videos, /lastWorkerHeartbeat/);
+  assert.match(videos, /publicLinkCookieConfigured/);
+  assert.match(workspace, /抖音链接 Cookie/);
 });

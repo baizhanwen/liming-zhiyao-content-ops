@@ -164,14 +164,24 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(result.confidence, 90)
 
     def test_public_resolver_returns_metadata_and_metrics(self):
+        captured = {}
+
+        def factory(options):
+            captured.update(options)
+            return FakeDownloader(options)
+
         with tempfile.TemporaryDirectory() as directory:
-            result = YtDlpPublicVideoResolver(FakeDownloader).download(
+            result = YtDlpPublicVideoResolver(
+                factory,
+                cookies_from_browser="edge:Default",
+            ).download(
                 "https://www.douyin.com/video/1",
                 Path(directory) / "source",
             )
         self.assertEqual(result.metadata.platform_work_id, "work-1")
         self.assertEqual(result.metadata.plays, 1000)
         self.assertEqual(result.metadata.duration_sec, 12)
+        self.assertEqual(captured["cookiesfrombrowser"], ("edge", "Default", None, None))
 
     def test_artifact_store_persists_subtitles_and_keyframes(self):
         client = ArtifactClient()

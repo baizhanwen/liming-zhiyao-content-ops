@@ -10,6 +10,9 @@ LOCAL_DEV_USER_NAME=本地管理员
 ANALYZER_SERVICE_TOKEN=local-change-me-before-using-analyzer
 ANALYZER_BASE_URL=http://127.0.0.1:3000
 ANALYZER_WORKER_ID=analyzer-01
+# Read fresh Douyin cookies from this browser on the analyzer host.
+# Optional profile syntax: edge:Default. Leave empty when only using uploads.
+ANALYZER_YTDLP_COOKIES_FROM_BROWSER=edge
 
 # Optional OpenAI-compatible generation/analysis provider.
 CONTENT_MODEL_PROVIDER=deepseek
