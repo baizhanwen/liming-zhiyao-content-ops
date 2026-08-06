@@ -35,6 +35,9 @@ class ClaimedJob:
     version: int
     source: Mapping[str, Any]
     analysis_profile: str = "standard"
+    checkpoint_stage: str | None = None
+    checkpoint: Mapping[str, Any] | None = None
+    resume_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -106,6 +109,9 @@ class AnalyzerApiClient:
             video_id=str(job["video_id"]), source_type=str(job["source_type"]), status=str(job["status"]),
             progress=int(job["progress"]), version=int(job["version"]), source=job["source"],
             analysis_profile=str(job.get("analysis_profile") or "standard"),
+            checkpoint_stage=str(job["checkpoint_stage"]) if job.get("checkpoint_stage") else None,
+            checkpoint=job["checkpoint"] if isinstance(job.get("checkpoint"), dict) else None,
+            resume_count=int(job.get("resume_count") or 0),
         )
 
     def heartbeat(self, job: ClaimedJob, status: str, progress: int, stage: str, lease_seconds: int = 300) -> ClaimedJob:
@@ -116,6 +122,15 @@ class AnalyzerApiClient:
         assert response is not None
         updated = response["job"]
         return replace(job, status=str(updated["status"]), progress=int(updated["progress"]), version=int(updated["version"]))
+
+    def save_checkpoint(self, job: ClaimedJob, stage: str, checkpoint: Mapping[str, Any]) -> Mapping[str, Any]:
+        if stage != "evidence_ready":
+            raise ValueError("unsupported analysis checkpoint stage")
+        response = self._post(f"/api/internal/analysis-jobs/{job.id}/checkpoint", {
+            "workerId": self.worker_id, "version": job.version, "stage": stage, "checkpoint": checkpoint,
+        })
+        assert response is not None
+        return response
 
     def complete(self, job: ClaimedJob, result_key: str, result: AnalysisResult) -> Mapping[str, Any]:
         payload: dict[str, Any] = {
@@ -250,6 +265,7 @@ class AnalyzerApiClient:
         except urllib.error.HTTPError as error:
             partial.unlink(missing_ok=True)
             if error.code == 404:
+                destination.unlink(missing_ok=True)
                 return False
             payload = json.loads(error.read().decode("utf-8")) if error.fp else {}
             detail = payload.get("error", {}) if isinstance(payload, dict) else {}

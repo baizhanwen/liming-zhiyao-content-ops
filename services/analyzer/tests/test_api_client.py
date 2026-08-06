@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -49,6 +50,26 @@ class ApiClientTests(unittest.TestCase):
         updated = client.heartbeat(job, "processing", 20, "规范化媒体")
         self.assertEqual(updated.version, 4)
         self.assertEqual(transport.requests[0][3]["version"], 3)
+
+    def test_checkpoint_uses_current_lease_version_and_claim_restores_it(self):
+        checkpoint = {"checkpoint_version": 1, "transcript": {"segments": []}}
+        transport = FakeTransport([
+            (201, {"checkpoint": {"stage": "evidence_ready"}}),
+            (200, {"job": {
+                "id": "job-1", "organization_id": "org-1", "project_id": "project-1", "video_id": "video-1",
+                "source_type": "url", "status": "queued", "progress": 82, "version": 4, "source": {},
+                "checkpoint_stage": "evidence_ready", "checkpoint": checkpoint, "resume_count": 1,
+            }}),
+        ])
+        client = AnalyzerApiClient("https://example.test", "secret", "worker-01", transport)
+        current = ClaimedJob("job-1", "org-1", "project-1", "video-1", "url", "extracting", 70, 3, {})
+        client.save_checkpoint(current, "evidence_ready", checkpoint)
+        restored = client.claim()
+        self.assertEqual(transport.requests[0][1], "https://example.test/api/internal/analysis-jobs/job-1/checkpoint")
+        self.assertEqual(transport.requests[0][3]["version"], 3)
+        self.assertEqual(restored.checkpoint_stage, "evidence_ready")
+        self.assertEqual(restored.resume_count, 1)
+        self.assertEqual(restored.checkpoint["checkpoint_version"], 1)
 
     def test_completion_uses_result_key_for_idempotency(self):
         transport = FakeTransport([(200, {"job": {"status": "completed"}, "idempotent": False})])
@@ -144,6 +165,16 @@ class ApiClientTests(unittest.TestCase):
         request = opener.call_args.args[0]
         self.assertTrue(request.full_url.endswith("/api/internal/analysis-jobs/job-1/cookies"))
         self.assertEqual(request.get_header("X-worker-id"), "worker-01")
+
+    def test_missing_cookie_snapshot_removes_stale_local_file(self):
+        client = AnalyzerApiClient("https://example.test", "secret", "worker-01")
+        job = ClaimedJob("job-1", "org-1", "project-1", "video-1", "url", "queued", 1, 3, {})
+        missing = urllib.error.HTTPError("https://example.test/cookies", 404, "Not Found", {}, None)
+        with tempfile.TemporaryDirectory() as temporary, patch("liming_analyzer.api_client.urllib.request.urlopen", side_effect=missing):
+            destination = Path(temporary) / "cookies.txt"
+            destination.write_text("stale cookie", encoding="utf-8")
+            self.assertFalse(client.download_cookie_snapshot(job, destination))
+            self.assertFalse(destination.exists())
 
 
 if __name__ == "__main__":

@@ -133,6 +133,7 @@ export const analysisJobs = sqliteTable("analysis_jobs", {
   analysisProfile: text("analysis_profile", { enum: ["economy", "standard", "deep"] }).notNull().default("standard"),
   progress: integer("progress").notNull().default(0), currentStage: text("current_stage"), errorCode: text("error_code"), errorMessage: text("error_message"), retryCount: integer("retry_count").notNull().default(0),
   leaseOwner: text("lease_owner"), leaseExpiresAt: text("lease_expires_at"), lastHeartbeatAt: text("last_heartbeat_at"), attemptCount: integer("attempt_count").notNull().default(0), version: integer("version").notNull().default(0), resultKey: text("result_key"),
+  checkpointStage: text("checkpoint_stage"), checkpointJson: text("checkpoint_json"), checkpointUpdatedAt: text("checkpoint_updated_at"), resumeCount: integer("resume_count").notNull().default(0),
   createdBy: text("created_by").notNull(), updatedBy: text("updated_by").notNull(), completedAt: text("completed_at"), ...timestamps,
 }, (table) => [
   uniqueIndex("idx_analysis_jobs_org_idempotency").on(table.organizationId, table.idempotencyKey),

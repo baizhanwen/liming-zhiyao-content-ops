@@ -131,6 +131,10 @@ class AnalysisArtifactStore(Protocol):
     ) -> VisualOutput: ...
 
 
+class AnalysisCheckpointStore(Protocol):
+    def save(self, job: ClaimedJob, stage: str, checkpoint: Mapping[str, Any]) -> None: ...
+
+
 Heartbeat = Callable[[str, int, str], ClaimedJob]
 
 

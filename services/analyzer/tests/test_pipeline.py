@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 
 from liming_analyzer.adapters import (
     Keyframe,
@@ -73,6 +74,41 @@ class PipelineTests(unittest.TestCase):
 
         self.assertEqual(result.transcript.full_text, "人工校正后的原文")
         self.assertEqual(structure.inputs[2].segments[0].text, "人工校正后的原文")
+
+    def test_failed_structure_analysis_resumes_from_persisted_evidence_checkpoint(self):
+        class Checkpoints:
+            saved = None
+
+            def save(self, _job, stage, checkpoint):
+                self.stage = stage
+                self.saved = checkpoint
+
+        class FailingStructure:
+            def analyze(self, *_):
+                raise RuntimeError("model report failed")
+
+        checkpoints = Checkpoints()
+        job = ClaimedJob("job-3", "org-1", "project-1", "video-1", "upload", "queued", 1, 2, {})
+        with self.assertRaisesRegex(RuntimeError, "model report failed"):
+            AnalysisPipeline(Source(), Media(), Speech(), Visual(), FailingStructure(), checkpoints=checkpoints).process(job, lambda *_: job)
+        self.assertEqual(checkpoints.stage, "evidence_ready")
+        self.assertIsNotNone(checkpoints.saved)
+
+        class Forbidden:
+            def __getattr__(self, name):
+                raise AssertionError(f"checkpoint resume must not use {name}")
+
+        structure = Structure(); stages = []
+        resumed = replace(job, status="queued", progress=82, version=4, checkpoint_stage="evidence_ready", checkpoint=checkpoints.saved, resume_count=1)
+
+        def heartbeat(status, progress, stage):
+            stages.append((status, progress, stage))
+            return replace(resumed, status=status, progress=progress)
+
+        result = AnalysisPipeline(Forbidden(), Forbidden(), Forbidden(), Forbidden(), structure).process(resumed, heartbeat)
+        self.assertEqual([item[0] for item in stages], ["analyzing"])
+        self.assertIn("检查点恢复", stages[0][2])
+        self.assertEqual(result.transcript.full_text, "先提出问题")
 
 
 if __name__ == "__main__":

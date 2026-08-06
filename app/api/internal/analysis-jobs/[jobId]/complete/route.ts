@@ -22,7 +22,7 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     if (job.version !== payload.version) return apiError("JOB_VERSION_CONFLICT", "任务版本已发生变化。", 409);
 
     const actor = `service:${payload.workerId}`; const finalVersion = payload.version + 1; const statements = [
-      db.prepare("UPDATE analysis_jobs SET status = 'completed', progress = 100, current_stage = '分析完成', error_code = NULL, error_message = NULL, completed_at = ?, lease_owner = NULL, lease_expires_at = NULL, result_key = ?, version = version + 1, updated_by = ?, updated_at = ? WHERE id = ? AND status = 'analyzing' AND lease_owner = ? AND version = ? AND lease_expires_at > ?")
+      db.prepare("UPDATE analysis_jobs SET status = 'completed', progress = 100, current_stage = '分析完成', error_code = NULL, error_message = NULL, completed_at = ?, lease_owner = NULL, lease_expires_at = NULL, result_key = ?, checkpoint_stage = NULL, checkpoint_json = NULL, checkpoint_updated_at = NULL, version = version + 1, updated_by = ?, updated_at = ? WHERE id = ? AND status = 'analyzing' AND lease_owner = ? AND version = ? AND lease_expires_at > ?")
         .bind(nowIso, payload.resultKey, actor, nowIso, jobId, payload.workerId, payload.version, nowIso),
     ];
     if (payload.transcript) {

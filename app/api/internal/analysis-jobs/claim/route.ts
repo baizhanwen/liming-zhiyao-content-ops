@@ -3,7 +3,7 @@ import { apiError, errorResponse } from "../../../../../lib/api-response";
 import { normalizeLeaseSeconds, normalizeWorkerId, requireAnalyzerService } from "../../../../../lib/service-auth";
 import type { WorkerJobRow } from "../../../../../lib/analysis-worker";
 
-type ClaimedJob = WorkerJobRow & { source_type: "url" | "upload"; source_ref: string; input_transcript_id: string | null; analysis_profile: "economy" | "standard" | "deep" };
+type ClaimedJob = WorkerJobRow & { source_type: "url" | "upload"; source_ref: string; input_transcript_id: string | null; analysis_profile: "economy" | "standard" | "deep"; checkpoint_stage: string | null; checkpoint_json: string | null; checkpoint_updated_at: string | null; resume_count: number };
 type JobSource = { source_url: string | null; media_asset_id: string | null; r2_key: string | null; content_type: string | null; filename: string | null; size_bytes: number | null; sha256: string | null; transcript_id: string | null; transcript_version: number | null; transcript_language: string | null; transcript_segments_json: string | null };
 
 export const dynamic = "force-dynamic";
@@ -23,9 +23,10 @@ export async function POST(request: Request) {
     const job = await db.prepare(`
       UPDATE analysis_jobs
       SET status = CASE WHEN status = 'pending' THEN 'queued' ELSE status END,
-          progress = CASE WHEN status = 'pending' THEN 1 ELSE progress END,
-          current_stage = CASE WHEN status = 'pending' THEN '分析服务已领取任务' ELSE current_stage END,
+          progress = CASE WHEN status = 'pending' AND checkpoint_stage = 'evidence_ready' THEN 82 WHEN status = 'pending' THEN 1 ELSE progress END,
+          current_stage = CASE WHEN checkpoint_stage = 'evidence_ready' THEN '分析服务已领取恢复任务' WHEN status = 'pending' THEN '分析服务已领取任务' ELSE current_stage END,
           lease_owner = ?, lease_expires_at = ?, last_heartbeat_at = ?, attempt_count = attempt_count + 1,
+          resume_count = resume_count + CASE WHEN checkpoint_stage = 'evidence_ready' THEN 1 ELSE 0 END,
           version = version + 1, updated_by = ?, updated_at = ?
       WHERE id = (
         SELECT j.id FROM analysis_jobs j
@@ -38,7 +39,7 @@ export async function POST(request: Request) {
         LIMIT 1
       )
       RETURNING id, organization_id, project_id, video_id, input_transcript_id, source_type, source_ref, analysis_profile, status, progress, current_stage,
-        lease_owner, lease_expires_at, attempt_count, version, result_key
+        lease_owner, lease_expires_at, attempt_count, version, result_key, checkpoint_stage, checkpoint_json, checkpoint_updated_at, resume_count
     `).bind(workerId, leaseExpiresAt, nowIso, actor, nowIso, nowIso).first<ClaimedJob>();
     if (!job) return new Response(null, { status: 204 });
 
@@ -60,7 +61,7 @@ export async function POST(request: Request) {
       return apiError("JOB_TRANSCRIPT_UNAVAILABLE", "人工校正版不存在或范围不匹配。", 409);
     }
     await db.prepare("INSERT INTO analysis_job_events (id, organization_id, project_id, job_id, video_id, event_type, to_status, progress, worker_id, details_json, created_at) VALUES (?, ?, ?, ?, ?, 'claimed', ?, ?, ?, ?, ?)")
-      .bind(crypto.randomUUID(), job.organization_id, job.project_id, job.id, job.video_id, job.status, job.progress, workerId, JSON.stringify({ attempt: job.attempt_count, leaseExpiresAt }), nowIso).run();
+      .bind(crypto.randomUUID(), job.organization_id, job.project_id, job.id, job.video_id, job.status, job.progress, workerId, JSON.stringify({ attempt: job.attempt_count, leaseExpiresAt, checkpointStage: job.checkpoint_stage, resumeCount: job.resume_count }), nowIso).run();
     let manualTranscript: { id: string; version: number; language: string; segments: unknown[] } | null = null;
     if (source.transcript_id && source.transcript_language && source.transcript_segments_json) {
       try {
@@ -80,6 +81,14 @@ export async function POST(request: Request) {
       size_bytes: source.size_bytes,
       sha256: source.sha256,
     };
-    return Response.json({ job: { ...job, source: { ...safeSource, manual_transcript: manualTranscript } } });
+    let checkpoint: Record<string, unknown> | null = null;
+    if (job.checkpoint_stage === "evidence_ready" && job.checkpoint_json) {
+      try {
+        const parsed = JSON.parse(job.checkpoint_json) as unknown;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) checkpoint = parsed as Record<string, unknown>;
+      } catch { checkpoint = null; }
+    }
+    const { checkpoint_json: _checkpointJson, ...safeJob } = job;
+    return Response.json({ job: { ...safeJob, checkpoint, source: { ...safeSource, manual_transcript: manualTranscript } } });
   } catch (error) { return errorResponse(error); }
 }

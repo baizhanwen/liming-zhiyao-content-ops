@@ -30,3 +30,24 @@ export async function POST(request: Request) {
     return errorResponse(error);
   }
 }
+
+export async function DELETE(request: Request) {
+  const identity = await readRequestIdentity(request);
+  if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再清除抖音 Cookie。", 401);
+  try {
+    const organizationId = request.headers.get("x-organization-id")?.trim() ?? "";
+    const projectId = request.headers.get("x-project-id")?.trim() ?? "";
+    if (!organizationId || !projectId) return apiError("PROJECT_SCOPE_REQUIRED", "缺少公司或项目范围。", 400);
+    const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
+    if (!access || access.organizationRole !== "admin") return apiError("ADMIN_REQUIRED", "只有公司管理员可以清除抖音 Cookie。", 403);
+
+    const user = await ensureUser(identity); const now = new Date().toISOString(); const key = douyinCookieObjectKey(organizationId);
+    const existed = Boolean(await getMediaBucket().head(key));
+    await getMediaBucket().delete(key);
+    await getD1().prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'analyzer.cookies_deleted', 'analyzer_settings', ?, ?, ?)")
+      .bind(crypto.randomUUID(), organizationId, projectId, user.id, organizationId, JSON.stringify({ existed }), now).run();
+    return Response.json({ configured: false, deleted: existed }, { headers: { "cache-control": "no-store" } });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}

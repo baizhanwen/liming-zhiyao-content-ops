@@ -109,6 +109,7 @@ def build_analyzer(settings: AnalyzerSettings) -> tuple[AnalyzerApiClient, Analy
         model=settings.llm_model,
         provider=settings.llm_provider,
     )
+    artifact_store = ApiArtifactStore(client)
     pipeline = AnalysisPipeline(
         PlatformSourceProvider(
             client,
@@ -122,6 +123,7 @@ def build_analyzer(settings: AnalyzerSettings) -> tuple[AnalyzerApiClient, Analy
         speech,
         visual,
         structure,
-        ApiArtifactStore(client),
+        artifact_store,
+        artifact_store,
     )
     return client, pipeline

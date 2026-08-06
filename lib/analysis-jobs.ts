@@ -2,7 +2,7 @@ export const analysisJobStatuses = ["pending", "queued", "downloading", "process
 export type AnalysisJobStatus = (typeof analysisJobStatuses)[number];
 
 const transitions: Record<AnalysisJobStatus, readonly AnalysisJobStatus[]> = {
-  pending: ["queued", "cancelled"], queued: ["downloading", "processing", "cancelled", "failed"], downloading: ["processing", "failed", "cancelled"],
+  pending: ["queued", "cancelled"], queued: ["downloading", "processing", "analyzing", "cancelled", "failed"], downloading: ["processing", "failed", "cancelled"],
   processing: ["transcribing", "extracting", "failed", "cancelled"], transcribing: ["extracting", "analyzing", "failed", "cancelled"],
   extracting: ["analyzing", "failed", "cancelled"], analyzing: ["completed", "failed", "cancelled"], completed: [], failed: ["pending"], cancelled: ["pending"],
 };

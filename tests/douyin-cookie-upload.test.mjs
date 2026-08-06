@@ -22,10 +22,14 @@ test("Douyin cookies can be refreshed from the analysis workspace without exposi
   ]);
   assert.match(uploadRoute, /organizationRole !== "admin"/);
   assert.match(uploadRoute, /getMediaBucket\(\)\.put/);
+  assert.match(uploadRoute, /export async function DELETE/);
+  assert.match(uploadRoute, /getMediaBucket\(\)\.delete/);
+  assert.match(uploadRoute, /analyzer\.cookies_deleted/);
   assert.doesNotMatch(uploadRoute, /contents.*Response\.json/);
   assert.match(workerRoute, /lease_owner = \?/);
   assert.match(workerRoute, /lease_expires_at > \?/);
   assert.match(workspace, /更新 Cookie/);
+  assert.match(workspace, /清除 Cookie/);
   assert.match(workspace, /accept="\.txt,text\/plain"/);
   assert.match(workerClient, /download_cookie_snapshot/);
 });

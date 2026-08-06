@@ -33,7 +33,7 @@ export async function GET(request: Request) {
         ) ORDER BY created_at DESC LIMIT 100
       `).bind(organizationId, projectId, organizationId, projectId).all(),
       db.prepare(`
-        SELECT id, video_id, status, analysis_profile, progress, current_stage, error_code, error_message, retry_count, lease_expires_at, created_at, updated_at
+        SELECT id, video_id, status, analysis_profile, progress, current_stage, error_code, error_message, retry_count, lease_expires_at, checkpoint_stage, checkpoint_updated_at, resume_count, created_at, updated_at
         FROM analysis_jobs
         WHERE organization_id = ? AND (project_id = ? OR video_id IN (
           SELECT library.source_video_id FROM project_video_references refs

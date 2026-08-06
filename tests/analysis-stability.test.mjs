@@ -30,6 +30,28 @@ test("analysis jobs can be cancelled or recovered after an expired lease", async
   assert.match(workspace, /jobActionId/);
 });
 
+test("analysis retries resume from a durable evidence checkpoint", async () => {
+  const [schema, migration, checkpoint, claim, retry, complete, pipeline, workspace] = await Promise.all([
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0014_analysis_checkpoints.sql", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/internal/analysis-jobs/[jobId]/checkpoint/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/internal/analysis-jobs/claim/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/analysis-jobs/[jobId]/retry/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/internal/analysis-jobs/[jobId]/complete/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../services/analyzer/liming_analyzer/pipeline.py", import.meta.url), "utf8"),
+    readFile(new URL("../components/AnalysisWorkspace.tsx", import.meta.url), "utf8"),
+  ]);
+  assert.match(schema, /checkpointStage: text\("checkpoint_stage"\)/);
+  assert.match(migration, /ADD `checkpoint_json`/);
+  assert.match(checkpoint, /parseCheckpointPayload/);
+  assert.match(checkpoint, /lease_expires_at > \?/);
+  assert.match(claim, /checkpoint_stage = 'evidence_ready'/);
+  assert.match(retry, /等待从证据检查点继续结构分析/);
+  assert.match(complete, /checkpoint_json = NULL/);
+  assert.match(pipeline, /_restore_evidence_checkpoint/);
+  assert.match(workspace, /从检查点继续/);
+});
+
 test("long videos use a bounded evidence budget and report coverage", async () => {
   const [provider, detail, worker] = await Promise.all([
     readFile(new URL("../services/analyzer/liming_analyzer/providers.py", import.meta.url), "utf8"),

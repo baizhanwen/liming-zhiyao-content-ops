@@ -8,6 +8,7 @@ const SAFE_CODE = /^[A-Z][A-Z0-9_]{2,63}$/;
 export type WorkerJobRow = {
   id: string; organization_id: string; project_id: string; video_id: string; status: AnalysisJobStatus; progress: number; current_stage: string | null;
   lease_owner: string | null; lease_expires_at: string | null; attempt_count: number; version: number; result_key: string | null;
+  checkpoint_stage?: string | null; checkpoint_json?: string | null; checkpoint_updated_at?: string | null; resume_count?: number;
 };
 
 function readStatus(value: unknown): AnalysisJobStatus | null {
@@ -28,6 +29,18 @@ export function parseHeartbeatPayload(value: unknown) {
   const version = typeof value.version === "number" && Number.isInteger(value.version) && value.version >= 0 ? value.version : null;
   if (!workerId || !status || !ACTIVE_WORKER_STATUSES.has(status) || progress === null || !stage || version === null) return null;
   return { workerId, status, progress, stage, version, leaseSeconds: normalizeLeaseSeconds(value.leaseSeconds) };
+}
+
+export function parseCheckpointPayload(value: unknown) {
+  if (!isPlainRecord(value)) return null;
+  const workerId = normalizeWorkerId(value.workerId);
+  const version = typeof value.version === "number" && Number.isInteger(value.version) && value.version >= 0 ? value.version : null;
+  const stage = value.stage === "evidence_ready" ? value.stage : null;
+  const checkpoint = isPlainRecord(value.checkpoint) ? value.checkpoint : null;
+  if (!workerId || version === null || !stage || !checkpoint) return null;
+  const checkpointJson = JSON.stringify(checkpoint);
+  if (checkpointJson.length <= 2 || checkpointJson.length > 1_000_000) return null;
+  return { workerId, version, stage, checkpointJson };
 }
 
 export function parseCompletionPayload(value: unknown) {

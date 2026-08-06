@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from collections.abc import Mapping
+from typing import Any
 
 from .adapters import TranscriptOutput, VisualOutput
 from .api_client import AnalyzerApiClient, ClaimedJob
@@ -63,3 +65,6 @@ class ApiArtifactStore:
             )
             keyframes.append(replace(frame, asset_id=str(asset["id"])))
         return VisualOutput(tuple(keyframes), visuals.observations)
+
+    def save(self, job: ClaimedJob, stage: str, checkpoint: Mapping[str, Any]) -> None:
+        self.client.save_checkpoint(job, stage, checkpoint)
