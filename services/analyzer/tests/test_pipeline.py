@@ -75,6 +75,22 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(result.transcript.full_text, "人工校正后的原文")
         self.assertEqual(structure.inputs[2].segments[0].text, "人工校正后的原文")
 
+    def test_pipeline_cleans_repeated_incremental_subtitles_before_persisting(self):
+        class RepeatedSpeech:
+            def transcribe(self, _audio):
+                return TranscriptOutput("zh-CN", (
+                    TranscriptSegment(0, 1_000, "老板要懂 AI", 90),
+                    TranscriptSegment(900, 2_000, "老板要懂 AI。", 92),
+                    TranscriptSegment(1_900, 3_000, "老板要懂 AI 的五个概念", 94),
+                    TranscriptSegment(8_000, 9_000, "先讲第一个概念", 91),
+                ), 92)
+
+        job = ClaimedJob("job-clean", "org-1", "project-1", "video-1", "upload", "queued", 1, 2, {})
+        structure = Structure()
+        result = AnalysisPipeline(Source(), Media(), RepeatedSpeech(), Visual(), structure).process(job, lambda *_: job)
+        self.assertEqual(len(result.transcript.segments), 2)
+        self.assertEqual(result.transcript.segments[0]["text"], "老板要懂 AI 的五个概念")
+
     def test_failed_structure_analysis_resumes_from_persisted_evidence_checkpoint(self):
         class Checkpoints:
             saved = None

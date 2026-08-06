@@ -138,9 +138,30 @@ test("analysis submissions expose duration estimates and enforce total token cei
   assert.match(profiles, /estimateMediaSourceTokens/);
   assert.match(profiles, /outputTokens: 6_000/);
   assert.match(workspace, /readMediaDuration/);
-  assert.match(workspace, /单次总预算/);
+  assert.match(workspace, /短视频总预算/);
   assert.match(workspace, /30 分钟以上媒体/);
-  assert.match(provider, /"max_tokens": effective_output_tokens/);
+  assert.match(provider, /"max_tokens": output_tokens/);
   assert.match(provider, /"maximum_total_tokens"/);
   assert.match(detail, /maximum_total_tokens/);
+});
+
+test("thirty minute videos use bounded multi-pass analysis and cleaned evidence", async () => {
+  const [profiles, provider, evidence, visual, pipeline, detail] = await Promise.all([
+    readFile(new URL("../lib/analysis-profile.ts", import.meta.url), "utf8"),
+    readFile(new URL("../services/analyzer/liming_analyzer/providers.py", import.meta.url), "utf8"),
+    readFile(new URL("../services/analyzer/liming_analyzer/evidence.py", import.meta.url), "utf8"),
+    readFile(new URL("../services/analyzer/liming_analyzer/visual.py", import.meta.url), "utf8"),
+    readFile(new URL("../services/analyzer/liming_analyzer/pipeline.py", import.meta.url), "utf8"),
+    readFile(new URL("../components/AnalysisDetail.tsx", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(profiles, /estimateAnalysisMaximumTokens/);
+  assert.match(provider, /duration_is_long.*1_800_000/);
+  assert.match(provider, /segment_reports/);
+  assert.match(provider, /processing_mode.*segmented/);
+  assert.match(evidence, /clean_transcript/);
+  assert.match(visual, /_image_signature/);
+  assert.match(visual, /is_useful_ocr/);
+  assert.match(pipeline, /clean_transcript/);
+  assert.match(detail, /分段分析后汇总/);
 });

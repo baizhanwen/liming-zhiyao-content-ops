@@ -2,7 +2,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from PIL import Image
+
 from liming_analyzer.adapters import (
+    Keyframe,
     MediaInfo,
     NormalizedMedia,
     TranscriptOutput,
@@ -19,6 +22,7 @@ from liming_analyzer.providers import (
     PySceneDetectFrameExtractor,
 )
 from liming_analyzer.sources import YtDlpPublicVideoResolver
+from liming_analyzer.visual import KeyframeVisualAnalyzer
 
 
 class FakeAsr:
@@ -154,6 +158,35 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual([frame.timestamp_ms for frame in frames], [1000, 4000])
         self.assertEqual(len(processor.commands), 2)
 
+    def test_visual_analyzer_drops_blank_duplicate_frames_and_low_confidence_ocr(self):
+        class Extractor:
+            def extract(self, _media, output_dir):
+                output_dir.mkdir(parents=True, exist_ok=True)
+                black = output_dir / "black.jpg"; first = output_dir / "first.jpg"; duplicate = output_dir / "duplicate.jpg"; second = output_dir / "second.jpg"
+                Image.new("L", (64, 64), 0).save(black)
+                image = Image.new("L", (64, 64), 0)
+                for x in range(32, 64):
+                    for y in range(64): image.putpixel((x, y), 255)
+                image.save(first); image.save(duplicate)
+                Image.eval(image, lambda value: 255 - value).save(second)
+                return [Keyframe(0, black), Keyframe(1_000, first), Keyframe(2_000, duplicate), Keyframe(3_000, second)]
+
+        class Ocr:
+            calls = 0
+
+            def recognize(self, _path):
+                self.calls += 1
+                return ("有效标题", 90) if self.calls == 1 else ("低置信乱码", 20)
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = KeyframeVisualAnalyzer(Extractor(), Ocr()).analyze(
+                NormalizedMedia(Path("video.mp4"), None, MediaInfo(6_000, 64, 64, "h264", "aac")),
+                Path(directory),
+            )
+        self.assertEqual(len(output.keyframes), 2)
+        self.assertEqual(len(output.observations), 1)
+        self.assertEqual(output.keyframes[1].ocr_text, None)
+
     def test_instructor_rejects_untraceable_evidence(self):
         transcript = TranscriptOutput("zh-CN", (TranscriptSegment(100, 900, "先说问题", 94),), 94)
         visual = VisualOutput((), (VisualObservation("ocr", 0, 0, "管理增长", 91),))
@@ -212,12 +245,15 @@ class ProviderTests(unittest.TestCase):
         )
         meta = result.report["analysis_meta"]
         self.assertEqual(meta["mode"], "budgeted")
+        self.assertEqual(meta["processing_mode"], "segmented")
+        self.assertGreater(meta["segment_analysis_count"], 1)
+        self.assertEqual(meta["analysis_passes"], meta["segment_analysis_count"] + 1)
         self.assertLess(meta["analyzed_segments"], meta["source_segments"])
         self.assertGreater(meta["chunk_count"], 1)
         self.assertLessEqual(meta["coverage_percent"], 100)
-        self.assertEqual(meta["actual_input_tokens"], 720)
-        self.assertEqual(meta["actual_output_tokens"], 180)
-        self.assertEqual(meta["actual_total_tokens"], 900)
+        self.assertEqual(meta["actual_input_tokens"], 720 * meta["analysis_passes"])
+        self.assertEqual(meta["actual_output_tokens"], 180 * meta["analysis_passes"])
+        self.assertEqual(meta["actual_total_tokens"], 900 * meta["analysis_passes"])
 
     def test_analysis_profiles_apply_distinct_token_budgets(self):
         transcript = TranscriptOutput(

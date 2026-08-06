@@ -26,6 +26,7 @@ from .adapters import (
     build_analysis_result,
 )
 from .api_client import AnalysisResult, ClaimedJob
+from .evidence import clean_transcript
 
 
 def _manual_transcript(job: ClaimedJob) -> TranscriptOutput | None:
@@ -168,7 +169,7 @@ class AnalysisPipeline:
                     if pending:
                         progress = min(64, progress + 4)
                         current = heartbeat("transcribing", progress, "正在转写语音并识别关键画面")
-                transcript = manual_transcript or (transcript_future.result() if transcript_future else TranscriptOutput("zh-CN", ()))
+                transcript = manual_transcript or clean_transcript(transcript_future.result() if transcript_future else TranscriptOutput("zh-CN", ()))
                 visuals = visuals_future.result()
 
             current = heartbeat("extracting", 70, "正在整理字幕、OCR 与关键帧证据")

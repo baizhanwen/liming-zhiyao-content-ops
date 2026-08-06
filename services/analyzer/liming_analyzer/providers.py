@@ -13,6 +13,7 @@ from .adapters import (
     VisualOutput,
 )
 from .api_client import ClaimedJob
+from .evidence import deduplicate_timed_rows
 from .ffmpeg import FfmpegFrameExtractor, FfmpegMediaProcessor
 
 
@@ -46,14 +47,8 @@ def estimate_text_tokens(value: str) -> int:
     return cjk + max(1, (len(value) - cjk + 3) // 4)
 
 
-def _deduplicate_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    seen: set[str] = set(); unique: list[dict[str, Any]] = []
-    for row in rows:
-        text = str(row.get("text") or "").strip()
-        if not text or text in seen:
-            continue
-        seen.add(text); unique.append(row)
-    return unique
+def _deduplicate_rows(rows: list[dict[str, Any]], *, max_gap_ms: int = 15_000) -> list[dict[str, Any]]:
+    return deduplicate_timed_rows(rows, max_gap_ms=max_gap_ms)
 
 
 def _row_tokens(row: Mapping[str, Any]) -> int:
@@ -82,6 +77,34 @@ def _chunk_rows(rows: list[dict[str, Any]], budget: int) -> list[list[dict[str, 
     if current:
         chunks.append(current)
     return chunks
+
+
+def _time_token_chunks(
+    rows: list[dict[str, Any]],
+    budget: int,
+    *,
+    segment_ms: int = 600_000,
+) -> list[list[dict[str, Any]]]:
+    chunks: list[list[dict[str, Any]]] = []; current: list[dict[str, Any]] = []; used = 0; bucket = -1
+    for row in rows:
+        row_bucket = max(0, int(row.get("start_ms") or 0)) // segment_ms
+        cost = _row_tokens(row)
+        if current and (row_bucket != bucket or used + cost > budget):
+            chunks.append(current); current = []; used = 0
+        current.append(row); used += cost; bucket = row_bucket
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _merge_chunks(chunks: list[list[dict[str, Any]]], limit: int) -> list[list[dict[str, Any]]]:
+    if len(chunks) <= limit:
+        return chunks
+    merged: list[list[dict[str, Any]]] = [[] for _ in range(limit)]
+    for index, chunk in enumerate(chunks):
+        target = min(limit - 1, index * limit // len(chunks))
+        merged[target].extend(chunk)
+    return [chunk for chunk in merged if chunk]
 
 
 class FunAsrSpeechRecognizer:
@@ -380,7 +403,7 @@ class InstructorStructureAnalyzer:
             for row in visuals.observations
         ]
         transcript_rows = _deduplicate_rows(raw_transcript_rows)
-        visual_rows = _deduplicate_rows(raw_visual_rows)
+        visual_rows = _deduplicate_rows(raw_visual_rows, max_gap_ms=120_000)
         original_tokens = sum(_row_tokens(row) for row in transcript_rows + visual_rows)
         profile = job.analysis_profile if job.analysis_profile in {"economy", "standard", "deep"} else "standard"
         profile_budget = {"economy": 8_000, "standard": 18_000, "deep": 32_000}[profile]
@@ -391,58 +414,103 @@ class InstructorStructureAnalyzer:
         selected_visuals = _select_evenly(visual_rows, visual_budget)
         transcript_budget = max(1_000, effective_source_tokens - sum(_row_tokens(row) for row in selected_visuals))
         selected_transcript = _select_evenly(transcript_rows, transcript_budget)
-        windows = _chunk_rows(selected_transcript, self.window_tokens)
         selected_tokens = sum(_row_tokens(row) for row in selected_transcript + selected_visuals)
         provider_options: dict[str, Any] = {}
         if self.provider.strip().lower() == "deepseek":
             provider_options["extra_body"] = {"thinking": {"type": "disabled"}}
-        request_kwargs = {
-            "model": self.model,
-            "response_model": self.report_model,
-            "max_retries": 2,
-            "max_tokens": effective_output_tokens,
-            "temperature": 0.2,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "你是短视频内容分析员。统计数字只能使用输入值，不能猜测。"
-                        "每条 evidence.text 必须逐字引用转写或 OCR，start_ms 必须来自同一证据。"
-                        "输出结构、受众、画面、语言、亮点、风险和可执行复用建议。"
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": str(
-                        {
-                            "video_id": job.video_id,
-                            "duration_ms": media.info.duration_ms,
-                            "transcript_windows": windows,
-                            "visual_evidence": selected_visuals,
-                            "input_budget": {
-                                "estimated_source_tokens": original_tokens,
-                                "estimated_model_input_tokens": selected_tokens + 1_200,
-                                "maximum_source_tokens": effective_source_tokens,
-                                "maximum_output_tokens": effective_output_tokens,
-                                "maximum_model_input_tokens": effective_source_tokens + 1_200,
-                                "maximum_total_tokens": effective_source_tokens + effective_output_tokens + 1_200,
-                                "coverage_percent": 100 if original_tokens == 0 else round(selected_tokens / original_tokens * 100),
-                            },
-                        }
-                    ),
-                },
-            ],
-            **provider_options,
-        }
         completions = self.client.chat.completions
         create_with_completion = getattr(completions, "create_with_completion", None)
-        raw_response = None
-        if callable(create_with_completion):
-            response, raw_response = create_with_completion(**request_kwargs)
+        actual_input_tokens = 0; actual_output_tokens = 0; actual_total_tokens = 0
+        system_prompt = (
+            "你是短视频内容分析员。统计数字只能使用输入值，不能猜测。"
+            "每条 evidence.text 必须逐字引用转写或 OCR，start_ms 必须来自同一证据。"
+            "输出结构、受众、画面、语言、亮点、风险和可执行复用建议。"
+        )
+
+        def request_report(payload: Mapping[str, Any], output_tokens: int, *, synthesis: bool = False) -> tuple[dict[str, Any], Any]:
+            nonlocal actual_input_tokens, actual_output_tokens, actual_total_tokens
+            request_kwargs = {
+                "model": self.model,
+                "response_model": self.report_model,
+                "max_retries": 1,
+                "max_tokens": output_tokens,
+                "temperature": 0.2,
+                "messages": [
+                    {"role": "system", "content": system_prompt + ("请汇总分段报告，消除重复结论并保持证据原文。" if synthesis else "")},
+                    {"role": "user", "content": str(payload)},
+                ],
+                **provider_options,
+            }
+            raw_response = None
+            if callable(create_with_completion):
+                response, raw_response = create_with_completion(**request_kwargs)
+            else:
+                response = completions.create(**request_kwargs)
+            value = response.model_dump(mode="json") if hasattr(response, "model_dump") else dict(response)
+            confidence_value = value.pop("confidence", None)
+            usage = getattr(raw_response, "usage", None)
+            if usage is not None:
+                input_value = int(getattr(usage, "prompt_tokens", 0) or 0)
+                output_value = int(getattr(usage, "completion_tokens", 0) or 0)
+                total_value = int(getattr(usage, "total_tokens", input_value + output_value) or input_value + output_value)
+                actual_input_tokens += input_value; actual_output_tokens += output_value; actual_total_tokens += total_value
+            return value, confidence_value
+
+        duration_is_long = media.info.duration_ms >= 1_800_000
+        candidate_windows = _time_token_chunks(selected_transcript, self.window_tokens) if duration_is_long else _chunk_rows(selected_transcript, self.window_tokens)
+        segment_limit = {"economy": 2, "standard": 4, "deep": 6}[profile]
+        windows = _merge_chunks(candidate_windows, segment_limit) if duration_is_long else candidate_windows
+        segmented = duration_is_long and len(windows) > 1 and effective_output_tokens >= 1_600
+        partial_output_tokens = min(600, max(400, (effective_output_tokens - 800) // max(1, len(windows)))) if segmented else 0
+        final_output_tokens = effective_output_tokens - partial_output_tokens * len(windows) if segmented else effective_output_tokens
+        partial_output_budget = partial_output_tokens * len(windows)
+        analysis_passes = len(windows) + 1 if segmented else 1
+
+        if segmented:
+            segment_reports: list[dict[str, Any]] = []
+            for index, window in enumerate(windows):
+                first_evidence_ms = int(window[0].get("start_ms") or 0)
+                last_evidence_ms = max(int(row.get("start_ms") or 0) for row in window)
+                start_ms = first_evidence_ms // 600_000 * 600_000
+                end_ms = min(media.info.duration_ms, (last_evidence_ms // 600_000 + 1) * 600_000)
+                window_visuals = [row for row in selected_visuals if start_ms <= int(row.get("start_ms") or 0) < end_ms]
+                partial_report, _partial_confidence = request_report(
+                    {
+                        "task": "分析长视频的一个时间段，结论仅限本段",
+                        "video_id": job.video_id,
+                        "segment": {"index": index + 1, "count": len(windows), "start_ms": start_ms, "end_ms": end_ms},
+                        "transcript_window": window,
+                        "visual_evidence": window_visuals,
+                    },
+                    partial_output_tokens,
+                )
+                allowed_partial_evidence = {str(row.get("text") or "") for row in window + window_visuals}
+                partial_report["evidence"] = [row for row in partial_report.get("evidence", []) if isinstance(row, dict) and row.get("text") in allowed_partial_evidence]
+                segment_reports.append({"start_ms": start_ms, "end_ms": end_ms, "report": partial_report})
+            report, confidence = request_report(
+                {
+                    "task": "将按时间顺序排列的分段报告汇总为一份完整视频报告",
+                    "video_id": job.video_id,
+                    "duration_ms": media.info.duration_ms,
+                    "segment_reports": segment_reports,
+                },
+                final_output_tokens,
+                synthesis=True,
+            )
         else:
-            response = completions.create(**request_kwargs)
-        report = response.model_dump(mode="json") if hasattr(response, "model_dump") else dict(response)
-        confidence = report.pop("confidence", None)
+            report, confidence = request_report(
+                {
+                    "video_id": job.video_id,
+                    "duration_ms": media.info.duration_ms,
+                    "transcript_windows": windows,
+                    "visual_evidence": selected_visuals,
+                    "input_budget": {
+                        "estimated_source_tokens": original_tokens,
+                        "maximum_source_tokens": effective_source_tokens,
+                    },
+                },
+                effective_output_tokens,
+            )
         evidence_text = {row.text for row in transcript.segments}
         evidence_text.update(row.text for row in visuals.observations)
         report["evidence"] = [
@@ -450,33 +518,33 @@ class InstructorStructureAnalyzer:
         ]
         if not report["evidence"]:
             raise RuntimeError("model report did not preserve exact source evidence")
+        estimated_model_input_tokens = selected_tokens + analysis_passes * 1_200 + (partial_output_budget if segmented else 0)
+        maximum_model_input_tokens = effective_source_tokens + analysis_passes * 1_200 + (partial_output_budget if segmented else 0)
         report["analysis_meta"] = {
             "mode": "full" if selected_tokens >= original_tokens else "budgeted",
+            "processing_mode": "segmented" if segmented else "single_pass",
             "estimated_source_tokens": original_tokens,
-            "estimated_model_input_tokens": selected_tokens + 1_200,
+            "estimated_model_input_tokens": estimated_model_input_tokens,
             "maximum_source_tokens": effective_source_tokens,
             "maximum_output_tokens": effective_output_tokens,
-            "maximum_model_input_tokens": effective_source_tokens + 1_200,
-            "maximum_total_tokens": effective_source_tokens + effective_output_tokens + 1_200,
+            "maximum_model_input_tokens": maximum_model_input_tokens,
+            "maximum_total_tokens": maximum_model_input_tokens + effective_output_tokens,
             "analysis_profile": profile,
             "source_segments": len(raw_transcript_rows),
             "analyzed_segments": len(selected_transcript),
             "deduplicated_segments": len(transcript_rows),
             "chunk_count": len(windows),
+            "segment_analysis_count": len(windows) if segmented else 0,
+            "analysis_passes": analysis_passes,
             "coverage_percent": 100 if original_tokens == 0 else min(100, round(selected_tokens / original_tokens * 100)),
             "duration_minutes": round(media.info.duration_ms / 60_000, 1),
         }
-        usage = getattr(raw_response, "usage", None)
-        if usage is not None:
-            input_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
-            output_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
-            total_tokens = int(getattr(usage, "total_tokens", input_tokens + output_tokens) or input_tokens + output_tokens)
-            if total_tokens > 0:
-                report["analysis_meta"].update({
-                    "actual_input_tokens": input_tokens,
-                    "actual_output_tokens": output_tokens,
-                    "actual_total_tokens": total_tokens,
-                })
+        if actual_total_tokens > 0:
+            report["analysis_meta"].update({
+                "actual_input_tokens": actual_input_tokens,
+                "actual_output_tokens": actual_output_tokens,
+                "actual_total_tokens": actual_total_tokens,
+            })
         return StructureOutput(
             "analysis.v3",
             report,
