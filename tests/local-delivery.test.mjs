@@ -23,10 +23,12 @@ test("normal startup stays on loopback while LAN mode is an explicit opt-in", as
   assert.match(vite, /services\/analyzer\/model-cache/);
 });
 
-test("team launch scripts install, migrate, and expose a health check", async () => {
-  const [setup, start, packageJson, migrations, health, config] = await Promise.all([
+test("team launch scripts install, migrate, stop safely, and expose a health check", async () => {
+  const [setup, start, stop, stopScript, packageJson, migrations, health, config] = await Promise.all([
     readFile(new URL("../setup-local.bat", import.meta.url), "utf8"),
     readFile(new URL("../start-local.bat", import.meta.url), "utf8"),
+    readFile(new URL("../stop-local.bat", import.meta.url), "utf8"),
+    readFile(new URL("../scripts/stop-local.ps1", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
     readFile(new URL("../scripts/run-local-migrations.mjs", import.meta.url), "utf8"),
     readFile(new URL("../app/api/health/route.ts", import.meta.url), "utf8"),
@@ -38,6 +40,12 @@ test("team launch scripts install, migrate, and expose a health check", async ()
   assert.match(start, /findstr "LISTENING"/);
   assert.match(start, /Port 3000 is occupied by an unhealthy process/);
   assert.match(start, /The web app stopped unexpectedly/);
+  assert.match(stop, /scripts\\stop-local\.ps1/);
+  assert.match(stopScript, /Get-NetTCPConnection/);
+  assert.match(stopScript, /param\(\[switch\]\$CheckOnly\)/);
+  assert.match(stopScript, /Port 3000 belongs to another program/);
+  assert.match(stopScript, /vinext\.\+dev/);
+  assert.match(stopScript, /taskkill\.exe \/PID \$targetId \/T \/F/);
   assert.match(packageJson, /db:local:migrate/);
   assert.match(migrations, /WRANGLER_WRITE_LOGS/);
   assert.match(config, /"migrations_dir": "drizzle"/);
@@ -46,7 +54,7 @@ test("team launch scripts install, migrate, and expose a health check", async ()
 });
 
 test("Windows batch entry points are ASCII-only and checked out with CRLF", async () => {
-  const files = ["setup-local.bat", "start-local.bat", "start-lan.bat", "setup-analyzer.bat", "start-analyzer.bat", "backup-local.bat", "restore-local.bat"];
+  const files = ["setup-local.bat", "start-local.bat", "stop-local.bat", "start-lan.bat", "setup-analyzer.bat", "start-analyzer.bat", "backup-local.bat", "restore-local.bat"];
   const contents = await Promise.all(files.map((file) => readFile(new URL(`../${file}`, import.meta.url), "utf8")));
   for (const [index, content] of contents.entries()) assert.equal(Array.from(content).every((character) => character.codePointAt(0) <= 127), true, `${files[index]} must stay ASCII-safe for cmd.exe`);
   const attributes = await readFile(new URL("../.gitattributes", import.meta.url), "utf8");
