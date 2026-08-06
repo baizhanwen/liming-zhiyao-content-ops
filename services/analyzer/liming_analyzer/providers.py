@@ -307,6 +307,7 @@ class InstructorStructureAnalyzer:
         provider: str,
         prompt_version: str = "video-analysis.v3",
         max_source_tokens: int = 32_000,
+        max_output_tokens: int = 6_000,
         window_tokens: int = 6_000,
         client: Any | None = None,
         report_model: Any | None = None,
@@ -350,6 +351,7 @@ class InstructorStructureAnalyzer:
         self.provider = provider
         self.prompt_version = prompt_version
         self.max_source_tokens = max_source_tokens
+        self.max_output_tokens = max_output_tokens
         self.window_tokens = window_tokens
 
     def analyze(
@@ -382,7 +384,9 @@ class InstructorStructureAnalyzer:
         original_tokens = sum(_row_tokens(row) for row in transcript_rows + visual_rows)
         profile = job.analysis_profile if job.analysis_profile in {"economy", "standard", "deep"} else "standard"
         profile_budget = {"economy": 8_000, "standard": 18_000, "deep": 32_000}[profile]
+        profile_output_budget = {"economy": 2_000, "standard": 4_000, "deep": 6_000}[profile]
         effective_source_tokens = min(self.max_source_tokens, profile_budget)
+        effective_output_tokens = min(self.max_output_tokens, profile_output_budget)
         visual_budget = min(3_000, max(1_000, effective_source_tokens // 5))
         selected_visuals = _select_evenly(visual_rows, visual_budget)
         transcript_budget = max(1_000, effective_source_tokens - sum(_row_tokens(row) for row in selected_visuals))
@@ -396,6 +400,7 @@ class InstructorStructureAnalyzer:
             "model": self.model,
             "response_model": self.report_model,
             "max_retries": 2,
+            "max_tokens": effective_output_tokens,
             "temperature": 0.2,
             "messages": [
                 {
@@ -418,6 +423,9 @@ class InstructorStructureAnalyzer:
                                 "estimated_source_tokens": original_tokens,
                                 "estimated_model_input_tokens": selected_tokens + 1_200,
                                 "maximum_source_tokens": effective_source_tokens,
+                                "maximum_output_tokens": effective_output_tokens,
+                                "maximum_model_input_tokens": effective_source_tokens + 1_200,
+                                "maximum_total_tokens": effective_source_tokens + effective_output_tokens + 1_200,
                                 "coverage_percent": 100 if original_tokens == 0 else round(selected_tokens / original_tokens * 100),
                             },
                         }
@@ -447,6 +455,9 @@ class InstructorStructureAnalyzer:
             "estimated_source_tokens": original_tokens,
             "estimated_model_input_tokens": selected_tokens + 1_200,
             "maximum_source_tokens": effective_source_tokens,
+            "maximum_output_tokens": effective_output_tokens,
+            "maximum_model_input_tokens": effective_source_tokens + 1_200,
+            "maximum_total_tokens": effective_source_tokens + effective_output_tokens + 1_200,
             "analysis_profile": profile,
             "source_segments": len(raw_transcript_rows),
             "analyzed_segments": len(selected_transcript),

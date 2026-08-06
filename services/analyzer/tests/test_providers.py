@@ -237,7 +237,11 @@ class ProviderTests(unittest.TestCase):
             media, transcript, VisualOutput(),
         )
         self.assertEqual(economy.report["analysis_meta"]["maximum_source_tokens"], 8_000)
+        self.assertEqual(economy.report["analysis_meta"]["maximum_output_tokens"], 2_000)
+        self.assertEqual(economy.report["analysis_meta"]["maximum_total_tokens"], 11_200)
         self.assertEqual(deep.report["analysis_meta"]["maximum_source_tokens"], 32_000)
+        self.assertEqual(deep.report["analysis_meta"]["maximum_output_tokens"], 6_000)
+        self.assertEqual(FakeCompletions.last_kwargs["max_tokens"], 6_000)
         self.assertEqual(deep.schema_version, "analysis.v3")
 
     def test_public_resolver_returns_metadata_and_metrics(self):

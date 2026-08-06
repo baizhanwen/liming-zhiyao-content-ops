@@ -3,11 +3,12 @@
 import { ChangeEvent, FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { preferredOrganizationId, preferredProjectId, rememberCurrentScope } from "../lib/client-scope";
+import { analysisProfileBudgets, estimateMediaSourceTokens, type AnalysisProfile } from "../lib/analysis-profile";
 import { VideoLibraryWorkspace } from "./VideoLibraryWorkspace";
 
 type Organization = { id: string; name: string };
 type Project = { id: string; name: string };
-type AnalysisProfile = "economy" | "standard" | "deep";
+type UploadEstimate = { name: string; durationSeconds: number | null };
 type Video = { id: string; platform: string; source_type: string; source_url: string | null; title: string | null; status: string; error_message: string | null; created_at: string; filename?: string | null; size_bytes?: number | null; is_reference?: number | boolean };
 type Job = { id: string; video_id: string; status: string; analysis_profile: AnalysisProfile; progress: number; current_stage: string | null; error_code: string | null; error_message: string | null; retry_count: number; lease_expires_at: string | null; checkpoint_stage: string | null; checkpoint_updated_at: string | null; resume_count: number; created_at: string; updated_at: string };
 type ServiceStatus = { checkedAt: string; credentialConfigured: boolean; modelConfigured: boolean; publicLinkCookieConfigured: boolean; cookieUpdatedAt: string | null; canManageCookies: boolean; analyzerOnline: boolean; lastWorkerHeartbeat: string | null };
@@ -18,9 +19,9 @@ const statusLabels: Record<string, string> = { pending: "等待中", queued: "�
 const activeJobStatuses = new Set(["pending", "queued", "downloading", "processing", "transcribing", "extracting", "analyzing"]);
 const profileLabels: Record<AnalysisProfile, string> = { economy: "经济", standard: "标准", deep: "深度" };
 const profileHints: Record<AnalysisProfile, string> = {
-  economy: "约 8k 来源 Token，适合批量初筛",
-  standard: "约 18k 来源 Token，质量与成本平衡",
-  deep: "约 32k 来源 Token，适合重点长视频",
+  economy: "最多 8k 输入 + 2k 输出 Token，适合批量初筛",
+  standard: "最多 18k 输入 + 4k 输出 Token，质量与成本平衡",
+  deep: "最多 32k 输入 + 6k 输出 Token，适合重点长视频",
 };
 const errorGuidance: Record<string, string> = {
   DOUYIN_COOKIE_EXPIRED: "先更新抖音 Cookie，然后重试任务。",
@@ -53,6 +54,28 @@ function queueLabel(job: Job, jobs: Job[], queue: QueueStatus | null) {
 
 async function readError(response: Response) { const body = await response.json().catch(() => null) as { error?: { message?: string } } | null; return body?.error?.message ?? "请求没有完成，请稍后重试。"; }
 
+function readMediaDuration(file: File) {
+  return new Promise<number | null>((resolve) => {
+    const element = document.createElement(file.type.startsWith("audio/") ? "audio" : "video");
+    const objectUrl = URL.createObjectURL(file);
+    let settled = false;
+    const finish = (duration: number | null) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      element.removeAttribute("src");
+      element.load();
+      URL.revokeObjectURL(objectUrl);
+      resolve(duration);
+    };
+    const timeout = window.setTimeout(() => finish(null), 8_000);
+    element.preload = "metadata";
+    element.onloadedmetadata = () => finish(Number.isFinite(element.duration) ? element.duration : null);
+    element.onerror = () => finish(null);
+    element.src = objectUrl;
+  });
+}
+
 function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "videos" | "benchmark" | "assets" }) {
   const [organizations, setOrganizations] = useState<Organization[]>([]); const [organizationId, setOrganizationId] = useState("");
   const [projects, setProjects] = useState<Project[]>([]); const [projectId, setProjectId] = useState("");
@@ -63,6 +86,8 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
   const [cookieUpdating, setCookieUpdating] = useState(false); const [cookieDeleting, setCookieDeleting] = useState(false); const [cookieMessage, setCookieMessage] = useState(""); const cookieFileRef = useRef<HTMLInputElement>(null);
   const [jobActionId, setJobActionId] = useState("");
   const [analysisProfile, setAnalysisProfile] = useState<AnalysisProfile>("standard");
+  const [uploadEstimates, setUploadEstimates] = useState<UploadEstimate[]>([]);
+  const [inspectingFiles, setInspectingFiles] = useState(false);
 
   const loadVideos = useCallback(async (orgId: string, projId: string) => {
     if (!orgId || !projId) { setVideos([]); setJobs([]); return; }
@@ -114,6 +139,16 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
     finally { input.value = ""; setCookieUpdating(false); }
   }
 
+  async function inspectUploadFiles(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.currentTarget.files ?? []);
+    setUploadEstimates([]);
+    if (!files.length) return;
+    setInspectingFiles(true);
+    const estimates = await Promise.all(files.map(async (file) => ({ name: file.name, durationSeconds: await readMediaDuration(file) })));
+    setUploadEstimates(estimates);
+    setInspectingFiles(false);
+  }
+
   async function deleteDouyinCookies() {
     if (!window.confirm("确定清除系统中保存的抖音 Cookie 吗？清除后，分析抖音链接前需要重新上传 Cookie。")) return;
     setCookieDeleting(true); setCookieMessage(""); setError("");
@@ -138,7 +173,7 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
         if (!response.ok) failures.push(`${file.name}：${await readError(response)}`); else { appendCreated(await response.json()); completed += 1; }
       } catch (reason) { failures.push(`${file.name}：${reason instanceof Error ? reason.message : "网络请求失败"}`); }
     }
-    if (completed) formElement.reset();
+    if (completed) { formElement.reset(); setUploadEstimates([]); }
     setUploadProgress(`批量上传完成：成功 ${completed} 个，失败 ${failures.length} 个。`);
     if (failures.length) setError(failures.join("；")); setSubmitting(false);
   }
@@ -172,6 +207,12 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
   const baseServiceReady = Boolean(service?.analyzerOnline && service.credentialConfigured && service.modelConfigured);
   const linkAnalysisReady = Boolean(baseServiceReady && service?.publicLinkCookieConfigured);
   const linkButtonLabel = submitting ? "正在启动分析…" : !service?.analyzerOnline ? "分析服务启动中…" : !service?.modelConfigured ? "请先配置分析模型" : !service?.publicLinkCookieConfigured ? "请先更新 Cookie" : "一键开始分析";
+  const profileBudget = analysisProfileBudgets[analysisProfile];
+  const knownUploadDuration = uploadEstimates.reduce((total, item) => total + (item.durationSeconds ?? 0), 0);
+  const unknownUploadDurations = uploadEstimates.filter((item) => item.durationSeconds === null).length;
+  const estimatedUploadTokens = uploadEstimates.some((item) => item.durationSeconds !== null)
+    ? uploadEstimates.reduce((total, item) => total + (item.durationSeconds === null ? 0 : estimateMediaSourceTokens(item.durationSeconds, analysisProfile)), 0)
+    : null;
 
   return <div className={`analysis-layout${initialView === "videos" ? "" : " single-view"}`}>
     <section className="analysis-main">
@@ -189,7 +230,7 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
         })}</div>}
       </article>
     </section>
-    {canWrite && initialView === "videos" && <aside className="analysis-ingest"><article className="analysis-profile-panel"><label>本次分析模式<select value={analysisProfile} onChange={(event) => setAnalysisProfile(event.target.value as AnalysisProfile)}><option value="economy">经济 · 批量初筛</option><option value="standard">标准 · 推荐</option><option value="deep">深度 · 重点视频</option></select></label><p>{profileHints[analysisProfile]}</p></article><article className="create-panel"><p className="section-kicker">一键链接分析</p><h2>粘贴分享文案即可开始</h2><p>提交前会自动检查后台、模型和 Cookie；长视频会按照上方模式控制模型输入预算，页面会自动更新进度。</p><form className="stack-form" onSubmit={submitUrl}><label>抖音分享文案或链接<textarea name="url" required rows={4} maxLength={2000} placeholder="粘贴完整分享文案，或 https://v.douyin.com/..." /></label><label>内部备注（可选）<input name="title" maxLength={120} placeholder="例如：管理者选题参考" /></label><button className="primary-button" disabled={submitting || !linkAnalysisReady}>{linkButtonLabel}</button></form></article><article className="create-panel upload-panel"><p className="section-kicker">批量本地上传</p><h2>上传视频或音频</h2><p>可一次选择多个文件，系统会依次上传并按上方模式创建任务；单文件上限 50 MB。</p><form className="stack-form" onSubmit={uploadFile}><label className="file-drop">选择一个或多个媒体文件<input name="file" type="file" multiple required accept="video/mp4,video/quicktime,video/webm,audio/mpeg,audio/mp4,audio/wav" /><span>MP4、MOV、WebM、MP3、M4A、WAV</span></label><button className="secondary-button" disabled={submitting || !baseServiceReady}>{submitting ? "正在批量上传…" : baseServiceReady ? "上传并自动分析" : "分析服务准备中…"}</button>{uploadProgress && <p className="upload-progress" role="status">{uploadProgress}</p>}</form></article></aside>}
+    {canWrite && initialView === "videos" && <aside className="analysis-ingest"><article className="analysis-profile-panel"><label>本次分析模式<select value={analysisProfile} onChange={(event) => setAnalysisProfile(event.target.value as AnalysisProfile)}><option value="economy">经济 · 批量初筛</option><option value="standard">标准 · 推荐</option><option value="deep">深度 · 重点视频</option></select></label><p>{profileHints[analysisProfile]}</p><div className="analysis-preflight-budget" aria-live="polite"><span>来源文本上限 <strong>{profileBudget.sourceTokens.toLocaleString()} Token</strong></span><span>模型输出硬上限 <strong>{profileBudget.outputTokens.toLocaleString()} Token</strong></span><span>单次总预算约 <strong>{(profileBudget.sourceTokens + profileBudget.promptTokens + profileBudget.outputTokens).toLocaleString()} Token</strong></span></div></article><article className="create-panel"><p className="section-kicker">一键链接分析</p><h2>粘贴分享文案即可开始</h2><p>抖音链接需解析后才能取得时长；提交前先按上方模式锁定最高预算，解析完成后报告会记录实际时长和用量。</p><form className="stack-form" onSubmit={submitUrl}><label>抖音分享文案或链接<textarea name="url" required rows={4} maxLength={2000} placeholder="粘贴完整分享文案，或 https://v.douyin.com/..." /></label><label>内部备注（可选）<input name="title" maxLength={120} placeholder="例如：管理者选题参考" /></label><button className="primary-button" disabled={submitting || !linkAnalysisReady}>{linkButtonLabel}</button></form></article><article className="create-panel upload-panel"><p className="section-kicker">批量本地上传</p><h2>上传视频或音频</h2><p>选择文件后会先读取本地媒体时长并估算 Token；不会上传文件内容进行预检。单文件上限 50 MB。</p><form className="stack-form" onSubmit={uploadFile}><label className="file-drop">选择一个或多个媒体文件<input name="file" type="file" multiple required accept="video/mp4,video/quicktime,video/webm,audio/mpeg,audio/mp4,audio/wav" onChange={inspectUploadFiles} /><span>MP4、MOV、WebM、MP3、M4A、WAV</span></label>{(inspectingFiles || uploadEstimates.length > 0) && <div className="upload-cost-estimate" role="status"><strong>{inspectingFiles ? "正在读取媒体时长…" : `${uploadEstimates.length} 个文件 · ${knownUploadDuration > 0 ? durationLabel(knownUploadDuration) : "时长暂不可读"}`}</strong>{!inspectingFiles && <span>{estimatedUploadTokens !== null ? `本批来源预计约 ${estimatedUploadTokens.toLocaleString()} Token` : "将按所选模式逐个任务保护"}{unknownUploadDurations ? ` · ${unknownUploadDurations} 个文件将在后台确认时长` : ""}</span>}{knownUploadDuration >= 1_800 && <em>检测到 30 分钟以上媒体，每个分析任务仍会受到所选模式的 Token 上限保护。</em>}</div>}<button className="secondary-button" disabled={submitting || inspectingFiles || !baseServiceReady}>{submitting ? "正在批量上传…" : inspectingFiles ? "正在估算…" : baseServiceReady ? "上传并自动分析" : "分析服务准备中…"}</button>{uploadProgress && <p className="upload-progress" role="status">{uploadProgress}</p>}</form></article></aside>}
   </div>;
 }
 

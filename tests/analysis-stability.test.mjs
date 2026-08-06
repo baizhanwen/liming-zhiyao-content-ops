@@ -126,3 +126,21 @@ test("analysis quality profiles persist from submission through worker budgets",
   assert.match(provider, /8_000/);
   assert.match(provider, /32_000/);
 });
+
+test("analysis submissions expose duration estimates and enforce total token ceilings", async () => {
+  const [profiles, workspace, provider, detail] = await Promise.all([
+    readFile(new URL("../lib/analysis-profile.ts", import.meta.url), "utf8"),
+    readFile(new URL("../components/AnalysisWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../services/analyzer/liming_analyzer/providers.py", import.meta.url), "utf8"),
+    readFile(new URL("../components/AnalysisDetail.tsx", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(profiles, /estimateMediaSourceTokens/);
+  assert.match(profiles, /outputTokens: 6_000/);
+  assert.match(workspace, /readMediaDuration/);
+  assert.match(workspace, /单次总预算/);
+  assert.match(workspace, /30 分钟以上媒体/);
+  assert.match(provider, /"max_tokens": effective_output_tokens/);
+  assert.match(provider, /"maximum_total_tokens"/);
+  assert.match(detail, /maximum_total_tokens/);
+});
