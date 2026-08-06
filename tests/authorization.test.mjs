@@ -56,9 +56,10 @@ test("analysis job state machine only allows explicit forward transitions and re
 });
 
 test("video ingestion checks project access before media buffering and uses private tenant prefixes", async () => {
-  const [upload, fromUrl, retry, runtime] = await Promise.all([
+  const [upload, fromUrl, douyinUrl, retry, runtime] = await Promise.all([
     readFile(new URL("../app/api/videos/upload/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/videos/from-url/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/douyin-url.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/analysis-jobs/[jobId]/retry/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../db/runtime.ts", import.meta.url), "utf8"),
   ]);
@@ -66,7 +67,8 @@ test("video ingestion checks project access before media buffering and uses priv
   assert.match(upload, /organizations\/\$\{organizationId\}\/projects\/\$\{projectId\}/);
   assert.match(upload, /sha256Hex\(bytes\)/);
   assert.match(upload, /best-effort rollback/);
-  assert.match(fromUrl, /endsWith\("\.douyin\.com"\)/);
+  assert.match(fromUrl, /extractDouyinUrl/);
+  assert.match(douyinUrl, /host\.endsWith\(`\.\$\{domain\}`\)/);
   assert.match(fromUrl, /VIDEO_ALREADY_EXISTS/);
   assert.match(retry, /status IN \('failed', 'cancelled'\)/);
   assert.match(runtime, /R2 binding MEDIA is unavailable/);

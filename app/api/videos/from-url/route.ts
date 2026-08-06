@@ -2,17 +2,7 @@ import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess, hashInvitat
 import { apiError, errorResponse } from "../../../../lib/api-response";
 import { readRequestIdentity } from "../../../../lib/request-auth";
 import { checkOrganizationQuota } from "../../../../lib/operations";
-
-function normalizeDouyinUrl(value: string) {
-  try {
-    const url = new URL(value.trim());
-    const host = url.hostname.toLowerCase();
-    const allowed = host === "douyin.com" || host.endsWith(".douyin.com") || host === "iesdouyin.com" || host.endsWith(".iesdouyin.com");
-    if (url.protocol !== "https:" || !allowed) return null;
-    url.hash = "";
-    return url.toString();
-  } catch { return null; }
-}
+import { extractDouyinUrl } from "../../../../lib/douyin-url";
 
 export async function POST(request: Request) {
   const identity = await readRequestIdentity(request);
@@ -20,9 +10,9 @@ export async function POST(request: Request) {
   try {
     const payload = await request.json() as { organizationId?: string; projectId?: string; url?: string; title?: string };
     const organizationId = payload.organizationId?.trim() ?? ""; const projectId = payload.projectId?.trim() ?? "";
-    const sourceUrl = normalizeDouyinUrl(payload.url ?? "");
+    const sourceUrl = extractDouyinUrl(payload.url ?? "");
     if (!organizationId || !projectId) return apiError("PROJECT_SCOPE_REQUIRED", "缺少公司或项目范围。", 400);
-    if (!sourceUrl) return apiError("INVALID_DOUYIN_URL", "请输入有效的抖音 HTTPS 链接。", 400);
+    if (!sourceUrl) return apiError("INVALID_DOUYIN_URL", "请粘贴抖音分享文案或有效的抖音 HTTPS 链接。", 400);
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
     if (!access || !canWriteProjectAccess(access)) return apiError("WRITE_ACCESS_REQUIRED", "当前角色不能创建分析任务。", 403);
     const user = await ensureUser(identity); const db = getD1(); const now = new Date().toISOString();
