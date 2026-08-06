@@ -15,6 +15,7 @@ type Segment = { startMs: number; endMs: number; text: string };
 type Evidence = { startMs: number | null; text: string; source: string; confidence: number | null };
 
 const sectionNames: Record<string, string> = { summary: "核心结论", hook: "开场钩子", structure: "内容结构", audience: "目标受众", visual: "画面表达", visuals: "画面表达", language: "语言与节奏", highlights: "有效亮点", risks: "风险与缺口", recommendations: "复用建议", evidence: "证据" };
+const reportSectionOrder = ["summary", "hook", "audience", "structure", "highlights", "recommendations", "visual", "visuals", "language", "risks"];
 const eventNames: Record<string, string> = { claimed: "任务已领取", heartbeat: "任务心跳", stage_changed: "阶段推进", completed: "分析完成", failed: "分析失败", lease_expired: "租约过期" };
 
 async function readError(response: Response) { const body = await response.json().catch(() => null) as { error?: { message?: string } } | null; return body?.error?.message ?? "分析结果暂时无法读取。"; }
@@ -47,16 +48,24 @@ function normalizeEvidence(value: unknown): Evidence[] {
   });
 }
 
-function renderValue(value: unknown) {
+function renderValue(value: unknown, key = "") {
   if (typeof value === "string" || typeof value === "number") return String(value);
-  if (Array.isArray(value)) return value.map((item) => typeof item === "string" ? item : JSON.stringify(item)).join("\n");
+  if (Array.isArray(value)) return value.map((item, index) => `${key === "structure" ? `${index + 1}.` : "•"} ${typeof item === "string" ? item : JSON.stringify(item)}`).join("\n");
   const record = asRecord(value); if (!record) return "暂无内容";
   return Object.entries(record).map(([key, item]) => `${sectionNames[key] ?? key}：${typeof item === "string" ? item : JSON.stringify(item)}`).join("\n");
+}
+
+async function copyText(value: string) {
+  if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(value); return; }
+  const helper = document.createElement("textarea"); helper.value = value; helper.style.position = "fixed"; helper.style.opacity = "0";
+  document.body.appendChild(helper); helper.select(); const copied = document.execCommand("copy"); helper.remove();
+  if (!copied) throw new Error("copy failed");
 }
 
 export function AnalysisDetail({ videoId, organizationId, projectId }: { videoId: string; organizationId: string; projectId: string }) {
   const [detail, setDetail] = useState<DetailResponse | null>(null); const [loading, setLoading] = useState(true); const [error, setError] = useState("");
   const [editingTranscript, setEditingTranscript] = useState(false); const [savingTranscript, setSavingTranscript] = useState(false); const [draftSegments, setDraftSegments] = useState<Segment[]>([]); const [editMessage, setEditMessage] = useState("");
+  const [copyMessage, setCopyMessage] = useState("");
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
   const requestUrl = useMemo(() => `/api/videos/${encodeURIComponent(videoId)}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`, [organizationId, projectId, videoId]);
   const load = useCallback(async () => {
@@ -79,12 +88,20 @@ export function AnalysisDetail({ videoId, organizationId, projectId }: { videoId
   }, [requestUrl]);
   const segments = useMemo(() => normalizeSegments(detail?.transcript?.segments), [detail?.transcript?.segments]);
   const captionTrack = useMemo(() => `data:text/vtt;charset=utf-8,${encodeURIComponent(`WEBVTT\n\n${segments.map((segment, index) => `${index + 1}\n${vttTime(segment.startMs)} --> ${vttTime(Math.max(segment.endMs, segment.startMs + 500))}\n${segment.text.replaceAll("\n", " ")}\n`).join("\n")}`)}`, [segments]);
-  const report = asRecord(detail?.analysis?.report); const analysisMeta = asRecord(report?.analysis_meta); const reportSections = report ? Object.entries(report).filter(([key]) => key !== "evidence" && key !== "analysis_meta") : [];
+  const report = asRecord(detail?.analysis?.report); const analysisMeta = asRecord(report?.analysis_meta); const reportSections = report ? Object.entries(report).filter(([key]) => key !== "evidence" && key !== "analysis_meta").sort(([left], [right]) => { const leftIndex = reportSectionOrder.indexOf(left); const rightIndex = reportSectionOrder.indexOf(right); return (leftIndex < 0 ? 999 : leftIndex) - (rightIndex < 0 ? 999 : rightIndex); }) : [];
   const evidence = normalizeEvidence(report?.evidence);
   const keyframes = detail?.assets.filter((asset) => asset.kind === "keyframe") ?? [];
   const coverFrame = keyframes[0] ?? null;
   const latestMetric = detail?.metrics[0] ?? null;
   function seek(startMs: number) { if (!mediaRef.current) return; mediaRef.current.currentTime = startMs / 1000; void mediaRef.current.play(); }
+  async function copyReport() {
+    if (!reportSections.length) return;
+    setCopyMessage("");
+    try {
+      await copyText(reportSections.map(([key, value]) => `${sectionNames[key] ?? key}\n${renderValue(value, key)}`).join("\n\n"));
+      setCopyMessage("分析报告已复制，可以直接粘贴到文档或群聊。" );
+    } catch { setCopyMessage("复制没有成功，请重新点击一次。" ); }
+  }
   function startTranscriptEdit() {
     if (!detail?.transcript) return;
     setDraftSegments(segments.length ? segments : [{ startMs: 0, endMs: Math.max(500, (detail.video.duration_sec ?? 1) * 1000), text: detail.transcript.full_text }]);
@@ -123,9 +140,10 @@ export function AnalysisDetail({ videoId, organizationId, projectId }: { videoId
         {keyframes.length > 0 && <div className="keyframe-strip"><div className="timeline-heading"><strong>镜头关键帧</strong><span>{keyframes.length} 个可追溯画面</span></div><div>{keyframes.map((asset, index) => <a key={asset.id} href={asset.url} target="_blank" rel="noreferrer"><span className="keyframe-image" style={{ backgroundImage: `url(${JSON.stringify(asset.url)})` }} role="img" aria-label={`关键帧 ${index + 1}`} /><span>{asset.filename}</span></a>)}</div></div>}
       </article>
 
-      <article className="panel report-panel"><div className="panel-heading"><div><p className="section-kicker">结构化分析与证据</p><h2>{detail.analysis ? `报告 ${detail.analysis.schema_version}` : "尚未生成结构化报告"}</h2></div>{detail.analysis && <span className="confidence-chip">整体置信度 {detail.analysis.confidence ?? "—"}</span>}</div>
-        {analysisMeta && <div className="analysis-cost-summary"><div><small>模型输入预估</small><strong>{numberLabel(typeof analysisMeta.estimated_model_input_tokens === "number" ? analysisMeta.estimated_model_input_tokens : null)} Token</strong></div><div><small>分析覆盖率</small><strong>{typeof analysisMeta.coverage_percent === "number" ? `${analysisMeta.coverage_percent}%` : "—"}</strong></div><div><small>长视频分段</small><strong>{typeof analysisMeta.chunk_count === "number" ? `${analysisMeta.chunk_count} 段` : "—"}</strong></div><div><small>预算策略</small><strong>{analysisMeta.mode === "budgeted" ? "预算内抽样" : "完整分析"}</strong></div></div>}
-        {reportSections.length > 0 ? <div className="report-sections">{reportSections.map(([key, value]) => <section key={key}><h3>{sectionNames[key] ?? key}</h3><p>{renderValue(value)}</p></section>)}</div> : <div className="list-empty">分析服务完成结构化输出后，结论、证据与复用建议会显示在这里。</div>}
+      <article className="panel report-panel"><div className="panel-heading"><div><p className="section-kicker">结构化分析与证据</p><h2>{detail.analysis ? `报告 ${detail.analysis.schema_version}` : "尚未生成结构化报告"}</h2></div>{detail.analysis && <div className="report-heading-actions"><span className="confidence-chip">整体置信度 {detail.analysis.confidence ?? "—"}</span><button type="button" onClick={copyReport}>复制报告</button></div>}</div>
+        {copyMessage && <p className="report-copy-message" role="status">{copyMessage}</p>}
+        {analysisMeta && <div className="analysis-cost-summary"><div><small>{typeof analysisMeta.actual_total_tokens === "number" ? "实际模型消耗" : "模型输入预估"}</small><strong>{numberLabel(typeof analysisMeta.actual_total_tokens === "number" ? analysisMeta.actual_total_tokens : typeof analysisMeta.estimated_model_input_tokens === "number" ? analysisMeta.estimated_model_input_tokens : null)} Token</strong>{typeof analysisMeta.actual_total_tokens === "number" && <span>输入 {numberLabel(typeof analysisMeta.actual_input_tokens === "number" ? analysisMeta.actual_input_tokens : null)} · 输出 {numberLabel(typeof analysisMeta.actual_output_tokens === "number" ? analysisMeta.actual_output_tokens : null)}</span>}</div><div><small>分析覆盖率</small><strong>{typeof analysisMeta.coverage_percent === "number" ? `${analysisMeta.coverage_percent}%` : "—"}</strong>{typeof analysisMeta.analyzed_segments === "number" && typeof analysisMeta.source_segments === "number" && <span>{analysisMeta.analyzed_segments} / {analysisMeta.source_segments} 个片段</span>}</div><div><small>长视频分段</small><strong>{typeof analysisMeta.chunk_count === "number" ? `${analysisMeta.chunk_count} 段` : "—"}</strong></div><div><small>预算策略</small><strong>{analysisMeta.mode === "budgeted" ? "预算内抽样" : "完整分析"}</strong></div></div>}
+        {reportSections.length > 0 ? <div className="report-sections">{reportSections.map(([key, value]) => <section className={key === "summary" || key === "recommendations" ? "report-section-wide" : undefined} key={key}><h3>{sectionNames[key] ?? key}</h3><p>{renderValue(value, key)}</p></section>)}</div> : <div className="list-empty">分析服务完成结构化输出后，结论、证据与复用建议会显示在这里。</div>}
         {evidence.length > 0 && <div className="evidence-list"><h3>结论证据</h3>{evidence.map((item, index) => <button type="button" key={`${item.startMs}-${index}`} onClick={() => item.startMs !== null && seek(item.startMs)} disabled={item.startMs === null || !detail.video.media_url}><span>{item.startMs === null ? "证据" : timeLabel(item.startMs)}</span><strong>{item.text}</strong><small>{item.source} · 置信度 {item.confidence ?? "—"}</small></button>)}</div>}
         {detail.analysis && <footer className="report-provenance"><span>模型：{[detail.analysis.model_provider, detail.analysis.model_name].filter(Boolean).join(" / ") || "规则与适配器"}</span><span>提示词版本：{detail.analysis.prompt_version || "—"}</span><span>生成：{dateLabel(detail.analysis.created_at)}</span>{detail.video.is_shared_reference ? <span>共享素材 · 原分析只读</span> : <Link href={`/topics?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}&sourceVideoId=${encodeURIComponent(videoId)}`}>从此分析创建选题 →</Link>}</footer>}
       </article>

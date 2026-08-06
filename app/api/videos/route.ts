@@ -14,7 +14,7 @@ export async function GET(request: Request) {
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
     if (!access) return apiError("ACCESS_DENIED", "无权访问该项目的视频。", 403);
     const db = getD1();
-    const [videos, jobs, readiness] = await Promise.all([
+    const [videos, jobs, readiness, queueStats] = await Promise.all([
       db.prepare(`
         SELECT * FROM (
           SELECT v.id, v.platform, v.source_type, v.source_url, v.title, v.author_name, v.status, v.error_message, v.created_at, a.filename, a.size_bytes,
@@ -42,9 +42,19 @@ export async function GET(request: Request) {
         )) ORDER BY created_at DESC LIMIT 150
       `).bind(organizationId, projectId, organizationId, projectId).all(),
       readAnalyzerReadiness(organizationId),
+      db.prepare(`
+        SELECT COUNT(*) AS sample_count,
+          CAST(AVG((julianday(completed_at) - julianday(created_at)) * 86400) AS INTEGER) AS average_seconds
+        FROM (
+          SELECT created_at, completed_at FROM analysis_jobs
+          WHERE organization_id = ? AND project_id = ? AND status = 'completed' AND completed_at IS NOT NULL
+          ORDER BY completed_at DESC LIMIT 20
+        )
+      `).bind(organizationId, projectId).first<{ sample_count: number; average_seconds: number | null }>(),
     ]);
     return Response.json({
       videos: videos.results, jobs: jobs.results, canWrite: canWriteProjectAccess(access),
+      queue: { sampleCount: queueStats?.sample_count ?? 0, averageSeconds: queueStats?.average_seconds ?? null },
       service: {
         credentialConfigured: readiness.credentialConfigured,
         modelConfigured: readiness.modelConfigured,

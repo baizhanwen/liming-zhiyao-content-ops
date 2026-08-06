@@ -41,7 +41,25 @@ test("long videos use a bounded evidence budget and report coverage", async () =
   assert.match(provider, /transcript_windows/);
   assert.match(provider, /analysis_meta/);
   assert.match(provider, /coverage_percent/);
+  assert.match(provider, /create_with_completion/);
+  assert.match(provider, /actual_total_tokens/);
   assert.match(detail, /estimated_model_input_tokens/);
+  assert.match(detail, /actual_total_tokens/);
+  assert.match(detail, /copyReport/);
   assert.match(worker, /MODEL_CONTEXT_LIMIT/);
   assert.match(worker, /DOUYIN_COOKIE_EXPIRED/);
+});
+
+test("analysis tasks show queue estimates and actionable recovery guidance", async () => {
+  const [videos, workspace] = await Promise.all([
+    readFile(new URL("../app/api/videos/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../components/AnalysisWorkspace.tsx", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(videos, /average_seconds/);
+  assert.match(videos, /sampleCount/);
+  assert.match(workspace, /queueLabel/);
+  assert.match(workspace, /errorGuidance/);
+  assert.match(workspace, /DOUYIN_COOKIE_EXPIRED/);
+  assert.match(workspace, /job-guidance/);
 });

@@ -76,6 +76,11 @@ class FakeCompletions:
         type(self).last_kwargs = _kwargs
         return FakeReport()
 
+    def create_with_completion(self, **_kwargs):
+        type(self).last_kwargs = _kwargs
+        usage = type("Usage", (), {"prompt_tokens": 720, "completion_tokens": 180, "total_tokens": 900})()
+        return FakeReport(), type("RawCompletion", (), {"usage": usage})()
+
 
 class FakeClient:
     class Chat:
@@ -210,6 +215,9 @@ class ProviderTests(unittest.TestCase):
         self.assertLess(meta["analyzed_segments"], meta["source_segments"])
         self.assertGreater(meta["chunk_count"], 1)
         self.assertLessEqual(meta["coverage_percent"], 100)
+        self.assertEqual(meta["actual_input_tokens"], 720)
+        self.assertEqual(meta["actual_output_tokens"], 180)
+        self.assertEqual(meta["actual_total_tokens"], 900)
 
     def test_public_resolver_returns_metadata_and_metrics(self):
         captured = {}

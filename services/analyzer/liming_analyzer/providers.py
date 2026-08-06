@@ -389,12 +389,12 @@ class InstructorStructureAnalyzer:
         provider_options: dict[str, Any] = {}
         if self.provider.strip().lower() == "deepseek":
             provider_options["extra_body"] = {"thinking": {"type": "disabled"}}
-        response = self.client.chat.completions.create(
-            model=self.model,
-            response_model=self.report_model,
-            max_retries=2,
-            temperature=0.2,
-            messages=[
+        request_kwargs = {
+            "model": self.model,
+            "response_model": self.report_model,
+            "max_retries": 2,
+            "temperature": 0.2,
+            "messages": [
                 {
                     "role": "system",
                     "content": (
@@ -422,7 +422,14 @@ class InstructorStructureAnalyzer:
                 },
             ],
             **provider_options,
-        )
+        }
+        completions = self.client.chat.completions
+        create_with_completion = getattr(completions, "create_with_completion", None)
+        raw_response = None
+        if callable(create_with_completion):
+            response, raw_response = create_with_completion(**request_kwargs)
+        else:
+            response = completions.create(**request_kwargs)
         report = response.model_dump(mode="json") if hasattr(response, "model_dump") else dict(response)
         confidence = report.pop("confidence", None)
         evidence_text = {row.text for row in transcript.segments}
@@ -444,6 +451,17 @@ class InstructorStructureAnalyzer:
             "coverage_percent": 100 if original_tokens == 0 else min(100, round(selected_tokens / original_tokens * 100)),
             "duration_minutes": round(media.info.duration_ms / 60_000, 1),
         }
+        usage = getattr(raw_response, "usage", None)
+        if usage is not None:
+            input_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+            output_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+            total_tokens = int(getattr(usage, "total_tokens", input_tokens + output_tokens) or input_tokens + output_tokens)
+            if total_tokens > 0:
+                report["analysis_meta"].update({
+                    "actual_input_tokens": input_tokens,
+                    "actual_output_tokens": output_tokens,
+                    "actual_total_tokens": total_tokens,
+                })
         return StructureOutput(
             "analysis.v2",
             report,
