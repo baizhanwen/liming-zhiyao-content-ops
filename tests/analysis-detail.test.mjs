@@ -33,5 +33,8 @@ test("detail UI links transcript evidence to protected media time", async () => 
   assert.match(detail, /currentTime = startMs \/ 1000/);
   assert.match(detail, /结构化分析与证据/);
   assert.match(detail, /公开指标/);
+  assert.match(detail, /const coverFrame = keyframes\[0\]/);
+  assert.match(detail, /本地分析封面/);
+  assert.match(detail, /打开原始抖音链接/);
   assert.doesNotMatch(detail, /dangerouslySetInnerHTML/);
 });
