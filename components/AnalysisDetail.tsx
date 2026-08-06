@@ -62,10 +62,22 @@ async function copyText(value: string) {
   if (!copied) throw new Error("copy failed");
 }
 
+function safeFilename(value: string) { return (value.replace(/[<>:"/\\|?*]/g, "-").trim().slice(0, 60) || "视频分析"); }
+function downloadText(filename: string, value: string, contentType: string) {
+  const url = URL.createObjectURL(new Blob([value], { type: `${contentType};charset=utf-8` }));
+  const anchor = document.createElement("a"); anchor.href = url; anchor.download = filename; document.body.appendChild(anchor); anchor.click(); anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+function highlightedText(value: string, query: string) {
+  const clean = query.trim(); if (!clean) return value;
+  const index = value.toLocaleLowerCase("zh-CN").indexOf(clean.toLocaleLowerCase("zh-CN")); if (index < 0) return value;
+  return <>{value.slice(0, index)}<mark>{value.slice(index, index + clean.length)}</mark>{value.slice(index + clean.length)}</>;
+}
+
 export function AnalysisDetail({ videoId, organizationId, projectId }: { videoId: string; organizationId: string; projectId: string }) {
   const [detail, setDetail] = useState<DetailResponse | null>(null); const [loading, setLoading] = useState(true); const [error, setError] = useState("");
   const [editingTranscript, setEditingTranscript] = useState(false); const [savingTranscript, setSavingTranscript] = useState(false); const [draftSegments, setDraftSegments] = useState<Segment[]>([]); const [editMessage, setEditMessage] = useState("");
-  const [copyMessage, setCopyMessage] = useState("");
+  const [copyMessage, setCopyMessage] = useState(""); const [transcriptQuery, setTranscriptQuery] = useState("");
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
   const requestUrl = useMemo(() => `/api/videos/${encodeURIComponent(videoId)}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`, [organizationId, projectId, videoId]);
   const load = useCallback(async () => {
@@ -87,7 +99,9 @@ export function AnalysisDetail({ videoId, organizationId, projectId }: { videoId
     return () => { active = false; };
   }, [requestUrl]);
   const segments = useMemo(() => normalizeSegments(detail?.transcript?.segments), [detail?.transcript?.segments]);
-  const captionTrack = useMemo(() => `data:text/vtt;charset=utf-8,${encodeURIComponent(`WEBVTT\n\n${segments.map((segment, index) => `${index + 1}\n${vttTime(segment.startMs)} --> ${vttTime(Math.max(segment.endMs, segment.startMs + 500))}\n${segment.text.replaceAll("\n", " ")}\n`).join("\n")}`)}`, [segments]);
+  const transcriptVtt = useMemo(() => `WEBVTT\n\n${segments.map((segment, index) => `${index + 1}\n${vttTime(segment.startMs)} --> ${vttTime(Math.max(segment.endMs, segment.startMs + 500))}\n${segment.text.replaceAll("\n", " ")}\n`).join("\n")}`, [segments]);
+  const captionTrack = useMemo(() => `data:text/vtt;charset=utf-8,${encodeURIComponent(transcriptVtt)}`, [transcriptVtt]);
+  const visibleSegments = useMemo(() => { const query = transcriptQuery.trim().toLocaleLowerCase("zh-CN"); return query ? segments.filter((segment) => segment.text.toLocaleLowerCase("zh-CN").includes(query)) : segments; }, [segments, transcriptQuery]);
   const report = asRecord(detail?.analysis?.report); const analysisMeta = asRecord(report?.analysis_meta); const reportSections = report ? Object.entries(report).filter(([key]) => key !== "evidence" && key !== "analysis_meta").sort(([left], [right]) => { const leftIndex = reportSectionOrder.indexOf(left); const rightIndex = reportSectionOrder.indexOf(right); return (leftIndex < 0 ? 999 : leftIndex) - (rightIndex < 0 ? 999 : rightIndex); }) : [];
   const evidence = normalizeEvidence(report?.evidence);
   const keyframes = detail?.assets.filter((asset) => asset.kind === "keyframe") ?? [];
@@ -101,6 +115,18 @@ export function AnalysisDetail({ videoId, organizationId, projectId }: { videoId
       await copyText(reportSections.map(([key, value]) => `${sectionNames[key] ?? key}\n${renderValue(value, key)}`).join("\n\n"));
       setCopyMessage("分析报告已复制，可以直接粘贴到文档或群聊。" );
     } catch { setCopyMessage("复制没有成功，请重新点击一次。" ); }
+  }
+  function exportMarkdown() {
+    const title = detail?.video.title || detail?.video.filename || "视频分析";
+    const lines = [`# ${title}`, "", `- 生成时间：${dateLabel(detail?.analysis?.created_at ?? null)}`, `- 模型：${[detail?.analysis?.model_provider, detail?.analysis?.model_name].filter(Boolean).join(" / ") || "规则与适配器"}`];
+    for (const [key, value] of reportSections) lines.push("", `## ${sectionNames[key] ?? key}`, "", renderValue(value, key));
+    if (evidence.length) { lines.push("", "## 结论证据", ""); for (const item of evidence) lines.push(`- ${item.startMs === null ? "[证据]" : `[${timeLabel(item.startMs)}]`} ${item.text}（${item.source}）`); }
+    if (segments.length) { lines.push("", "## 时间轴转写", ""); for (const segment of segments) lines.push(`- [${timeLabel(segment.startMs)}] ${segment.text}`); }
+    downloadText(`${safeFilename(title)}-分析报告.md`, `${lines.join("\n")}\n`, "text/markdown"); setCopyMessage("Markdown 报告已下载到浏览器下载目录。" );
+  }
+  function exportTranscript() {
+    const title = detail?.video.title || detail?.video.filename || "视频分析";
+    downloadText(`${safeFilename(title)}-时间轴字幕.vtt`, transcriptVtt, "text/vtt"); setEditMessage("时间轴字幕已下载到浏览器下载目录。" );
   }
   function startTranscriptEdit() {
     if (!detail?.transcript) return;
@@ -122,8 +148,9 @@ export function AnalysisDetail({ videoId, organizationId, projectId }: { videoId
   if (error || !detail) return <div className="management-state error-state"><strong>暂时无法查看分析详情</strong><p>{error}</p><Link href="/analysis">返回视频分析</Link></div>;
   const isAudio = detail.video.content_type?.startsWith("audio/");
   return <div className="analysis-detail-layout">
+    <nav className="analysis-detail-nav" aria-label="分析结果快捷导航"><a href="#analysis-media">媒体与转写</a><a href="#analysis-report">结构化报告</a><a href="#analysis-trace">处理记录</a></nav>
     <section className="detail-primary">
-      <article className="panel media-review-panel">
+      <article className="panel media-review-panel" id="analysis-media">
         <div className="panel-heading"><div><p className="section-kicker">原始媒体与时间轴</p><h2>{detail.video.title || detail.video.filename || "待提取视频标题"}</h2></div><span className={`status ${detail.job?.status === "completed" ? "success" : detail.job?.status === "failed" ? "danger" : "neutral"}`}>{detail.job?.current_stage || detail.video.status}</span></div>
         <div className="media-review-grid"><div className={`media-player-shell${!detail.video.media_url && detail.video.source_url && coverFrame ? " has-external-cover" : ""}`}>
           {detail.video.media_url && isAudio && <audio ref={(node) => { mediaRef.current = node; }} controls preload="metadata" src={detail.video.media_url}><track kind="captions" src={captionTrack} srcLang={detail.transcript?.language || "zh-CN"} label="转写字幕" default /></audio>}
@@ -133,14 +160,15 @@ export function AnalysisDetail({ videoId, organizationId, projectId }: { videoId
             <div className="external-media-content"><span aria-hidden="true">↗</span><strong>{coverFrame ? "查看原始视频" : "公开视频来源"}</strong><p>{coverFrame ? "封面取自本地分析关键帧，原视频仍通过平台链接核对。" : "平台内容保持外链，不在页面中绕过平台限制嵌入。"}</p><a href={detail.video.source_url} target="_blank" rel="noreferrer">打开原始抖音链接</a></div>
           </div>}
         </div><div className={`transcript-timeline${editingTranscript ? " editing" : ""}`}>
-          <div className="timeline-heading"><div><strong>时间轴文案</strong><span>{detail.transcript ? `${detail.transcript.source === "manual" ? "人工校正版" : "ASR 原稿"} · 版本 ${detail.transcript.version} · 置信度 ${detail.transcript.confidence ?? "—"}` : "等待转写"}</span></div>{detail.transcript && detail.canWrite && !editingTranscript && <button type="button" onClick={startTranscriptEdit}>校正转写</button>}</div>
-          {editingTranscript ? <div className="transcript-editor"><p>逐段修正错别字和专有名词，时间点会继续保留用于证据定位。</p>{draftSegments.map((segment, index) => <label key={`${segment.startMs}-${index}`}><time>{timeLabel(segment.startMs)}</time><textarea value={segment.text} maxLength={2000} onChange={(event) => setDraftSegments((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, text: event.target.value } : item))} aria-label={`${timeLabel(segment.startMs)} 的转写内容`} /></label>)}<div className="transcript-editor-actions"><button type="button" onClick={() => setEditingTranscript(false)} disabled={savingTranscript}>取消</button><button type="button" onClick={() => saveTranscript(false)} disabled={savingTranscript}>仅保存校正版</button><button className="primary" type="button" onClick={() => saveTranscript(true)} disabled={savingTranscript}>{savingTranscript ? "正在保存…" : "保存并重新分析"}</button></div>{editMessage && <div className="inline-alert" role="alert">{editMessage}</div>}</div> : segments.length > 0 ? <ol>{segments.map((segment, index) => <li key={`${segment.startMs}-${index}`}><button type="button" onClick={() => seek(segment.startMs)} disabled={!detail.video.media_url}><time>{timeLabel(segment.startMs)}</time><span>{segment.text}</span></button></li>)}</ol> : <div className="timeline-empty">{detail.transcript?.full_text || "转写完成后，这里会按时间点展示原文。"}</div>}
+          <div className="timeline-heading"><div><strong>时间轴文案</strong><span>{detail.transcript ? `${detail.transcript.source === "manual" ? "人工校正版" : "ASR 原稿"} · 版本 ${detail.transcript.version} · 置信度 ${detail.transcript.confidence ?? "—"}` : "等待转写"}</span></div><div className="timeline-actions">{segments.length > 0 && !editingTranscript && <label className="transcript-search"><span className="sr-only">搜索转写内容</span><input type="search" value={transcriptQuery} onChange={(event) => setTranscriptQuery(event.target.value)} placeholder="搜索转写…" /></label>}{segments.length > 0 && !editingTranscript && <button type="button" onClick={exportTranscript}>导出字幕</button>}{detail.transcript && detail.canWrite && !editingTranscript && <button type="button" onClick={startTranscriptEdit}>校正转写</button>}</div></div>
+          {!editingTranscript && transcriptQuery.trim() && <p className="transcript-match-count" role="status">找到 {visibleSegments.length} 个匹配片段</p>}
+          {editingTranscript ? <div className="transcript-editor"><p>逐段修正错别字和专有名词，时间点会继续保留用于证据定位。</p>{draftSegments.map((segment, index) => <label key={`${segment.startMs}-${index}`}><time>{timeLabel(segment.startMs)}</time><textarea value={segment.text} maxLength={2000} onChange={(event) => setDraftSegments((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, text: event.target.value } : item))} aria-label={`${timeLabel(segment.startMs)} 的转写内容`} /></label>)}<div className="transcript-editor-actions"><button type="button" onClick={() => setEditingTranscript(false)} disabled={savingTranscript}>取消</button><button type="button" onClick={() => saveTranscript(false)} disabled={savingTranscript}>仅保存校正版</button><button className="primary" type="button" onClick={() => saveTranscript(true)} disabled={savingTranscript}>{savingTranscript ? "正在保存…" : "保存并重新分析"}</button></div>{editMessage && <div className="inline-alert" role="alert">{editMessage}</div>}</div> : visibleSegments.length > 0 ? <ol>{visibleSegments.map((segment, index) => <li key={`${segment.startMs}-${index}`}><button type="button" onClick={() => seek(segment.startMs)} disabled={!detail.video.media_url}><time>{timeLabel(segment.startMs)}</time><span>{highlightedText(segment.text, transcriptQuery)}</span></button></li>)}</ol> : segments.length > 0 && transcriptQuery.trim() ? <div className="timeline-empty">没有找到包含“{transcriptQuery.trim()}”的转写片段。</div> : <div className="timeline-empty">{detail.transcript?.full_text || "转写完成后，这里会按时间点展示原文。"}</div>}
           {!editingTranscript && editMessage && <div className="transcript-save-message" role="status">{editMessage}</div>}
         </div></div>
         {keyframes.length > 0 && <div className="keyframe-strip"><div className="timeline-heading"><strong>镜头关键帧</strong><span>{keyframes.length} 个可追溯画面</span></div><div>{keyframes.map((asset, index) => <a key={asset.id} href={asset.url} target="_blank" rel="noreferrer"><span className="keyframe-image" style={{ backgroundImage: `url(${JSON.stringify(asset.url)})` }} role="img" aria-label={`关键帧 ${index + 1}`} /><span>{asset.filename}</span></a>)}</div></div>}
       </article>
 
-      <article className="panel report-panel"><div className="panel-heading"><div><p className="section-kicker">结构化分析与证据</p><h2>{detail.analysis ? `报告 ${detail.analysis.schema_version}` : "尚未生成结构化报告"}</h2></div>{detail.analysis && <div className="report-heading-actions"><span className="confidence-chip">整体置信度 {detail.analysis.confidence ?? "—"}</span><button type="button" onClick={copyReport}>复制报告</button></div>}</div>
+      <article className="panel report-panel" id="analysis-report"><div className="panel-heading"><div><p className="section-kicker">结构化分析与证据</p><h2>{detail.analysis ? `报告 ${detail.analysis.schema_version}` : "尚未生成结构化报告"}</h2></div>{detail.analysis && <div className="report-heading-actions"><span className="confidence-chip">整体置信度 {detail.analysis.confidence ?? "—"}</span><button type="button" onClick={copyReport}>复制报告</button><button type="button" onClick={exportMarkdown}>导出 Markdown</button></div>}</div>
         {copyMessage && <p className="report-copy-message" role="status">{copyMessage}</p>}
         {analysisMeta && <div className="analysis-cost-summary"><div><small>{typeof analysisMeta.actual_total_tokens === "number" ? "实际模型消耗" : "模型输入预估"}</small><strong>{numberLabel(typeof analysisMeta.actual_total_tokens === "number" ? analysisMeta.actual_total_tokens : typeof analysisMeta.estimated_model_input_tokens === "number" ? analysisMeta.estimated_model_input_tokens : null)} Token</strong>{typeof analysisMeta.actual_total_tokens === "number" && <span>输入 {numberLabel(typeof analysisMeta.actual_input_tokens === "number" ? analysisMeta.actual_input_tokens : null)} · 输出 {numberLabel(typeof analysisMeta.actual_output_tokens === "number" ? analysisMeta.actual_output_tokens : null)}</span>}</div><div><small>分析覆盖率</small><strong>{typeof analysisMeta.coverage_percent === "number" ? `${analysisMeta.coverage_percent}%` : "—"}</strong>{typeof analysisMeta.analyzed_segments === "number" && typeof analysisMeta.source_segments === "number" && <span>{analysisMeta.analyzed_segments} / {analysisMeta.source_segments} 个片段</span>}</div><div><small>长视频分段</small><strong>{typeof analysisMeta.chunk_count === "number" ? `${analysisMeta.chunk_count} 段` : "—"}</strong></div><div><small>预算策略</small><strong>{analysisMeta.mode === "budgeted" ? "预算内抽样" : "完整分析"}</strong></div></div>}
         {reportSections.length > 0 ? <div className="report-sections">{reportSections.map(([key, value]) => <section className={key === "summary" || key === "recommendations" ? "report-section-wide" : undefined} key={key}><h3>{sectionNames[key] ?? key}</h3><p>{renderValue(value, key)}</p></section>)}</div> : <div className="list-empty">分析服务完成结构化输出后，结论、证据与复用建议会显示在这里。</div>}
@@ -151,7 +179,7 @@ export function AnalysisDetail({ videoId, organizationId, projectId }: { videoId
 
     <aside className="detail-sidebar">
       <article className="panel metric-panel"><div className="panel-heading"><div><p className="section-kicker">指标快照</p><h2>{latestMetric ? (latestMetric.source === "public" ? "公开指标" : latestMetric.source === "client_backend" ? "客户后台指标" : "人工回填指标") : "等待指标"}</h2></div></div>{latestMetric ? <dl><div><dt>播放</dt><dd>{numberLabel(latestMetric.plays)}</dd></div><div><dt>点赞</dt><dd>{numberLabel(latestMetric.likes)}</dd></div><div><dt>评论</dt><dd>{numberLabel(latestMetric.comments)}</dd></div><div><dt>收藏</dt><dd>{numberLabel(latestMetric.favorites)}</dd></div><div><dt>分享</dt><dd>{numberLabel(latestMetric.shares)}</dd></div><div><dt>涨粉</dt><dd>{numberLabel(latestMetric.followers_gained)}</dd></div></dl> : <p className="sidebar-empty">暂无可追溯指标快照。</p>}</article>
-      <article className="panel trace-panel"><div className="panel-heading"><div><p className="section-kicker">任务追踪</p><h2>处理记录</h2></div><button type="button" onClick={load}>刷新</button></div>{detail.events.length > 0 ? <ol>{detail.events.map((event, index) => <li key={`${event.created_at}-${index}`}><i aria-hidden="true" /><div><strong>{eventNames[event.event_type] ?? event.event_type}</strong><span>{event.to_status || event.from_status || "状态记录"}{event.progress !== null ? ` · ${event.progress}%` : ""}</span><time>{dateLabel(event.created_at)}</time></div></li>)}</ol> : <p className="sidebar-empty">尚无处理事件。</p>}</article>
+      <article className="panel trace-panel" id="analysis-trace"><div className="panel-heading"><div><p className="section-kicker">任务追踪</p><h2>处理记录</h2></div><button type="button" onClick={load}>刷新</button></div>{detail.events.length > 0 ? <ol>{detail.events.map((event, index) => <li key={`${event.created_at}-${index}`}><i aria-hidden="true" /><div><strong>{eventNames[event.event_type] ?? event.event_type}</strong><span>{event.to_status || event.from_status || "状态记录"}{event.progress !== null ? ` · ${event.progress}%` : ""}</span><time>{dateLabel(event.created_at)}</time></div></li>)}</ol> : <p className="sidebar-empty">尚无处理事件。</p>}</article>
       {detail.job?.error_message && <article className="inline-alert" role="alert"><strong>{detail.job.error_code || "分析失败"}</strong><p>{detail.job.error_message}</p></article>}
     </aside>
   </div>;

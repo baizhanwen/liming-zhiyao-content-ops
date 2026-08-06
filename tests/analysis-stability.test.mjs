@@ -63,3 +63,19 @@ test("analysis tasks show queue estimates and actionable recovery guidance", asy
   assert.match(workspace, /DOUYIN_COOKIE_EXPIRED/);
   assert.match(workspace, /job-guidance/);
 });
+
+test("long analysis reports can be searched, navigated and exported locally", async () => {
+  const [detail, styles] = await Promise.all([
+    readFile(new URL("../components/AnalysisDetail.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(detail, /transcriptQuery/);
+  assert.match(detail, /visibleSegments/);
+  assert.match(detail, /highlightedText/);
+  assert.match(detail, /exportMarkdown/);
+  assert.match(detail, /exportTranscript/);
+  assert.match(detail, /analysis-detail-nav/);
+  assert.match(styles, /transcript-search/);
+  assert.match(styles, /report-heading-actions/);
+});
