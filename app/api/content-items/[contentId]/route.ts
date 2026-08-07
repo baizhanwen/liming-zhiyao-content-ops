@@ -1,6 +1,6 @@
 import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess } from "../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../lib/api-response";
-import { saveContentVersionSchema } from "../../../../lib/content-production";
+import { analysisReportSourceText, saveContentVersionSchema } from "../../../../lib/content-production";
 import { readRequestIdentity } from "../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
@@ -25,6 +25,19 @@ export async function PATCH(request: Request, context: { params: Promise<{ conte
       UNION ALL SELECT 'strategy:' || id, name || char(10) || positioning || char(10) || COALESCE(persona, '') || char(10) || target_audience || char(10) || pain_points_json || char(10) || pillars_json || char(10) || topic_mix_json || char(10) || COALESCE(style_notes, '') || char(10) || COALESCE(cadence, '') || char(10) || COALESCE(conversion_path, '') || char(10) || objectives_json FROM content_strategies WHERE organization_id = ? AND project_id = ?
     `).bind(item.topic_id, organizationId, projectId, organizationId, projectId, organizationId, projectId, organizationId, projectId).all<{ source_key: string; source_text: string }>();
     for (const row of sourceRows.results) allowed.set(row.source_key, row.source_text.replace(/\s+/g, " ").trim());
+    const benchmarkRows = await db.prepare(`
+      SELECT library.id AS library_entry_id, analysis.report_json
+      FROM project_video_references refs
+      INNER JOIN video_library_entries library ON library.id = refs.library_entry_id AND library.organization_id = refs.organization_id
+      INNER JOIN videos v ON v.id = library.source_video_id AND v.organization_id = library.organization_id AND v.deleted_at IS NULL
+      INNER JOIN video_analyses analysis ON analysis.id = (
+        SELECT latest.id FROM video_analyses latest
+        WHERE latest.organization_id = v.organization_id AND latest.video_id = v.id
+        ORDER BY latest.created_at DESC LIMIT 1
+      )
+      WHERE refs.organization_id = ? AND refs.project_id = ? AND refs.purpose = 'benchmark'
+    `).bind(organizationId, projectId).all<{ library_entry_id: string; report_json: string }>();
+    for (const row of benchmarkRows.results) allowed.set(`benchmark:${row.library_entry_id}`, analysisReportSourceText(row.report_json).replace(/\s+/g, " ").trim());
     const invalidCitation = pack.citations.some((citation) => {
       const source = allowed.get(`${citation.sourceType}:${citation.sourceId}`);
       return !source || !source.includes(citation.quote.replace(/\s+/g, " ").trim());

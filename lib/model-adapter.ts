@@ -36,14 +36,40 @@ export function readContentModelConfig(profile: ModelProfile) {
   return { apiKey, baseUrl, model, provider, profile };
 }
 
-function responseText(payload: unknown) {
+function contentPartText(value: unknown): string | null {
+  if (typeof value === "string") return value.trim() ? value : null;
+  if (Array.isArray(value)) {
+    const joined = value.map((part) => contentPartText(part)).filter((part): part is string => Boolean(part)).join("");
+    return joined.trim() ? joined : null;
+  }
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  return contentPartText(record.text) || contentPartText(record.content) || contentPartText(record.value);
+}
+
+export function extractModelResponseText(payload: unknown) {
   if (!payload || typeof payload !== "object") return null;
-  const choices = (payload as { choices?: unknown }).choices;
+  const root = payload as Record<string, unknown>;
+  const direct = contentPartText(root.output_text) || contentPartText(root.content);
+  if (direct) return direct;
+  const choices = root.choices;
   if (!Array.isArray(choices) || !choices[0] || typeof choices[0] !== "object") return null;
-  const message = (choices[0] as { message?: unknown }).message;
-  if (!message || typeof message !== "object") return null;
-  const content = (message as { content?: unknown }).content;
-  return typeof content === "string" && content.trim() ? content : null;
+  const choice = choices[0] as Record<string, unknown>;
+  const message = choice.message && typeof choice.message === "object" ? choice.message as Record<string, unknown> : null;
+  const messageText = message ? contentPartText(message.content) : null;
+  if (messageText) return messageText;
+  const legacyText = contentPartText(choice.text);
+  if (legacyText) return legacyText;
+  const toolCalls = message?.tool_calls;
+  if (!Array.isArray(toolCalls)) return null;
+  for (const toolCall of toolCalls) {
+    if (!toolCall || typeof toolCall !== "object") continue;
+    const fn = (toolCall as Record<string, unknown>).function;
+    if (!fn || typeof fn !== "object") continue;
+    const argumentsText = contentPartText((fn as Record<string, unknown>).arguments);
+    if (argumentsText) return argumentsText;
+  }
+  return null;
 }
 
 export async function invokeContentModel(input: { system: string; user: string; profile: ModelProfile }): Promise<ModelInvocation> {
@@ -52,15 +78,19 @@ export async function invokeContentModel(input: { system: string; user: string; 
   const timeout = setTimeout(() => controller.abort(), 90_000);
   const started = Date.now();
   try {
+    const isDeepSeek = config.provider.toLowerCase().includes("deepseek") || config.baseUrl.toLowerCase().includes("deepseek");
+    const requestBody: Record<string, unknown> = {
+      model: config.model,
+      messages: [{ role: "system", content: input.system }, { role: "user", content: input.user }],
+      temperature: input.profile === "advanced" ? 0.55 : 0.35,
+      response_format: { type: "json_object" },
+      max_tokens: input.profile === "fast" ? 4_000 : input.profile === "advanced" ? 8_000 : 6_000,
+    };
+    if (isDeepSeek) requestBody.thinking = { type: "disabled" };
     const response = await fetch(`${config.baseUrl}/chat/completions`, {
       method: "POST",
       headers: { authorization: `Bearer ${config.apiKey}`, "content-type": "application/json" },
-      body: JSON.stringify({
-        model: config.model,
-        messages: [{ role: "system", content: input.system }, { role: "user", content: input.user }],
-        temperature: input.profile === "advanced" ? 0.55 : 0.35,
-        response_format: { type: "json_object" },
-      }),
+      body: JSON.stringify(requestBody),
       signal: controller.signal,
     });
     const raw = await response.json().catch(() => null) as unknown;
@@ -68,8 +98,12 @@ export async function invokeContentModel(input: { system: string; user: string; 
       const detail = raw && typeof raw === "object" && "error" in raw ? JSON.stringify((raw as { error: unknown }).error).slice(0, 500) : `HTTP ${response.status}`;
       throw new ModelRequestError(`内容模型调用失败：${detail}`, `MODEL_HTTP_${response.status}`);
     }
-    const content = responseText(raw);
-    if (!content) throw new ModelRequestError("内容模型没有返回可解析的文本。", "MODEL_EMPTY_RESPONSE");
+    const content = extractModelResponseText(raw);
+    if (!content) {
+      const finishReason = raw && typeof raw === "object" && Array.isArray((raw as { choices?: unknown }).choices) ? ((raw as { choices: Array<{ finish_reason?: unknown }> }).choices[0]?.finish_reason) : null;
+      const suffix = finishReason === "length" ? "模型输出达到长度上限，请切换标准或高级档位后重试。" : "模型本次返回为空，系统会自动重试。";
+      throw new ModelRequestError(`内容模型没有返回可解析的文本。${suffix}`, finishReason === "length" ? "MODEL_OUTPUT_TRUNCATED" : "MODEL_EMPTY_RESPONSE");
+    }
     return { provider: config.provider, model: config.model, profile: config.profile, content, raw, latencyMs: Date.now() - started };
   } catch (error) {
     if (error instanceof ModelRequestError) throw error;

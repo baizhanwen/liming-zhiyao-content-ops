@@ -218,7 +218,7 @@ export const contentVersions = sqliteTable("content_versions", {
 
 export const contentCitations = sqliteTable("content_citations", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), contentItemId: text("content_item_id").notNull().references(() => contentItems.id), contentVersionId: text("content_version_id").notNull().references(() => contentVersions.id),
-  citationType: text("citation_type", { enum: ["topic", "knowledge", "video_analysis", "strategy"] }).notNull(), citationId: text("citation_id").notNull(), quote: text("quote"), createdBy: text("created_by").notNull(), createdAt: text("created_at").notNull(),
+  citationType: text("citation_type", { enum: ["topic", "knowledge", "video_analysis", "strategy", "benchmark"] }).notNull(), citationId: text("citation_id").notNull(), quote: text("quote"), createdBy: text("created_by").notNull(), createdAt: text("created_at").notNull(),
 }, (table) => [uniqueIndex("idx_content_citations_version_source").on(table.contentVersionId, table.citationType, table.citationId), index("idx_content_citations_tenant_item").on(table.organizationId, table.projectId, table.contentItemId)]);
 
 export const contentReviews = sqliteTable("content_reviews", {

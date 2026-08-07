@@ -3,7 +3,7 @@ import { z } from "zod";
 const shortText = (maximum: number) => z.string().trim().min(1).max(maximum);
 
 export const productionCitationSchema = z.object({
-  sourceType: z.enum(["topic", "knowledge", "video_analysis", "strategy"]),
+  sourceType: z.enum(["topic", "knowledge", "video_analysis", "strategy", "benchmark"]),
   sourceId: shortText(200),
   quote: shortText(1000),
 }).strict();
@@ -53,17 +53,18 @@ export const generateContentSchema = z.object({
   organizationId: shortText(100),
   projectId: shortText(100),
   modelProfile: z.enum(["fast", "standard", "advanced"]).default("standard"),
+  benchmarkEntryIds: z.array(shortText(100)).max(5).default([]),
 }).strict();
 
-export const CONTENT_PROMPT_VERSION = "content-draft.v1";
+export const CONTENT_PROMPT_VERSION = "content-draft.v2";
 export const CONTENT_PROMPT_NAME = "口播稿与短视频生产包";
-export const CONTENT_SYSTEM_PROMPT = `你是新媒体服务公司的资深内容策划。根据给定选题、已启用策略和已确认品牌知识，生成可直接进入审核的原创短视频生产包。
+export const CONTENT_SYSTEM_PROMPT = `你是新媒体服务公司的资深内容策划。根据给定选题、已启用策略、已确认品牌知识和用户选择的对标样本，生成可直接进入审核的原创短视频生产包。
 
 要求：
 1. 只使用输入中提供的事实，不补造客户案例、数据、资质或承诺；
-2. 可以复用内容方法和结构，但不能改写或洗稿来源原文；
+2. 对标样本只用于学习钩子、结构、节奏、情绪和转化方法，不能近义改写、拼接或洗稿来源原文；
 3. 完整口播稿要自然、口语化、可拍摄，开头快速进入问题；
-4. 每个事实性表达必须在 citations 中引用输入提供的来源 ID 和原文；
+4. 每个事实性表达必须在 citations 中引用输入提供的来源 ID 和原文；输入含 benchmark 来源时，至少引用一条 benchmark，证明本次确实使用了对标内容库；
 5. 风险、不确定信息和需要客户确认的内容写入 riskNotes；
 6. 仅输出 JSON，不要 Markdown、解释或代码围栏。`;
 
@@ -78,7 +79,7 @@ export const CONTENT_OUTPUT_SCHEMA = {
     performanceNotes: { type: "array", items: { type: "string" } }, brollSuggestions: { type: "array", items: { type: "string" } }, subtitleHighlights: { type: "array", items: { type: "string" } },
     coverCopy: { type: "array", items: { type: "string" } }, publishTitles: { type: "array", items: { type: "string" } }, hashtags: { type: "array", items: { type: "string" } }, commentPrompt: { type: "string" },
     adaptations: { type: "array", items: { type: "object", additionalProperties: false, required: ["platform", "copy"], properties: { platform: { type: "string" }, copy: { type: "string" } } } },
-    citations: { type: "array", items: { type: "object", additionalProperties: false, required: ["sourceType", "sourceId", "quote"], properties: { sourceType: { enum: ["topic", "knowledge", "video_analysis", "strategy"] }, sourceId: { type: "string" }, quote: { type: "string" } } } },
+    citations: { type: "array", items: { type: "object", additionalProperties: false, required: ["sourceType", "sourceId", "quote"], properties: { sourceType: { enum: ["topic", "knowledge", "video_analysis", "strategy", "benchmark"] }, sourceId: { type: "string" }, quote: { type: "string" } } } },
     riskNotes: { type: "array", items: { type: "string" } },
   },
 } as const;
@@ -106,7 +107,43 @@ export function parseProductionPack(value: unknown) {
 }
 
 export function parseModelJson(value: string) {
-  const trimmed = value.trim();
-  const normalized = trimmed.startsWith("```") ? trimmed.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "") : trimmed;
-  return JSON.parse(normalized) as unknown;
+  const trimmed = value.replace(/^\uFEFF/, "").trim();
+  const withoutFence = trimmed.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
+  try { return JSON.parse(withoutFence) as unknown; } catch { /* try the first balanced JSON object below */ }
+  const start = withoutFence.indexOf("{");
+  if (start < 0) throw new SyntaxError("模型响应中没有 JSON 对象。");
+  let depth = 0; let quoted = false; let escaped = false;
+  for (let index = start; index < withoutFence.length; index += 1) {
+    const character = withoutFence[index];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') quoted = false;
+      continue;
+    }
+    if (character === '"') quoted = true;
+    else if (character === "{") depth += 1;
+    else if (character === "}") {
+      depth -= 1;
+      if (depth === 0) return JSON.parse(withoutFence.slice(start, index + 1)) as unknown;
+    }
+  }
+  throw new SyntaxError("模型响应中的 JSON 对象不完整。");
+}
+
+export function analysisReportSourceText(reportJson: string) {
+  try {
+    const report = JSON.parse(reportJson) as Record<string, unknown>;
+    const sections: string[] = [];
+    const labels: Record<string, string> = { summary: "核心结论", spoken_script: "口播结构", hook_analysis: "钩子方法", viral_points: "爆点", rhythm_analysis: "节奏", emotion_curve: "情绪", conversion_design: "转化设计", highlights: "亮点", risks: "风险", recommendations: "复用建议" };
+    for (const [key, label] of Object.entries(labels)) {
+      const value = report[key];
+      if (typeof value === "string" && value.trim()) sections.push(`${label}：${value.trim()}`);
+      else if (Array.isArray(value)) {
+        const items = value.map((item) => typeof item === "string" ? item.trim() : "").filter(Boolean);
+        if (items.length) sections.push(`${label}：\n${items.join("\n")}`);
+      }
+    }
+    return (sections.length ? sections.join("\n\n") : reportJson).slice(0, 8_000);
+  } catch { return reportJson.slice(0, 8_000); }
 }
