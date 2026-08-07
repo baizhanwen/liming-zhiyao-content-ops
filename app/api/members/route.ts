@@ -48,11 +48,13 @@ export async function PATCH(request: Request) {
       const admins = await db.prepare("SELECT COUNT(*) AS value FROM organization_members WHERE organization_id = ? AND role = 'admin' AND status = 'active'").bind(organizationId).first<{ value: number }>();
       if ((admins?.value ?? 0) <= 1) return apiError("LAST_ADMIN_REQUIRED", "公司必须保留至少一位有效管理员。", 409);
     }
-    await db.batch([
+    const statements = [
       db.prepare("UPDATE organization_members SET role = ?, status = ?, updated_by = ?, updated_at = ? WHERE organization_id = ? AND user_id = ?").bind(payload.role, payload.status, user.id, now, organizationId, memberId),
-      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, NULL, ?, 'organization.member_updated', 'user', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, user.id, memberId, JSON.stringify({ role: payload.role, status: payload.status }), now),
-    ]);
-    return Response.json({ member: { id: memberId, role: payload.role, status: payload.status } });
+      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, NULL, ?, 'organization.member_updated', 'user', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, user.id, memberId, JSON.stringify({ previousRole: target.role, previousStatus: target.status, role: payload.role, status: payload.status, projectAccessRemoved: payload.status === "removed" }), now),
+    ];
+    if (payload.status === "removed") statements.splice(1, 0, db.prepare("UPDATE project_members SET status = 'removed', updated_by = ?, updated_at = ? WHERE organization_id = ? AND user_id = ? AND status = 'active'").bind(user.id, now, organizationId, memberId));
+    await db.batch(statements);
+    return Response.json({ member: { id: memberId, role: payload.role, status: payload.status }, projectAccessRemoved: payload.status === "removed" });
   } catch (error) { return errorResponse(error); }
 }
 
