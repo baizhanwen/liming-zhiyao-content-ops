@@ -35,7 +35,7 @@ export async function GET(request: Request) {
       db.prepare("SELECT id, title, angle, source_type, source_ref, pillar, audience, objective, hook, rationale, priority, status, created_at, updated_at FROM topic_ideas WHERE organization_id = ? AND project_id = ? AND deleted_at IS NULL ORDER BY CASE status WHEN 'selected' THEN 0 WHEN 'idea' THEN 1 WHEN 'drafting' THEN 2 ELSE 3 END, priority DESC, created_at DESC LIMIT 200").bind(organizationId, projectId).all(),
       db.prepare("SELECT id, topic_id, citation_type, citation_id, quote, created_at FROM topic_citations WHERE organization_id = ? AND project_id = ? ORDER BY created_at DESC LIMIT 500").bind(organizationId, projectId).all(),
     ]);
-    return Response.json({ topics: topics.results, citations: citations.results, canWrite: canWriteProjectAccess(access) });
+    return Response.json({ topics: topics.results, citations: citations.results, canWrite: canWriteProjectAccess(access), canDelete: access.organizationRole === "admin" });
   } catch (error) { return errorResponse(error); }
 }
 
@@ -71,5 +71,33 @@ export async function POST(request: Request) {
     for (const citation of citationRecords) statements.push(db.prepare("INSERT INTO topic_citations (id, organization_id, project_id, topic_id, citation_type, citation_id, quote, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(citation.id, organizationId, projectId, topicId, citation.citation_type, citation.citation_id, citation.quote, user.id, now));
     await db.batch(statements);
     return Response.json({ topic: { id: topicId, title, angle, source_type: sourceType, source_ref: sourceRef, pillar: text("pillar", 200), audience: text("audience"), objective: text("objective"), hook: text("hook", 500), rationale: text("rationale", 2000), priority, status: "idea", created_at: now, updated_at: now }, citation: citationRecords[0] ?? null, citations: citationRecords }, { status: 201 });
+  } catch (error) { return errorResponse(error); }
+}
+
+export async function DELETE(request: Request) {
+  const identity = await readRequestIdentity(request); if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再删除选题。", 401);
+  try {
+    const payload = await request.json() as Record<string, unknown>;
+    const organizationId = typeof payload.organizationId === "string" ? payload.organizationId.trim() : "";
+    const projectId = typeof payload.projectId === "string" ? payload.projectId.trim() : "";
+    const topicId = typeof payload.topicId === "string" ? payload.topicId.trim() : "";
+    const confirmationTitle = typeof payload.confirmationTitle === "string" ? payload.confirmationTitle.trim() : "";
+    if (!organizationId || !projectId || !topicId) return apiError("TOPIC_SCOPE_REQUIRED", "缺少公司、项目或选题信息。", 400);
+
+    const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
+    if (!access) return apiError("ACCESS_DENIED", "无权访问该项目的选题。", 403);
+    if (access.organizationRole !== "admin") return apiError("ADMIN_CONFIRMATION_REQUIRED", "只有公司管理员可以确认删除选题。", 403);
+
+    const db = getD1();
+    const topic = await db.prepare("SELECT id, title, status FROM topic_ideas WHERE id = ? AND organization_id = ? AND project_id = ? AND deleted_at IS NULL LIMIT 1").bind(topicId, organizationId, projectId).first<{ id: string; title: string; status: string }>();
+    if (!topic) return apiError("TOPIC_NOT_FOUND", "选题不存在或已经删除。", 404);
+    if (confirmationTitle !== topic.title) return apiError("TOPIC_DELETE_CONFIRMATION_MISMATCH", "输入的选题标题不一致，未执行删除。", 400);
+
+    const user = await ensureUser(identity); const now = new Date().toISOString();
+    await db.batch([
+      db.prepare("UPDATE topic_ideas SET deleted_at = ?, updated_by = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND deleted_at IS NULL").bind(now, user.id, now, topicId, organizationId, projectId),
+      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'topic.deleted', 'topic_idea', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, topicId, JSON.stringify({ title: topic.title, status: topic.status, deletionMode: "soft" }), now),
+    ]);
+    return Response.json({ deleted: { id: topicId, deleted_at: now } });
   } catch (error) { return errorResponse(error); }
 }

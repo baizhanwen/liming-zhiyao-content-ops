@@ -18,21 +18,23 @@ async function readError(response: Response) { const body = await response.json(
 
 export function TopicWorkspace({ initialOrganizationId = "", initialProjectId = "", sourceVideoId = "" }: { initialOrganizationId?: string; initialProjectId?: string; sourceVideoId?: string }) {
   const [organizations, setOrganizations] = useState<Organization[]>([]); const [organizationId, setOrganizationId] = useState(""); const [projects, setProjects] = useState<Project[]>([]); const [projectId, setProjectId] = useState("");
-  const [topics, setTopics] = useState<Topic[]>([]); const [citations, setCitations] = useState<Citation[]>([]); const [knowledge, setKnowledge] = useState<KnowledgeItem[]>([]); const [canWrite, setCanWrite] = useState(false);
+  const [topics, setTopics] = useState<Topic[]>([]); const [citations, setCitations] = useState<Citation[]>([]); const [knowledge, setKnowledge] = useState<KnowledgeItem[]>([]); const [canWrite, setCanWrite] = useState(false); const [canDelete, setCanDelete] = useState(false);
   const [loading, setLoading] = useState(true); const [saving, setSaving] = useState(false); const [error, setError] = useState("");
   const [movingTopicId, setMovingTopicId] = useState("");
+  const [deleteCandidate, setDeleteCandidate] = useState<Topic | null>(null); const [deleteConfirmation, setDeleteConfirmation] = useState(""); const [deletingTopicId, setDeletingTopicId] = useState("");
   const [selectedKnowledgeIds, setSelectedKnowledgeIds] = useState<string[]>([]);
-  const [generatingFields, setGeneratingFields] = useState<GeneratedField[]>([]); const [generationMessage, setGenerationMessage] = useState(""); const topicFormRef = useRef<HTMLFormElement>(null);
+  const [generatingFields, setGeneratingFields] = useState<GeneratedField[]>([]); const [generationMessage, setGenerationMessage] = useState(""); const topicFormRef = useRef<HTMLFormElement>(null); const deleteConfirmationInputRef = useRef<HTMLInputElement>(null);
 
   const loadWorkspace = useCallback(async (orgId: string, projId: string) => {
-    setSelectedKnowledgeIds([]); if (!orgId || !projId) return; const query = `organizationId=${encodeURIComponent(orgId)}&projectId=${encodeURIComponent(projId)}`;
+    setSelectedKnowledgeIds([]); setDeleteCandidate(null); setDeleteConfirmation(""); if (!orgId || !projId) return; const query = `organizationId=${encodeURIComponent(orgId)}&projectId=${encodeURIComponent(projId)}`;
     const [topicResponse, knowledgeResponse] = await Promise.all([fetch(`/api/topics?${query}`), fetch(`/api/knowledge?${query}`)]);
     if (!topicResponse.ok) throw new Error(await readError(topicResponse)); if (!knowledgeResponse.ok) throw new Error(await readError(knowledgeResponse));
-    const topicBody = await topicResponse.json() as { topics: Topic[]; citations: Citation[]; canWrite: boolean }; const knowledgeBody = await knowledgeResponse.json() as { items: KnowledgeItem[] };
-    setTopics(topicBody.topics); setCitations(topicBody.citations); setCanWrite(topicBody.canWrite); setKnowledge(knowledgeBody.items.filter((item) => item.status === "confirmed"));
+    const topicBody = await topicResponse.json() as { topics: Topic[]; citations: Citation[]; canWrite: boolean; canDelete: boolean }; const knowledgeBody = await knowledgeResponse.json() as { items: KnowledgeItem[] };
+    setTopics(topicBody.topics); setCitations(topicBody.citations); setCanWrite(topicBody.canWrite); setCanDelete(topicBody.canDelete); setKnowledge(knowledgeBody.items.filter((item) => item.status === "confirmed"));
   }, []);
   const loadProjects = useCallback(async (orgId: string, preferred = "") => { const response = await fetch(`/api/projects?organizationId=${encodeURIComponent(orgId)}`); if (!response.ok) throw new Error(await readError(response)); const body = await response.json() as { projects: Project[] }; setProjects(body.projects); const selected = preferredProjectId(body.projects, preferred); setProjectId(selected); rememberCurrentScope(orgId, selected); await loadWorkspace(orgId, selected); }, [loadWorkspace]);
   useEffect(() => { let active = true; (async () => { try { const response = await fetch("/api/organizations"); if (!response.ok) throw new Error(await readError(response)); const body = await response.json() as { organizations: Organization[] }; if (!active) return; setOrganizations(body.organizations); const selected = preferredOrganizationId(body.organizations, initialOrganizationId); setOrganizationId(selected); if (selected) await loadProjects(selected, initialProjectId); } catch (reason) { if (active) setError(reason instanceof Error ? reason.message : "加载失败"); } finally { if (active) setLoading(false); } })(); return () => { active = false; }; }, [initialOrganizationId, initialProjectId, loadProjects]);
+  useEffect(() => { if (deleteCandidate) deleteConfirmationInputRef.current?.focus(); }, [deleteCandidate]);
 
   async function createTopic(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setSaving(true); setError(""); const formElement = event.currentTarget; const form = new FormData(formElement); const sourceKnowledgeItemIds = sourceVideoId ? [] : selectedKnowledgeIds;
@@ -50,6 +52,24 @@ export function TopicWorkspace({ initialOrganizationId = "", initialProjectId = 
       if (!response.ok) throw new Error(await readError(response));
       window.location.assign(destination);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "选题进入内容生产失败，请稍后重试。"); setMovingTopicId(""); }
+  }
+
+  function closeDeleteConfirmation() {
+    if (deletingTopicId) return;
+    setDeleteCandidate(null); setDeleteConfirmation("");
+  }
+
+  async function deleteTopic(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); if (!deleteCandidate || deleteConfirmation.trim() !== deleteCandidate.title) return;
+    const topic = deleteCandidate; setDeletingTopicId(topic.id); setError("");
+    try {
+      const response = await fetch("/api/topics", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, topicId: topic.id, confirmationTitle: deleteConfirmation }) });
+      if (!response.ok) throw new Error(await readError(response));
+      setTopics((current) => current.filter((item) => item.id !== topic.id));
+      setCitations((current) => current.filter((citation) => citation.topic_id !== topic.id));
+      setDeleteCandidate(null); setDeleteConfirmation("");
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "删除选题失败，请稍后重试。"); }
+    finally { setDeletingTopicId(""); }
   }
 
   function formValue(name: string) {
@@ -97,7 +117,7 @@ export function TopicWorkspace({ initialOrganizationId = "", initialProjectId = 
   if (error && organizations.length === 0) return <div className="management-state error-state"><strong>暂时无法进入选题中心</strong><p>{error}</p><small>请确认本地身份已启用，并先创建公司与客户项目。</small></div>;
   if (!organizationId || !projectId) return <div className="empty-panel"><span aria-hidden="true">◇</span><h2>请先创建客户项目</h2><p>选题必须归属于明确的客户项目。</p></div>;
   return <div className="topic-workspace"><div className="management-toolbar topic-toolbar"><label>公司<select value={organizationId} onChange={async (event) => { const id = event.target.value; setOrganizationId(id); await loadProjects(id); }}>{organizations.map((organization) => <option key={organization.id} value={organization.id}>{organization.name}</option>)}</select></label><label>客户项目<select value={projectId} onChange={async (event) => { const id = event.target.value; setProjectId(id); rememberCurrentScope(organizationId, id); await loadWorkspace(organizationId, id); }}>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><span>{topics.length} 个选题</span></div>{error && <div className="inline-alert" role="alert">{error}</div>}
-    <div className="topic-layout"><section className="panel topic-list-panel"><div className="panel-heading"><div><p className="section-kicker">复用方法，不做近义词洗稿</p><h2>选题池</h2></div></div>{topics.length ? <div className="topic-list">{topics.map((topic) => { const topicCitations = citations.filter((citation) => citation.topic_id === topic.id); return <article key={topic.id}><div className="topic-card-head"><span className="topic-priority">P{topic.priority}</span><span className="status neutral">{topic.status === "idea" ? "想法" : topic.status === "selected" ? "已入选" : topic.status === "drafting" ? "生产中" : "已归档"}</span></div><h3>{topic.title}</h3>{topic.angle && <p>{topic.angle}</p>}<dl><div><dt>内容支柱</dt><dd>{topic.pillar || "待归类"}</dd></div><div><dt>目标人群</dt><dd>{topic.audience || "待补充"}</dd></div><div><dt>内容目标</dt><dd>{topic.objective || "待补充"}</dd></div></dl><footer><div><span>{sourceLabels[topic.source_type] || topic.source_type}</span>{topicCitations.length > 0 && <em title={topicCitations[0].quote || "已保留来源"}>已引用 {topicCitations.length} 条证据</em>}</div>{topic.status !== "archived" && (canWrite || topic.status === "drafting") && <button type="button" disabled={movingTopicId === topic.id} onClick={() => void moveTopicToProduction(topic)}>{movingTopicId === topic.id ? "正在流转…" : topic.status === "drafting" ? "继续生产 →" : "进入生产 →"}</button>}</footer></article>; })}</div> : <div className="list-empty">从品牌知识、视频分析或人工策划创建第一个选题。</div>}</section>
+    <div className="topic-layout"><section className="panel topic-list-panel"><div className="panel-heading"><div><p className="section-kicker">复用方法，不做近义词洗稿</p><h2>选题池</h2></div></div>{topics.length ? <div className="topic-list">{topics.map((topic) => { const topicCitations = citations.filter((citation) => citation.topic_id === topic.id); return <article key={topic.id}><div className="topic-card-head"><span className="topic-priority">P{topic.priority}</span><span className="status neutral">{topic.status === "idea" ? "想法" : topic.status === "selected" ? "已入选" : topic.status === "drafting" ? "生产中" : "已归档"}</span></div><h3>{topic.title}</h3>{topic.angle && <p>{topic.angle}</p>}<dl><div><dt>内容支柱</dt><dd>{topic.pillar || "待归类"}</dd></div><div><dt>目标人群</dt><dd>{topic.audience || "待补充"}</dd></div><div><dt>内容目标</dt><dd>{topic.objective || "待补充"}</dd></div></dl><footer><div><span>{sourceLabels[topic.source_type] || topic.source_type}</span>{topicCitations.length > 0 && <em title={topicCitations[0].quote || "已保留来源"}>已引用 {topicCitations.length} 条证据</em>}</div><div className="topic-card-actions">{canDelete && <button className="topic-delete-button" type="button" onClick={() => { setError(""); setDeleteCandidate(topic); setDeleteConfirmation(""); }}>删除</button>}{topic.status !== "archived" && (canWrite || topic.status === "drafting") && <button type="button" disabled={movingTopicId === topic.id} onClick={() => void moveTopicToProduction(topic)}>{movingTopicId === topic.id ? "正在流转…" : topic.status === "drafting" ? "继续生产 →" : "进入生产 →"}</button>}</div></footer></article>; })}</div> : <div className="list-empty">从品牌知识、视频分析或人工策划创建第一个选题。</div>}</section>
       {canWrite && <aside className="create-panel topic-create">
         <p className="section-kicker">新选题</p><h2>{sourceVideoId ? "从视频分析转为选题" : "加入项目选题池"}</h2>
         {sourceVideoId && <div className="source-banner"><strong>已关联分析结果</strong><span>创建时会由服务端确认该视频属于当前项目。</span></div>}
@@ -117,5 +137,6 @@ export function TopicWorkspace({ initialOrganizationId = "", initialProjectId = 
         <a className="production-entry" href={`/content?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`}>进入内容生产 →</a>
       </aside>}
     </div>
+    {deleteCandidate && <div className="confirmation-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeDeleteConfirmation(); }} onKeyDown={(event) => { if (event.key === "Escape") closeDeleteConfirmation(); }}><section className="confirmation-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-topic-title" aria-describedby="delete-topic-description"><form onSubmit={deleteTopic}><p className="section-kicker">管理员确认</p><h2 id="delete-topic-title">删除选题</h2><p id="delete-topic-description">删除后，这个选题会从选题池隐藏；已经进入内容生产的稿件和历史版本不会被删除。</p><div className="confirmation-topic-name">{deleteCandidate.title}</div><label htmlFor="delete-topic-confirmation">输入完整选题标题以确认<input ref={deleteConfirmationInputRef} id="delete-topic-confirmation" value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} autoComplete="off" /></label><div className="confirmation-actions"><button type="button" onClick={closeDeleteConfirmation} disabled={deletingTopicId === deleteCandidate.id}>取消</button><button className="confirmation-danger" disabled={deleteConfirmation.trim() !== deleteCandidate.title || deletingTopicId === deleteCandidate.id}>{deletingTopicId === deleteCandidate.id ? "正在删除…" : "确认删除"}</button></div></form></section></div>}
   </div>;
 }
