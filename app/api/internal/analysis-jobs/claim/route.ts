@@ -88,7 +88,8 @@ export async function POST(request: Request) {
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) checkpoint = parsed as Record<string, unknown>;
       } catch { checkpoint = null; }
     }
-    const { checkpoint_json: _checkpointJson, ...safeJob } = job;
+    const safeJob: Partial<typeof job> = { ...job };
+    delete safeJob.checkpoint_json;
     return Response.json({ job: { ...safeJob, checkpoint, source: { ...safeSource, manual_transcript: manualTranscript } } });
   } catch (error) { return errorResponse(error); }
 }

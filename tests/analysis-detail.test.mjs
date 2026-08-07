@@ -42,5 +42,8 @@ test("detail UI links transcript evidence to protected media time", async () => 
   assert.match(detail, /对比版本/);
   assert.match(detail, /evidenceForInsight/);
   assert.match(detail, /定位证据/);
+  assert.match(detail, /打开原视频核对/);
+  assert.match(detail, /window\.open\(detail\.video\.source_url/);
+  assert.match(detail, /detail\.video\.media_url \|\| detail\.video\.source_url/);
   assert.doesNotMatch(detail, /dangerouslySetInnerHTML/);
 });

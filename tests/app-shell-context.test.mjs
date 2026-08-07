@@ -20,4 +20,7 @@ test("app shell resolves the real member and current project on every route", as
   assert.match(organizations, /currentUser: \{ id: user\.id, email: user\.email, displayName:/);
   assert.match(scope, /window\.localStorage\.setItem/);
   for (const source of [projects, analysis, content, workflow]) assert.match(source, /rememberCurrentScope\(/);
+  assert.match(projects, /进入项目 →/);
+  assert.match(projects, /window\.location\.assign/);
+  assert.match(projects, /当前项目/);
 });

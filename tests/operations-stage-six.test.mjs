@@ -49,16 +49,20 @@ test("commercial organization controls preserve an active administrator and audi
 });
 
 test("dashboard and search use real tenant-scoped records instead of sample copy", async () => {
-  const [home, dashboard, search] = await Promise.all([
+  const [home, dashboard, search, searchWorkspace] = await Promise.all([
     readFile(new URL("../components/DashboardWorkspace.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/dashboard/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/search/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../components/SearchWorkspace.tsx", import.meta.url), "utf8"),
   ]);
   assert.match(home, /所有数字均来自当前公司真实业务记录/);
   assert.doesNotMatch(home, /澄川管理咨询今天最需要推进/);
   assert.match(dashboard, /project_members own/);
   assert.match(search, /project_members own/);
   assert.match(search, /knowledge_items/);
+  assert.match(search, /project_id/);
+  assert.match(searchWorkspace, /rememberCurrentScope/);
+  assert.match(searchWorkspace, /contentId/);
 });
 
 test("local backup excludes secrets and restore keeps a rollback copy", async () => {
