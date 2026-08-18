@@ -11,6 +11,9 @@ test("video analysis is one click after the local launcher starts", async () => 
     readFile(new URL("../drizzle/0012_analyzer_worker_presence.sql", import.meta.url), "utf8"),
   ]);
   assert.match(workspace, /一键开始分析/);
+  assert.match(workspace, /请先配置分析模型/);
+  assert.match(workspace, /分析服务未连接/);
+  assert.doesNotMatch(workspace, /分析服务启动中/);
   assert.match(workspace, /window\.setInterval/);
   assert.match(workspace, /4_000/);
   assert.match(workspace, /页面会自动更新进度/);

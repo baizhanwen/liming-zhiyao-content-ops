@@ -65,8 +65,11 @@ test("long videos use a bounded evidence budget and report coverage", async () =
   assert.match(provider, /coverage_percent/);
   assert.match(provider, /create_with_completion/);
   assert.match(provider, /actual_total_tokens/);
+  assert.match(provider, /scene_plus_timeline/);
+  assert.match(provider, /visual_extraction/);
   assert.match(detail, /estimated_model_input_tokens/);
   assert.match(detail, /actual_total_tokens/);
+  assert.match(detail, /keyframe-coverage/);
   assert.match(detail, /copyReport/);
   assert.match(worker, /MODEL_CONTEXT_LIMIT/);
   assert.match(worker, /DOUYIN_COOKIE_EXPIRED/);
@@ -136,9 +139,11 @@ test("analysis submissions expose duration estimates and enforce total token cei
   ]);
 
   assert.match(profiles, /estimateMediaSourceTokens/);
-  assert.match(profiles, /outputTokens: 6_000/);
+  assert.match(profiles, /outputTokens: 12_000/);
+  assert.match(profiles, /finalPasses = profile === "deep" \? 2 : 1/);
   assert.match(workspace, /readMediaDuration/);
-  assert.match(workspace, /短视频总预算/);
+  assert.match(workspace, /短视频最高预算/);
+  assert.match(workspace, /满血双通道/);
   assert.match(workspace, /30 分钟以上媒体/);
   assert.match(provider, /"max_tokens": output_tokens/);
   assert.match(provider, /"maximum_total_tokens"/);
@@ -173,7 +178,18 @@ test("analysis reports produce a reusable spoken script and specialist operating
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(provider, /video-analysis\.v5/);
+  assert.match(provider, /video-analysis\.v9-quality-gated/);
+  assert.match(provider, /DeepCoreReport/);
+  assert.match(provider, /DeepInsightReport/);
+  assert.match(provider, /dual_pass_full/);
+  assert.match(provider, /"deep": 12_000/);
+  assert.match(provider, /length_contract/);
+  assert.match(provider, /target_maximum_chinese_characters/);
+  assert.match(provider, /instructor\.Mode\.JSON/);
+  assert.match(provider, /_recover_partial_json_report/);
+  assert.match(provider, /recovered_json_outputs/);
+  assert.match(provider, /_assess_report_quality/);
+  assert.match(provider, /quality_audit/);
   assert.match(provider, /spoken_script/);
   assert.match(provider, /hook_analysis/);
   assert.match(provider, /viral_points/);
@@ -182,11 +198,15 @@ test("analysis reports produce a reusable spoken script and specialist operating
   assert.match(provider, /conversion_design/);
   assert.match(provider, /insight_evidence/);
   assert.match(provider, /SegmentReport/);
+  assert.match(provider, /_repair_report_evidence/);
+  assert.match(provider, /evidence_repair/);
+  assert.doesNotMatch(provider, /model report did not preserve exact source evidence/);
   assert.match(detail, /copySpokenScript/);
   assert.match(detail, /整理后的口播稿/);
   assert.match(detail, /传播爆点/);
   assert.match(detail, /analysis-comparison-panel/);
   assert.match(detail, /linked-insight-list/);
+  assert.match(detail, /analysis-quality-audit/);
   assert.match(styles, /spoken-script-panel/);
   assert.match(styles, /analysis-comparison-panel/);
 });

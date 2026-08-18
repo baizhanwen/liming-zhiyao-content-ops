@@ -3,11 +3,20 @@ setlocal
 cd /d "%~dp0"
 
 echo [Liming Zhiyao] Checking the local runtime...
-where node >nul 2>nul || goto :missing_node
-where npm >nul 2>nul || goto :missing_node
+call :find_node
+if /i "%~1"=="--check-runtime" goto :check_runtime
+if defined NODE_EXE goto :node_ready
 
-for /f %%V in ('node -p "Number(process.versions.node.split('.')[0])"') do set "NODE_MAJOR=%%V"
-if %NODE_MAJOR% LSS 22 goto :old_node
+echo [NOTICE] 64-bit Node.js 22.13 or newer was not found.
+echo [ACTION] Downloading and installing the official signed Node.js runtime...
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\install-node22.ps1" -NodePathFile "%~dp0.local\node.path"
+if errorlevel 1 goto :node_install_failed
+call :find_node
+if not defined NODE_EXE goto :node_install_failed
+
+:node_ready
+set "PATH=%NODE_HOME%;%PATH%"
+echo [OK] Using %NODE_EXE%
 
 if not exist ".dev.vars" (
   copy /Y ".dev.vars.example" ".dev.vars" >nul
@@ -17,28 +26,39 @@ if not exist ".dev.vars" (
 )
 
 echo [Liming Zhiyao] Installing web dependencies...
-call npm ci
+call "%NPM_CMD%" ci
 if errorlevel 1 goto :failed
 
 echo [Liming Zhiyao] Initializing the local database...
 set "CI=1"
-call npm run db:local:migrate
+call "%NPM_CMD%" run db:local:migrate
 set "CI="
+if errorlevel 1 goto :failed
+
+echo [Liming Zhiyao] Synchronizing authorized content knowledge...
+call "%NPM_CMD%" run knowledge:local:sync
 if errorlevel 1 goto :failed
 
 echo.
 echo [Liming Zhiyao] Web setup completed.
-echo Run start-local.bat to start the app. Video analysis is installed separately with setup-analyzer.bat.
+echo Run start-local.bat to start the app. Video analysis is installed separately with tools\setup-analyzer.bat.
 pause
 exit /b 0
 
-:missing_node
-echo [ERROR] Node.js or npm was not found. Install Node.js 22.13 or newer.
-pause
-exit /b 1
+:check_runtime
+if not defined NODE_EXE (
+  echo [ERROR] 64-bit Node.js 22.13 or newer with npm was not found.
+  exit /b 1
+)
+echo [OK] Node.js runtime: %NODE_EXE%
+"%NODE_EXE%" --version
+call "%NPM_CMD%" --version
+exit /b 0
 
-:old_node
-echo [ERROR] Node.js major version %NODE_MAJOR% is too old. Version 22.13 or newer is required.
+:node_install_failed
+echo.
+echo [ERROR] Node.js 22 could not be installed or verified automatically.
+echo Check the internet connection and Windows approval prompt, then run this file again.
 pause
 exit /b 1
 
@@ -47,3 +67,25 @@ echo.
 echo [ERROR] Setup did not complete. Review the error shown above.
 pause
 exit /b 1
+
+:find_node
+set "NODE_EXE="
+set "NODE_HOME="
+set "NPM_CMD="
+if exist "%~dp0.local\node.path" set /p NODE_HOME=<"%~dp0.local\node.path"
+if defined NODE_HOME call :try_node "%NODE_HOME%\node.exe"
+if not defined NODE_EXE call :try_node "%ProgramFiles%\nodejs\node.exe"
+if not defined NODE_EXE call :try_node "%LocalAppData%\Programs\nodejs\node.exe"
+for /f "delims=" %%N in ('where node.exe 2^>nul') do if not defined NODE_EXE call :try_node "%%N"
+exit /b 0
+
+:try_node
+if defined NODE_EXE exit /b 0
+if not exist "%~1" exit /b 0
+if not exist "%~dp1npm.cmd" exit /b 0
+"%~1" -e "const [major,minor]=process.versions.node.split('.').map(Number); process.exit(process.arch === 'x64' && (major > 22 || (major === 22 && minor >= 13)) ? 0 : 1)" >nul 2>nul
+if errorlevel 1 exit /b 0
+set "NODE_EXE=%~1"
+set "NODE_HOME=%~dp1"
+set "NPM_CMD=%~dp1npm.cmd"
+exit /b 0

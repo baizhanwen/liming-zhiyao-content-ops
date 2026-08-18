@@ -11,7 +11,19 @@ const labels: Record<string, string> = { project: "项目", content: "内容", t
 
 export function SearchWorkspace() {
   const [organizations, setOrganizations] = useState<Organization[]>([]); const [organizationId, setOrganizationId] = useState(""); const [results, setResults] = useState<SearchResult[]>([]); const [searched, setSearched] = useState(false); const [error, setError] = useState(""); const [loading, setLoading] = useState(false);
-  useEffect(() => { fetch("/api/organizations").then((response) => response.json()).then((body: { organizations?: Organization[] }) => { const items = body.organizations ?? []; setOrganizations(items); setOrganizationId(items[0]?.id ?? ""); }).catch(() => setError("无法读取公司空间。")); }, []);
+  useEffect(() => {
+    void (async () => {
+      try {
+        const response = await fetch("/api/organizations");
+        const body = await response.json() as { organizations?: Organization[] };
+        const items = body.organizations ?? [];
+        setOrganizations(items);
+        setOrganizationId(items[0]?.id ?? "");
+      } catch {
+        setError("无法读取公司空间。");
+      }
+    })();
+  }, []);
   async function search(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const form = new FormData(event.currentTarget); const q = String(form.get("q") || "").trim(); if (!organizationId || q.length < 2) return; setLoading(true); setError(""); const response = await fetch(`/api/search?organizationId=${encodeURIComponent(organizationId)}&q=${encodeURIComponent(q)}`); const body = await response.json() as { results?: SearchResult[]; error?: { message?: string } }; if (!response.ok) setError(body.error?.message || "搜索失败。"); else setResults(body.results ?? []); setSearched(true); setLoading(false); }
   function resultHref(item: SearchResult) {
     const params = new URLSearchParams();

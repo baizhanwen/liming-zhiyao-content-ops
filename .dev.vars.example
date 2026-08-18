@@ -1,9 +1,15 @@
 # Local browser identity. It is accepted only on localhost/127.0.0.1 and the
 # Vite server is bound to 127.0.0.1, so it is not a public login mechanism.
 LOCAL_DEV_AUTH=1
+DELIVERY_MODE=0
+FIRST_RUN_SETUP_CODE=
+FIRST_RUN_SETUP_CODE_HASH=
 LOCAL_DEV_USER_ID=local-owner
 LOCAL_DEV_USER_EMAIL=local-owner@localhost
 LOCAL_DEV_USER_NAME=本地管理员
+# Accept platform-provided identity headers only behind a trusted proxy that
+# strips client-supplied copies. Keep disabled for local and LAN operation.
+TRUST_FORWARDED_IDENTITY=0
 
 # The Python analyzer must use the same token. Change this before enabling the
 # analyzer on a shared machine.
@@ -29,7 +35,9 @@ ANALYZER_LLM_API_KEY=
 
 # Local media models. First use downloads model files into the English-only
 # cache directory chosen automatically by the Python worker.
+ANALYZER_MODEL_CACHE=
 ANALYZER_ASR_MODEL=paraformer-zh
 ANALYZER_ASR_DEVICE=cpu
 ANALYZER_PADDLE_OCR_DETECTION_MODEL=PP-OCRv5_mobile_det
 ANALYZER_PADDLE_OCR_RECOGNITION_MODEL=PP-OCRv5_mobile_rec
+ANALYZER_PADDLE_MODEL_SOURCE=bos

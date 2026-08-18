@@ -8,7 +8,7 @@ export const analysisProfileBudgets: Record<AnalysisProfile, {
 }> = {
   economy: { sourceTokens: 8_000, outputTokens: 2_000, promptTokens: 1_200 },
   standard: { sourceTokens: 18_000, outputTokens: 4_000, promptTokens: 1_200 },
-  deep: { sourceTokens: 32_000, outputTokens: 6_000, promptTokens: 1_200 },
+  deep: { sourceTokens: 32_000, outputTokens: 12_000, promptTokens: 1_200 },
 };
 
 export const analysisProfileSegmentLimits: Record<AnalysisProfile, number> = {
@@ -24,10 +24,17 @@ export function estimateMediaSourceTokens(durationSeconds: number, profile: Anal
 
 export function estimateAnalysisMaximumTokens(durationSeconds: number, profile: AnalysisProfile) {
   const budget = analysisProfileBudgets[profile];
-  if (durationSeconds < 1_800) return budget.sourceTokens + budget.promptTokens + budget.outputTokens;
+  const finalPasses = profile === "deep" ? 2 : 1;
+  if (durationSeconds < 1_800) return budget.sourceTokens * finalPasses + budget.promptTokens * finalPasses + budget.outputTokens;
   const segments = Math.min(analysisProfileSegmentLimits[profile], Math.max(2, Math.ceil(durationSeconds / 600)));
-  const partialOutputPerSegment = Math.min(500, Math.max(300, Math.floor((budget.outputTokens - 1_200) / segments)));
-  return budget.sourceTokens + budget.promptTokens * (segments + 1) + partialOutputPerSegment * segments + budget.outputTokens;
+  const partialOutputPerSegment = profile === "deep"
+    ? Math.min(600, Math.max(400, Math.floor((budget.outputTokens - 4_800) / segments)))
+    : Math.min(350, Math.max(220, Math.floor((budget.outputTokens - 1_200) / segments)));
+  const partialOutput = partialOutputPerSegment * segments;
+  return budget.sourceTokens
+    + budget.promptTokens * (segments + finalPasses)
+    + partialOutput * finalPasses
+    + budget.outputTokens;
 }
 
 export function normalizeAnalysisProfile(value: unknown): AnalysisProfile {

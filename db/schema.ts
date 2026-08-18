@@ -20,6 +20,15 @@ export const localSessions = sqliteTable("local_sessions", {
   expiresAt: text("expires_at").notNull(), lastSeenAt: text("last_seen_at").notNull(), createdAt: text("created_at").notNull(),
 }, (table) => [uniqueIndex("idx_local_sessions_token_hash").on(table.tokenHash), index("idx_local_sessions_user_expiry").on(table.userId, table.expiresAt)]);
 
+export const localLoginAttempts = sqliteTable("local_login_attempts", {
+  email: text("email").primaryKey(), failedCount: integer("failed_count").notNull().default(0),
+  lockedUntil: text("locked_until"), updatedAt: text("updated_at").notNull(),
+  }, (table) => [index("idx_local_login_attempts_lock").on(table.lockedUntil)]);
+
+export const installationSettings = sqliteTable("installation_settings", {
+  key: text("key").primaryKey(), value: text("value").notNull(), updatedAt: text("updated_at").notNull(),
+});
+
 export const organizations = sqliteTable("organizations", {
   id: id(), name: text("name").notNull(), slug: text("slug").notNull(), status: text("status", { enum: ["active", "suspended"] }).notNull().default("active"),
   createdBy: text("created_by").notNull(), ...timestamps,
@@ -218,8 +227,18 @@ export const contentVersions = sqliteTable("content_versions", {
 
 export const contentCitations = sqliteTable("content_citations", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), contentItemId: text("content_item_id").notNull().references(() => contentItems.id), contentVersionId: text("content_version_id").notNull().references(() => contentVersions.id),
-  citationType: text("citation_type", { enum: ["topic", "knowledge", "video_analysis", "strategy", "benchmark"] }).notNull(), citationId: text("citation_id").notNull(), quote: text("quote"), createdBy: text("created_by").notNull(), createdAt: text("created_at").notNull(),
+  citationType: text("citation_type", { enum: ["topic", "knowledge", "video_analysis", "strategy", "benchmark", "method_knowledge"] }).notNull(), citationId: text("citation_id").notNull(), quote: text("quote"), createdBy: text("created_by").notNull(), createdAt: text("created_at").notNull(),
 }, (table) => [uniqueIndex("idx_content_citations_version_source").on(table.contentVersionId, table.citationType, table.citationId), index("idx_content_citations_tenant_item").on(table.organizationId, table.projectId, table.contentItemId)]);
+
+export const authorizedKnowledgeSources = sqliteTable("authorized_knowledge_sources", {
+  id: id(), name: text("name").notNull(), revision: text("revision").notNull(), itemCount: integer("item_count").notNull().default(0), syncedAt: text("synced_at").notNull(),
+});
+
+export const authorizedKnowledgeAtoms = sqliteTable("authorized_knowledge_atoms", {
+  id: id(), sourceId: text("source_id").notNull().references(() => authorizedKnowledgeSources.id, { onDelete: "cascade" }),
+  knowledge: text("knowledge").notNull(), original: text("original").notNull(), url: text("url"), publishedAt: text("published_at"),
+  topicsJson: text("topics_json").notNull().default("[]"), skillsJson: text("skills_json").notNull().default("[]"), atomType: text("atom_type").notNull(), confidence: text("confidence").notNull(),
+}, (table) => [index("idx_authorized_atoms_source_confidence").on(table.sourceId, table.confidence), index("idx_authorized_atoms_type_date").on(table.atomType, table.publishedAt)]);
 
 export const contentReviews = sqliteTable("content_reviews", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), contentItemId: text("content_item_id").notNull().references(() => contentItems.id), contentVersionId: text("content_version_id").notNull().references(() => contentVersions.id),
@@ -240,6 +259,20 @@ export const publicationRecords = sqliteTable("publication_records", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), contentItemId: text("content_item_id").notNull().references(() => contentItems.id), contentVersionId: text("content_version_id").notNull().references(() => contentVersions.id), scheduleId: text("schedule_id").references(() => contentSchedules.id),
   platform: text("platform", { enum: ["douyin", "xiaohongshu", "wechat_channels", "bilibili", "other"] }).notNull(), status: text("status", { enum: ["scheduled", "publishing", "published", "failed", "cancelled"] }).notNull().default("scheduled"), externalId: text("external_id"), externalUrl: text("external_url"), publishedAt: text("published_at"), errorMessage: text("error_message"), createdBy: text("created_by").notNull().references(() => users.id), updatedBy: text("updated_by").notNull().references(() => users.id), ...timestamps,
 }, (table) => [index("idx_publication_records_project_status_updated").on(table.organizationId, table.projectId, table.status, table.updatedAt), index("idx_publication_records_item_created").on(table.contentItemId, table.createdAt)]);
+
+export const publishedCopyRecords = sqliteTable("published_copy_records", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id),
+  contentItemId: text("content_item_id").references(() => contentItems.id), contentVersionId: text("content_version_id").references(() => contentVersions.id), publicationId: text("publication_id").references(() => publicationRecords.id),
+  sourceType: text("source_type", { enum: ["manual", "publication", "csv_import"] }).notNull(), title: text("title").notNull(), body: text("body").notNull(),
+  platform: text("platform", { enum: ["douyin", "xiaohongshu", "wechat_official", "wechat_channels", "bilibili", "other"] }).notNull(), contentFormat: text("content_format", { enum: ["spoken_script", "article", "caption", "newsletter", "other"] }).notNull(),
+  publishedAt: text("published_at"), externalUrl: text("external_url"), characterCount: integer("character_count").notNull(), paragraphCount: integer("paragraph_count").notNull(),
+  monetizationTypesJson: text("monetization_types_json").notNull().default("[]"), monetizationDetail: text("monetization_detail"), analysisJson: text("analysis_json").notNull(), performanceJson: text("performance_json").notNull().default("{}"),
+  createdBy: text("created_by").notNull().references(() => users.id), updatedBy: text("updated_by").notNull().references(() => users.id), deletedAt: text("deleted_at"), ...timestamps,
+}, (table) => [
+  uniqueIndex("idx_published_copy_publication").on(table.publicationId),
+  index("idx_published_copy_project_published").on(table.organizationId, table.projectId, table.publishedAt),
+  index("idx_published_copy_project_platform").on(table.organizationId, table.projectId, table.platform, table.updatedAt),
+]);
 
 export const performanceImportBatches = sqliteTable("performance_import_batches", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id),

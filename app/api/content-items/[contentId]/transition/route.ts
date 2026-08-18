@@ -25,7 +25,7 @@ export async function POST(request: Request, context: { params: Promise<{ conten
     if (!allowedWorkflowTransition(access, fromStatus, toStatus)) return apiError("WORKFLOW_TRANSITION_DENIED", "当前角色不能执行这次状态流转。", 403);
     const pendingStage = fromStatus === "internal_review" ? "internal" : fromStatus === "client_review" ? "client" : null;
     const pendingReview = pendingStage ? await db.prepare("SELECT id FROM content_reviews WHERE organization_id = ? AND project_id = ? AND content_item_id = ? AND content_version_id = ? AND review_stage = ? AND decision = 'pending' ORDER BY round DESC LIMIT 1").bind(organizationId, projectId, contentId, item.version_id, pendingStage).first<{ id: string }>() : null;
-    if (pendingStage && !pendingReview) return apiError("PENDING_REVIEW_REQUIRED", "当前版本没有待处理的审核记录，请刷新后重试。", 409);
+    if (pendingStage === "internal" && !pendingReview) return apiError("PENDING_REVIEW_REQUIRED", "当前版本没有待处理的内部审核记录，请刷新后重试。", 409);
     const user = await ensureUser(identity); const now = new Date().toISOString();
     const statements = [
       db.prepare("UPDATE content_items SET status = ?, updated_by = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = ? AND current_version = ?").bind(toStatus, user.id, now, contentId, organizationId, projectId, fromStatus, item.current_version),
@@ -34,15 +34,11 @@ export async function POST(request: Request, context: { params: Promise<{ conten
       const row = await db.prepare("SELECT COALESCE(MAX(round), 0) + 1 AS next_round FROM content_reviews WHERE content_item_id = ? AND review_stage = 'internal'").bind(contentId).first<{ next_round: number }>();
       statements.push(db.prepare("INSERT INTO content_reviews (id, organization_id, project_id, content_item_id, content_version_id, review_stage, round, decision, note, requested_by, requested_at) VALUES (?, ?, ?, ?, ?, 'internal', ?, 'pending', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, contentId, item.version_id, row?.next_round ?? 1, note || null, user.id, now));
     } else if (fromStatus === "internal_review" && pendingReview) {
-      const decision = toStatus === "client_review" ? "approved" : "changes_requested";
-      statements.push(db.prepare("UPDATE content_reviews SET decision = ?, note = ?, decided_by = ?, decided_at = ? WHERE id = ? AND decision = 'pending'").bind(decision, note || null, user.id, now, pendingReview.id));
-      if (toStatus === "client_review") {
-        const row = await db.prepare("SELECT COALESCE(MAX(round), 0) + 1 AS next_round FROM content_reviews WHERE content_item_id = ? AND review_stage = 'client'").bind(contentId).first<{ next_round: number }>();
-        statements.push(db.prepare("INSERT INTO content_reviews (id, organization_id, project_id, content_item_id, content_version_id, review_stage, round, decision, requested_by, requested_at) VALUES (?, ?, ?, ?, ?, 'client', ?, 'pending', ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, contentId, item.version_id, row?.next_round ?? 1, user.id, now));
-      }
-    } else if (fromStatus === "client_review" && pendingReview) {
       const decision = toStatus === "shooting_ready" ? "approved" : "changes_requested";
       statements.push(db.prepare("UPDATE content_reviews SET decision = ?, note = ?, decided_by = ?, decided_at = ? WHERE id = ? AND decision = 'pending'").bind(decision, note || null, user.id, now, pendingReview.id));
+    } else if (fromStatus === "client_review" && pendingReview) {
+      const legacyNote = note || "客户审核步骤已停用，记录由内部流程接管。";
+      statements.push(db.prepare("UPDATE content_reviews SET decision = 'cancelled', note = ?, decided_by = ?, decided_at = ? WHERE id = ? AND decision = 'pending'").bind(legacyNote, user.id, now, pendingReview.id));
     }
     statements.push(db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'content.status.changed', 'content_item', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, contentId, JSON.stringify({ fromStatus, toStatus, version: item.current_version, note: note || null }), now));
     const results = await db.batch(statements);

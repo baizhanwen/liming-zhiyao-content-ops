@@ -20,7 +20,10 @@ export async function readAnalyzerReadiness(organizationId: string) {
     modelConfigured: Boolean(runtime.ANALYZER_LLM_API_KEY?.trim() && runtime.ANALYZER_LLM_BASE_URL?.trim() && runtime.ANALYZER_LLM_MODEL?.trim() && runtime.ANALYZER_LLM_PROVIDER?.trim()),
     publicLinkCookieConfigured: Boolean(cookieSnapshot || runtime.ANALYZER_YTDLP_COOKIE_FILE?.trim() || runtime.ANALYZER_YTDLP_COOKIES_FROM_BROWSER?.trim()),
     cookieUpdatedAt: cookieSnapshot?.customMetadata?.updatedAt ?? null,
-    analyzerOnline: Boolean(lastWorkerHeartbeat && new Date(lastWorkerHeartbeat).getTime() >= Date.now() - 20_000),
+    // Active jobs refresh presence every eight seconds, while idle workers claim
+    // every four seconds. Forty-five seconds tolerates brief local scheduling or
+    // antivirus pauses without presenting a healthy worker as disconnected.
+    analyzerOnline: Boolean(lastWorkerHeartbeat && new Date(lastWorkerHeartbeat).getTime() >= Date.now() - 45_000),
     lastWorkerHeartbeat,
   };
 }

@@ -101,7 +101,7 @@ def main() -> None:
         if "DPAPI" in message:
             message = (
                 "Edge uses Windows app-bound cookie encryption. Export cookies.txt from "
-                "inside Edge, then run refresh-douyin-cookies.bat again."
+                "inside Edge, then run tools\\refresh-douyin-cookies.bat again."
             )
         print(f"[ERROR] {message}", file=sys.stderr)
         raise SystemExit(1) from None

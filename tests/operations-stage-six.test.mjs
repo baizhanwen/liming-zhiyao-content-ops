@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 
-test("stage six persists organization capacity and enforces every expensive boundary", async () => {
-  const [schema, operations, projects, members, url, upload, generate] = await Promise.all([
+test("stage six fixes organization capacity at delivery and enforces every expensive boundary", async () => {
+  const [schema, operations, entitlements, projects, members, url, upload, generate] = await Promise.all([
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/operations.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/delivery-entitlements.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/projects/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/members/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/videos/from-url/route.ts", import.meta.url), "utf8"),
@@ -13,7 +14,9 @@ test("stage six persists organization capacity and enforces every expensive boun
     readFile(new URL("../app/api/content-items/[contentId]/generate/route.ts", import.meta.url), "utf8"),
   ]);
   assert.match(schema, /organization_settings/);
-  assert.match(operations, /starter:[\s\S]*team:[\s\S]*scale:/);
+  assert.match(operations, /deliveryPlan\.quotas/);
+  assert.doesNotMatch(operations, /planPresets/);
+  assert.match(entitlements, /videoAnalysis/);
   assert.match(projects, /PROJECT_QUOTA_EXCEEDED/);
   assert.match(members, /MEMBER_QUOTA_EXCEEDED/);
   assert.match(url, /ANALYSIS_QUOTA_EXCEEDED/);
@@ -41,7 +44,7 @@ test("commercial organization controls preserve an active administrator and audi
     readFile(new URL("../app/api/projects/route.ts", import.meta.url), "utf8"),
   ]);
   assert.match(members, /LAST_ADMIN_REQUIRED/);
-  assert.match(members, /CANNOT_DISABLE_SELF/);
+  assert.match(members, /CANNOT_CHANGE_SELF/);
   assert.match(members, /invitation\.revoked/);
   assert.match(projects, /project\.status_updated/);
   assert.match(projects, /paused/);

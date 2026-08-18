@@ -1,15 +1,16 @@
-import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess, sha256Hex } from "../../../../../db/runtime";
+import { canAccessOrganizationVideoLibrary, canWriteProjectAccess, ensureUser, getD1, getOrganizationAccess, getProjectAccess, sha256Hex } from "../../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../../lib/api-response";
-import { CONTENT_OUTPUT_SCHEMA, CONTENT_PROMPT_NAME, CONTENT_PROMPT_VERSION, CONTENT_SYSTEM_PROMPT, analysisReportSourceText, generateContentSchema, parseModelJson, productionPackSchema } from "../../../../../lib/content-production";
+import { authorizedKnowledgePromptSource, retrieveAuthorizedKnowledge } from "../../../../../lib/authorized-knowledge";
+import { CONTENT_OUTPUT_SCHEMA, CONTENT_PROMPT_NAME, CONTENT_PROMPT_VERSION, CONTENT_SYSTEM_PROMPT, analysisReportSourceText, buildSourceUsageReport, citationQuoteMatchesSource, generateContentSchema, parseModelJson, productionPackSchema } from "../../../../../lib/content-production";
 import { invokeContentModel, ModelConfigurationError, ModelRequestError, readContentModelConfig } from "../../../../../lib/model-adapter";
+import { buildPublishedCopyProfile, publishedCopyPromptSource, selectRelevantPublishedCopies, validateHistoricalStyleApplication, type PublishedCopyRecord } from "../../../../../lib/published-copy";
 import { readRequestIdentity } from "../../../../../lib/request-auth";
 import { checkOrganizationQuota } from "../../../../../lib/operations";
+import { materialFeedbackPrompt, type MaterialFeedback } from "../../../../../lib/material-recommendation";
 
 export const dynamic = "force-dynamic";
 
-type Source = { sourceType: "topic" | "knowledge" | "video_analysis" | "strategy" | "benchmark"; sourceId: string; title: string; text: string };
-
-function normalized(value: string) { return value.replace(/\s+/g, " ").trim(); }
+type Source = { sourceType: "topic" | "knowledge" | "video_analysis" | "strategy" | "benchmark" | "method_knowledge" | "historical_copy"; sourceId: string; title: string; text: string };
 
 export async function POST(request: Request, context: { params: Promise<{ contentId: string }> }) {
   const identity = await readRequestIdentity(request);
@@ -18,9 +19,13 @@ export async function POST(request: Request, context: { params: Promise<{ conten
   try {
     const parsed = generateContentSchema.safeParse(await request.json());
     if (!parsed.success) return apiError("INVALID_GENERATION_INPUT", "内容生成参数无效。", 400);
-    const { organizationId, projectId, modelProfile, benchmarkEntryIds } = parsed.data;
+    const { organizationId, projectId, modelProfile, benchmarkEntryIds, recommendedBenchmarkIds } = parsed.data;
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
     if (!access || !canWriteProjectAccess(access)) return apiError("WRITE_ACCESS_REQUIRED", "当前角色不能生成内容。", 403);
+    if (benchmarkEntryIds.length) {
+      const organizationAccess = await getOrganizationAccess(identity.authSubject, organizationId);
+      if (!organizationAccess || !await canAccessOrganizationVideoLibrary(organizationAccess)) return apiError("LIBRARY_ACCESS_DENIED", "当前角色不能跨项目调用公司素材中心。", 403);
+    }
     const user = await ensureUser(identity);
     const quota = await checkOrganizationQuota(organizationId, user.id, "modelCalls");
     if (!quota.allowed) return apiError("MODEL_QUOTA_EXCEEDED", `本月模型调用已达到 ${quota.limit} 次套餐上限。`, 429, { usage: quota.current, limit: quota.limit });
@@ -32,38 +37,99 @@ export async function POST(request: Request, context: { params: Promise<{ conten
       WHERE c.id = ? AND c.organization_id = ? AND c.project_id = ? AND c.deleted_at IS NULL AND t.deleted_at IS NULL AND c.status NOT IN ('published', 'reviewed', 'archived')
     `).bind(contentId, organizationId, projectId).first<{ id: string; title: string; current_version: number; topic_id: string; topic_title: string; angle: string | null; pillar: string | null; audience: string | null; objective: string | null; hook: string | null; rationale: string | null }>();
     if (!item) return apiError("CONTENT_NOT_GENERATABLE", "内容不存在、已归档或当前状态不可生成。", 409);
-    const [strategy, knowledgeRows, citationRows] = await Promise.all([
+    const [strategy, knowledgeRows, citationRows, historicalRows] = await Promise.all([
       db.prepare("SELECT id, name, positioning, persona, target_audience, pain_points_json, pillars_json, style_notes, cadence, conversion_path, objectives_json FROM content_strategies WHERE organization_id = ? AND project_id = ? AND status = 'active' ORDER BY version DESC LIMIT 1").bind(organizationId, projectId).first<Record<string, string | null>>(),
       db.prepare(`
         SELECT k.id, k.title, k.category, v.body FROM knowledge_items k
         INNER JOIN knowledge_item_versions v ON v.item_id = k.id AND v.version = k.current_version AND v.organization_id = k.organization_id AND v.project_id = k.project_id
+        LEFT JOIN topic_citations selected ON selected.organization_id = k.organization_id AND selected.project_id = k.project_id AND selected.topic_id = ? AND selected.citation_type = 'knowledge' AND selected.citation_id = k.id
         WHERE k.organization_id = ? AND k.project_id = ? AND k.status = 'confirmed' AND k.deleted_at IS NULL
-        ORDER BY CASE k.category WHEN 'compliance' THEN 0 WHEN 'brand_voice' THEN 1 WHEN 'client_preference' THEN 2 ELSE 3 END, k.updated_at DESC LIMIT 16
-      `).bind(organizationId, projectId).all<{ id: string; title: string; category: string; body: string }>(),
+        ORDER BY CASE WHEN selected.id IS NOT NULL THEN 0 ELSE 1 END, CASE k.category WHEN 'compliance' THEN 0 WHEN 'brand_voice' THEN 1 WHEN 'client_preference' THEN 2 ELSE 3 END, k.updated_at DESC LIMIT 36
+      `).bind(item.topic_id, organizationId, projectId).all<{ id: string; title: string; category: string; body: string }>(),
       db.prepare("SELECT citation_type, citation_id, quote FROM topic_citations WHERE organization_id = ? AND project_id = ? AND topic_id = ? ORDER BY created_at ASC").bind(organizationId, projectId, item.topic_id).all<{ citation_type: string; citation_id: string; quote: string | null }>(),
+      db.prepare(`SELECT pc.id, pc.title, pc.body, pc.platform, pc.content_format, pc.source_type, pc.published_at, pc.external_url,
+        pc.character_count, pc.paragraph_count, pc.monetization_types_json, pc.monetization_detail, pc.analysis_json,
+        CASE WHEN latest.id IS NULL THEN pc.performance_json ELSE json_set(
+          COALESCE(NULLIF(pc.performance_json, ''), '{}'),
+          '$.views', latest.views, '$.likes', latest.likes, '$.saves', latest.saves, '$.leads', latest.leads
+        ) END AS performance_json,
+        pc.created_at, pc.updated_at
+        FROM published_copy_records pc
+        LEFT JOIN publication_metric_snapshots latest ON latest.id = (
+          SELECT snapshot.id FROM publication_metric_snapshots snapshot
+          WHERE snapshot.organization_id = pc.organization_id AND snapshot.project_id = pc.project_id AND snapshot.publication_id = pc.publication_id
+          ORDER BY snapshot.observed_at DESC, snapshot.created_at DESC LIMIT 1
+        )
+        WHERE pc.organization_id = ? AND pc.project_id = ? AND pc.deleted_at IS NULL
+        ORDER BY COALESCE(pc.published_at, pc.created_at) DESC LIMIT 200`).bind(organizationId, projectId).all<PublishedCopyRecord>(),
     ]);
     const benchmarkRows = benchmarkEntryIds.length ? await db.prepare(`
-      SELECT library.id AS library_entry_id, COALESCE(v.title, v.filename, '未命名对标视频') AS title, analysis.id AS analysis_id, analysis.report_json
-      FROM project_video_references refs
-      INNER JOIN video_library_entries library ON library.id = refs.library_entry_id AND library.organization_id = refs.organization_id
+      SELECT library.id AS library_entry_id, COALESCE(v.title, v.source_url, '未命名素材') AS title, analysis.id AS analysis_id, analysis.report_json,
+        metrics.plays, metrics.likes, metrics.comments, metrics.favorites, metrics.shares, metrics.followers_gained
+      FROM video_library_entries library
       INNER JOIN videos v ON v.id = library.source_video_id AND v.organization_id = library.organization_id AND v.deleted_at IS NULL
       INNER JOIN video_analyses analysis ON analysis.id = (
         SELECT latest.id FROM video_analyses latest
         WHERE latest.organization_id = v.organization_id AND latest.video_id = v.id
         ORDER BY latest.created_at DESC LIMIT 1
       )
-      WHERE refs.organization_id = ? AND refs.project_id = ? AND refs.purpose = 'benchmark'
+      LEFT JOIN video_metric_snapshots metrics ON metrics.id = (
+        SELECT latest_metric.id FROM video_metric_snapshots latest_metric WHERE latest_metric.organization_id = v.organization_id AND latest_metric.video_id = v.id ORDER BY latest_metric.collected_at DESC, latest_metric.created_at DESC LIMIT 1
+      )
+      WHERE library.organization_id = ?
         AND library.id IN (${benchmarkEntryIds.map(() => "?").join(", ")})
       LIMIT 5
-    `).bind(organizationId, projectId, ...benchmarkEntryIds).all<{ library_entry_id: string; title: string; analysis_id: string; report_json: string }>() : { results: [] as { library_entry_id: string; title: string; analysis_id: string; report_json: string }[] };
-    if (benchmarkRows.results.length !== benchmarkEntryIds.length) return apiError("BENCHMARK_SOURCE_NOT_READY", "所选对标样本不存在、尚未分析完成或已经移出当前项目。", 409);
+    `).bind(organizationId, ...benchmarkEntryIds).all<{ library_entry_id: string; title: string; analysis_id: string; report_json: string; plays: number | null; likes: number | null; comments: number | null; favorites: number | null; shares: number | null; followers_gained: number | null }>() : { results: [] as { library_entry_id: string; title: string; analysis_id: string; report_json: string; plays: number | null; likes: number | null; comments: number | null; favorites: number | null; shares: number | null; followers_gained: number | null }[] };
+    if (benchmarkRows.results.length !== benchmarkEntryIds.length) return apiError("BENCHMARK_SOURCE_NOT_READY", "所选素材不存在、尚未分析完成或已经移出公司素材中心。", 409);
+    const benchmarkFeedbackRows = benchmarkEntryIds.length ? await db.prepare(`WITH cited AS (
+        SELECT DISTINCT citation_id AS entry_id, content_item_id
+        FROM content_citations WHERE organization_id = ? AND project_id = ? AND citation_type = 'benchmark'
+      ), versions AS (
+        SELECT cc.citation_id AS entry_id, COUNT(DISTINCT cc.content_item_id) AS usage_count,
+          COUNT(DISTINCT CASE WHEN cv.generation_mode = 'manual' THEN cv.id END) AS manual_revision_count
+        FROM content_citations cc INNER JOIN content_versions cv ON cv.id = cc.content_version_id
+        WHERE cc.organization_id = ? AND cc.project_id = ? AND cc.citation_type = 'benchmark' GROUP BY cc.citation_id
+      ), reviews AS (
+        SELECT cited.entry_id,
+          COUNT(DISTINCT CASE WHEN r.decision = 'approved' THEN r.id END) AS approved_count,
+          COUNT(DISTINCT CASE WHEN r.decision = 'changes_requested' THEN r.id END) AS changes_requested_count
+        FROM cited LEFT JOIN content_reviews r ON r.content_item_id = cited.content_item_id AND r.organization_id = ? AND r.project_id = ? GROUP BY cited.entry_id
+      ), comments AS (
+        SELECT cited.entry_id, COUNT(DISTINCT c.id) AS comment_count FROM cited
+        LEFT JOIN content_comments c ON c.content_item_id = cited.content_item_id AND c.organization_id = ? AND c.project_id = ? AND c.deleted_at IS NULL GROUP BY cited.entry_id
+      ), published AS (
+        SELECT cited.entry_id, COUNT(DISTINCT p.id) AS published_count,
+          COALESCE(SUM(m.views), 0) AS views, COALESCE(SUM(m.likes), 0) AS likes, COALESCE(SUM(m.comments), 0) AS comments,
+          COALESCE(SUM(m.shares), 0) AS shares, COALESCE(SUM(m.saves), 0) AS saves,
+          COALESCE(SUM(m.followers_gained), 0) AS followers_gained, COALESCE(SUM(m.leads), 0) AS leads,
+          COALESCE(MAX(m.completion_rate_bps), 0) AS completion_rate_bps
+        FROM cited LEFT JOIN publication_records p ON p.content_item_id = cited.content_item_id AND p.organization_id = ? AND p.project_id = ? AND p.status = 'published'
+        LEFT JOIN publication_metric_snapshots m ON m.id = (SELECT latest.id FROM publication_metric_snapshots latest WHERE latest.publication_id = p.id ORDER BY latest.observed_at DESC, latest.created_at DESC LIMIT 1)
+        GROUP BY cited.entry_id
+      ) SELECT v.entry_id, v.usage_count, v.manual_revision_count,
+        COALESCE(r.approved_count, 0) AS approved_count, COALESCE(r.changes_requested_count, 0) AS changes_requested_count,
+        COALESCE(c.comment_count, 0) AS comment_count, COALESCE(p.published_count, 0) AS published_count,
+        COALESCE(p.views, 0) AS views, COALESCE(p.likes, 0) AS likes, COALESCE(p.comments, 0) AS comments,
+        COALESCE(p.shares, 0) AS shares, COALESCE(p.saves, 0) AS saves, COALESCE(p.followers_gained, 0) AS followers_gained,
+        COALESCE(p.leads, 0) AS leads, COALESCE(p.completion_rate_bps, 0) AS completion_rate_bps
+      FROM versions v LEFT JOIN reviews r ON r.entry_id = v.entry_id LEFT JOIN comments c ON c.entry_id = v.entry_id LEFT JOIN published p ON p.entry_id = v.entry_id
+      WHERE v.entry_id IN (${benchmarkEntryIds.map(() => "?").join(", ")})`).bind(
+        organizationId, projectId, organizationId, projectId, organizationId, projectId, organizationId, projectId, organizationId, projectId, ...benchmarkEntryIds,
+      ).all<{ entry_id: string; usage_count: number; manual_revision_count: number; approved_count: number; changes_requested_count: number; comment_count: number; published_count: number; views: number; likes: number; comments: number; shares: number; saves: number; followers_gained: number; leads: number; completion_rate_bps: number }>() : { results: [] };
+    const benchmarkFeedback = new Map<string, MaterialFeedback>(benchmarkFeedbackRows.results.map((row) => [row.entry_id, {
+      usageCount: Number(row.usage_count || 0), manualRevisionCount: Number(row.manual_revision_count || 0), approvedCount: Number(row.approved_count || 0), changesRequestedCount: Number(row.changes_requested_count || 0), commentCount: Number(row.comment_count || 0), publishedCount: Number(row.published_count || 0),
+      performance: { views: Number(row.views || 0), likes: Number(row.likes || 0), comments: Number(row.comments || 0), shares: Number(row.shares || 0), saves: Number(row.saves || 0), followersGained: Number(row.followers_gained || 0), leads: Number(row.leads || 0), completionRateBps: Number(row.completion_rate_bps || 0) },
+    }]));
     if (!strategy?.id) return apiError("ACTIVE_STRATEGY_REQUIRED", "请先启用该项目的内容策略，再生成生产包。", 409);
     if (!knowledgeRows.results.length) return apiError("CONFIRMED_KNOWLEDGE_REQUIRED", "请先确认至少一条品牌知识，再生成生产包。", 409);
     const sources = new Map<string, Source>();
+    const selectedKnowledgeSourceIds = new Set(citationRows.results.filter((row) => row.citation_type === "knowledge").map((row) => row.citation_id));
     const topicText = [item.topic_title, item.angle, item.pillar, item.audience, item.objective, item.hook, item.rationale].filter(Boolean).join("\n");
+    const historicalQuery = [topicText, strategy?.positioning, strategy?.target_audience, strategy?.conversion_path, strategy?.style_notes].filter(Boolean).join("\n");
+    const historicalMatches = selectRelevantPublishedCopies(historicalRows.results, historicalQuery, 5);
     sources.set(`topic:${item.topic_id}`, { sourceType: "topic", sourceId: item.topic_id, title: item.topic_title, text: topicText });
+    const strategyText = [strategy.name, strategy.positioning, strategy.persona, strategy.target_audience, strategy.pain_points_json, strategy.pillars_json, strategy.style_notes, strategy.cadence, strategy.conversion_path, strategy.objectives_json].filter(Boolean).join("\n").slice(0, 8_000);
     if (strategy?.id) {
-      const strategyText = [strategy.name, strategy.positioning, strategy.persona, strategy.target_audience, strategy.pain_points_json, strategy.pillars_json, strategy.style_notes, strategy.cadence, strategy.conversion_path, strategy.objectives_json].filter(Boolean).join("\n").slice(0, 8_000);
       sources.set(`strategy:${strategy.id}`, { sourceType: "strategy", sourceId: strategy.id, title: strategy.name || "当前内容策略", text: strategyText });
     }
     for (const row of knowledgeRows.results) sources.set(`knowledge:${row.id}`, { sourceType: "knowledge", sourceId: row.id, title: row.title, text: row.body.slice(0, 4_000) });
@@ -71,9 +137,29 @@ export async function POST(request: Request, context: { params: Promise<{ conten
       if (row.citation_type !== "video_analysis" || !row.quote) continue;
       sources.set(`video_analysis:${row.citation_id}`, { sourceType: "video_analysis", sourceId: row.citation_id, title: "选题引用的视频分析", text: row.quote });
     }
-    for (const row of benchmarkRows.results) sources.set(`benchmark:${row.library_entry_id}`, { sourceType: "benchmark", sourceId: row.library_entry_id, title: row.title, text: analysisReportSourceText(row.report_json) });
-    const sourceList = Array.from(sources.values());
-    const generationInput = { topic: { id: item.topic_id, title: item.topic_title, angle: item.angle, pillar: item.pillar, audience: item.audience, objective: item.objective, hook: item.hook, rationale: item.rationale }, sources: sourceList, outputSchema: CONTENT_OUTPUT_SCHEMA };
+    for (const row of benchmarkRows.results) sources.set(`benchmark:${row.library_entry_id}`, {
+      sourceType: "benchmark",
+      sourceId: row.library_entry_id,
+      title: row.title,
+      text: `${analysisReportSourceText(row.report_json)}\n\n[系统历史反馈]\n${materialFeedbackPrompt(benchmarkFeedback.get(row.library_entry_id))}`,
+    });
+    for (const match of historicalMatches) sources.set(`historical_copy:${match.record.id}`, { sourceType: "historical_copy", sourceId: match.record.id, title: match.record.title, text: publishedCopyPromptSource(match.record) });
+    const methodAtoms = await retrieveAuthorizedKnowledge(db, [topicText, strategyText, ...knowledgeRows.results.map((row) => `${row.title}\n${row.body.slice(0, 1_500)}`), ...benchmarkRows.results.map((row) => analysisReportSourceText(row.report_json).slice(0, 1_500)), ...historicalMatches.map((match) => publishedCopyPromptSource(match.record).slice(0, 800))].join("\n"), { task: "content", limit: 6 });
+    for (const atom of methodAtoms) sources.set(`method_knowledge:${atom.id}`, { sourceType: "method_knowledge", sourceId: atom.id, title: `授权方法 · ${atom.id}`, text: authorizedKnowledgePromptSource(atom) });
+    const sourceList = Array.from(sources.values()); const historicalStyleProfile = buildPublishedCopyProfile(historicalRows.results);
+    const generationInput = {
+      topic: { id: item.topic_id, title: item.topic_title, angle: item.angle, pillar: item.pillar, audience: item.audience, objective: item.objective, hook: item.hook, rationale: item.rationale },
+      materialSelection: {
+        autoRecommendedIds: recommendedBenchmarkIds,
+        selectedIds: benchmarkEntryIds,
+        manuallyAddedIds: benchmarkEntryIds.filter((id) => !recommendedBenchmarkIds.includes(id)),
+        manuallyRemovedIds: recommendedBenchmarkIds.filter((id) => !benchmarkEntryIds.includes(id)),
+      },
+      benchmarkFeedback: benchmarkRows.results.map((row) => ({ sourceId: row.library_entry_id, summary: materialFeedbackPrompt(benchmarkFeedback.get(row.library_entry_id)) })),
+      historicalStyleProfile,
+      sources: sourceList,
+      outputSchema: CONTENT_OUTPUT_SCHEMA,
+    };
     const inputJson = JSON.stringify(generationInput); const inputHash = await sha256Hex(new TextEncoder().encode(inputJson)); const now = new Date().toISOString(); const promptTemplateId = crypto.randomUUID();
     let prompt = await db.prepare("SELECT id FROM prompt_templates WHERE organization_id = ? AND project_id = ? AND task_type = 'content_draft' AND version = ?").bind(organizationId, projectId, CONTENT_PROMPT_VERSION).first<{ id: string }>();
     if (!prompt) {
@@ -89,19 +175,53 @@ export async function POST(request: Request, context: { params: Promise<{ conten
     let pack: ReturnType<typeof productionPackSchema.parse> | null = null; let totalLatencyMs = 0; let correction = "";
     for (let attempt = 0; attempt < 2 && !pack; attempt += 1) {
       try {
-        const invocation = await invokeContentModel({ system: CONTENT_SYSTEM_PROMPT, user: `请根据以下 JSON 输入生成生产包：\n${inputJson}${correction}`, profile: modelProfile });
+        const invocation = await invokeContentModel({
+          system: CONTENT_SYSTEM_PROMPT,
+          user: `请根据以下 JSON 输入生成生产包：\n${inputJson}${correction}`,
+          profile: modelProfile,
+          nativeJson: attempt === 0,
+        });
         totalLatencyMs += invocation.latencyMs;
         const modelOutput = parseModelJson(invocation.content); const candidate = productionPackSchema.safeParse(modelOutput);
         if (!candidate.success) throw new ModelRequestError(`模型输出未通过生产包校验：${candidate.error.issues[0]?.message || "结构无效"}`, "INVALID_MODEL_OUTPUT");
-        for (const citation of candidate.data.citations) {
+        const invalidCitation = candidate.data.citations.find((citation) => {
           const source = sources.get(`${citation.sourceType}:${citation.sourceId}`);
-          if (!source || !normalized(source.text).includes(normalized(citation.quote))) throw new ModelRequestError("模型输出包含无法追溯的引用。", "UNTRACEABLE_MODEL_CITATION");
+          return !source || !citationQuoteMatchesSource(source.text, citation.quote);
+        });
+        if (invalidCitation) {
+          throw new ModelRequestError(
+            `引用 ${invalidCitation.sourceType}:${invalidCitation.sourceId} 不是来源 text 中的连续原文。请从该来源直接复制 8–80 字短原文，不要改写或补全。`,
+            "UNTRACEABLE_MODEL_CITATION",
+          );
         }
+        const hasCitation = (sourceType: Source["sourceType"], sourceIds?: Set<string>) => candidate.data.citations.some((citation) => citation.sourceType === sourceType && (!sourceIds || sourceIds.has(citation.sourceId)));
+        if (!hasCitation("strategy")) throw new ModelRequestError("模型没有形成当前内容策略的可追溯引用。", "STRATEGY_CITATION_REQUIRED");
+        if (selectedKnowledgeSourceIds.size && !hasCitation("knowledge", selectedKnowledgeSourceIds)) throw new ModelRequestError("模型没有实际引用选题指定的品牌知识。", "SELECTED_KNOWLEDGE_CITATION_REQUIRED");
+        if (!selectedKnowledgeSourceIds.size && knowledgeRows.results.length && !hasCitation("knowledge")) throw new ModelRequestError("模型没有实际引用项目品牌知识。", "BRAND_KNOWLEDGE_CITATION_REQUIRED");
+        if (sourceList.some((source) => source.sourceType === "video_analysis") && !hasCitation("video_analysis")) throw new ModelRequestError("模型没有实际引用选题关联的视频分析。", "VIDEO_ANALYSIS_CITATION_REQUIRED");
         if (benchmarkRows.results.length && !candidate.data.citations.some((citation) => citation.sourceType === "benchmark")) throw new ModelRequestError("模型没有实际引用所选对标样本。", "BENCHMARK_CITATION_REQUIRED");
-        pack = candidate.data;
+        if (methodAtoms.length && !candidate.data.citations.some((citation) => citation.sourceType === "method_knowledge")) throw new ModelRequestError("模型没有实际引用本次检索到的授权方法知识。", "METHOD_KNOWLEDGE_CITATION_REQUIRED");
+        if (historicalMatches.length && !candidate.data.citations.some((citation) => citation.sourceType === "historical_copy")) throw new ModelRequestError("模型没有实际引用本次自动检索到的品牌历史文案。", "HISTORICAL_COPY_CITATION_REQUIRED");
+        const benchmarkSourceIds = new Set(benchmarkRows.results.map((row) => row.library_entry_id));
+        const methodSourceIds = candidate.data.qualityReview?.benchmarkMethods.map((method) => method.sourceId) ?? [];
+        if (methodSourceIds.some((sourceId) => !benchmarkSourceIds.has(sourceId))) throw new ModelRequestError("质量诊断引用了本次未选择的对标样本。", "INVALID_BENCHMARK_METHOD_SOURCE");
+        if (benchmarkRows.results.length && !methodSourceIds.length) throw new ModelRequestError("模型没有说明如何使用所选对标样本。", "BENCHMARK_METHOD_REQUIRED");
+        if (historicalMatches.length) {
+          const historicalSourceIds = candidate.data.citations.filter((citation) => citation.sourceType === "historical_copy").map((citation) => citation.sourceId);
+          const application = validateHistoricalStyleApplication(candidate.data.fullScript, historicalStyleProfile, historicalMatches.map((match) => match.record), historicalSourceIds);
+          if (application.status === "rewrite") {
+            const mismatches = application.checks.filter((check) => !check.matched).map((check) => `${check.label}应为“${check.expected}”，实际为“${check.actual}”`);
+            if (!application.originality.passed) mismatches.push(`与历史文案连续重复 ${application.originality.longestSharedCharacters} 字：“${application.originality.phrase || "重复片段"}”`);
+            throw new ModelRequestError(`历史文案应用验收未通过：${mismatches.join("；")}。请只重写 fullScript 及受影响的分镜、短版和发布文案，保留可追溯引用。`, "HISTORICAL_STYLE_VALIDATION_FAILED");
+          }
+          const candidateWithHistory = { ...candidate.data, historicalStyleApplication: application };
+          pack = { ...candidateWithHistory, sourceUsageReport: buildSourceUsageReport(sourceList, candidate.data.citations, selectedKnowledgeSourceIds) };
+        } else pack = { ...candidate.data, sourceUsageReport: buildSourceUsageReport(sourceList, candidate.data.citations, selectedKnowledgeSourceIds) };
       } catch (error) {
         if (attempt === 1 || !(error instanceof ModelRequestError)) throw error;
-        correction = `\n\n上次生成未完成：${error.message}。请重新生成完整 JSON，严格按 Schema 输出全部字段；若输入含 benchmark 来源，citations 至少逐字引用其中一条。`;
+        correction = error.code === "HISTORICAL_STYLE_VALIDATION_FAILED"
+          ? `\n\n上次生成未通过历史文案应用验收：${error.message}。请依据 historicalStyleProfile 修正完整口播稿，并同步修正 shortScript、storyboard、hooks、commentPrompt 和 adaptations。不要输出 historicalStyleApplication，该字段由系统计算；仍需返回完整 JSON。`
+          : `\n\n上次原生 JSON 生成未完成：${error.message}。本次已切换兼容模式。请直接返回一个完整 JSON 对象，不要使用 Markdown 或代码围栏；严格按 Schema 输出全部字段和 qualityReview；citations.quote 只能从对应 sources[].text 中直接复制 8–80 字连续原文，不要改写、概括、补全或添加引号；必须引用当前 strategy；必须引用选题指定的 knowledge（若没有指定则引用至少一条项目 knowledge）；输入含 video_analysis、benchmark、method_knowledge 或 historical_copy 时分别至少逐字引用一条实际采用的来源；并在 qualityReview.benchmarkMethods 说明采用的对标方法。`;
       }
     }
     if (!pack) throw new ModelRequestError("内容模型未生成有效生产包。", "INVALID_MODEL_OUTPUT");
@@ -111,12 +231,13 @@ export async function POST(request: Request, context: { params: Promise<{ conten
       db.prepare("INSERT INTO content_versions (id, organization_id, project_id, content_item_id, version, generation_mode, pack_json, full_script, short_script, change_summary, prompt_version, model_call_id, created_by, created_at) SELECT ?, organization_id, project_id, id, ?, 'ai', ?, ?, ?, 'AI 生成口播稿与生产包', ?, ?, ?, ? FROM content_items WHERE id = ? AND organization_id = ? AND project_id = ? AND current_version = ?").bind(versionId, nextVersion, packJson, pack.fullScript, pack.shortScript, CONTENT_PROMPT_VERSION, modelCallId, user.id, completedAt, contentId, organizationId, projectId, nextVersion),
       db.prepare("UPDATE model_calls SET status = 'completed', output_json = ?, latency_ms = ?, completed_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'started'").bind(packJson, totalLatencyMs, completedAt, modelCallId, organizationId, projectId),
       ...pack.citations.map((citation) => db.prepare("INSERT INTO content_citations (id, organization_id, project_id, content_item_id, content_version_id, citation_type, citation_id, quote, created_by, created_at) SELECT ?, ?, ?, ?, id, ?, ?, ?, ?, ? FROM content_versions WHERE id = ? AND organization_id = ? AND project_id = ?").bind(crypto.randomUUID(), organizationId, projectId, contentId, citation.sourceType, citation.sourceId, citation.quote, user.id, completedAt, versionId, organizationId, projectId)),
-      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) SELECT ?, organization_id, project_id, ?, 'content.generated', 'content_item', id, ?, ? FROM content_items WHERE id = ? AND organization_id = ? AND project_id = ? AND current_version = ?").bind(crypto.randomUUID(), user.id, JSON.stringify({ version: nextVersion, modelCallId, promptVersion: CONTENT_PROMPT_VERSION, benchmarkEntryIds, benchmarkCitations: pack.citations.filter((citation) => citation.sourceType === "benchmark").length }), completedAt, contentId, organizationId, projectId, nextVersion),
+      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) SELECT ?, organization_id, project_id, ?, 'content.generated', 'content_item', id, ?, ? FROM content_items WHERE id = ? AND organization_id = ? AND project_id = ? AND current_version = ?").bind(crypto.randomUUID(), user.id, JSON.stringify({ version: nextVersion, modelCallId, promptVersion: CONTENT_PROMPT_VERSION, benchmarkEntryIds, recommendedBenchmarkIds, manuallyAddedBenchmarkIds: benchmarkEntryIds.filter((id) => !recommendedBenchmarkIds.includes(id)), manuallyRemovedBenchmarkIds: recommendedBenchmarkIds.filter((id) => !benchmarkEntryIds.includes(id)), benchmarkCitations: pack.citations.filter((citation) => citation.sourceType === "benchmark").length, authorizedKnowledgeIds: methodAtoms.map((atom) => atom.id), authorizedKnowledgeCitations: pack.citations.filter((citation) => citation.sourceType === "method_knowledge").length, historicalCopyIds: historicalMatches.map((match) => match.record.id), historicalCopyCitations: pack.citations.filter((citation) => citation.sourceType === "historical_copy").length, historicalStyleStatus: pack.historicalStyleApplication?.status || null, historicalStyleMatchedChecks: pack.historicalStyleApplication?.matchedChecks || 0, historicalStyleTotalChecks: pack.historicalStyleApplication?.totalChecks || 0 }), completedAt, contentId, organizationId, projectId, nextVersion),
     ];
     const results = await db.batch(statements);
     if (!results[0].meta.changes) return apiError("CONTENT_VERSION_CONFLICT", "生成期间内容已被其他成员更新，本次结果未覆盖新版本。", 409);
-    return Response.json({ item: { id: contentId, current_version: nextVersion, version_id: versionId, generation_mode: "ai", pack_json: packJson, full_script: pack.fullScript, short_script: pack.shortScript, prompt_version: CONTENT_PROMPT_VERSION, model_call_id: modelCallId, updated_at: completedAt }, benchmarksUsed: benchmarkRows.results.filter((row) => pack.citations.some((citation) => citation.sourceType === "benchmark" && citation.sourceId === row.library_entry_id)).map((row) => ({ id: row.library_entry_id, title: row.title })) });
+    return Response.json({ item: { id: contentId, current_version: nextVersion, version_id: versionId, generation_mode: "ai", pack_json: packJson, full_script: pack.fullScript, short_script: pack.shortScript, prompt_version: CONTENT_PROMPT_VERSION, model_call_id: modelCallId, updated_at: completedAt }, benchmarksUsed: benchmarkRows.results.filter((row) => pack.citations.some((citation) => citation.sourceType === "benchmark" && citation.sourceId === row.library_entry_id)).map((row) => ({ id: row.library_entry_id, title: row.title })), authorizedKnowledgeUsed: methodAtoms.filter((atom) => pack.citations.some((citation) => citation.sourceType === "method_knowledge" && citation.sourceId === atom.id)).map((atom) => ({ id: atom.id, knowledge: atom.knowledge, url: atom.url })), historicalCopiesUsed: historicalMatches.filter((match) => pack.citations.some((citation) => citation.sourceType === "historical_copy" && citation.sourceId === match.record.id)).map((match) => ({ id: match.record.id, title: match.record.title, characterCount: match.record.character_count, monetizationTypes: JSON.parse(match.record.monetization_types_json || "[]") })) });
   } catch (error) {
+    console.error("[content.generate] Unhandled generation error", error);
     if (modelCallId) {
       try {
         const db = getD1(); const code = error instanceof ModelRequestError ? error.code : "MODEL_GENERATION_FAILED";
@@ -124,7 +245,17 @@ export async function POST(request: Request, context: { params: Promise<{ conten
       } catch { /* best-effort failure trace */ }
     }
     if (error instanceof ModelConfigurationError) return apiError("CONTENT_MODEL_NOT_CONFIGURED", error.message, 503);
-    if (error instanceof ModelRequestError) return apiError(error.code, error.message, 502);
+    if (error instanceof ModelRequestError) {
+      const message = error.code === "MODEL_EMPTY_RESPONSE"
+        ? "DeepSeek 连续两次返回空内容。系统已尝试原生 JSON 和兼容模式，请稍后重试或改用“标准”档位。"
+        : error.message;
+      return apiError(error.code, message, 502);
+    }
+    const hostname = new URL(request.url).hostname.toLowerCase();
+    const isLoopback = hostname === "127.0.0.1" || hostname === "localhost" || hostname === "[::1]";
+    if (isLoopback && error instanceof Error) {
+      return apiError("INTERNAL_ERROR", "服务暂时无法完成请求。", 500, { diagnostic: error.message.slice(0, 500) });
+    }
     return errorResponse(error);
   }
 }

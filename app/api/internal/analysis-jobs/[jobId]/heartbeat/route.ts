@@ -23,6 +23,11 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
         .bind(payload.status, payload.progress, payload.stage, leaseExpiresAt, nowIso, `service:${payload.workerId}`, nowIso, jobId, payload.workerId, payload.version, nowIso),
       db.prepare("INSERT INTO analysis_job_events (id, organization_id, project_id, job_id, video_id, event_type, from_status, to_status, progress, worker_id, created_at) SELECT ?, organization_id, project_id, id, video_id, ?, ?, status, progress, ?, ? FROM analysis_jobs WHERE id = ? AND lease_owner = ? AND version = ?")
         .bind(crypto.randomUUID(), eventType, job.status, payload.workerId, nowIso, jobId, payload.workerId, payload.version + 1),
+      db.prepare(`
+        INSERT INTO analyzer_workers (worker_id, status, started_at, last_seen_at, updated_at)
+        VALUES (?, 'online', ?, ?, ?)
+        ON CONFLICT(worker_id) DO UPDATE SET status = 'online', last_seen_at = excluded.last_seen_at, last_error = NULL, updated_at = excluded.updated_at
+      `).bind(payload.workerId, nowIso, nowIso, nowIso),
     ]);
     if (!results[0].meta.changes) return apiError("JOB_STATE_CHANGED", "任务状态已变化，请停止当前处理。", 409);
     return Response.json({ job: { id: jobId, status: payload.status, progress: payload.progress, currentStage: payload.stage, leaseExpiresAt, version: payload.version + 1 } });

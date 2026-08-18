@@ -89,7 +89,10 @@ class AnalyzerApiClient:
         )
         if status == 204 and allow_empty:
             return None
-        data = json.loads(raw.decode("utf-8")) if raw else {}
+        try:
+            data = json.loads(raw.decode("utf-8")) if raw else {}
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise AnalyzerApiError(status, "INVALID_RESPONSE", "response is not valid JSON") from error
         if not 200 <= status < 300:
             error = data.get("error", {}) if isinstance(data, dict) else {}
             raise AnalyzerApiError(status, str(error.get("code", "API_ERROR")), str(error.get("message", "request failed")))

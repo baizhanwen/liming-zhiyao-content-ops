@@ -72,7 +72,7 @@ export function extractModelResponseText(payload: unknown) {
   return null;
 }
 
-export async function invokeContentModel(input: { system: string; user: string; profile: ModelProfile }): Promise<ModelInvocation> {
+export async function invokeContentModel(input: { system: string; user: string; profile: ModelProfile; nativeJson?: boolean }): Promise<ModelInvocation> {
   const config = readContentModelConfig(input.profile);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 90_000);
@@ -83,9 +83,9 @@ export async function invokeContentModel(input: { system: string; user: string; 
       model: config.model,
       messages: [{ role: "system", content: input.system }, { role: "user", content: input.user }],
       temperature: input.profile === "advanced" ? 0.55 : 0.35,
-      response_format: { type: "json_object" },
       max_tokens: input.profile === "fast" ? 4_000 : input.profile === "advanced" ? 8_000 : 6_000,
     };
+    if (input.nativeJson !== false) requestBody.response_format = { type: "json_object" };
     if (isDeepSeek) requestBody.thinking = { type: "disabled" };
     const response = await fetch(`${config.baseUrl}/chat/completions`, {
       method: "POST",
@@ -101,7 +101,7 @@ export async function invokeContentModel(input: { system: string; user: string; 
     const content = extractModelResponseText(raw);
     if (!content) {
       const finishReason = raw && typeof raw === "object" && Array.isArray((raw as { choices?: unknown }).choices) ? ((raw as { choices: Array<{ finish_reason?: unknown }> }).choices[0]?.finish_reason) : null;
-      const suffix = finishReason === "length" ? "模型输出达到长度上限，请切换标准或高级档位后重试。" : "模型本次返回为空，系统会自动重试。";
+      const suffix = finishReason === "length" ? "模型输出达到长度上限，请切换标准或高级档位后重试。" : "DeepSeek 的原生 JSON 模式偶尔会返回空内容，系统将切换兼容模式重试。";
       throw new ModelRequestError(`内容模型没有返回可解析的文本。${suffix}`, finishReason === "length" ? "MODEL_OUTPUT_TRUNCATED" : "MODEL_EMPTY_RESPONSE");
     }
     return { provider: config.provider, model: config.model, profile: config.profile, content, raw, latencyMs: Date.now() - started };

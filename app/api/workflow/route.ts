@@ -1,6 +1,6 @@
 import { getD1, getProjectAccess } from "../../../db/runtime";
 import { apiError, errorResponse } from "../../../lib/api-response";
-import { canClientReview, canInternalReview, canManagePublishing, canSubmitContent } from "../../../lib/content-workflow";
+import { canInternalReview, canManagePublishing, canSubmitContent } from "../../../lib/content-workflow";
 import { readRequestIdentity } from "../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
@@ -43,7 +43,7 @@ export async function GET(request: Request) {
         FROM content_reviews r
         INNER JOIN users requester ON requester.id = r.requested_by
         LEFT JOIN users decider ON decider.id = r.decided_by
-        WHERE r.organization_id = ? AND r.project_id = ? AND (? = 0 OR r.review_stage = 'client')
+        WHERE r.organization_id = ? AND r.project_id = ? AND r.review_stage = 'internal' AND ? = 0
         ORDER BY r.requested_at DESC LIMIT 1000
       `).bind(organizationId, projectId, clientOnly ? 1 : 0).all(),
       db.prepare(`
@@ -66,7 +66,6 @@ export async function GET(request: Request) {
       permissions: {
         canSubmit: canSubmitContent(access),
         canInternalReview: canInternalReview(access),
-        canClientReview: canClientReview(access),
         canManagePublishing: canManagePublishing(access),
         clientOnly,
       },

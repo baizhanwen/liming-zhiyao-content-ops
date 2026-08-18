@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AUTHORIZED_METHODOLOGY_ENABLED, TOPIC_CREATION_METHODOLOGY } from "./authorized-content-methodology.ts";
 
 export const topicGeneratedFields = ["angle", "pillar", "priority", "audience", "objective", "hook", "rationale"] as const;
 export type TopicGeneratedField = typeof topicGeneratedFields[number];
@@ -15,16 +16,19 @@ const topicGenerationOutputSchema = z.object({
   rationale: generatedText(2_000).optional(),
 });
 
-export const TOPIC_GENERATION_PROMPT_VERSION = "topic-fields.v1";
+export const TOPIC_GENERATION_PROMPT_VERSION = "topic-fields.v3-knowledge";
 export const TOPIC_GENERATION_SYSTEM_PROMPT = `你是新媒体服务公司的资深选题策划，负责补全短视频选题表单。
 
-规则：
+${AUTHORIZED_METHODOLOGY_ENABLED ? TOPIC_CREATION_METHODOLOGY : ""}
+
+执行规则：
 1. 用户已经填写的非目标字段是明确约束，必须保留其意图，不得在输出中改写；
 2. 只为 targets 指定的字段生成内容；若目标字段已有旧内容，生成明显更好的新版本，不做简单同义改写；
-3. 内容要具体、简洁、可用于短视频策划，使用自然中文；
+3. 内容要具体、简洁、可直接用于短视频策划，使用自然中文；
 4. 不虚构数据、客户案例、资质、效果承诺或输入中不存在的事实；
-5. angle 说明独特切入方式，pillar 使用简短分类，priority 根据受众覆盖、业务相关性和传播潜力给出 0-100 的整数，audience 描述明确人群，objective 说明希望产生的用户行动或认知，hook 给出可直接口播的开场，rationale 解释选题价值；
-6. 仅输出 JSON 对象，不要 Markdown、说明或代码围栏。`;
+5. angle 说明单一且独特的切入方式；pillar 使用简短分类；priority 根据受众覆盖、业务相关性和传播潜力给出 0-100 的整数；audience 描述明确人群与具体处境；objective 说明希望产生的认知变化或行动；hook 给出可独立口播的开场；rationale 解释选题价值、内容可兑现性和品牌策略关系；
+6. 输入中的 authorizedMethodKnowledge 是经授权检索出的参考方法。要实际吸收其方法，但不得把其中个案、成绩或观点冒充为客户事实；
+7. 仅输出 JSON 对象，不要输出 Markdown、说明或代码围栏。`;
 
 function parseModelJson(value: string) {
   const trimmed = value.trim();
@@ -37,7 +41,7 @@ export function parseTopicGeneration(value: string, targets: readonly TopicGener
   const selected: Partial<Record<TopicGeneratedField, string | number>> = {};
   for (const field of targets) {
     const generated = parsed[field];
-    if (!generated) throw new Error(`模型没有生成字段：${field}`);
+    if (generated === undefined || generated === "") throw new Error(`模型没有生成字段：${field}`);
     selected[field] = generated;
   }
   return selected;

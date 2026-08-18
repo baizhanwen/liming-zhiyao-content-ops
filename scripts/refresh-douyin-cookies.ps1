@@ -1,10 +1,17 @@
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $projectRoot
+$appPort = 3000
+$portPath = Join-Path $projectRoot ".local\app.port"
+if (Test-Path -LiteralPath $portPath) {
+    [void][int]::TryParse((Get-Content -Raw -LiteralPath $portPath).Trim(), [ref]$appPort)
+    if ($appPort -le 0) { $appPort = 3000 }
+}
+$appUrl = "http://127.0.0.1:$appPort"
 
 $python = Join-Path $projectRoot "services\analyzer\.venv\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $python)) {
-    throw "The analyzer is not installed. Run setup-analyzer.bat first."
+    throw "The analyzer is not installed. Run tools\setup-analyzer.bat first."
 }
 
 $extensionUrl = "https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc"
@@ -39,8 +46,8 @@ Write-Host "[OK] Cookie snapshot refreshed. Edge may stay open throughout analys
 Write-Host "[SECURITY] Delete the exported cookies.txt from Downloads after this succeeds."
 Write-Host "[NEXT] Return to video analysis and retry the failed task. No analyzer restart is required."
 try {
-    $health = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:3000/api/health" -TimeoutSec 2
+    $health = Invoke-WebRequest -UseBasicParsing -Uri "$appUrl/api/health" -TimeoutSec 2
     if ($health.StatusCode -eq 200) {
-        Start-Process "http://127.0.0.1:3000/analysis"
+        Start-Process "$appUrl/analysis"
     }
 } catch {}

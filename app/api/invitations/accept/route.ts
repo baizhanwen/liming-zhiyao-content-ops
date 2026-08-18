@@ -1,5 +1,6 @@
 import { getD1, hashInvitationToken } from "../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../lib/api-response";
+import { isProjectRoleCompatible, organizationRoles, projectRoles } from "../../../../lib/authorization";
 import { createLocalSession, setLocalPassword, validateLocalPassword } from "../../../../lib/local-auth";
 
 type InvitationRow = { id: string; organization_id: string; project_id: string | null; email: string; organization_role: string; project_role: string | null; status: string; expires_at: string };
@@ -19,8 +20,18 @@ export async function POST(request: Request) {
     const invitation = await db.prepare("SELECT id, organization_id, project_id, email, organization_role, project_role, status, expires_at FROM invitations WHERE token_hash = ?").bind(await hashInvitationToken(token)).first<InvitationRow>();
     if (!invitation || invitation.status !== "pending") return apiError("INVITATION_UNAVAILABLE", "邀请不存在或已使用。", 404);
     if (new Date(invitation.expires_at).getTime() <= Date.now()) return apiError("INVITATION_EXPIRED", "邀请已经过期，请联系管理员重新发送。", 410);
+    if (!organizationRoles.includes(invitation.organization_role as never) || (invitation.project_role && !projectRoles.includes(invitation.project_role as never))) return apiError("INVITATION_ROLE_INVALID", "邀请中的权限设置已失效，请联系管理员重新发送。", 409);
+    if (!isProjectRoleCompatible(invitation.organization_role as (typeof organizationRoles)[number], invitation.project_role as (typeof projectRoles)[number] | null)) return apiError("INVITATION_ROLE_INVALID", "邀请中的公司角色与项目角色不兼容，请联系管理员重新发送。", 409);
     const now = new Date().toISOString();
     let user = await db.prepare("SELECT id, email FROM users WHERE lower(email) = ? AND status = 'active'").bind(invitation.email.toLowerCase()).first<{ id: string; email: string }>();
+    if (user) {
+      const existingMembership = await db.prepare("SELECT status FROM organization_members WHERE organization_id = ? AND user_id = ? AND status != 'removed'").bind(invitation.organization_id, user.id).first<{ status: string }>();
+      if (existingMembership) return apiError("MEMBER_ALREADY_EXISTS", "你已经是该公司成员，请直接登录；如需调整项目，请联系管理员。", 409);
+    }
+    if (invitation.project_id) {
+      const project = await db.prepare("SELECT id FROM projects WHERE id = ? AND organization_id = ? AND deleted_at IS NULL AND status != 'archived'").bind(invitation.project_id, invitation.organization_id).first<{ id: string }>();
+      if (!project) return apiError("INVITATION_PROJECT_UNAVAILABLE", "邀请关联的客户项目已归档或删除，请联系管理员重新发送。", 409);
+    }
     if (!user) {
       user = { id: crypto.randomUUID(), email: invitation.email.toLowerCase() };
       await db.prepare("INSERT INTO users (id, auth_subject, email, display_name, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'active', ?, ?)")

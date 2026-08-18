@@ -40,6 +40,7 @@ Worker 需要以下环境变量：
 - `ANALYZER_ASR_DEVICE`，默认 `cpu`
 - `ANALYZER_PADDLE_OCR_DETECTION_MODEL`，默认 `PP-OCRv5_mobile_det`
 - `ANALYZER_PADDLE_OCR_RECOGNITION_MODEL`，默认 `PP-OCRv5_mobile_rec`
+- `ANALYZER_PADDLE_MODEL_SOURCE`，默认 `bos`（Paddle 官方 BOS 模型源，Windows 本地交付推荐）
 - `ANALYZER_MODEL_CACHE`，建议指向 Worker 的持久化模型卷；Windows 未配置时自动使用纯英文的 `%LOCALAPPDATA%/LimingZhiyao/model-cache`
 
 Windows 下 Paddle 原生推理层可能无法读取含中文字符的模型路径，因此模型缓存不要放在中文目录。CPU 推理默认关闭 oneDNN，以规避当前 PaddlePaddle 对 PP-OCRv5 PIR 模型的算子兼容问题。

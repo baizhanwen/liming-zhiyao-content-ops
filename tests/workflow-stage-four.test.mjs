@@ -11,16 +11,17 @@ test("stage four persists version-bound reviews, comments, schedules, and public
   assert.match(schema, /idx_publication_records_project_status_updated/);
 });
 
-test("workflow permissions separate submitters, internal reviewers, and clients", async () => {
+test("workflow permissions use one internal approval before production", async () => {
   const workflow = await import("../lib/content-workflow.ts");
   const base = { userId: "user-1", organizationId: "org-1", organizationRole: "member", projectId: "project-1" };
   const creator = { ...base, projectRole: "creator" };
   const reviewer = { ...base, projectRole: "reviewer" };
   const client = { ...base, projectRole: "client" };
   assert.equal(workflow.allowedWorkflowTransition(creator, "draft", "internal_review"), true);
-  assert.equal(workflow.allowedWorkflowTransition(creator, "internal_review", "client_review"), false);
-  assert.equal(workflow.allowedWorkflowTransition(reviewer, "internal_review", "client_review"), true);
-  assert.equal(workflow.allowedWorkflowTransition(client, "client_review", "shooting_ready"), true);
+  assert.equal(workflow.allowedWorkflowTransition(creator, "internal_review", "shooting_ready"), false);
+  assert.equal(workflow.allowedWorkflowTransition(reviewer, "internal_review", "shooting_ready"), true);
+  assert.equal(workflow.allowedWorkflowTransition(client, "client_review", "shooting_ready"), false);
+  assert.equal(workflow.allowedWorkflowTransition(reviewer, "client_review", "shooting_ready"), true);
   assert.equal(workflow.canCommentOnContent(client, "internal"), false);
   assert.equal(workflow.canCommentOnContent(client, "client"), true);
 });
@@ -47,6 +48,7 @@ test("stage four APIs keep tenant scope, client visibility, audit events, and op
   assert.match(collection, /c\.visibility = 'client'/);
   assert.match(transition, /allowedWorkflowTransition/);
   assert.match(transition, /PENDING_REVIEW_REQUIRED/);
+  assert.doesNotMatch(transition, /review_stage, round, decision, requested_by, requested_at\) VALUES \(\?, \?, \?, \?, \?, 'client'/);
   assert.match(transition, /content\.status\.changed/);
   assert.match(transition, /results\[0\]\.meta\.changes/);
   assert.match(comments, /canCommentOnContent/);

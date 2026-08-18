@@ -2,7 +2,10 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $projectRoot
 
-$listener = Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue
+$appPort = 3000
+$portPath = Join-Path $projectRoot ".local\app.port"
+if (Test-Path -LiteralPath $portPath) { [void][int]::TryParse((Get-Content -Raw -LiteralPath $portPath).Trim(), [ref]$appPort) }
+$listener = Get-NetTCPConnection -LocalPort $appPort -State Listen -ErrorAction SilentlyContinue
 if ($listener) { throw "Stop the local server with Ctrl+C before creating a backup." }
 if (-not (Test-Path -LiteralPath ".wrangler\state")) { throw "Local state was not found. Run the project once before creating a backup." }
 

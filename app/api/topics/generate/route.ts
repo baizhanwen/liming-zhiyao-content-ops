@@ -1,5 +1,6 @@
 import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess, sha256Hex } from "../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../lib/api-response";
+import { retrieveAuthorizedKnowledge } from "../../../../lib/authorized-knowledge";
 import { invokeContentModel, ModelConfigurationError, ModelRequestError, readContentModelConfig } from "../../../../lib/model-adapter";
 import { checkOrganizationQuota } from "../../../../lib/operations";
 import { readRequestIdentity } from "../../../../lib/request-auth";
@@ -58,19 +59,22 @@ export async function POST(request: Request) {
     ]);
     if (sourceVideoId && !analysis) return apiError("ANALYSIS_SOURCE_NOT_FOUND", "未找到可用于生成的关联视频分析。", 409);
     let knowledge: { id: string; title: string; body: string }[] = [];
-    if (!sourceVideoId && sourceKnowledgeItemIds.length) {
+    if (sourceKnowledgeItemIds.length) {
       const placeholders = sourceKnowledgeItemIds.map(() => "?").join(", ");
       const rows = await db.prepare(`SELECT k.id, k.title, v.body FROM knowledge_items k INNER JOIN knowledge_item_versions v ON v.item_id = k.id AND v.version = k.current_version AND v.organization_id = k.organization_id AND v.project_id = k.project_id WHERE k.id IN (${placeholders}) AND k.organization_id = ? AND k.project_id = ? AND k.status = 'confirmed' AND k.deleted_at IS NULL`).bind(...sourceKnowledgeItemIds, organizationId, projectId).all<{ id: string; title: string; body: string }>();
       if (rows.results.length !== sourceKnowledgeItemIds.length) return apiError("CONFIRMED_KNOWLEDGE_REQUIRED", "只能使用当前项目已确认的品牌知识。", 409);
       const byId = new Map(rows.results.map((item) => [item.id, item])); knowledge = sourceKnowledgeItemIds.map((id) => byId.get(id)!);
     }
     const perKnowledgeLimit = knowledge.length ? Math.min(5_000, Math.floor(MAX_KNOWLEDGE_CONTEXT_CHARS / knowledge.length)) : 0;
+    const compactVideoAnalysis = analysis ? compactAnalysis(analysis.report_json) : null;
+    const methodAtoms = await retrieveAuthorizedKnowledge(db, [JSON.stringify(draft), JSON.stringify(strategy ?? {}), JSON.stringify(compactVideoAnalysis ?? {}), ...knowledge.map((item) => `${item.title}\n${item.body.slice(0, 1_500)}`)].join("\n"), { task: "topic", limit: 5 });
     const context = {
       draft,
       targets,
       activeStrategy: strategy ?? null,
-      sourceVideoAnalysis: analysis ? compactAnalysis(analysis.report_json) : null,
+      sourceVideoAnalysis: compactVideoAnalysis,
       selectedKnowledge: knowledge.map((item) => ({ id: item.id, title: item.title, body: item.body.slice(0, perKnowledgeLimit) })),
+      authorizedMethodKnowledge: methodAtoms.map((atom) => ({ id: atom.id, knowledge: atom.knowledge, original: atom.original, url: atom.url, type: atom.atom_type, confidence: atom.confidence, matchedTerms: atom.matchedTerms })),
     };
     const inputJson = JSON.stringify(context); const inputHash = await sha256Hex(new TextEncoder().encode(inputJson)); const now = new Date().toISOString();
     modelCallId = crypto.randomUUID();
@@ -90,9 +94,9 @@ export async function POST(request: Request) {
     const completedAt = new Date().toISOString(); const outputJson = JSON.stringify(generated);
     await db.batch([
       db.prepare("UPDATE model_calls SET status = 'completed', output_json = ?, latency_ms = ?, completed_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'started'").bind(outputJson, totalLatencyMs, completedAt, modelCallId, organizationId, projectId),
-      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'topic.fields_generated', 'topic_draft', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, projectId, JSON.stringify({ targets, modelCallId }), completedAt),
+      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'topic.fields_generated', 'topic_draft', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, projectId, JSON.stringify({ targets, modelCallId, authorizedKnowledgeIds: methodAtoms.map((atom) => atom.id) }), completedAt),
     ]);
-    return Response.json({ generated, targets, modelCallId });
+    return Response.json({ generated, targets, modelCallId, authorizedKnowledgeRetrieved: methodAtoms.map((atom) => ({ id: atom.id, knowledge: atom.knowledge, url: atom.url })) });
   } catch (error) {
     if (modelCallId) {
       try {

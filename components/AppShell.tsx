@@ -3,28 +3,33 @@
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Bell, BookOpenText, BriefcaseBusiness, CalendarDays, ChartNoAxesCombined, ChevronDown, ClipboardCheck, FileChartColumn, FilePenLine, FolderOpen, LayoutDashboard, LibraryBig, Lightbulb, LogOut, Search, Send, Settings, UsersRound, Video } from "lucide-react";
+import { Bell, BookOpenText, BriefcaseBusiness, CalendarDays, ChartNoAxesCombined, ChevronDown, ClipboardCheck, FileChartColumn, FilePenLine, FolderOpen, Images, LayoutDashboard, LibraryBig, Lightbulb, LogOut, Search, Send, Settings, UsersRound, Video } from "lucide-react";
 import { preferredOrganizationId, preferredProjectId, scopeChangeEvent } from "../lib/client-scope";
+import { deliveryPlan, type DeliveryFeature } from "../lib/delivery-entitlements";
 
-const navGroups = [
+type NavigationItem = { label: string; icon: typeof LayoutDashboard; href: string; feature?: DeliveryFeature };
+type NavigationGroup = { label: string; items: NavigationItem[] };
+
+const navGroups: NavigationGroup[] = [
   { label: "运营工作", items: [
     { label: "工作台", icon: LayoutDashboard, href: "/" },
     { label: "客户项目", icon: BriefcaseBusiness, href: "/projects" },
     { label: "选题中心", icon: Lightbulb, href: "/topics" },
     { label: "内容生产", icon: FilePenLine, href: "/content" },
+    { label: "公众号图片", icon: Images, href: "/wechat-images", feature: "wechatImages" },
     { label: "审核中心", icon: ClipboardCheck, href: "/workflow?view=review" },
     { label: "内容日历", icon: CalendarDays, href: "/workflow?view=calendar" },
   ] },
   { label: "研究与资产", items: [
-    { label: "视频分析", icon: Video, href: "/analysis" },
-    { label: "对标内容库", icon: LibraryBig, href: "/analysis?view=benchmark" },
+    { label: "视频分析", icon: Video, href: "/analysis", feature: "videoAnalysis" },
+    { label: "对标内容库", icon: LibraryBig, href: "/analysis?view=benchmark", feature: "videoAnalysis" },
     { label: "品牌知识库", icon: BookOpenText, href: "/knowledge" },
-    { label: "素材中心", icon: FolderOpen, href: "/analysis?view=assets" },
+    { label: "素材中心", icon: FolderOpen, href: "/analysis?view=assets", feature: "videoAnalysis" },
   ] },
   { label: "增长复盘", items: [
     { label: "发布管理", icon: Send, href: "/workflow?view=publish" },
-    { label: "数据复盘", icon: ChartNoAxesCombined, href: "/insights?view=overview" },
-    { label: "报告中心", icon: FileChartColumn, href: "/insights?view=reports" },
+    { label: "数据复盘", icon: ChartNoAxesCombined, href: "/insights?view=overview", feature: "insights" },
+    { label: "报告中心", icon: FileChartColumn, href: "/insights?view=reports", feature: "insights" },
   ] },
 ];
 
@@ -90,7 +95,7 @@ export function AppShell({ children, activePath }: { children: ReactNode; active
       </header>
 
       <aside className="sidebar" aria-label="主导航">
-        <nav>{navGroups.map((group) => <div className="nav-group" key={group.label}><p>{group.label}</p>{group.items.map((item) => { const Icon = item.icon; const active = activePath === item.href; return <Link className={active ? "nav-item active" : "nav-item"} href={item.href} key={`${group.label}:${item.href}`} aria-current={active ? "page" : undefined}><Icon className="nav-icon" aria-hidden="true" /><strong>{item.label}</strong></Link>; })}</div>)}</nav>
+        <nav>{navGroups.map((group) => ({ ...group, items: group.items.filter((item) => !item.feature || deliveryPlan.features[item.feature]) })).filter((group) => group.items.length > 0).map((group) => <div className="nav-group" key={group.label}><p>{group.label}</p>{group.items.map((item) => { const Icon = item.icon; const active = activePath === item.href; return <Link className={active ? "nav-item active" : "nav-item"} href={item.href} key={`${group.label}:${item.href}`} aria-current={active ? "page" : undefined}><Icon className="nav-icon" aria-hidden="true" /><strong>{item.label}</strong></Link>; })}</div>)}</nav>
         <div className="sidebar-footer"><Link className={activePath === "/members" ? "nav-item active" : "nav-item"} href="/members"><UsersRound className="nav-icon" aria-hidden="true" /><strong>成员与权限</strong></Link><Link className={activePath === "/settings" ? "nav-item active" : "nav-item"} href="/settings"><Settings className="nav-icon" aria-hidden="true" /><strong>系统设置</strong></Link></div>
       </aside>
 

@@ -24,7 +24,15 @@ class FfmpegMediaProcessor:
 
     def _execute(self, command: Sequence[str]) -> subprocess.CompletedProcess[str]:
         try:
-            result = self._runner(list(command), capture_output=True, text=True, timeout=self.timeout_seconds, check=False)
+            result = self._runner(
+                list(command),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=self.timeout_seconds,
+                check=False,
+            )
         except (OSError, subprocess.TimeoutExpired) as error:
             raise MediaProcessingError(str(error)) from error
         if result.returncode != 0:

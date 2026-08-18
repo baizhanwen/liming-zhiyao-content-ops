@@ -2,7 +2,10 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $projectRoot
 
-$listener = Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue
+$appPort = 3000
+$portPath = Join-Path $projectRoot ".local\app.port"
+if (Test-Path -LiteralPath $portPath) { [void][int]::TryParse((Get-Content -Raw -LiteralPath $portPath).Trim(), [ref]$appPort) }
+$listener = Get-NetTCPConnection -LocalPort $appPort -State Listen -ErrorAction SilentlyContinue
 if ($listener) { throw "Stop the local server with Ctrl+C before restoring a backup." }
 $backupRoot = Join-Path $projectRoot "backups"
 $backups = @(Get-ChildItem -LiteralPath $backupRoot -Filter "liming-zhiyao-*.zip" -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)

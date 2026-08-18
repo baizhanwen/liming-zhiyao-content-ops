@@ -17,6 +17,20 @@ test("production pack uses a strict Zod contract and traceable citations", async
   assert.equal(pack.citations[0].sourceId, "topic-1");
   assert.equal(production.productionPackSchema.safeParse({ ...pack, citations: [] }).success, false);
   assert.equal(production.productionPackSchema.safeParse({ ...pack, invented: true }).success, false);
+  assert.equal(production.citationQuoteMatchesSource("智能体 = 能完成一类任务，需要明确边界。", "“智能体=能完成一类任务”"), true);
+  assert.equal(production.citationQuoteMatchesSource("只有短句", "只有短句"), false);
+  assert.equal(production.productionCitationSchema.safeParse({ sourceType: "knowledge", sourceId: "k-1", quote: "太短" }).success, false);
+  assert.equal(production.citationQuoteMatchesSource("智能体需要明确边界", "智能体什么都能做"), false);
+  assert.equal(production.citationQuoteMatchesSource("转化率是 1.5%", "转化率是 15%"), false);
+  const usage = production.buildSourceUsageReport([
+    { sourceType: "strategy", sourceId: "strategy-1" },
+    { sourceType: "knowledge", sourceId: "knowledge-1" },
+  ], [
+    { sourceType: "strategy", sourceId: "strategy-1", quote: "面向中小企业老板提供可执行建议" },
+    { sourceType: "knowledge", sourceId: "knowledge-1", quote: "企业人工智能应该先选择具体业务场景" },
+  ], ["knowledge-1"]);
+  assert.equal(usage.status, "verified");
+  assert.equal(usage.groups.find((group) => group.key === "selected_knowledge")?.citedCount, 1);
 });
 
 test("content APIs enforce tenant access, immutable versions, and optimistic writes", async () => {
@@ -35,9 +49,13 @@ test("content APIs enforce tenant access, immutable versions, and optimistic wri
   assert.match(generation, /UNTRACEABLE_MODEL_CITATION/);
   assert.match(generation, /ACTIVE_STRATEGY_REQUIRED/);
   assert.match(generation, /CONFIRMED_KNOWLEDGE_REQUIRED/);
+  assert.match(generation, /SELECTED_KNOWLEDGE_CITATION_REQUIRED/);
+  assert.match(generation, /buildSourceUsageReport/);
   assert.match(generation, /for \(let attempt = 0; attempt < 2 && !pack; attempt \+= 1\)/);
   assert.match(generation, /prompt_templates/);
   assert.match(generation, /model_calls/);
+  assert.match(generation, /COALESCE\(v\.title, v\.source_url/);
+  assert.doesNotMatch(generation, /v\.filename/);
 });
 
 test("model adapter keeps provider credentials server-side and supports profiles", async () => {
@@ -45,7 +63,8 @@ test("model adapter keeps provider credentials server-side and supports profiles
   assert.match(adapter, /CONTENT_MODEL_API_KEY/);
   assert.match(adapter, /CONTENT_MODEL_BASE_URL/);
   assert.match(adapter, /authorization: `Bearer/);
-  assert.match(adapter, /response_format: \{ type: "json_object" \}/);
+  assert.match(adapter, /requestBody\.response_format = \{ type: "json_object" \}/);
+  assert.match(adapter, /input\.nativeJson !== false/);
   assert.doesNotMatch(adapter, /NEXT_PUBLIC/);
 });
 

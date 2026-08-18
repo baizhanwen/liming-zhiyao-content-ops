@@ -1,12 +1,7 @@
 import { getD1 } from "../db/runtime";
+import { deliveryPlan } from "./delivery-entitlements";
 
-export const planPresets = {
-  starter: { projectQuota: 3, memberQuota: 10, monthlyAnalysisQuota: 30, monthlyModelCallQuota: 100, storageQuotaBytes: 2 * 1024 ** 3, retentionDays: 90, failedJobAlertThreshold: 1 },
-  team: { projectQuota: 20, memberQuota: 50, monthlyAnalysisQuota: 500, monthlyModelCallQuota: 2_000, storageQuotaBytes: 20 * 1024 ** 3, retentionDays: 365, failedJobAlertThreshold: 3 },
-  scale: { projectQuota: 100, memberQuota: 250, monthlyAnalysisQuota: 5_000, monthlyModelCallQuota: 20_000, storageQuotaBytes: 200 * 1024 ** 3, retentionDays: 730, failedJobAlertThreshold: 10 },
-} as const;
-
-export type PlanCode = keyof typeof planPresets;
+export type PlanCode = "starter" | "team" | "scale";
 export type OrganizationCapacity = {
   plan_code: PlanCode;
   project_quota: number;
@@ -19,17 +14,36 @@ export type OrganizationCapacity = {
 };
 
 export async function ensureOrganizationSettings(organizationId: string, actorUserId: string) {
-  const preset = planPresets.team;
+  const preset = deliveryPlan.quotas;
   const now = new Date().toISOString();
   await getD1().prepare(`
     INSERT OR IGNORE INTO organization_settings
       (id, organization_id, plan_code, project_quota, member_quota, monthly_analysis_quota, monthly_model_call_quota, storage_quota_bytes, retention_days, failed_job_alert_threshold, created_by, updated_by, created_at, updated_at)
-    VALUES (?, ?, 'team', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).bind(crypto.randomUUID(), organizationId, preset.projectQuota, preset.memberQuota, preset.monthlyAnalysisQuota, preset.monthlyModelCallQuota, preset.storageQuotaBytes, preset.retentionDays, preset.failedJobAlertThreshold, actorUserId, actorUserId, now, now).run();
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(crypto.randomUUID(), organizationId, deliveryPlan.code, preset.projectQuota, preset.memberQuota, preset.monthlyAnalysisQuota, preset.monthlyModelCallQuota, preset.storageQuotaBytes, preset.retentionDays, preset.failedJobAlertThreshold, actorUserId, actorUserId, now, now).run();
 }
 
 export async function getOrganizationCapacity(organizationId: string, actorUserId: string): Promise<OrganizationCapacity> {
   await ensureOrganizationSettings(organizationId, actorUserId);
+  if (deliveryPlan.deliveryMode) {
+    const preset = deliveryPlan.quotas;
+    const now = new Date().toISOString();
+    await getD1().prepare(`
+      UPDATE organization_settings SET plan_code = ?, project_quota = ?, member_quota = ?, monthly_analysis_quota = ?,
+        monthly_model_call_quota = ?, storage_quota_bytes = ?, retention_days = ?, failed_job_alert_threshold = ?, updated_at = ?
+      WHERE organization_id = ?
+    `).bind(deliveryPlan.code, preset.projectQuota, preset.memberQuota, preset.monthlyAnalysisQuota, preset.monthlyModelCallQuota, preset.storageQuotaBytes, preset.retentionDays, preset.failedJobAlertThreshold, now, organizationId).run();
+    return {
+      plan_code: deliveryPlan.code,
+      project_quota: preset.projectQuota,
+      member_quota: preset.memberQuota,
+      monthly_analysis_quota: preset.monthlyAnalysisQuota,
+      monthly_model_call_quota: preset.monthlyModelCallQuota,
+      storage_quota_bytes: preset.storageQuotaBytes,
+      retention_days: preset.retentionDays,
+      failed_job_alert_threshold: preset.failedJobAlertThreshold,
+    };
+  }
   const row = await getD1().prepare(`
     SELECT plan_code, project_quota, member_quota, monthly_analysis_quota, monthly_model_call_quota, storage_quota_bytes, retention_days, failed_job_alert_threshold
     FROM organization_settings WHERE organization_id = ?
@@ -48,7 +62,7 @@ export async function readOrganizationUsage(organizationId: string) {
   const monthStart = currentMonthStart();
   const [projects, members, analyses, modelCalls, storage] = await Promise.all([
     db.prepare("SELECT COUNT(*) AS value FROM projects WHERE organization_id = ? AND deleted_at IS NULL AND status != 'archived'").bind(organizationId).first<{ value: number }>(),
-    db.prepare("SELECT (SELECT COUNT(*) FROM organization_members WHERE organization_id = ? AND status = 'active') + (SELECT COUNT(*) FROM invitations WHERE organization_id = ? AND status = 'pending') AS value").bind(organizationId, organizationId).first<{ value: number }>(),
+    db.prepare("SELECT (SELECT COUNT(*) FROM organization_members WHERE organization_id = ? AND status = 'active') + (SELECT COUNT(*) FROM invitations WHERE organization_id = ? AND status = 'pending' AND julianday(expires_at) > julianday('now')) AS value").bind(organizationId, organizationId).first<{ value: number }>(),
     db.prepare("SELECT COUNT(*) AS value FROM analysis_jobs WHERE organization_id = ? AND created_at >= ?").bind(organizationId, monthStart).first<{ value: number }>(),
     db.prepare("SELECT COUNT(*) AS value FROM model_calls WHERE organization_id = ? AND created_at >= ?").bind(organizationId, monthStart).first<{ value: number }>(),
     db.prepare("SELECT COALESCE(SUM(size_bytes), 0) AS value FROM media_assets WHERE organization_id = ? AND status = 'active'").bind(organizationId).first<{ value: number }>(),

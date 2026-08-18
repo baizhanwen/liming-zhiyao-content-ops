@@ -13,6 +13,7 @@ const eslintConfig = defineConfig([
     "dist/**",
     "out/**",
     "build/**",
+    ".local/**",
     "**/.venv/**",
     "**/.ruff_cache/**",
     "next-env.d.ts",

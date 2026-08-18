@@ -55,10 +55,14 @@ test("new topics can cite multiple confirmed brand knowledge items", async () =>
   assert.match(workspace, /selectedKnowledgeIds/);
   assert.match(workspace, /sourceKnowledgeItemIds/);
   assert.match(workspace, /可多选/);
+  assert.doesNotMatch(workspace, /sourceKnowledgeItemIds: sourceVideoId \? \[\] : selectedKnowledgeIds/);
+  assert.match(workspace, /品牌知识会与视频分析共同参与补全/);
   assert.match(topics, /MAX_KNOWLEDGE_SOURCES/);
+  assert.match(topics, /citations\.push\(\.\.\.sourceKnowledgeItemIds/);
   assert.match(topics, /citations: citationRecords/);
   assert.match(generate, /MAX_KNOWLEDGE_CONTEXT_CHARS/);
   assert.match(generate, /selectedKnowledge: knowledge\.map/);
+  assert.doesNotMatch(generate, /if \(!sourceVideoId && sourceKnowledgeItemIds\.length\)/);
   assert.match(styles, /topic-knowledge-picker/);
 });
 

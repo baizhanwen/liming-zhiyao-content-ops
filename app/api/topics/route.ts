@@ -49,23 +49,25 @@ export async function POST(request: Request) {
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId); if (!access || !canWriteProjectAccess(access)) return apiError("WRITE_ACCESS_REQUIRED", "当前角色不能创建选题。", 403);
     const user = await ensureUser(identity); const db = getD1(); const sourceVideoId = typeof payload.sourceVideoId === "string" ? payload.sourceVideoId.trim() : ""; const sourceKnowledgeItemIds = knowledgeSourceIds(payload);
     if (sourceKnowledgeItemIds.length > MAX_KNOWLEDGE_SOURCES) return apiError("TOO_MANY_KNOWLEDGE_SOURCES", `一次最多引用 ${MAX_KNOWLEDGE_SOURCES} 条品牌知识。`, 400);
-    let sourceType = "manual"; let sourceRef: string | null = null; let citations: { type: string; id: string; quote: string | null }[] = [];
+    let sourceType = "manual"; let sourceRef: string | null = null; const citations: { type: string; id: string; quote: string | null }[] = [];
     if (sourceVideoId) {
       const analysis = await db.prepare(`SELECT a.id, a.report_json FROM video_analyses a INNER JOIN videos v ON v.id = a.video_id AND v.organization_id = a.organization_id AND v.project_id = a.project_id WHERE a.organization_id = ? AND a.project_id = ? AND a.video_id = ? AND v.deleted_at IS NULL ORDER BY a.created_at DESC LIMIT 1`).bind(organizationId, projectId, sourceVideoId).first<{ id: string; report_json: string }>();
       if (!analysis) return apiError("ANALYSIS_SOURCE_NOT_FOUND", "未找到可引用的视频分析结果。", 409);
-      sourceType = "video_analysis"; sourceRef = sourceVideoId; citations = [{ type: "video_analysis", id: analysis.id, quote: analysisQuote(analysis.report_json) }];
-    } else if (sourceKnowledgeItemIds.length) {
+      sourceType = "video_analysis"; sourceRef = sourceVideoId; citations.push({ type: "video_analysis", id: analysis.id, quote: analysisQuote(analysis.report_json) });
+    }
+    if (sourceKnowledgeItemIds.length) {
       const placeholders = sourceKnowledgeItemIds.map(() => "?").join(", ");
       const knowledge = await db.prepare(`SELECT k.id, v.body FROM knowledge_items k INNER JOIN knowledge_item_versions v ON v.item_id = k.id AND v.version = k.current_version AND v.organization_id = k.organization_id AND v.project_id = k.project_id WHERE k.id IN (${placeholders}) AND k.organization_id = ? AND k.project_id = ? AND k.status = 'confirmed' AND k.deleted_at IS NULL`).bind(...sourceKnowledgeItemIds, organizationId, projectId).all<{ id: string; body: string }>();
       if (knowledge.results.length !== sourceKnowledgeItemIds.length) return apiError("CONFIRMED_KNOWLEDGE_REQUIRED", "只能引用当前项目中已确认的品牌知识。", 409);
       const byId = new Map(knowledge.results.map((item) => [item.id, item]));
-      sourceType = "knowledge"; sourceRef = sourceKnowledgeItemIds[0]; citations = sourceKnowledgeItemIds.map((id) => ({ type: "knowledge", id, quote: byId.get(id)!.body.slice(0, 500) }));
+      if (!sourceVideoId) { sourceType = "knowledge"; sourceRef = sourceKnowledgeItemIds[0]; }
+      citations.push(...sourceKnowledgeItemIds.map((id) => ({ type: "knowledge", id, quote: byId.get(id)!.body.slice(0, 500) })));
     }
     const text = (key: string, max = 1000) => typeof payload[key] === "string" && payload[key].trim() ? payload[key].trim().slice(0, max) : null;
     const priority = typeof payload.priority === "number" && Number.isFinite(payload.priority) ? Math.max(0, Math.min(100, Math.trunc(payload.priority))) : 50; const topicId = crypto.randomUUID(); const now = new Date().toISOString();
     const statements = [
       db.prepare("INSERT INTO topic_ideas (id, organization_id, project_id, title, angle, source_type, source_ref, pillar, audience, objective, hook, rationale, priority, status, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'idea', ?, ?, ?, ?)").bind(topicId, organizationId, projectId, title, angle, sourceType, sourceRef, text("pillar", 200), text("audience"), text("objective"), text("hook", 500), text("rationale", 2000), priority, user.id, user.id, now, now),
-      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'topic.created', 'topic_idea', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, topicId, JSON.stringify({ sourceType, sourceRef, sourceKnowledgeItemIds: sourceType === "knowledge" ? sourceKnowledgeItemIds : [] }), now),
+      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'topic.created', 'topic_idea', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, topicId, JSON.stringify({ sourceType, sourceRef, sourceVideoId: sourceVideoId || null, sourceKnowledgeItemIds }), now),
     ];
     const citationRecords = citations.map((citation) => ({ id: crypto.randomUUID(), topic_id: topicId, citation_type: citation.type, citation_id: citation.id, quote: citation.quote }));
     for (const citation of citationRecords) statements.push(db.prepare("INSERT INTO topic_citations (id, organization_id, project_id, topic_id, citation_type, citation_id, quote, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(citation.id, organizationId, projectId, topicId, citation.citation_type, citation.citation_id, citation.quote, user.id, now));

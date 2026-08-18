@@ -10,29 +10,36 @@ test("content model output parsing tolerates wrappers while DeepSeek structured 
   assert.match(adapter, /extractModelResponseText/);
   assert.match(adapter, /Array\.isArray\(value\)/);
   assert.match(adapter, /requestBody\.thinking = \{ type: "disabled" \}/);
+  assert.match(adapter, /input\.nativeJson !== false/);
   assert.match(adapter, /max_tokens:/);
   assert.match(adapter, /MODEL_OUTPUT_TRUNCATED/);
 });
 
-test("content generation uses selected project benchmark analyses and preserves visible citations", async () => {
-  const [route, saveRoute, workspace, schema, styles] = await Promise.all([
+test("content generation recommends organization materials and preserves feedback-aware citations", async () => {
+  const [route, saveRoute, workspace, schema, styles, recommendationRoute] = await Promise.all([
     readFile(new URL("../app/api/content-items/[contentId]/generate/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/content-items/[contentId]/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../components/ContentProductionWorkspace.tsx", import.meta.url), "utf8"),
     readFile(new URL("../lib/content-production.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/video-library/recommendations/route.ts", import.meta.url), "utf8"),
   ]);
 
   assert.match(schema, /benchmarkEntryIds/);
+  assert.match(schema, /recommendedBenchmarkIds/);
   assert.match(schema, /"benchmark"/);
-  assert.match(route, /project_video_references/);
-  assert.match(route, /refs\.purpose = 'benchmark'/);
-  assert.match(route, /analysisReportSourceText/);
+  assert.match(route, /video_library_entries/);
+  assert.match(route, /materialFeedbackPrompt/);
   assert.match(route, /BENCHMARK_CITATION_REQUIRED/);
+  assert.match(route, /nativeJson: attempt === 0/);
   assert.match(route, /benchmarkEntryIds/);
   assert.match(saveRoute, /benchmark:/);
-  assert.match(workspace, /本次参考的对标内容/);
+  assert.match(workspace, /智能推荐参考素材/);
   assert.match(workspace, /selectedBenchmarkIds/);
-  assert.match(workspace, /本版实际引用/);
+  assert.match(workspace, /匹配度/);
+  assert.match(workspace, /实际引用/);
   assert.match(styles, /benchmark-generation-context/);
+  assert.match(recommendationRoute, /recommendMaterials/);
+  assert.match(recommendationRoute, /content_reviews/);
+  assert.match(recommendationRoute, /publication_metric_snapshots/);
 });
