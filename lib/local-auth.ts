@@ -4,6 +4,8 @@ import type { RequestIdentity } from "./request-auth";
 const sessionCookieName = "liming_session";
 const passwordIterations = 210_000;
 const sessionLifetimeSeconds = 7 * 24 * 60 * 60;
+const loginFailureLimit = 5;
+const loginLockSeconds = 15 * 60;
 
 type CredentialRow = {
   user_id: string;
@@ -34,8 +36,29 @@ function randomToken(size = 32) {
 
 async function derivePassword(password: string, salt: Uint8Array, iterations: number) {
   const keyMaterial = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt, iterations }, keyMaterial, 256);
+  const saltBuffer = Uint8Array.from(salt).buffer;
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: saltBuffer, iterations }, keyMaterial, 256);
   return bytesToBase64Url(new Uint8Array(bits));
+}
+
+export async function createLocalCredential(userId: string, password: string, now = new Date().toISOString()) {
+  const salt = new Uint8Array(16);
+  crypto.getRandomValues(salt);
+  return {
+    userId,
+    passwordSalt: bytesToBase64Url(salt),
+    passwordHash: await derivePassword(password, salt, passwordIterations),
+    iterations: passwordIterations,
+    now,
+  };
+}
+
+async function passwordMatches(row: Pick<CredentialRow, "password_salt" | "password_hash" | "iterations">, password: string) {
+  const candidate = await derivePassword(password, base64UrlToBytes(row.password_salt), row.iterations);
+  if (candidate.length !== row.password_hash.length) return false;
+  let mismatch = 0;
+  for (let index = 0; index < candidate.length; index += 1) mismatch |= candidate.charCodeAt(index) ^ row.password_hash.charCodeAt(index);
+  return mismatch === 0;
 }
 
 export function validateLocalPassword(password: string) {
@@ -45,17 +68,13 @@ export function validateLocalPassword(password: string) {
 }
 
 export async function setLocalPassword(userId: string, password: string) {
-  const salt = new Uint8Array(16);
-  crypto.getRandomValues(salt);
-  const passwordSalt = bytesToBase64Url(salt);
-  const passwordHash = await derivePassword(password, salt, passwordIterations);
-  const now = new Date().toISOString();
+  const credential = await createLocalCredential(userId, password);
   await getD1().prepare(`
     INSERT INTO local_credentials (user_id, password_salt, password_hash, iterations, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id) DO UPDATE SET password_salt = excluded.password_salt, password_hash = excluded.password_hash,
       iterations = excluded.iterations, updated_at = excluded.updated_at
-  `).bind(userId, passwordSalt, passwordHash, passwordIterations, now, now).run();
+  `).bind(credential.userId, credential.passwordSalt, credential.passwordHash, credential.iterations, credential.now, credential.now).run();
 }
 
 export async function verifyLocalLogin(email: string, password: string) {
@@ -65,11 +84,50 @@ export async function verifyLocalLogin(email: string, password: string) {
     WHERE lower(u.email) = ? AND u.status = 'active'
   `).bind(email.toLowerCase()).first<CredentialRow>();
   if (!row) return null;
-  const candidate = await derivePassword(password, base64UrlToBytes(row.password_salt), row.iterations);
-  if (candidate.length !== row.password_hash.length) return null;
-  let mismatch = 0;
-  for (let index = 0; index < candidate.length; index += 1) mismatch |= candidate.charCodeAt(index) ^ row.password_hash.charCodeAt(index);
-  return mismatch === 0 ? row : null;
+  return await passwordMatches(row, password) ? row : null;
+}
+
+export async function hasLocalPassword(userId: string) {
+  const row = await getD1().prepare("SELECT 1 AS configured FROM local_credentials WHERE user_id = ?").bind(userId).first<{ configured: number }>();
+  return Boolean(row?.configured);
+}
+
+export async function verifyLocalPasswordForUser(userId: string, password: string) {
+  const row = await getD1().prepare("SELECT password_salt, password_hash, iterations FROM local_credentials WHERE user_id = ?")
+    .bind(userId).first<Pick<CredentialRow, "password_salt" | "password_hash" | "iterations">>();
+  return row ? passwordMatches(row, password) : false;
+}
+
+export async function readLocalLoginLock(email: string) {
+  const row = await getD1().prepare("SELECT locked_until FROM local_login_attempts WHERE email = ?").bind(email.toLowerCase()).first<{ locked_until: string | null }>();
+  if (!row?.locked_until) return null;
+  const remainingSeconds = Math.ceil((new Date(row.locked_until).getTime() - Date.now()) / 1000);
+  return remainingSeconds > 0 ? remainingSeconds : null;
+}
+
+export async function recordLocalLoginFailure(email: string) {
+  const normalizedEmail = email.toLowerCase();
+  const now = new Date();
+  const current = await getD1().prepare("SELECT failed_count, locked_until FROM local_login_attempts WHERE email = ?")
+    .bind(normalizedEmail).first<{ failed_count: number; locked_until: string | null }>();
+  const currentLock = current?.locked_until ? new Date(current.locked_until).getTime() : 0;
+  const failedCount = currentLock > now.getTime()
+    ? current?.failed_count ?? 0
+    : current?.locked_until ? 1 : (current?.failed_count ?? 0) + 1;
+  const lockedUntil = failedCount >= loginFailureLimit ? new Date(now.getTime() + loginLockSeconds * 1000).toISOString() : null;
+  await getD1().prepare(`
+    INSERT INTO local_login_attempts (email, failed_count, locked_until, updated_at) VALUES (?, ?, ?, ?)
+    ON CONFLICT(email) DO UPDATE SET failed_count = excluded.failed_count, locked_until = excluded.locked_until, updated_at = excluded.updated_at
+  `).bind(normalizedEmail, failedCount, lockedUntil, now.toISOString()).run();
+  return lockedUntil ? loginLockSeconds : null;
+}
+
+export async function clearLocalLoginFailures(email: string) {
+  await getD1().prepare("DELETE FROM local_login_attempts WHERE email = ?").bind(email.toLowerCase()).run();
+}
+
+export async function revokeAllLocalSessions(userId: string) {
+  await getD1().prepare("DELETE FROM local_sessions WHERE user_id = ?").bind(userId).run();
 }
 
 export async function createLocalSession(userId: string, request: Request) {
@@ -113,4 +171,3 @@ export async function revokeLocalSession(request: Request) {
   const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
   return `${sessionCookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`;
 }
-

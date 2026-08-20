@@ -6,7 +6,7 @@ type RuntimeEnv = typeof env & { GENERATION_P0_FREEZE?: string };
 export type ProjectGenerationCapability = "topic" | "content" | "wechat_image" | "analysis";
 
 export type ProjectGenerationSource = {
-  sourceType: "topic" | "knowledge" | "video_analysis" | "strategy" | "benchmark" | "system_methodology";
+  sourceType: "topic" | "knowledge" | "video_analysis" | "strategy" | "benchmark" | "historical_copy" | "system_methodology";
   sourceId: string;
   title: string;
   text: string;

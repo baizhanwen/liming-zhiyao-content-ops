@@ -117,6 +117,15 @@ class ApiClientTests(unittest.TestCase):
         with self.assertRaisesRegex(AnalyzerApiError, "LEASE_EXPIRED"):
             client.claim()
 
+    def test_invalid_json_response_is_exposed_as_retryable_api_error(self):
+        def transport(*_):
+            return 502, b"upstream reset"
+
+        client = AnalyzerApiClient("https://example.test", "secret", "worker-01", transport)
+        with self.assertRaisesRegex(AnalyzerApiError, "INVALID_RESPONSE") as raised:
+            client.claim()
+        self.assertEqual(raised.exception.status, 502)
+
     def test_uploaded_source_uses_worker_lease_endpoint_and_streams_to_file(self):
         class Stream:
             def __init__(self):

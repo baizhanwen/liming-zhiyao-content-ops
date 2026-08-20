@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import logging
 import time
 import urllib.error
 import uuid
 from collections.abc import Callable
 
 from .api_client import AnalysisResult, AnalyzerApiClient, AnalyzerApiError, ClaimedJob, Processor
+
+logger = logging.getLogger(__name__)
+
+
+def _is_transient_api_error(error: AnalyzerApiError) -> bool:
+    return error.status in {408, 425, 429} or error.status >= 500 or error.code == "INVALID_RESPONSE"
 
 
 def classify_worker_error(error: Exception) -> tuple[str, str]:
@@ -23,8 +30,16 @@ def classify_worker_error(error: Exception) -> tuple[str, str]:
         return "VISUAL_EXTRACTION_FAILED", message
     if any(value in lowered for value in ("context length", "maximum context", "token limit")):
         return "MODEL_CONTEXT_LIMIT", message
+    if "max_tokens" in lowered or "output is incomplete" in lowered or "length limit" in lowered:
+        return "MODEL_OUTPUT_LIMIT", "模型报告超过当前模式的输出长度，已启用压缩输出；请从证据检查点继续。"
+    if "invalid json" in lowered or "json_invalid" in lowered or "validation error for report" in lowered:
+        return "MODEL_OUTPUT_INVALID", "模型报告格式不完整，已启用 JSON 恢复；请从证据检查点继续。"
     if any(value in lowered for value in ("429", "rate limit", "too many requests")):
         return "MODEL_RATE_LIMITED", message
+    if "model report did not preserve exact source evidence" in lowered:
+        return "MODEL_EVIDENCE_MISMATCH", "模型引用格式未通过追溯校验，请从证据检查点继续。"
+    if "analysis source did not contain usable" in lowered:
+        return "MODEL_EVIDENCE_UNAVAILABLE", "转写与画面中没有可用于追溯的有效证据。"
     if any(value in lowered for value in ("deepseek", "openai", "api call", "model report")):
         return "MODEL_REQUEST_FAILED", message
     return "WORKER_PROCESSING_FAILED", message
@@ -63,7 +78,17 @@ def run_forever(client: AnalyzerApiClient, processor: Processor, idle_seconds: f
     while not should_stop():
         try:
             processed = process_once(client, processor)
-        except urllib.error.URLError:
+        except AnalyzerApiError as error:
+            if not _is_transient_api_error(error):
+                raise
+            logger.warning("Analyzer API is temporarily unavailable (%s). Retrying.", error)
+            processed = False
+        except (urllib.error.URLError, OSError) as error:
+            # On Windows a web-server restart commonly surfaces as
+            # ConnectionResetError/ConnectionRefusedError, both OSError
+            # subclasses rather than urllib.error.URLError. They must not kill
+            # the long-running worker.
+            logger.warning("Analyzer API connection was interrupted (%s). Retrying.", error)
             processed = False
         if not processed:
             time.sleep(idle_seconds)

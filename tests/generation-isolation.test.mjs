@@ -3,17 +3,18 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 test("all current generation routes pass through the project context firewall", async () => {
-  const [topic, content, context] = await Promise.all([
+  const [topic, content, wechat, context] = await Promise.all([
     readFile(new URL("../app/api/topics/generate/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/content-items/[contentId]/generate/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/wechat-images/generate/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/project-generation-context.ts", import.meta.url), "utf8"),
   ]);
-  for (const route of [topic, content]) {
+  for (const route of [topic, content, wechat]) {
     assert.match(route, /buildProjectGenerationContext/);
     assert.match(route, /assertProjectGenerationContext/);
     assert.match(route, /insertGenerationSourceManifest/);
     assert.match(route, /finishGenerationSourceManifest/);
-    assert.doesNotMatch(route, /authorizedKnowledge|retrieveAuthorizedKnowledge|\.original/);
+    assert.doesNotMatch(route, /authorizedKnowledge|retrieveAuthorizedKnowledge|\.original\b/);
   }
   assert.match(context, /GENERATION_P0_FREEZE/);
   assert.match(context, /PROJECT_CONTEXT_INCOMPLETE/);

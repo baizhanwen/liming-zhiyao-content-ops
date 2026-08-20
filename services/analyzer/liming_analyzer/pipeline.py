@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+import logging
+from collections.abc import Callable, Mapping
 from concurrent.futures import ALL_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import Any, TypeVar
 
 from .adapters import (
     AcquiredSource,
@@ -14,8 +15,8 @@ from .adapters import (
     MediaInfo,
     MediaProcessor,
     NormalizedMedia,
-    SourceProvider,
     SourceMetadata,
+    SourceProvider,
     SpeechRecognizer,
     StructureAnalyzer,
     TranscriptOutput,
@@ -27,6 +28,9 @@ from .adapters import (
 )
 from .api_client import AnalysisResult, ClaimedJob
 from .evidence import clean_transcript
+
+logger = logging.getLogger(__name__)
+T = TypeVar("T")
 
 
 def _manual_transcript(job: ClaimedJob) -> TranscriptOutput | None:
@@ -76,6 +80,7 @@ def _evidence_checkpoint(media: NormalizedMedia, transcript: TranscriptOutput, v
         "visuals": {
             "keyframes": [{"timestamp_ms": row.timestamp_ms, "ocr_text": row.ocr_text, "confidence": row.confidence, "asset_id": row.asset_id} for row in visuals.keyframes],
             "observations": [{"kind": row.kind, "start_ms": row.start_ms, "end_ms": row.end_ms, "text": row.text, "confidence": row.confidence} for row in visuals.observations],
+            "stats": dict(visuals.stats),
         },
         "source_metadata": _metadata_payload(metadata),
     }
@@ -108,6 +113,7 @@ def _restore_evidence_checkpoint(job: ClaimedJob, workspace: Path) -> tuple[Norm
         visuals = VisualOutput(
             tuple(Keyframe(int(row["timestamp_ms"]), workspace / f"restored-{index}.jpg", str(row["ocr_text"]) if row.get("ocr_text") else None, int(row["confidence"]) if row.get("confidence") is not None else None, str(row["asset_id"]) if row.get("asset_id") else None) for index, row in enumerate(raw_frames) if isinstance(row, Mapping)),
             tuple(VisualObservation(str(row["kind"]), int(row["start_ms"]), int(row["end_ms"]), str(row["text"]), int(row["confidence"]) if row.get("confidence") is not None else None) for row in raw_observations if isinstance(row, Mapping)),
+            dict(visuals_value.get("stats")) if isinstance(visuals_value.get("stats"), Mapping) else {},
         )
         metadata_value = value.get("source_metadata")
         metadata = SourceMetadata(**{key: metadata_value.get(key) for key in SourceMetadata.__dataclass_fields__}) if isinstance(metadata_value, Mapping) else None
@@ -126,7 +132,7 @@ class AnalysisPipeline:
         structure: StructureAnalyzer,
         artifacts: AnalysisArtifactStore | None = None,
         checkpoints: AnalysisCheckpointStore | None = None,
-        heartbeat_seconds: float = 30.0,
+        heartbeat_seconds: float = 8.0,
     ) -> None:
         if heartbeat_seconds <= 0:
             raise ValueError("heartbeat_seconds must be positive")
@@ -139,6 +145,24 @@ class AnalysisPipeline:
         self.checkpoints = checkpoints
         self.heartbeat_seconds = heartbeat_seconds
 
+    def _run_monitored(
+        self,
+        operation: Callable[[], T],
+        current: ClaimedJob,
+        heartbeat,
+        status: str,
+        progress: int,
+        stage: str,
+    ) -> tuple[ClaimedJob, T]:
+        """Keep worker presence and the job lease alive during one blocking operation."""
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="liming-stage") as executor:
+            future = executor.submit(operation)
+            while not future.done():
+                wait((future,), timeout=self.heartbeat_seconds, return_when=ALL_COMPLETED)
+                if not future.done():
+                    current = heartbeat(status, progress, stage)
+            return current, future.result()
+
     def process(self, job: ClaimedJob, heartbeat) -> AnalysisResult:
         with TemporaryDirectory(prefix="liming-analysis-") as temporary:
             workspace = Path(temporary)
@@ -146,14 +170,35 @@ class AnalysisPipeline:
             if restored is not None:
                 media, transcript, visuals, source_metadata = restored
                 current = heartbeat("analyzing", max(84, job.progress), "已从证据检查点恢复，正在继续结构分析")
-                structure = self.structure.analyze(current, media, transcript, visuals)
+                current, structure = self._run_monitored(
+                    lambda: self.structure.analyze(current, media, transcript, visuals),
+                    current,
+                    heartbeat,
+                    "analyzing",
+                    max(84, current.progress),
+                    "正在从证据检查点继续生成结构化结论",
+                )
                 return build_analysis_result(transcript, structure, source_metadata)
             current = heartbeat("downloading", 5, "正在安全获取源媒体")
-            acquired = self.source.acquire(current, workspace / "source-media")
+            current, acquired = self._run_monitored(
+                lambda: self.source.acquire(current, workspace / "source-media"),
+                current,
+                heartbeat,
+                "downloading",
+                8,
+                "正在下载源媒体并保持分析服务在线",
+            )
             acquired = acquired if isinstance(acquired, AcquiredSource) else AcquiredSource(acquired)
 
             current = heartbeat("processing", 18, "正在规范化媒体并提取音轨")
-            media = self.media.prepare(acquired.path, workspace / "normalized")
+            current, media = self._run_monitored(
+                lambda: self.media.prepare(acquired.path, workspace / "normalized"),
+                current,
+                heartbeat,
+                "processing",
+                22,
+                "正在规范化媒体并保持分析服务在线",
+            )
             manual_transcript = _manual_transcript(current)
             current = heartbeat("transcribing", 35, "正在使用人工校正版并提取画面" if manual_transcript else "正在并行转写语音与提取画面")
 
@@ -174,12 +219,26 @@ class AnalysisPipeline:
 
             current = heartbeat("extracting", 70, "正在整理字幕、OCR 与关键帧证据")
             if self.artifacts:
-                visuals = self.artifacts.persist(current, transcript, visuals, workspace)
+                current, visuals = self._run_monitored(
+                    lambda: self.artifacts.persist(current, transcript, visuals, workspace),
+                    current,
+                    heartbeat,
+                    "extracting",
+                    76,
+                    "正在保存字幕和关键画面证据",
+                )
             if self.checkpoints:
                 try:
                     self.checkpoints.save(current, "evidence_ready", _evidence_checkpoint(media, transcript, visuals, acquired.metadata))
-                except Exception:
-                    pass
+                except Exception as error:  # noqa: BLE001 - checkpoint is resumability only
+                    logger.warning("Could not persist the analysis checkpoint: %s", error)
             current = heartbeat("analyzing", 84, "正在生成可追溯结构化结论")
-            structure = self.structure.analyze(current, media, transcript, visuals)
+            current, structure = self._run_monitored(
+                lambda: self.structure.analyze(current, media, transcript, visuals),
+                current,
+                heartbeat,
+                "analyzing",
+                88,
+                "模型正在生成可追溯结构化结论",
+            )
             return build_analysis_result(transcript, structure, acquired.metadata)

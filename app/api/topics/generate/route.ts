@@ -61,7 +61,7 @@ export async function POST(request: Request) {
     ]);
     if (sourceVideoId && !analysis) return apiError("ANALYSIS_SOURCE_NOT_FOUND", "未找到可用于生成的关联视频分析。", 409);
     let knowledge: { id: string; title: string; body: string }[] = [];
-    if (!sourceVideoId && sourceKnowledgeItemIds.length) {
+    if (sourceKnowledgeItemIds.length) {
       const placeholders = sourceKnowledgeItemIds.map(() => "?").join(", ");
       const rows = await db.prepare(`SELECT k.id, k.title, v.body FROM knowledge_items k INNER JOIN knowledge_item_versions v ON v.item_id = k.id AND v.version = k.current_version AND v.organization_id = k.organization_id AND v.project_id = k.project_id WHERE k.id IN (${placeholders}) AND k.organization_id = ? AND k.project_id = ? AND k.status = 'confirmed' AND k.deleted_at IS NULL`).bind(...sourceKnowledgeItemIds, organizationId, projectId).all<{ id: string; title: string; body: string }>();
       if (rows.results.length !== sourceKnowledgeItemIds.length) return apiError("CONFIRMED_KNOWLEDGE_REQUIRED", "只能使用当前项目已确认的品牌知识。", 409);

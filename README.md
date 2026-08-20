@@ -49,6 +49,16 @@
 
 局域网模式仍不会暴露到公网。主机必须保持开机、连接局域网并保持启动窗口运行；主机 IP 改变后，以重新启动时显示的新地址为准。如果公司 Wi-Fi 开启了设备隔离，需要让网络管理员允许同一局域网设备互访。调用外部大模型时主机仍需要访问互联网。
 
+本地和局域网模式默认不信任浏览器自行携带的 `oai-authenticated-user-*` 身份头，避免伪造身份。只有在未来接入能够清理客户端同名头并重新注入已认证身份的可信反向代理时，才应把 `TRUST_FORWARDED_IDENTITY` 设为 `1`。局域网登录连续失败 5 次会锁定 15 分钟；修改已有密码需要先验证当前密码，并会注销该账号的全部旧会话。
+
+## 纯本地商业交付
+
+开发目录不要直接发送给客户。运行根目录的 `prepare-delivery.bat`，输入客户公司名称并在打包前选择“基础协作版 / 智能生产版 / 全功能经营版”，系统会在被 Git 忽略的 `deliveries` 目录生成干净交付 ZIP 与单独的 `delivery-credential.txt`。套餐写入只含当前授权的 `delivery-entitlements.ts`，客户后台不能切换；未购买模块的页面、API、服务和专属依赖会从 ZIP 物理删除。交付副本同时排除当前数据库、媒体、Cookie、模型密钥、Git 历史、缓存、备份、测试、内部文档和研究资料，并自动启用 `DELIVERY_MODE=1`、关闭 localhost 开发身份、生成一次性初始化码与独立分析服务令牌。
+
+客户首次运行 `setup-local.bat` 和 `start-local.bat` 后，会进入仅允许主机 `127.0.0.1` 访问的首次开通向导；输入交付凭证中的初始化码后创建首家公司与管理员。开通完成后入口永久关闭，其他成员由管理员通过邀请加入。商业模式每次启动都会注销旧登录会话，因此必须重新登录。
+
+客户需要清空全部本地业务数据时可运行 `factory-reset.bat`。工具要求输入 `FACTORY RESET`，先创建备份，再重建空数据库并恢复首次开通状态；不要在项目运行时执行。未来 Cloudflare 授权与 AI 服务升级路线见 [Cloudflare 商业授权升级计划](docs/product/Cloudflare商业授权升级计划.md)。
+
 ## 视频分析服务（可选）
 
 视频 ASR、OCR、关键帧和结构化分析另需 64 位 Python 3.11、FFmpeg/ffprobe、Microsoft Visual C++ 2015–2022 x64 运行库，以及模型服务密钥：
@@ -56,11 +66,11 @@
 - 视频分析页会显示服务凭证、模型配置和 Worker 最近心跳，便于区分“任务处理中”和“服务尚未启动”；
 - 本地视频支持一次选择多个文件，系统会逐个上传并保留每个文件的成功或失败结果；
 - 分析详情允许有写权限的成员校正转写、保存新版本，并可基于校正版重新生成结构分析；重新分析会跳过 ASR，但仍会重新提取画面和生成报告。
-- 抖音链接使用本机 Cookie 快照。Windows 新版 Edge 的 Cookie 受应用绑定加密保护，不能由 yt-dlp 直接解密；请安装 yt-dlp 官方文档推荐的 `Get cookies.txt LOCALLY` 扩展，在抖音页导出 Netscape 格式文件，再双击 `refresh-douyin-cookies.bat` 选择该文件。脚本只保留抖音域名 Cookie 到被 Git 忽略的 `.local/`，不会上传或写入数据库；导入成功后请删除下载目录中的原始导出文件。解析期间可以一直打开 Edge，Cookie 失效时重新导出即可。
+- 抖音链接使用本机 Cookie 快照。Windows 新版 Edge 的 Cookie 受应用绑定加密保护，不能由 yt-dlp 直接解密；请安装 yt-dlp 官方文档推荐的 `Get cookies.txt LOCALLY` 扩展，在抖音页导出 Netscape 格式文件，再双击 `tools\refresh-douyin-cookies.bat` 选择该文件。脚本只保留抖音域名 Cookie 到被 Git 忽略的 `.local/`，不会上传或写入数据库；导入成功后请删除下载目录中的原始导出文件。解析期间可以一直打开 Edge，Cookie 失效时重新导出即可。
 
-1. 首次使用时双击 `setup-analyzer.bat` 安装体积较大的媒体依赖；
+1. 首次使用时双击 `tools\setup-analyzer.bat` 安装体积较大的媒体依赖；
 2. 编辑 `.dev.vars`，填写 `ANALYZER_LLM_*`；内容生成默认复用这套模型配置，只有确需使用不同模型时才填写 `CONTENT_MODEL_*`；
-3. 后续只需双击 `start-local.bat` 或 `start-lan.bat`，网页和视频分析服务会一起启动，无需再运行 `start-analyzer.bat`。
+3. 后续只需双击 `start-local.bat` 或 `start-lan.bat`，网页和视频分析服务会一起启动，无需再运行 `tools\start-analyzer.bat`。
 
 网站基础页面、公司/项目、内容流转与数据报告不依赖 Python 服务，可以单独运行。
 
@@ -68,8 +78,8 @@
 
 先在项目终端按 `Ctrl+C` 停止服务：
 
-- 双击 `backup-local.bat`：备份 D1、R2 和本地运行状态到 `backups/`；
-- 双击 `restore-local.bat`：选择备份并输入 `RESTORE` 确认；恢复前的旧状态会保留为 `.wrangler/state-before-restore-*`，便于回退。
+- 双击 `tools\backup-local.bat`：备份 D1、R2 和本地运行状态到 `backups/`；
+- 双击 `tools\restore-local.bat`：选择备份并输入 `RESTORE` 确认；恢复前的旧状态会保留为 `.wrangler/state-before-restore-*`，便于回退。
 
 密钥文件 `.dev.vars` 不会进入备份包。系统运营中心位于 `/settings`，可以查看健康状态、告警、用量、套餐配额和最近审计记录。
 
@@ -100,4 +110,4 @@ cd services/analyzer
 python -m unittest discover -s tests -v
 ```
 
-详细范围、假设和旧项目迁移结论见 `docs/`。产品总说明见 `项目施工说明.md`。
+文档总索引见 `docs/README.md`。产品总说明位于 `docs/product/项目施工说明.md`，目录与清理边界见 `docs/operations/项目目录说明.md`，低频维护入口见 `tools/`。

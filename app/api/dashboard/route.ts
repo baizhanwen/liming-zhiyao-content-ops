@@ -14,13 +14,13 @@ export async function GET(request: Request) {
     const memberScope = (alias: string) => access.organizationRole === "admin" ? "" : ` AND EXISTS (SELECT 1 FROM project_members own WHERE own.organization_id = ${alias}.organization_id AND own.project_id = ${alias}.project_id AND own.user_id = ? AND own.status = 'active')`;
     const scopeValues = access.organizationRole === "admin" ? [] : [access.userId];
     const [pendingReviews, activeJobs, failedJobs, upcomingSchedules, reviews, jobs, projects, published] = await Promise.all([
-      db.prepare(`SELECT COUNT(*) AS value FROM content_reviews r INNER JOIN content_items c ON c.id = r.content_item_id WHERE c.organization_id = ? AND r.decision = 'pending'${memberScope("c")}`).bind(organizationId, ...scopeValues).first<{ value: number }>(),
+      db.prepare(`SELECT COUNT(*) AS value FROM content_reviews r INNER JOIN content_items c ON c.id = r.content_item_id WHERE c.organization_id = ? AND r.review_stage = 'internal' AND r.decision = 'pending'${memberScope("c")}`).bind(organizationId, ...scopeValues).first<{ value: number }>(),
       db.prepare(`SELECT COUNT(*) AS value FROM analysis_jobs j WHERE j.organization_id = ? AND j.status IN ('pending','queued','downloading','processing','transcribing','extracting','analyzing')${memberScope("j")}`).bind(organizationId, ...scopeValues).first<{ value: number }>(),
       db.prepare(`SELECT COUNT(*) AS value FROM analysis_jobs j WHERE j.organization_id = ? AND j.status = 'failed'${memberScope("j")}`).bind(organizationId, ...scopeValues).first<{ value: number }>(),
       db.prepare(`SELECT COUNT(*) AS value FROM content_schedules s WHERE s.organization_id = ? AND s.status IN ('planned','ready') AND s.scheduled_at >= ? AND s.scheduled_at <= ?${memberScope("s")}`).bind(organizationId, now.toISOString(), weekEnd, ...scopeValues).first<{ value: number }>(),
       db.prepare(`SELECT r.id, r.review_stage, r.requested_at, c.id AS content_id, c.title, c.due_at, p.name AS project_name
         FROM content_reviews r INNER JOIN content_items c ON c.id = r.content_item_id INNER JOIN projects p ON p.id = c.project_id
-        WHERE r.organization_id = ? AND r.decision = 'pending'${memberScope("c")} ORDER BY COALESCE(c.due_at, r.requested_at) ASC LIMIT 8`).bind(organizationId, ...scopeValues).all(),
+        WHERE r.organization_id = ? AND r.review_stage = 'internal' AND r.decision = 'pending'${memberScope("c")} ORDER BY COALESCE(c.due_at, r.requested_at) ASC LIMIT 8`).bind(organizationId, ...scopeValues).all(),
       db.prepare(`SELECT j.id, j.status, j.progress, j.current_stage, j.updated_at, v.title, p.name AS project_name
         FROM analysis_jobs j LEFT JOIN videos v ON v.id = j.video_id INNER JOIN projects p ON p.id = j.project_id
         WHERE j.organization_id = ?${memberScope("j")} ORDER BY CASE j.status WHEN 'failed' THEN 0 WHEN 'analyzing' THEN 1 WHEN 'processing' THEN 2 ELSE 3 END, j.updated_at DESC LIMIT 8`).bind(organizationId, ...scopeValues).all(),

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import os
+import shutil
+import sys
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TypeVar
 
 from .api_client import AnalyzerApiClient
 from .artifacts import ApiArtifactStore
@@ -17,11 +21,72 @@ from .providers import (
 from .sources import PlatformSourceProvider, YtDlpPublicVideoResolver
 from .visual import KeyframeVisualAnalyzer
 
+T = TypeVar("T")
+
+_EMPTY_JSON_ERROR_MARKERS = (
+    "json.exception.parse_error.101",
+    "attempting to parse an empty input",
+    "unexpected end of input",
+)
+
+_MISSING_MODEL_FILE_MARKERS = (
+    "cannot open file",
+    "inference.json",
+    "isfileexists(prog_file_)",
+)
+
+_FUNASR_CACHE_PATHS = (
+    Path("models/iic--speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch"),
+    Path("models/iic--speech_fsmn_vad_zh-cn-16k-common-pytorch"),
+    Path("models/iic--punc_ct-transformer_cn-en-common-vocab471067-large"),
+)
+
+_PADDLE_MODEL_SOURCES = frozenset({"bos", "aistudio", "modelscope", "huggingface"})
+
+
+def _path_is_ascii(value: str) -> bool:
+    try:
+        value.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _windows_model_cache(environ: Mapping[str, str]) -> str:
+    # Paddle's Windows native inference runtime cannot open model files when
+    # their absolute path contains non-ASCII characters. This is common for a
+    # Chinese Windows account because LOCALAPPDATA lives below C:\Users\<name>.
+    # ProgramData is machine-local, writable for application-created folders,
+    # and normally has an ASCII-only path.
+    candidates = (
+        environ.get("PROGRAMDATA", ""),
+        environ.get("PUBLIC", ""),
+        str(Path(environ.get("SystemDrive", "C:")) / "ProgramData"),
+    )
+    for root in candidates:
+        if root and _path_is_ascii(root):
+            return str(Path(root) / "LimingZhiyao" / "model-cache")
+    return r"C:\ProgramData\LimingZhiyao\model-cache"
+
 
 def _default_model_cache() -> str:
-    if os.name == "nt" and (local_app_data := os.environ.get("LOCALAPPDATA")):
-        return str(Path(local_app_data) / "LimingZhiyao" / "model-cache")
+    if os.name == "nt":
+        return _windows_model_cache(os.environ)
     return "model-cache"
+
+
+def _normalize_model_cache(value: str) -> str:
+    candidate = value.strip() or _default_model_cache()
+    if os.name != "nt" or _path_is_ascii(candidate):
+        return candidate
+    fallback = _default_model_cache()
+    print(
+        "[RECOVERY] ANALYZER_MODEL_CACHE contains non-ASCII characters that "
+        f"Paddle cannot open on Windows. Using {fallback} instead.",
+        file=sys.stderr,
+        flush=True,
+    )
+    return fallback
 
 
 @dataclass(frozen=True)
@@ -37,6 +102,7 @@ class AnalyzerSettings:
     asr_device: str = "cpu"
     paddle_ocr_detection_model: str = "PP-OCRv5_mobile_det"
     paddle_ocr_recognition_model: str = "PP-OCRv5_mobile_rec"
+    paddle_model_source: str = "bos"
     ffmpeg: str = "ffmpeg"
     ffprobe: str = "ffprobe"
     model_cache: str = field(default_factory=_default_model_cache)
@@ -68,9 +134,12 @@ class AnalyzerSettings:
             paddle_ocr_recognition_model=os.environ.get(
                 "ANALYZER_PADDLE_OCR_RECOGNITION_MODEL", "PP-OCRv5_mobile_rec"
             ).strip(),
+            paddle_model_source=os.environ.get(
+                "ANALYZER_PADDLE_MODEL_SOURCE", "bos"
+            ).strip().lower(),
             ffmpeg=os.environ.get("ANALYZER_FFMPEG", "ffmpeg").strip(),
             ffprobe=os.environ.get("ANALYZER_FFPROBE", "ffprobe").strip(),
-            model_cache=os.environ.get("ANALYZER_MODEL_CACHE", _default_model_cache()).strip(),
+            model_cache=_normalize_model_cache(os.environ.get("ANALYZER_MODEL_CACHE", "")),
             yt_dlp_cookies_from_browser=os.environ.get(
                 "ANALYZER_YTDLP_COOKIES_FROM_BROWSER", ""
             ).strip(),
@@ -80,27 +149,147 @@ class AnalyzerSettings:
         )
 
 
-def build_analyzer(settings: AnalyzerSettings) -> tuple[AnalyzerApiClient, AnalysisPipeline]:
-    model_cache = Path(settings.model_cache).expanduser().resolve()
-    model_cache.mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("PADDLE_PDX_CACHE_HOME", str(model_cache / "paddlex"))
-    os.environ.setdefault("MODELSCOPE_CACHE", str(model_cache / "modelscope"))
-    os.environ.setdefault("HF_HOME", str(model_cache / "huggingface"))
-    client = AnalyzerApiClient(
+def _configure_paddlex_model_source(source: str) -> None:
+    normalized = source.strip().lower()
+    if normalized not in _PADDLE_MODEL_SOURCES:
+        choices = ", ".join(sorted(_PADDLE_MODEL_SOURCES))
+        raise RuntimeError(
+            f"unsupported ANALYZER_PADDLE_MODEL_SOURCE={source!r}; choose one of: {choices}"
+        )
+
+    # PaddleX 3.7 defaults to Hugging Face. On some Windows installations the
+    # Hub reports a successful snapshot download but leaves link-backed model
+    # files unavailable to Paddle's native runtime. BOS distributes a regular
+    # tar archive, so the extracted inference files are real local files.
+    # These flags must be set before paddleocr imports paddlex.utils.flags.
+    os.environ["PADDLE_PDX_MODEL_SOURCE"] = normalized
+    os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
+
+
+def build_client(settings: AnalyzerSettings) -> AnalyzerApiClient:
+    return AnalyzerApiClient(
         settings.base_url,
         settings.service_token,
         settings.worker_id,
     )
+
+
+def _exception_messages(error: BaseException) -> str:
+    messages: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        messages.append(str(current))
+        current = current.__cause__ or current.__context__
+    return " | ".join(messages).lower()
+
+
+def _is_recoverable_model_cache_error(error: BaseException) -> bool:
+    message = _exception_messages(error)
+    empty_json = _EMPTY_JSON_ERROR_MARKERS[0] in message and any(
+        marker in message for marker in _EMPTY_JSON_ERROR_MARKERS[1:]
+    )
+    missing_model_file = all(marker in message for marker in _MISSING_MODEL_FILE_MARKERS)
+    return empty_json or missing_model_file
+
+
+def _remove_cache_entries(cache_root: Path, relative_paths: Sequence[Path]) -> tuple[Path, ...]:
+    root = cache_root.expanduser().resolve()
+    removed: list[Path] = []
+    for relative_path in relative_paths:
+        candidate = (root / relative_path).resolve()
+        if candidate == root or not candidate.is_relative_to(root) or not candidate.exists():
+            continue
+        if candidate.is_dir():
+            shutil.rmtree(candidate)
+        else:
+            candidate.unlink()
+        removed.append(candidate)
+    return tuple(removed)
+
+
+def _initialize_model_with_cache_repair(
+    label: str,
+    factory: Callable[[], T],
+    cache_root: Path,
+    recoverable_paths: Sequence[Path],
+) -> T:
+    try:
+        return factory()
+    except Exception as error:
+        if not _is_recoverable_model_cache_error(error):
+            raise RuntimeError(f"{label} model initialization failed: {error}") from error
+
+        try:
+            removed = _remove_cache_entries(cache_root, recoverable_paths)
+        except OSError as cleanup_error:
+            raise RuntimeError(
+                f"{label} model cache is damaged and could not be cleared: {cleanup_error}. "
+                "Close any other analyzer process, then run tools\\repair-analyzer-models.bat."
+            ) from error
+
+        if not removed:
+            raise RuntimeError(
+                f"{label} model cache is incomplete, but its known cache folders were not found. "
+                "Run tools\\repair-analyzer-models.bat, then retry the task."
+            ) from error
+
+        print(
+            f"[RECOVERY] {label} cache was incomplete. Removed {len(removed)} model folder(s); "
+            "downloading a clean copy and retrying once.",
+            file=sys.stderr,
+            flush=True,
+        )
+        try:
+            return factory()
+        except Exception as retry_error:
+            raise RuntimeError(
+                f"{label} model initialization still failed after automatic cache repair: {retry_error}. "
+                "Check that this computer can download model files, then run "
+                "tools\\repair-analyzer-models.bat and retry."
+            ) from retry_error
+
+
+def _paddlex_cache_paths(settings: AnalyzerSettings) -> tuple[Path, ...]:
+    names = (
+        settings.paddle_ocr_detection_model,
+        settings.paddle_ocr_recognition_model,
+    )
+    return tuple(Path("official_models") / name for name in names) + tuple(
+        Path("locks/official_models") / name for name in names
+    )
+
+
+def build_pipeline(settings: AnalyzerSettings, client: AnalyzerApiClient) -> AnalysisPipeline:
+    model_cache = Path(settings.model_cache).expanduser().resolve()
+    model_cache.mkdir(parents=True, exist_ok=True)
+    _configure_paddlex_model_source(settings.paddle_model_source)
+    # Override inherited cache variables so stale values below a non-ASCII
+    # Windows profile cannot route native model files back to the broken path.
+    os.environ["PADDLE_PDX_CACHE_HOME"] = str(model_cache / "paddlex")
+    os.environ["MODELSCOPE_CACHE"] = str(model_cache / "modelscope")
+    os.environ["HF_HOME"] = str(model_cache / "huggingface")
     media = FfmpegMediaProcessor(settings.ffmpeg, settings.ffprobe)
-    speech = FunAsrSpeechRecognizer(
-        settings.asr_model,
-        device=settings.asr_device,
+    speech = _initialize_model_with_cache_repair(
+        "FunASR speech recognition",
+        lambda: FunAsrSpeechRecognizer(
+            settings.asr_model,
+            device=settings.asr_device,
+        ),
+        model_cache / "modelscope",
+        _FUNASR_CACHE_PATHS,
     )
     visual = KeyframeVisualAnalyzer(
         PySceneDetectFrameExtractor(media),
-        PaddleOcrEngine(
-            detection_model=settings.paddle_ocr_detection_model,
-            recognition_model=settings.paddle_ocr_recognition_model,
+        _initialize_model_with_cache_repair(
+            "PaddleOCR visual recognition",
+            lambda: PaddleOcrEngine(
+                detection_model=settings.paddle_ocr_detection_model,
+                recognition_model=settings.paddle_ocr_recognition_model,
+            ),
+            model_cache / "paddlex",
+            _paddlex_cache_paths(settings),
         ),
     )
     structure = InstructorStructureAnalyzer(
@@ -126,4 +315,9 @@ def build_analyzer(settings: AnalyzerSettings) -> tuple[AnalyzerApiClient, Analy
         artifact_store,
         artifact_store,
     )
-    return client, pipeline
+    return pipeline
+
+
+def build_analyzer(settings: AnalyzerSettings) -> tuple[AnalyzerApiClient, AnalysisPipeline]:
+    client = build_client(settings)
+    return client, build_pipeline(settings, client)

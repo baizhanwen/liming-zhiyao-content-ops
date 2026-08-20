@@ -12,6 +12,8 @@ type LocalAuthEnv = typeof env & {
   LOCAL_DEV_USER_ID?: string;
   LOCAL_DEV_USER_EMAIL?: string;
   LOCAL_DEV_USER_NAME?: string;
+  TRUST_FORWARDED_IDENTITY?: string;
+  DELIVERY_MODE?: string;
 };
 
 function isLoopbackRequest(request: Request) {
@@ -39,13 +41,19 @@ function readForwardedIdentity(request: Request): RequestIdentity | null {
 }
 
 export async function readRequestIdentity(request: Request): Promise<RequestIdentity | null> {
-  const forwarded = readForwardedIdentity(request);
-  if (forwarded) return forwarded;
-
   const localSession = await readLocalSessionIdentity(request);
   if (localSession) return localSession;
 
   const runtime = env as LocalAuthEnv;
+  // Platform identity headers are safe only behind a trusted proxy that strips
+  // client-supplied values. LAN mode talks to this worker directly, so accepting
+  // them by default would allow another device to impersonate any account.
+  if (runtime.TRUST_FORWARDED_IDENTITY?.trim() === "1") {
+    const forwarded = readForwardedIdentity(request);
+    if (forwarded) return forwarded;
+  }
+
+  if (runtime.DELIVERY_MODE?.trim() === "1") return null;
   if (runtime.LOCAL_DEV_AUTH?.trim() !== "1" || !isLoopbackRequest(request)) return null;
 
   const authSubject = runtime.LOCAL_DEV_USER_ID?.trim() || "local-owner";

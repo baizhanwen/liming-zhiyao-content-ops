@@ -89,6 +89,7 @@ class VisualObservation:
 class VisualOutput:
     keyframes: Sequence[Keyframe] = field(default_factory=tuple)
     observations: Sequence[VisualObservation] = field(default_factory=tuple)
+    stats: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

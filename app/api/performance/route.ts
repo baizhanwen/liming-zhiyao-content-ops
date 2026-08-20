@@ -11,7 +11,7 @@ function normalizedWorkTitle(value: string) { return value.normalize("NFKC").rep
 async function importDouyinSnapshot(identity: RequestIdentity, body: unknown) {
   const parsed = douyinPerformanceImportSchema.safeParse(body);
   if (!parsed.success) return apiError("INVALID_DOUYIN_METRIC_IMPORT", parsed.error.issues[0]?.message || "抖音 16 字段导入格式无效。", 400);
-  const { organizationId, projectId, source, format, asOfAt, filename, rows } = parsed.data;
+  const { organizationId, projectId, format, asOfAt, filename, rows } = parsed.data;
   const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
   if (!access || !canWriteProjectAccess(access)) return apiError("IMPORT_ACCESS_DENIED", "当前角色不能导入抖音数据。", 403);
   const db = getD1(); const user = await ensureUser(identity); const now = new Date().toISOString(); const sourceHash = await sha256Hex(new TextEncoder().encode(JSON.stringify({ format, asOfAt, rows })));

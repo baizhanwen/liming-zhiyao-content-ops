@@ -3,13 +3,13 @@ import { defineConfig } from "vite";
 import hostingConfig from "./.openai/hosting.json";
 import { sites } from "./build/sites-vite-plugin";
 
-const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
+const LOCAL_PLACEHOLDER_DATABASE_ID =
   "00000000-0000-4000-8000-000000000000";
 
 const { d1, r2 } = hostingConfig;
 
-// macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
-const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
+// Opt into polling on restricted filesystems where native watch events are unavailable.
+const usePolling = process.env.VITE_USE_POLLING === "1";
 const ignoredWatchPaths = [
   "**/.git/**",
   "**/.vinext/**",
@@ -31,8 +31,8 @@ const localBindingConfig = {
     ? [
         {
           binding: d1,
-          database_name: "site-creator-d1",
-          database_id: SITE_CREATOR_PLACEHOLDER_DATABASE_ID,
+          database_name: "liming-zhiyao-d1",
+          database_id: LOCAL_PLACEHOLDER_DATABASE_ID,
         },
       ]
     : [],
@@ -40,11 +40,11 @@ const localBindingConfig = {
     ? [
         {
           binding: r2,
-          bucket_name: "site-creator-r2",
+          bucket_name: "liming-zhiyao-media",
         },
       ]
     : [],
-  vars: lanAccessOrigin ? { LAN_ACCESS_ORIGIN: lanAccessOrigin } : {},
+  ...(lanAccessOrigin ? { vars: { LAN_ACCESS_ORIGIN: lanAccessOrigin } } : {}),
 };
 
 export default defineConfig(async () => {
@@ -62,7 +62,7 @@ export default defineConfig(async () => {
       // Normal local mode remains loopback-only. start-lan.bat opts into LAN
       // listening; remote visitors still need a database-backed login session.
       host: lanMode ? "0.0.0.0" : "127.0.0.1",
-      watch: isCodexSeatbeltSandbox
+      watch: usePolling
         ? { useFsEvents: false, usePolling: true, ignored: ignoredWatchPaths }
         : { ignored: ignoredWatchPaths },
     },

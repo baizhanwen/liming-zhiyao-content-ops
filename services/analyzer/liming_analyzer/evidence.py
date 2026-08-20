@@ -81,6 +81,4 @@ def is_useful_ocr(value: str, confidence: int | None, *, minimum_confidence: int
     key = normalize_evidence_text(value)
     if len(key) < 2 or (confidence is not None and confidence < minimum_confidence):
         return False
-    if len(key) >= 4 and len(set(key)) == 1:
-        return False
-    return True
+    return not (len(key) >= 4 and len(set(key)) == 1)

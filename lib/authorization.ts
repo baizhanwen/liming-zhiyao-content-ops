@@ -7,6 +7,10 @@ export type ProjectRole = (typeof projectRoles)[number];
 export type AccessContext = { userId: string; organizationId: string; organizationRole: OrganizationRole; projectMemberships: ReadonlyMap<string, ProjectRole> };
 export type ProjectResource = { organizationId: string; projectId: string };
 
+export function isProjectRoleCompatible(organizationRole: OrganizationRole, projectRole: ProjectRole | null) {
+  return projectRole === null || organizationRole !== "readonly" || projectRole === "readonly";
+}
+
 export function canReadProject(context: AccessContext, resource: ProjectResource) {
   if (context.organizationId !== resource.organizationId) return false;
   if (context.organizationRole === "admin") return true;
@@ -22,7 +26,7 @@ export function canWriteProject(context: AccessContext, resource: ProjectResourc
 export function canReviewContent(context: AccessContext, resource: ProjectResource) {
   if (!canReadProject(context, resource)) return false;
   const role = context.projectMemberships.get(resource.projectId);
-  return context.organizationRole === "admin" || role === "owner" || role === "reviewer" || role === "client";
+  return context.organizationRole === "admin" || (context.organizationRole !== "readonly" && (role === "owner" || role === "reviewer" || role === "client"));
 }
 
 export function assertProjectAccess(context: AccessContext, resource: ProjectResource) {

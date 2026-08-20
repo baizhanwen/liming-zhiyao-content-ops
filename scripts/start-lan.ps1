@@ -10,14 +10,23 @@ if (-not (Test-Path ".dev.vars")) {
     Copy-Item ".dev.vars.example" ".dev.vars"
 }
 
+$recordedPort = 3000
+$portPath = Join-Path $projectRoot ".local\app.port"
+if (Test-Path -LiteralPath $portPath) {
+    [void][int]::TryParse((Get-Content -Raw -LiteralPath $portPath).Trim(), [ref]$recordedPort)
+    if ($recordedPort -le 0) { $recordedPort = 3000 }
+}
 try {
-    $running = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:3000/api/health" -TimeoutSec 2
+    $running = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$recordedPort/api/health" -TimeoutSec 2
     if ($running.StatusCode -eq 200) {
-        Write-Host "[ERROR] A local-only server is already using port 3000."
+        Write-Host "[ERROR] A local-only server is already using port $recordedPort."
         Write-Host "Stop it with Ctrl+C, then run start-lan.bat again."
         exit 1
     }
 } catch {}
+
+$appPort = [int](& "$PSScriptRoot\select-local-port.ps1" -BindAll)
+$hostUrl = "http://127.0.0.1:$appPort"
 
 function Test-PrivateLanAddress([string]$Address) {
     if ($Address -match '^10\.') { return $true }
@@ -46,18 +55,28 @@ $env:CI = "1"
 Remove-Item Env:CI -ErrorAction SilentlyContinue
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+Write-Host "[Liming Zhiyao] Preparing login sessions..."
+& npm.cmd run auth:startup
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+Write-Host "[Liming Zhiyao] Checking authorized content knowledge..."
+& npm.cmd run knowledge:local:sync
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 $env:LAN_MODE = "1"
-$env:LAN_ACCESS_ORIGIN = "http://${lanIp}:3000"
+$env:LAN_ACCESS_ORIGIN = "http://${lanIp}:$appPort"
+$env:ANALYZER_BASE_URL = $hostUrl
 Write-Host ""
 Write-Host "[Liming Zhiyao] LAN team mode is starting."
-Write-Host "Host access:      http://127.0.0.1:3000"
+Write-Host "Host access:      $hostUrl"
 Write-Host "Colleague access: $env:LAN_ACCESS_ORIGIN"
+if ($appPort -ne 3000) { Write-Host "[NOTICE] Windows reserved port 3000, so this run uses port $appPort." }
 Write-Host "If Windows asks, allow Node.js on Private networks."
 Write-Host "The browser and video analyzer will start automatically."
 Write-Host "Keep this window open. Press Ctrl+C or run stop-local.bat to stop everything."
 
 Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @(
-    "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "$PSScriptRoot\open-lan.ps1", "-Url", $env:LAN_ACCESS_ORIGIN
+    "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "$PSScriptRoot\open-lan.ps1", "-Url", $env:LAN_ACCESS_ORIGIN, "-HealthUrl", $hostUrl
 )
-& npm.cmd run dev
+& npm.cmd run dev -- --hostname 0.0.0.0 --port $appPort
 exit $LASTEXITCODE

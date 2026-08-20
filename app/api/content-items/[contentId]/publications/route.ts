@@ -1,6 +1,7 @@
 import { ensureUser, getD1, getProjectAccess } from "../../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../../lib/api-response";
 import { canManagePublishing, publicationRecordSchema } from "../../../../../lib/content-workflow";
+import { analyzePublishedCopy } from "../../../../../lib/published-copy";
 import { readRequestIdentity } from "../../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
@@ -15,7 +16,7 @@ export async function POST(request: Request, context: { params: Promise<{ conten
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
     if (!access || !canManagePublishing(access)) return apiError("PUBLICATION_ACCESS_DENIED", "当前角色不能管理发布记录。", 403);
     const { contentId } = await context.params; const db = getD1();
-    const item = await db.prepare("SELECT c.status, c.current_version, v.id AS version_id FROM content_items c INNER JOIN content_versions v ON v.content_item_id = c.id AND v.version = c.current_version AND v.organization_id = c.organization_id AND v.project_id = c.project_id WHERE c.id = ? AND c.organization_id = ? AND c.project_id = ? AND c.deleted_at IS NULL AND c.status NOT IN ('reviewed', 'archived')").bind(contentId, organizationId, projectId).first<{ status: string; current_version: number; version_id: string }>();
+    const item = await db.prepare("SELECT c.status, c.current_version, c.title, v.id AS version_id, v.full_script, v.short_script FROM content_items c INNER JOIN content_versions v ON v.content_item_id = c.id AND v.version = c.current_version AND v.organization_id = c.organization_id AND v.project_id = c.project_id WHERE c.id = ? AND c.organization_id = ? AND c.project_id = ? AND c.deleted_at IS NULL AND c.status NOT IN ('reviewed', 'archived')").bind(contentId, organizationId, projectId).first<{ status: string; current_version: number; title: string; version_id: string; full_script: string; short_script: string }>();
     if (!item) return apiError("CONTENT_NOT_PUBLISHABLE", "内容不存在或当前状态不能记录发布。", 409);
     if (status === "published" && !["publish_ready", "published"].includes(item.status)) return apiError("PUBLISH_READY_REQUIRED", "内容必须先通过审核并进入待发布状态。", 409);
     const existing = publicationId ? await db.prepare("SELECT id FROM publication_records WHERE id = ? AND content_item_id = ? AND organization_id = ? AND project_id = ?").bind(publicationId, contentId, organizationId, projectId).first<{ id: string }>() : null;
@@ -29,6 +30,19 @@ export async function POST(request: Request, context: { params: Promise<{ conten
     if (status === "published") {
       statements.push(db.prepare("UPDATE content_items SET status = 'published', updated_by = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status IN ('publish_ready', 'published')").bind(user.id, now, contentId, organizationId, projectId));
       if (schedule?.id) statements.push(db.prepare("UPDATE content_schedules SET status = 'published', updated_by = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ?").bind(user.id, now, schedule.id, organizationId, projectId));
+      const historicalBody = item.full_script.trim() || item.short_script.trim(); const historicalAnalysis = analyzePublishedCopy(historicalBody);
+      statements.push(db.prepare(`INSERT INTO published_copy_records (
+        id, organization_id, project_id, content_item_id, content_version_id, publication_id, source_type,
+        title, body, platform, content_format, published_at, external_url, character_count, paragraph_count,
+        monetization_types_json, analysis_json, performance_json, created_by, updated_by, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'publication', ?, ?, ?, 'spoken_script', ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?)
+      ON CONFLICT(publication_id) DO UPDATE SET
+        content_version_id = excluded.content_version_id, title = excluded.title, body = excluded.body,
+        platform = excluded.platform, published_at = excluded.published_at, external_url = excluded.external_url,
+        character_count = excluded.character_count, paragraph_count = excluded.paragraph_count,
+        monetization_types_json = excluded.monetization_types_json, analysis_json = excluded.analysis_json,
+        updated_by = excluded.updated_by, updated_at = excluded.updated_at, deleted_at = NULL`)
+        .bind(crypto.randomUUID(), organizationId, projectId, contentId, item.version_id, recordId, item.title, historicalBody, platform, actualPublishedAt, externalUrl || null, historicalAnalysis.characterCount, historicalAnalysis.paragraphCount, JSON.stringify(historicalAnalysis.monetizationTypes), JSON.stringify(historicalAnalysis), user.id, user.id, now, now));
     }
     statements.push(db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'content.publication.saved', 'content_item', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, contentId, JSON.stringify({ publicationId: recordId, platform, status, version: item.current_version }), now));
     const results = await db.batch(statements);
@@ -36,4 +50,3 @@ export async function POST(request: Request, context: { params: Promise<{ conten
     return Response.json({ publication: { id: recordId, content_item_id: contentId, content_version_id: item.version_id, schedule_id: schedule?.id || null, platform, status, external_id: externalId || null, external_url: externalUrl || null, published_at: actualPublishedAt, error_message: errorMessage || null, updated_at: now }, item: status === "published" ? { id: contentId, status: "published", updated_at: now } : null });
   } catch (error) { return errorResponse(error); }
 }
-

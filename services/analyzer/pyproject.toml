@@ -19,14 +19,17 @@ media = [
   "torch>=2.11,<2.12",
   "torchaudio>=2.11,<2.12",
   "paddleocr>=3.7,<4",
-  "paddlepaddle>=3.2,<4",
-  "scenedetect>=0.7.1,<0.8",
-  "opencv-python==4.10.0.84",
+  # PaddlePaddle 3.3.x can fail to load PP-OCRv5 inference.json on Windows.
+  # Keep the runtime on the version recommended by the PaddleOCR installation guide.
+  "paddlepaddle==3.2.0",
+  # PaddleX already uses the contrib build. Installing another OpenCV wheel beside it
+  # overwrites the same cv2 package and makes Windows installations order-dependent.
+  "opencv-contrib-python==4.10.0.84",
 ]
 dev = ["ruff>=0.12,<1"]
 
 [build-system]
-requires = ["setuptools>=77"]
+requires = ["setuptools>=77,<82"]
 build-backend = "setuptools.build_meta"
 
 [tool.ruff]

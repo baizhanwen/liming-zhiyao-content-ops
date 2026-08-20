@@ -17,15 +17,17 @@ export async function GET(request: Request) {
     const adminSql = `
       SELECT p.id, p.name, p.client_name, p.status, p.service_starts_at, p.service_ends_at, p.content_target, p.created_at,
              COUNT(pm.id) AS member_count
-      FROM projects p LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.status = 'active'
+      FROM projects p LEFT JOIN project_members pm ON pm.organization_id = p.organization_id AND pm.project_id = p.id AND pm.status = 'active'
+        AND EXISTS (SELECT 1 FROM organization_members om WHERE om.organization_id = pm.organization_id AND om.user_id = pm.user_id AND om.status = 'active')
       WHERE p.organization_id = ? AND p.deleted_at IS NULL
       GROUP BY p.id ORDER BY p.created_at DESC`;
     const memberSql = `
       SELECT p.id, p.name, p.client_name, p.status, p.service_starts_at, p.service_ends_at, p.content_target, p.created_at,
              COUNT(all_pm.id) AS member_count
       FROM projects p
-      INNER JOIN project_members own_pm ON own_pm.project_id = p.id AND own_pm.user_id = ? AND own_pm.status = 'active'
-      LEFT JOIN project_members all_pm ON all_pm.project_id = p.id AND all_pm.status = 'active'
+      INNER JOIN project_members own_pm ON own_pm.organization_id = p.organization_id AND own_pm.project_id = p.id AND own_pm.user_id = ? AND own_pm.status = 'active'
+      LEFT JOIN project_members all_pm ON all_pm.organization_id = p.organization_id AND all_pm.project_id = p.id AND all_pm.status = 'active'
+        AND EXISTS (SELECT 1 FROM organization_members all_om WHERE all_om.organization_id = all_pm.organization_id AND all_om.user_id = all_pm.user_id AND all_om.status = 'active')
       WHERE p.organization_id = ? AND p.deleted_at IS NULL
       GROUP BY p.id ORDER BY p.created_at DESC`;
     const rows = access.organizationRole === "admin"

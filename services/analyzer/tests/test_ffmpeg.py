@@ -26,6 +26,45 @@ class FfmpegTests(unittest.TestCase):
         self.assertIn("pcm_s16le", commands[1])
         self.assertIsInstance(commands[1], list)
 
+    def test_probe_preserves_chinese_path_and_parses_utf8_json(self):
+        observed = {}
+
+        def runner(command, **kwargs):
+            observed["command"] = command
+            observed["kwargs"] = kwargs
+            payload = {
+                "streams": [
+                    {
+                        "codec_type": "video",
+                        "codec_name": "h264",
+                        "width": 1920,
+                        "height": 1080,
+                        "tags": {"title": "利明智耀中文视频"},
+                    },
+                    {"codec_type": "audio", "codec_name": "aac"},
+                ],
+                "format": {
+                    "duration": "17.25",
+                    "tags": {"comment": "企业 AI 落地素材"},
+                },
+            }
+            stdout = json.dumps(payload, ensure_ascii=False).encode("utf-8").decode("utf-8")
+            return subprocess.CompletedProcess(command, 0, stdout, "")
+
+        with tempfile.TemporaryDirectory(prefix="利明智耀-媒体探测-") as temporary:
+            source = Path(temporary) / "客户素材" / "中文标题-第一版.mp4"
+            source.parent.mkdir()
+            source.write_bytes(b"test")
+            info = FfmpegMediaProcessor(runner=runner).probe(source)
+
+        self.assertEqual(observed["command"][-1], str(source))
+        self.assertTrue(observed["kwargs"]["text"])
+        self.assertEqual(observed["kwargs"]["encoding"], "utf-8")
+        self.assertEqual(observed["kwargs"]["errors"], "replace")
+        self.assertEqual(info.duration_ms, 17250)
+        self.assertEqual((info.width, info.height), (1920, 1080))
+        self.assertEqual((info.video_codec, info.audio_codec), ("h264", "aac"))
+
     def test_command_failure_is_redacted_to_bounded_message(self):
         def runner(command, **kwargs):
             return subprocess.CompletedProcess(command, 1, "", "x" * 3000)

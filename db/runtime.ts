@@ -7,13 +7,15 @@ export type OrganizationAccess = { userId: string; organizationId: string; organ
 export type ProjectAccess = OrganizationAccess & { projectId: string; projectRole: ProjectRole | null };
 
 export function getD1() {
-  if (!env.DB) throw new Error("D1 binding DB is unavailable");
-  return env.DB;
+  const runtimeEnv = env as typeof env & { DB?: D1Database };
+  if (!runtimeEnv.DB) throw new Error("D1 binding DB is unavailable");
+  return runtimeEnv.DB;
 }
 
 export function getMediaBucket() {
-  if (!env.MEDIA) throw new Error("R2 binding MEDIA is unavailable");
-  return env.MEDIA;
+  const runtimeEnv = env as typeof env & { MEDIA?: R2Bucket };
+  if (!runtimeEnv.MEDIA) throw new Error("R2 binding MEDIA is unavailable");
+  return runtimeEnv.MEDIA;
 }
 
 export async function ensureUser(identity: RequestIdentity): Promise<UserRow> {
@@ -75,7 +77,10 @@ export async function hashInvitationToken(token: string) {
 }
 
 export async function sha256Hex(input: ArrayBuffer | ArrayBufferView) {
-  const digest = await crypto.subtle.digest("SHA-256", input);
+  const bytes = input instanceof ArrayBuffer
+    ? input
+    : Uint8Array.from(new Uint8Array(input.buffer, input.byteOffset, input.byteLength)).buffer;
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 

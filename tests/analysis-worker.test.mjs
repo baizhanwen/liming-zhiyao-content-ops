@@ -19,6 +19,22 @@ test("heartbeats use lease owner and optimistic job versions", async () => {
   assert.match(heartbeat, /version = \?/);
   assert.match(heartbeat, /lease_expires_at > \?/);
   assert.match(heartbeat, /validateHeartbeatTransition/);
+  assert.match(heartbeat, /INSERT INTO analyzer_workers/);
+  assert.match(heartbeat, /last_seen_at = excluded\.last_seen_at/);
+});
+
+test("analyzer startup can verify a real authenticated worker heartbeat", async () => {
+  const [statusRoute, startScript] = await Promise.all([
+    readFile(new URL("../app/api/internal/analyzer/status/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../scripts/start-analyzer-background.ps1", import.meta.url), "utf8"),
+  ]);
+  assert.match(statusRoute, /requireAnalyzerService/);
+  assert.match(statusRoute, /WHERE worker_id = \?/);
+  assert.match(statusRoute, /ONLINE_WINDOW_MS = 45_000/);
+  assert.match(startScript, /api\/internal\/analyzer\/status/);
+  assert.match(startScript, /Test-AnalyzerHeartbeat/);
+  assert.match(startScript, /did not report a live heartbeat within 15 seconds/);
+  assert.match(startScript, /analyzer\.base-url/);
 });
 
 test("result submission is idempotent and scopes artifacts through the job tenant", async () => {

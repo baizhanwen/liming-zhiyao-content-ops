@@ -1,6 +1,6 @@
 import { ensureUser, getD1 } from "../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../lib/api-response";
-import { createLocalSession, revokeLocalSession, verifyLocalLogin } from "../../../../lib/local-auth";
+import { clearLocalLoginFailures, createLocalSession, readLocalLoginLock, recordLocalLoginFailure, revokeLocalSession, verifyLocalLogin } from "../../../../lib/local-auth";
 import { readRequestIdentity } from "../../../../lib/request-auth";
 
 export async function GET(request: Request) {
@@ -18,8 +18,15 @@ export async function POST(request: Request) {
     const email = payload.email?.trim().toLowerCase() ?? "";
     const password = payload.password ?? "";
     if (!email || !password) return apiError("LOGIN_REQUIRED", "请输入邮箱和密码。", 400);
+    const lockedSeconds = await readLocalLoginLock(email);
+    if (lockedSeconds) return apiError("LOGIN_TEMPORARILY_LOCKED", `登录失败次数过多，请在 ${Math.ceil(lockedSeconds / 60)} 分钟后重试。`, 429, { retryAfterSeconds: lockedSeconds });
     const user = await verifyLocalLogin(email, password);
-    if (!user) return apiError("LOGIN_FAILED", "邮箱或密码不正确。", 401);
+    if (!user) {
+      const retryAfterSeconds = await recordLocalLoginFailure(email);
+      if (retryAfterSeconds) return apiError("LOGIN_TEMPORARILY_LOCKED", "登录失败次数过多，账号已临时锁定 15 分钟。", 429, { retryAfterSeconds });
+      return apiError("LOGIN_FAILED", "邮箱或密码不正确。", 401);
+    }
+    await clearLocalLoginFailures(email);
     const membership = await getD1().prepare("SELECT 1 AS allowed FROM organization_members WHERE user_id = ? AND status = 'active' LIMIT 1").bind(user.user_id).first();
     if (!membership) return apiError("ACCOUNT_UNAVAILABLE", "该账号尚未加入有效的公司空间。", 403);
     const cookie = await createLocalSession(user.user_id, request);
@@ -32,4 +39,3 @@ export async function DELETE(request: Request) {
     return Response.json({ signedOut: true }, { headers: { "set-cookie": await revokeLocalSession(request), "cache-control": "no-store" } });
   } catch (error) { return errorResponse(error); }
 }
-

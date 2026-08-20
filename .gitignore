@@ -17,6 +17,7 @@
 /.next/
 /.vinext/
 /out/
+*.tsbuildinfo
 
 # misc
 .DS_Store
@@ -43,6 +44,7 @@ yarn-error.log*
 /outputs/
 /work/
 /backups/
+/deliveries/
 /.local/
 
 # python

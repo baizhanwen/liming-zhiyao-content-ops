@@ -1,3 +1,4 @@
+import time
 import unittest
 from dataclasses import replace
 
@@ -36,7 +37,11 @@ class Speech:
 
 class Visual:
     def analyze(self, media, output_dir):
-        return VisualOutput((Keyframe(0, output_dir / "frame.jpg", "管理增长", 88),), (VisualObservation("ocr", 0, 0, "管理增长", 88),))
+        return VisualOutput(
+            (Keyframe(0, output_dir / "frame.jpg", "管理增长", 88),),
+            (VisualObservation("ocr", 0, 0, "管理增长", 88),),
+            {"strategy": "scene_plus_timeline", "kept_count": 1},
+        )
 
 
 class Structure:
@@ -46,6 +51,31 @@ class Structure:
 
 
 class PipelineTests(unittest.TestCase):
+    def test_blocking_stages_keep_worker_presence_alive(self):
+        class SlowSource(Source):
+            def acquire(self, job, destination):
+                time.sleep(0.05)
+                return super().acquire(job, destination)
+
+        class SlowStructure(Structure):
+            def analyze(self, job, media, transcript, visuals):
+                time.sleep(0.05)
+                return super().analyze(job, media, transcript, visuals)
+
+        job = ClaimedJob("job-presence", "org-1", "project-1", "video-1", "upload", "queued", 1, 2, {})
+        stages = []
+
+        def heartbeat(status, progress, stage):
+            stages.append((status, progress, stage))
+            return replace(job, status=status, progress=progress)
+
+        AnalysisPipeline(
+            SlowSource(), Media(), Speech(), Visual(), SlowStructure(), heartbeat_seconds=0.01
+        ).process(job, heartbeat)
+
+        self.assertGreaterEqual(sum(status == "downloading" for status, *_ in stages), 3)
+        self.assertGreaterEqual(sum(status == "analyzing" for status, *_ in stages), 3)
+
     def test_pipeline_preserves_evidence_and_emits_legal_stage_order(self):
         job = ClaimedJob("job-1", "org-1", "project-1", "video-1", "upload", "queued", 1, 2, {})
         structure = Structure(); stages = []
@@ -59,6 +89,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(result.transcript.segments[0]["start_ms"], 0)
         self.assertEqual(result.report["evidence"][0]["text"], "先提出问题")
         self.assertEqual(result.confidence, 91)
+        self.assertEqual(structure.inputs[3].stats["strategy"], "scene_plus_timeline")
 
     def test_manual_transcript_skips_asr_and_drives_reanalysis(self):
         class ForbiddenSpeech:
@@ -125,6 +156,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual([item[0] for item in stages], ["analyzing"])
         self.assertIn("检查点恢复", stages[0][2])
         self.assertEqual(result.transcript.full_text, "先提出问题")
+        self.assertEqual(structure.inputs[3].stats["kept_count"], 1)
 
 
 if __name__ == "__main__":

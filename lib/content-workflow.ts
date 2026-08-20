@@ -11,7 +11,7 @@ export const contentStatusLabels: Record<ContentStatus, string> = {
   draft: "草稿",
   internal_revision: "内部修改",
   internal_review: "内部审核",
-  client_review: "客户审核",
+  client_review: "待内部处理（旧流程）",
   shooting_ready: "待拍摄",
   shot: "已拍摄",
   editing: "剪辑中",
@@ -69,11 +69,7 @@ export function canSubmitContent(access: ProjectAccess) {
 }
 
 export function canInternalReview(access: ProjectAccess) {
-  return isAdmin(access) || hasProjectRole(access, ["owner", "reviewer"]);
-}
-
-export function canClientReview(access: ProjectAccess) {
-  return isAdmin(access) || hasProjectRole(access, ["owner", "client"]);
+  return isAdmin(access) || (access.organizationRole !== "readonly" && hasProjectRole(access, ["owner", "reviewer"]));
 }
 
 export function canCommentOnContent(access: ProjectAccess, visibility: "internal" | "client") {
@@ -88,14 +84,15 @@ export function canManagePublishing(access: ProjectAccess) {
 
 export function allowedWorkflowTransition(access: ProjectAccess, from: ContentStatus, to: ContentStatus) {
   if (from === to || from === "archived" || from === "reviewed") return false;
-  if (to === "archived") return isAdmin(access) || hasProjectRole(access, ["owner"]);
+  if (to === "archived") return isAdmin(access) || (access.organizationRole !== "readonly" && hasProjectRole(access, ["owner"]));
   if ((from === "draft" || from === "internal_revision") && to === "internal_review") return canSubmitContent(access);
-  if (from === "internal_review" && (to === "client_review" || to === "internal_revision")) return canInternalReview(access);
-  if (from === "client_review" && (to === "shooting_ready" || to === "internal_revision")) return canClientReview(access);
+  if (from === "internal_review" && (to === "shooting_ready" || to === "internal_revision")) return canInternalReview(access);
+  // 兼容旧数据：已经停留在 client_review 的内容由内部审核人直接处理，
+  // 新流程不会再进入这个状态。
+  if (from === "client_review" && (to === "shooting_ready" || to === "internal_revision")) return canInternalReview(access);
   if (from === "shooting_ready" && to === "shot") return canManagePublishing(access);
   if (from === "shot" && to === "editing") return canManagePublishing(access);
   if (from === "editing" && to === "publish_ready") return canManagePublishing(access);
   if (from === "publish_ready" && to === "published") return canManagePublishing(access);
   return false;
 }
-
