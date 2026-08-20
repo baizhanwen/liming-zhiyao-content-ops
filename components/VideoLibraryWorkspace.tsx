@@ -23,25 +23,24 @@ async function readError(response: Response) {
   const body = await response.json().catch(() => null) as { error?: { message?: string } } | null;
   return body?.error?.message ?? "请求没有完成，请稍后重试。";
 }
-
 export function VideoLibraryWorkspace({ mode }: { mode: "benchmark" | "assets" }) {
   const [organizations, setOrganizations] = useState<Organization[]>([]); const [organizationId, setOrganizationId] = useState("");
   const [projects, setProjects] = useState<Project[]>([]); const [projectId, setProjectId] = useState("");
   const [entries, setEntries] = useState<LibraryEntry[]>([]); const [selected, setSelected] = useState<string[]>([]);
   const [query, setQuery] = useState(""); const [category, setCategory] = useState("");
   const [loading, setLoading] = useState(true); const [working, setWorking] = useState(false); const [error, setError] = useState(""); const [notice, setNotice] = useState("");
-  const [canManage, setCanManage] = useState(false); const [canWrite, setCanWrite] = useState(false); const [tagDrafts, setTagDrafts] = useState<Record<string, string>>({});
+  const [canManage, setCanManage] = useState(false); const [canWrite, setCanWrite] = useState(false); const [tagDrafts, setTagDrafts] = useState<Record<string, string>>({}); const [coverFailures, setCoverFailures] = useState<Record<string, boolean>>({});
 
   const loadEntries = useCallback(async (orgId: string, projId: string, search = "", filter = "") => {
-    if (!orgId || !projId) { setEntries([]); return; }
+    if (!orgId || (mode !== "assets" && !projId)) { setEntries([]); return; }
     setLoading(true); setError("");
     try {
       const base = mode === "assets" ? "/api/video-library" : "/api/video-library/references";
-      const params = new URLSearchParams({ organizationId: orgId, projectId: projId });
+      const params = new URLSearchParams({ organizationId: orgId }); if (projId) params.set("projectId", projId);
       if (search.trim()) params.set("q", search.trim()); if (filter) params.set("category", filter);
       const response = await fetch(`${base}?${params}`); if (!response.ok) throw new Error(await readError(response));
       const body = await response.json() as { entries: LibraryEntry[]; canManage?: boolean; canWrite?: boolean };
-      setEntries(body.entries); setCanManage(Boolean(body.canManage)); setCanWrite(Boolean(body.canWrite)); setSelected([]);
+      setEntries(body.entries); setCanManage(Boolean(body.canManage)); setCanWrite(Boolean(body.canWrite)); setSelected([]); setCoverFailures({});
       setTagDrafts(Object.fromEntries(body.entries.map((entry) => [entry.id, entry.tags.join("、")])));
     } catch (reason) { setError(reason instanceof Error ? reason.message : "素材库加载失败。"); setEntries([]); }
     finally { setLoading(false); }
@@ -104,11 +103,11 @@ export function VideoLibraryWorkspace({ mode }: { mode: "benchmark" | "assets" }
       {loading ? <div className="list-empty">正在整理素材库…</div> : entries.length === 0 ? <div className="list-empty">{mode === "assets" ? "公司素材库还没有匹配的分析视频。新分析完成后会自动沉淀到这里。" : "当前项目还没有对标素材。请从素材中心选择并导入。"}</div> : <div className="library-grid">{entries.map((entry) => {
         const checked = selected.includes(entry.id); const completed = entry.job_status === "completed" || entry.status === "ready";
         return <article className={`library-card${checked ? " selected" : ""}`} key={entry.reference_id ?? entry.id}>
-          <div className="library-cover">{entry.cover_url ? <span role="img" aria-label={`${entry.title || "视频素材"}封面`} style={{ backgroundImage: `url(${JSON.stringify(entry.cover_url)})` }} /> : <span className="library-cover-placeholder" aria-hidden="true">{entry.source_type === "upload" ? "本地" : "链接"}</span>}<em className={`status ${completed ? "success" : entry.job_status === "failed" ? "danger" : "neutral"}`}>{completed ? "分析完成" : entry.current_stage || "处理中"}</em>{mode === "assets" && <label className="library-select"><input type="checkbox" checked={checked} disabled={Boolean(entry.imported_to_project)} onChange={() => setSelected((current) => current.includes(entry.id) ? current.filter((id) => id !== entry.id) : [...current, entry.id])} /><span>{entry.imported_to_project ? "已导入" : "选择"}</span></label>}</div>
+          <div className="library-cover">{entry.cover_url && !coverFailures[entry.id] ? <img src={entry.cover_url} alt={`${entry.title || "视频素材"}封面`} loading="lazy" onError={() => setCoverFailures((current) => ({ ...current, [entry.id]: true }))} /> : <span className="library-cover-placeholder" aria-hidden="true">{coverFailures[entry.id] ? "封面读取失败" : entry.source_type === "upload" ? "本地" : "链接"}</span>}<em className={`status ${completed ? "success" : entry.job_status === "failed" ? "danger" : "neutral"}`}>{completed ? "分析完成" : entry.current_stage || "处理中"}</em>{mode === "assets" && <label className="library-select"><input type="checkbox" checked={checked} disabled={Boolean(entry.imported_to_project)} onChange={() => setSelected((current) => current.includes(entry.id) ? current.filter((id) => id !== entry.id) : [...current, entry.id])} /><span>{entry.imported_to_project ? "已导入" : "选择"}</span></label>}</div>
           <div className="library-card-body"><div className="library-card-tags"><span>{categoryNames[entry.category] ?? "未分类"}</span><small>{entry.platform === "douyin" ? "抖音" : "本地上传"}</small></div><h3>{entry.title || "待提取视频标题"}</h3><p>{entry.account_name || entry.author_name || "未关联账号"} · 来源：{entry.source_project_name}</p><div className="plain-chips">{entry.tags.length ? entry.tags.map((tag) => <span key={tag}>{tag}</span>) : <span>暂无标签</span>}</div>
             {mode === "assets" && canManage && <div className="library-edit"><select value={entry.category} aria-label="素材分类" onChange={(event) => saveMetadata(entry, event.target.value)}>{categories.filter(([value]) => value).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><input value={tagDrafts[entry.id] ?? ""} onChange={(event) => setTagDrafts((current) => ({ ...current, [entry.id]: event.target.value }))} placeholder="标签用逗号分隔" aria-label="素材标签" /><button type="button" onClick={() => saveMetadata(entry)} disabled={working}>保存</button></div>}
           </div>
-          <footer><span>{mode === "assets" ? `已被 ${entry.reference_count ?? 0} 个项目引用` : `来自 ${entry.source_project_name}`}</span><div><Link href={`/analysis/${entry.video_id}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`}>查看分析</Link>{mode === "benchmark" && canWrite && <button type="button" disabled={working} onClick={() => removeReference(entry)}>移出项目</button>}</div></footer>
+          <footer><span>{mode === "assets" ? `已被 ${entry.reference_count ?? 0} 个项目引用` : `来自 ${entry.source_project_name}`}</span><div><Link href={`/analysis/${entry.video_id}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}&libraryEntryId=${encodeURIComponent(entry.id)}`}>查看分析</Link>{mode === "benchmark" && canWrite && <button type="button" disabled={working} onClick={() => removeReference(entry)}>移出项目</button>}</div></footer>
         </article>;
       })}</div>}
     </article>

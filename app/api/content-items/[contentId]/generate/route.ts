@@ -4,7 +4,7 @@ import { CONTENT_OUTPUT_SCHEMA, CONTENT_PROMPT_NAME, CONTENT_PROMPT_VERSION, CON
 import { invokeContentModel, ModelConfigurationError, ModelRequestError, readContentModelConfig } from "../../../../../lib/model-adapter";
 import { readRequestIdentity } from "../../../../../lib/request-auth";
 import { checkOrganizationQuota } from "../../../../../lib/operations";
-import { buildProjectGenerationContext, finishGenerationSourceManifest, insertGenerationSourceManifest, redactedGenerationInput, untrustedReferencePrompt } from "../../../../../lib/project-generation-context";
+import { assertProjectGenerationContext, buildProjectGenerationContext, finishGenerationSourceManifest, insertGenerationSourceManifest, redactedGenerationInput, untrustedReferencePrompt } from "../../../../../lib/project-generation-context";
 
 export const dynamic = "force-dynamic";
 
@@ -27,7 +27,6 @@ export async function POST(request: Request, context: { params: Promise<{ conten
     const user = await ensureUser(identity);
     const quota = await checkOrganizationQuota(organizationId, user.id, "modelCalls");
     if (!quota.allowed) return apiError("MODEL_QUOTA_EXCEEDED", `本月模型调用已达到 ${quota.limit} 次套餐上限。`, 429, { usage: quota.current, limit: quota.limit });
-    const config = readContentModelConfig(modelProfile);
     const { contentId } = await context.params; const db = getD1();
     const item = await db.prepare(`
       SELECT c.id, c.title, c.current_version, c.topic_id, t.title AS topic_title, t.angle, t.pillar, t.audience, t.objective, t.hook, t.rationale
@@ -87,6 +86,7 @@ export async function POST(request: Request, context: { params: Promise<{ conten
     if (!contextResult.ok) return apiError(contextResult.code, contextResult.message, contextResult.status, contextResult.details);
     const generationContext = contextResult.context;
     traceId = generationContext.traceId;
+    const config = readContentModelConfig(modelProfile);
     const generationInput = { topic: { id: item.topic_id, title: item.topic_title, angle: item.angle, pillar: item.pillar, audience: item.audience, objective: item.objective, hook: item.hook, rationale: item.rationale }, sources: sourceList, projectReferences: untrustedReferencePrompt(generationContext.sources), outputSchema: CONTENT_OUTPUT_SCHEMA };
     const promptInputJson = JSON.stringify(generationInput); const inputJson = redactedGenerationInput({ topic: generationInput.topic, outputSchema: CONTENT_OUTPUT_SCHEMA }, generationContext.sourceManifest); const inputHash = await sha256Hex(new TextEncoder().encode(promptInputJson)); const now = new Date().toISOString(); const promptTemplateId = crypto.randomUUID();
     await insertGenerationSourceManifest({ context: generationContext, userId: user.id, modelProvider: config.provider, modelName: config.model });
@@ -102,6 +102,11 @@ export async function POST(request: Request, context: { params: Promise<{ conten
     if (!prompt) return apiError("PROMPT_REGISTRY_FAILED", "提示词版本无法注册。", 500);
     modelCallId = crypto.randomUUID();
     await db.prepare("INSERT INTO model_calls (id, organization_id, project_id, topic_id, prompt_template_id, task_type, provider, model_name, model_profile, prompt_version, status, input_hash, input_json, created_by, created_at) VALUES (?, ?, ?, ?, ?, 'content_draft', ?, ?, ?, ?, 'started', ?, ?, ?, ?)").bind(modelCallId, organizationId, projectId, item.topic_id, prompt.id, config.provider, config.model, modelProfile, CONTENT_PROMPT_VERSION, inputHash, inputJson, user.id, now).run();
+    const finalContextCheck = await assertProjectGenerationContext({ authSubject: identity.authSubject, context: generationContext });
+    if (!finalContextCheck.ok) {
+      await finishGenerationSourceManifest(traceId, "blocked", { promptHash: inputHash, errorCode: finalContextCheck.code });
+      return apiError(finalContextCheck.code, finalContextCheck.message, finalContextCheck.status, finalContextCheck.details);
+    }
     let pack: ReturnType<typeof productionPackSchema.parse> | null = null; let totalLatencyMs = 0; let correction = "";
     for (let attempt = 0; attempt < 2 && !pack; attempt += 1) {
       try {

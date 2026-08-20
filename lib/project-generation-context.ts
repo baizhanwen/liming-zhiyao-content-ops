@@ -138,6 +138,17 @@ export async function buildProjectGenerationContext(input: {
   };
 }
 
+/** Re-check the authenticated project boundary immediately before a model request. */
+export async function assertProjectGenerationContext(input: { authSubject: string; context: ProjectGenerationContext }): Promise<ProjectGenerationContextResult> {
+  const access = await getProjectAccess(input.authSubject, input.context.organizationId, input.context.projectId);
+  if (!access) return { ok: false, code: "PROJECT_ACCESS_DENIED", message: "当前用户已失去该客户项目权限，已阻止模型调用。", status: 403 };
+  if (isP0FreezeEnabled() && access.organizationRole !== "admin") return { ok: false, code: "GENERATION_FROZEN", message: "风险隔离期间仅公司管理员可以执行 AI 生成。", status: 403 };
+  if (input.context.sources.some((source) => source.sourceType !== "system_methodology" && (source.organizationId !== input.context.organizationId || source.projectId !== input.context.projectId))) {
+    return { ok: false, code: "UNSAFE_GENERATION_SOURCE", message: "模型调用前检测到项目来源边界变化，已阻止本次调用。", status: 409 };
+  }
+  return { ok: true, context: input.context };
+}
+
 export async function insertGenerationSourceManifest(input: {
   context: ProjectGenerationContext;
   userId: string;

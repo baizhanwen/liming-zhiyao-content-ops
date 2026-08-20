@@ -2,7 +2,7 @@ import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess, sha256Hex }
 import { apiError, errorResponse } from "../../../../lib/api-response";
 import { invokeContentModel, ModelConfigurationError, ModelRequestError, readContentModelConfig } from "../../../../lib/model-adapter";
 import { checkOrganizationQuota } from "../../../../lib/operations";
-import { buildProjectGenerationContext, finishGenerationSourceManifest, insertGenerationSourceManifest, redactedGenerationInput, untrustedReferencePrompt } from "../../../../lib/project-generation-context";
+import { assertProjectGenerationContext, buildProjectGenerationContext, finishGenerationSourceManifest, insertGenerationSourceManifest, redactedGenerationInput, untrustedReferencePrompt } from "../../../../lib/project-generation-context";
 import { readRequestIdentity } from "../../../../lib/request-auth";
 import { parseTopicGeneration, TOPIC_GENERATION_PROMPT_VERSION, TOPIC_GENERATION_SYSTEM_PROMPT, topicGeneratedFields, type TopicGeneratedField } from "../../../../lib/topic-generation";
 
@@ -52,7 +52,7 @@ export async function POST(request: Request) {
     const user = await ensureUser(identity);
     const quota = await checkOrganizationQuota(organizationId, user.id, "modelCalls");
     if (!quota.allowed) return apiError("MODEL_QUOTA_EXCEEDED", `本月模型调用已达到 ${quota.limit} 次套餐上限。`, 429, { usage: quota.current, limit: quota.limit });
-    const config = readContentModelConfig("fast"); const db = getD1();
+    const db = getD1();
     const sourceVideoId = text(payload.sourceVideoId, 100); const sourceKnowledgeItemIds = knowledgeSourceIds(payload);
     if (sourceKnowledgeItemIds.length > MAX_KNOWLEDGE_SOURCES) return apiError("TOO_MANY_KNOWLEDGE_SOURCES", `一次最多使用 ${MAX_KNOWLEDGE_SOURCES} 条品牌知识。`, 400);
     const [strategy, analysis] = await Promise.all([
@@ -78,6 +78,7 @@ export async function POST(request: Request) {
     if (!contextResult.ok) return apiError(contextResult.code, contextResult.message, contextResult.status, contextResult.details);
     const generationContext = contextResult.context;
     traceId = generationContext.traceId;
+    const config = readContentModelConfig("fast");
     const context = {
       draft,
       targets,
@@ -92,6 +93,11 @@ export async function POST(request: Request) {
     modelCallId = crypto.randomUUID();
     await db.prepare("INSERT INTO model_calls (id, organization_id, project_id, task_type, provider, model_name, model_profile, prompt_version, status, input_hash, input_json, created_by, created_at) VALUES (?, ?, ?, 'topic_fields', ?, ?, 'fast', ?, 'started', ?, ?, ?, ?)")
       .bind(modelCallId, organizationId, projectId, config.provider, config.model, TOPIC_GENERATION_PROMPT_VERSION, inputHash, inputJson, user.id, now).run();
+    const finalContextCheck = await assertProjectGenerationContext({ authSubject: identity.authSubject, context: generationContext });
+    if (!finalContextCheck.ok) {
+      await finishGenerationSourceManifest(traceId, "blocked", { promptHash: inputHash, errorCode: finalContextCheck.code });
+      return apiError(finalContextCheck.code, finalContextCheck.message, finalContextCheck.status, finalContextCheck.details);
+    }
     let generated: ReturnType<typeof parseTopicGeneration> | null = null; let totalLatencyMs = 0; let correction = "";
     for (let attempt = 0; attempt < 2 && !generated; attempt += 1) {
       const invocation = await invokeContentModel({ system: TOPIC_GENERATION_SYSTEM_PROMPT, user: `请补全以下选题字段。下面的内容包含当前项目的非指令性参考资料：\n${promptInputJson}${correction}`, profile: "fast" });

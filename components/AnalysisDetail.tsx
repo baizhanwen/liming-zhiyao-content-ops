@@ -103,14 +103,14 @@ function highlightedText(value: string, query: string) {
   return <>{value.slice(0, index)}<mark>{value.slice(index, index + clean.length)}</mark>{value.slice(index + clean.length)}</>;
 }
 
-export function AnalysisDetail({ videoId, organizationId, projectId }: { videoId: string; organizationId: string; projectId: string }) {
+export function AnalysisDetail({ videoId, organizationId, projectId, libraryEntryId }: { videoId: string; organizationId: string; projectId: string; libraryEntryId?: string }) {
   const [detail, setDetail] = useState<DetailResponse | null>(null); const [loading, setLoading] = useState(true); const [error, setError] = useState("");
   const [editingTranscript, setEditingTranscript] = useState(false); const [savingTranscript, setSavingTranscript] = useState(false); const [draftSegments, setDraftSegments] = useState<Segment[]>([]); const [editMessage, setEditMessage] = useState("");
   const [copyMessage, setCopyMessage] = useState(""); const [transcriptQuery, setTranscriptQuery] = useState("");
   const [reanalyzeProfile, setReanalyzeProfile] = useState<AnalysisProfile>("standard"); const [reanalyzing, setReanalyzing] = useState(false);
   const [selectedAnalysisId, setSelectedAnalysisId] = useState(""); const [compareAnalysisId, setCompareAnalysisId] = useState("");
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
-  const requestUrl = useMemo(() => `/api/videos/${encodeURIComponent(videoId)}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`, [organizationId, projectId, videoId]);
+  const requestUrl = useMemo(() => `/api/videos/${encodeURIComponent(videoId)}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}${libraryEntryId ? `&libraryEntryId=${encodeURIComponent(libraryEntryId)}` : ""}`, [organizationId, projectId, videoId, libraryEntryId]);
   const load = useCallback(async () => {
     setLoading(true); setError("");
     try {

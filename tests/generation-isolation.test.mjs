@@ -10,6 +10,7 @@ test("all current generation routes pass through the project context firewall", 
   ]);
   for (const route of [topic, content]) {
     assert.match(route, /buildProjectGenerationContext/);
+    assert.match(route, /assertProjectGenerationContext/);
     assert.match(route, /insertGenerationSourceManifest/);
     assert.match(route, /finishGenerationSourceManifest/);
     assert.doesNotMatch(route, /authorizedKnowledge|retrieveAuthorizedKnowledge|\.original/);

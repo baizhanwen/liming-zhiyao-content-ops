@@ -52,7 +52,7 @@ export async function GET(request: Request) {
           SELECT 1 FROM project_video_references own_ref
           WHERE own_ref.organization_id = library.organization_id AND own_ref.project_id = ? AND own_ref.library_entry_id = library.id AND own_ref.purpose = 'benchmark'
         ) THEN 1 ELSE 0 END AS imported_to_project,
-        (SELECT frame.id FROM media_assets frame WHERE frame.organization_id = v.organization_id AND frame.project_id = v.project_id AND frame.video_id = v.id AND frame.kind = 'keyframe' AND frame.status = 'active' ORDER BY frame.created_at ASC LIMIT 1) AS cover_asset_id
+        (SELECT frame.id FROM media_assets frame WHERE frame.organization_id = v.organization_id AND frame.project_id = v.project_id AND frame.video_id = v.id AND frame.kind = 'keyframe' AND frame.status = 'active' ORDER BY frame.is_cover DESC, COALESCE(frame.quality_score, 0) DESC, frame.created_at ASC LIMIT 1) AS cover_asset_id
       FROM video_library_entries library
       INNER JOIN videos v ON v.id = library.source_video_id AND v.organization_id = library.organization_id
       INNER JOIN projects p ON p.id = v.project_id AND p.organization_id = v.organization_id

@@ -39,6 +39,19 @@ test("material center supports search, classification, tags, import and removal"
   assert.match(libraryRoute, /video_library\.updated/);
   assert.match(referencesRoute, /video_library\.imported/);
   assert.match(referencesRoute, /video_library\.removed/);
+  assert.match(component, /封面读取失败/);
+  assert.match(libraryRoute, /frame\.is_cover DESC/);
+});
+
+test("company-level library detail does not require a target project", async () => {
+  const [detailRoute, migration] = await Promise.all([
+    read("../app/api/video-library/[entryId]/route.ts"), read("../drizzle/0021_material_library_cover_integrity.sql"),
+  ]);
+  assert.match(detailRoute, /canAccessOrganizationVideoLibrary/);
+  assert.match(detailRoute, /WHERE library\.id = \? AND library\.organization_id = \?/);
+  assert.match(detailRoute, /video_analyses/);
+  assert.match(migration, /is_cover/);
+  assert.match(migration, /quality_score/);
 });
 
 test("video ingestion reuses organization canonical analysis before consuming quota", async () => {

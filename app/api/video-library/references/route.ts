@@ -21,7 +21,7 @@ export async function GET(request: Request) {
         p.name AS source_project_name, account.display_name AS account_name,
         j.status AS job_status, j.progress AS job_progress, j.current_stage,
         (SELECT latest_analysis.id FROM video_analyses latest_analysis WHERE latest_analysis.organization_id = v.organization_id AND latest_analysis.video_id = v.id ORDER BY latest_analysis.created_at DESC LIMIT 1) AS analysis_id,
-        (SELECT frame.id FROM media_assets frame WHERE frame.organization_id = v.organization_id AND frame.project_id = v.project_id AND frame.video_id = v.id AND frame.kind = 'keyframe' AND frame.status = 'active' ORDER BY frame.created_at ASC LIMIT 1) AS cover_asset_id
+        (SELECT frame.id FROM media_assets frame WHERE frame.organization_id = v.organization_id AND frame.project_id = v.project_id AND frame.video_id = v.id AND frame.kind = 'keyframe' AND frame.status = 'active' ORDER BY frame.is_cover DESC, COALESCE(frame.quality_score, 0) DESC, frame.created_at ASC LIMIT 1) AS cover_asset_id
       FROM project_video_references refs
       INNER JOIN video_library_entries library ON library.id = refs.library_entry_id AND library.organization_id = refs.organization_id
       INNER JOIN videos v ON v.id = library.source_video_id AND v.organization_id = library.organization_id

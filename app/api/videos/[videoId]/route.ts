@@ -1,4 +1,4 @@
-import { canWriteProjectAccess, getD1, getProjectAccess } from "../../../../db/runtime";
+import { canAccessOrganizationVideoLibrary, canWriteProjectAccess, getD1, getOrganizationAccess, getProjectAccess } from "../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../lib/api-response";
 import { readRequestIdentity } from "../../../../lib/request-auth";
 
@@ -9,18 +9,32 @@ function parseStoredJson(value: string | null) {
 
 export async function GET(request: Request, context: { params: Promise<{ videoId: string }> }) {
   const identity = await readRequestIdentity(request); if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再访问分析结果。", 401);
-  const url = new URL(request.url); const organizationId = url.searchParams.get("organizationId")?.trim() ?? ""; const projectId = url.searchParams.get("projectId")?.trim() ?? "";
+  const url = new URL(request.url); const organizationId = url.searchParams.get("organizationId")?.trim() ?? ""; const projectId = url.searchParams.get("projectId")?.trim() ?? ""; const requestedLibraryEntryId = url.searchParams.get("libraryEntryId")?.trim() ?? "";
   if (!organizationId || !projectId) return apiError("PROJECT_SCOPE_REQUIRED", "缺少公司或项目范围。", 400);
   try {
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId); if (!access) return apiError("ACCESS_DENIED", "无权访问该项目的分析结果。", 403);
     const { videoId } = await context.params; const db = getD1();
     let sourceProjectId = projectId; let libraryEntryId: string | null = null; let sharedReference = false;
-    let video = await db.prepare(`
+    let video: Record<string, unknown> | null = null;
+    if (requestedLibraryEntryId) {
+      const organization = await getOrganizationAccess(identity.authSubject, organizationId);
+      const library = organization && await canAccessOrganizationVideoLibrary(organization) ? await db.prepare("SELECT library.id AS library_entry_id, v.project_id AS source_project_id FROM video_library_entries library INNER JOIN videos v ON v.id = library.source_video_id AND v.organization_id = library.organization_id AND v.id = ? AND v.deleted_at IS NULL WHERE library.id = ? AND library.organization_id = ?").bind(videoId, requestedLibraryEntryId, organizationId).first<{ library_entry_id: string; source_project_id: string }>() : null;
+      if (!library) return apiError("VIDEO_NOT_FOUND", "视频不存在或不属于公司素材库。", 404);
+      sourceProjectId = library.source_project_id; libraryEntryId = library.library_entry_id; sharedReference = true;
+      video = await db.prepare(`
+        SELECT v.id, v.platform, v.source_type, v.source_url, v.title, v.author_name, v.published_at, v.duration_sec, v.status, v.error_message, v.created_at,
+          a.filename, a.content_type, a.size_bytes
+        FROM videos v LEFT JOIN media_assets a ON a.id = v.media_asset_id AND a.organization_id = v.organization_id AND a.project_id = v.project_id AND a.status = 'active'
+        WHERE v.id = ? AND v.organization_id = ? AND v.project_id = ? AND v.deleted_at IS NULL
+      `).bind(videoId, organizationId, sourceProjectId).first<Record<string, unknown>>();
+    } else {
+      video = await db.prepare(`
       SELECT v.id, v.platform, v.source_type, v.source_url, v.title, v.author_name, v.published_at, v.duration_sec, v.status, v.error_message, v.created_at,
         a.filename, a.content_type, a.size_bytes
       FROM videos v LEFT JOIN media_assets a ON a.id = v.media_asset_id AND a.organization_id = v.organization_id AND a.project_id = v.project_id AND a.status = 'active'
       WHERE v.id = ? AND v.organization_id = ? AND v.project_id = ? AND v.deleted_at IS NULL
     `).bind(videoId, organizationId, projectId).first<Record<string, unknown>>();
+    }
     if (!video) {
       const reference = await db.prepare(`
         SELECT library.id AS library_entry_id, v.project_id AS source_project_id

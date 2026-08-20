@@ -69,7 +69,7 @@ export const socialAccounts = sqliteTable("social_accounts", {
 export const mediaAssets = sqliteTable("media_assets", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id),
   videoId: text("video_id").references((): AnySQLiteColumn => videos.id),
-  kind: text("kind", { enum: ["source_video", "source_audio", "keyframe", "subtitle", "report"] }).notNull(), r2Key: text("r2_key").notNull(),
+  kind: text("kind", { enum: ["source_video", "source_audio", "keyframe", "subtitle", "report"] }).notNull(), r2Key: text("r2_key").notNull(), isCover: integer("is_cover").notNull().default(0), qualityScore: integer("quality_score"),
   filename: text("filename").notNull(), contentType: text("content_type").notNull(), sizeBytes: integer("size_bytes").notNull(), sha256: text("sha256").notNull(),
   status: text("status", { enum: ["active", "deleted"] }).notNull().default("active"), createdBy: text("created_by").notNull(), updatedBy: text("updated_by").notNull(), ...timestamps,
 }, (table) => [
