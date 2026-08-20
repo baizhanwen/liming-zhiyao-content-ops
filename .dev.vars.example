@@ -5,6 +5,12 @@ LOCAL_DEV_USER_ID=local-owner
 LOCAL_DEV_USER_EMAIL=local-owner@localhost
 LOCAL_DEV_USER_NAME=本地管理员
 
+# P0 safety switch. Keep enabled until the A/B/C isolation matrix passes.
+GENERATION_P0_FREEZE=1
+BUILD_ID=codex-gate1-20260820
+DATABASE_MIGRATION_VERSION=0019_generation_source_manifests
+ANALYSIS_CONTRACT_VERSION=analysis.v5
+
 # The Python analyzer must use the same token. Change this before enabling the
 # analyzer on a shared machine.
 ANALYZER_SERVICE_TOKEN=local-change-me-before-using-analyzer

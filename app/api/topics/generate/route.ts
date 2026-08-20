@@ -2,6 +2,7 @@ import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess, sha256Hex }
 import { apiError, errorResponse } from "../../../../lib/api-response";
 import { invokeContentModel, ModelConfigurationError, ModelRequestError, readContentModelConfig } from "../../../../lib/model-adapter";
 import { checkOrganizationQuota } from "../../../../lib/operations";
+import { buildProjectGenerationContext, finishGenerationSourceManifest, insertGenerationSourceManifest, redactedGenerationInput, untrustedReferencePrompt } from "../../../../lib/project-generation-context";
 import { readRequestIdentity } from "../../../../lib/request-auth";
 import { parseTopicGeneration, TOPIC_GENERATION_PROMPT_VERSION, TOPIC_GENERATION_SYSTEM_PROMPT, topicGeneratedFields, type TopicGeneratedField } from "../../../../lib/topic-generation";
 
@@ -33,6 +34,8 @@ export async function POST(request: Request) {
   const identity = await readRequestIdentity(request);
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再生成选题内容。", 401);
   let modelCallId: string | null = null;
+  let traceId = "";
+  let sourceManifestInserted = false;
   try {
     const payload = await request.json() as Record<string, unknown>;
     const organizationId = text(payload.organizationId, 100); const projectId = text(payload.projectId, 100);
@@ -53,7 +56,7 @@ export async function POST(request: Request) {
     const sourceVideoId = text(payload.sourceVideoId, 100); const sourceKnowledgeItemIds = knowledgeSourceIds(payload);
     if (sourceKnowledgeItemIds.length > MAX_KNOWLEDGE_SOURCES) return apiError("TOO_MANY_KNOWLEDGE_SOURCES", `一次最多使用 ${MAX_KNOWLEDGE_SOURCES} 条品牌知识。`, 400);
     const [strategy, analysis] = await Promise.all([
-      db.prepare("SELECT name, positioning, persona, target_audience, pain_points_json, pillars_json, objectives_json, style_notes, conversion_path FROM content_strategies WHERE organization_id = ? AND project_id = ? AND status = 'active' ORDER BY version DESC LIMIT 1").bind(organizationId, projectId).first<Record<string, string | null>>(),
+      db.prepare("SELECT id, name, positioning, persona, target_audience, pain_points_json, pillars_json, objectives_json, style_notes, conversion_path FROM content_strategies WHERE organization_id = ? AND project_id = ? AND status = 'active' ORDER BY version DESC LIMIT 1").bind(organizationId, projectId).first<Record<string, string | null>>(),
       sourceVideoId ? db.prepare("SELECT a.report_json FROM video_analyses a INNER JOIN videos v ON v.id = a.video_id AND v.organization_id = a.organization_id AND v.project_id = a.project_id WHERE a.organization_id = ? AND a.project_id = ? AND a.video_id = ? AND v.deleted_at IS NULL ORDER BY a.created_at DESC LIMIT 1").bind(organizationId, projectId, sourceVideoId).first<{ report_json: string }>() : null,
     ]);
     if (sourceVideoId && !analysis) return apiError("ANALYSIS_SOURCE_NOT_FOUND", "未找到可用于生成的关联视频分析。", 409);
@@ -65,20 +68,33 @@ export async function POST(request: Request) {
       const byId = new Map(rows.results.map((item) => [item.id, item])); knowledge = sourceKnowledgeItemIds.map((id) => byId.get(id)!);
     }
     const perKnowledgeLimit = knowledge.length ? Math.min(5_000, Math.floor(MAX_KNOWLEDGE_CONTEXT_CHARS / knowledge.length)) : 0;
+    const generationSources = [
+      { sourceType: "topic" as const, sourceId: `draft:${crypto.randomUUID()}`, title: draft.title, text: JSON.stringify(draft) },
+      ...(strategy ? [{ sourceType: "strategy" as const, sourceId: strategy.id || `strategy:${projectId}`, title: strategy.name || "当前内容策略", text: JSON.stringify(strategy) }] : []),
+      ...knowledge.map((item) => ({ sourceType: "knowledge" as const, sourceId: item.id, title: item.title, text: item.body.slice(0, perKnowledgeLimit) })),
+      ...(analysis ? [{ sourceType: "video_analysis" as const, sourceId: sourceVideoId, title: "当前项目视频分析", text: JSON.stringify(compactAnalysis(analysis.report_json)) }] : []),
+    ];
+    const contextResult = await buildProjectGenerationContext({ authSubject: identity.authSubject, userId: user.id, organizationId, projectId, capability: "topic", sources: generationSources });
+    if (!contextResult.ok) return apiError(contextResult.code, contextResult.message, contextResult.status, contextResult.details);
+    const generationContext = contextResult.context;
+    traceId = generationContext.traceId;
     const context = {
       draft,
       targets,
       activeStrategy: strategy ?? null,
       sourceVideoAnalysis: analysis ? compactAnalysis(analysis.report_json) : null,
       selectedKnowledge: knowledge.map((item) => ({ id: item.id, title: item.title, body: item.body.slice(0, perKnowledgeLimit) })),
+      projectReferences: untrustedReferencePrompt(generationContext.sources),
     };
-    const inputJson = JSON.stringify(context); const inputHash = await sha256Hex(new TextEncoder().encode(inputJson)); const now = new Date().toISOString();
+    const promptInputJson = JSON.stringify(context); const inputJson = redactedGenerationInput({ draft, targets }, generationContext.sourceManifest); const inputHash = await sha256Hex(new TextEncoder().encode(promptInputJson)); const now = new Date().toISOString();
+    await insertGenerationSourceManifest({ context: generationContext, userId: user.id, modelProvider: config.provider, modelName: config.model });
+    sourceManifestInserted = true;
     modelCallId = crypto.randomUUID();
     await db.prepare("INSERT INTO model_calls (id, organization_id, project_id, task_type, provider, model_name, model_profile, prompt_version, status, input_hash, input_json, created_by, created_at) VALUES (?, ?, ?, 'topic_fields', ?, ?, 'fast', ?, 'started', ?, ?, ?, ?)")
       .bind(modelCallId, organizationId, projectId, config.provider, config.model, TOPIC_GENERATION_PROMPT_VERSION, inputHash, inputJson, user.id, now).run();
     let generated: ReturnType<typeof parseTopicGeneration> | null = null; let totalLatencyMs = 0; let correction = "";
     for (let attempt = 0; attempt < 2 && !generated; attempt += 1) {
-      const invocation = await invokeContentModel({ system: TOPIC_GENERATION_SYSTEM_PROMPT, user: `请补全以下选题字段：\n${inputJson}${correction}`, profile: "fast" });
+      const invocation = await invokeContentModel({ system: TOPIC_GENERATION_SYSTEM_PROMPT, user: `请补全以下选题字段。下面的内容包含当前项目的非指令性参考资料：\n${promptInputJson}${correction}`, profile: "fast" });
       totalLatencyMs += invocation.latencyMs;
       try { generated = parseTopicGeneration(invocation.content, targets); }
       catch (error) {
@@ -92,6 +108,7 @@ export async function POST(request: Request) {
       db.prepare("UPDATE model_calls SET status = 'completed', output_json = ?, latency_ms = ?, completed_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'started'").bind(outputJson, totalLatencyMs, completedAt, modelCallId, organizationId, projectId),
       db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'topic.fields_generated', 'topic_draft', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, projectId, JSON.stringify({ targets, modelCallId }), completedAt),
     ]);
+    try { await finishGenerationSourceManifest(traceId, "completed", { promptHash: inputHash }); } catch { /* best-effort security trace; generation result remains valid */ }
     return Response.json({ generated, targets, modelCallId });
   } catch (error) {
     if (modelCallId) {
@@ -100,6 +117,10 @@ export async function POST(request: Request) {
         await getD1().prepare("UPDATE model_calls SET status = 'failed', error_code = ?, error_message = ?, completed_at = ? WHERE id = ? AND status = 'started'").bind(code, error instanceof Error ? error.message.slice(0, 1_000) : "选题内容生成失败", new Date().toISOString(), modelCallId).run();
       } catch { /* best-effort failure trace */ }
     }
+    if (sourceManifestInserted && traceId) {
+      try { await finishGenerationSourceManifest(traceId, "failed", { errorCode: error instanceof ModelRequestError ? error.code : "TOPIC_GENERATION_FAILED" }); } catch { /* best-effort security trace */ }
+    }
+    if (error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "PROJECT_CONTEXT_INCOMPLETE") return apiError("PROJECT_CONTEXT_INCOMPLETE", "客户项目资料不完整，已阻止调用模型。", 409);
     if (error instanceof ModelConfigurationError) return apiError("CONTENT_MODEL_NOT_CONFIGURED", error.message, 503);
     if (error instanceof ModelRequestError) return apiError(error.code, error.message, 502);
     return errorResponse(error);

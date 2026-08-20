@@ -40,9 +40,10 @@ export async function PATCH(request: Request) {
       return Response.json({ invitation: { id: payload.invitationId, status: "revoked" } });
     }
     const memberId = payload.memberId?.trim() ?? "";
-    if (!memberId || !organizationRoles.includes(payload.role as never) || !["active", "suspended", "removed"].includes(payload.status ?? "")) return apiError("INVALID_MEMBER_UPDATE", "成员角色或状态无效。", 400);
+    if (!memberId || !organizationRoles.includes(payload.role as never) || !["active", "suspended", "removed"].includes(payload.status ?? "")) return apiError("INVALID_MEMBER_UPDATE", "成员角色或状态无效。公司成员身份只能是管理员或员工。", 400);
     const target = await db.prepare("SELECT role, status FROM organization_members WHERE organization_id = ? AND user_id = ? AND status != 'removed'").bind(organizationId, memberId).first<{ role: string; status: string }>();
     if (!target) return apiError("MEMBER_NOT_FOUND", "成员不存在。", 404);
+    if (target.role !== "admin" && payload.role === "admin") return apiError("ADMIN_ROLE_NOT_TRANSFERABLE", "公司管理员身份不可转让；后续成员只能是公司员工。", 409);
     if (memberId === access.userId && payload.status !== "active") return apiError("CANNOT_DISABLE_SELF", "管理员不能暂停或移除自己。", 409);
     if (target.role === "admin" && (payload.role !== "admin" || payload.status !== "active")) {
       const admins = await db.prepare("SELECT COUNT(*) AS value FROM organization_members WHERE organization_id = ? AND role = 'admin' AND status = 'active'").bind(organizationId).first<{ value: number }>();
@@ -67,7 +68,7 @@ export async function POST(request: Request) {
     const email = payload.email?.trim().toLowerCase() ?? "";
     if (!organizationId) return apiError("ORGANIZATION_REQUIRED", "缺少公司范围。", 400);
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return apiError("INVALID_EMAIL", "请输入有效邮箱地址。", 400);
-    if (!organizationRoles.includes(payload.organizationRole as never)) return apiError("INVALID_ORGANIZATION_ROLE", "公司角色无效。", 400);
+    if (payload.organizationRole !== "member") return apiError("INVALID_ORGANIZATION_ROLE", "公司管理员只能在首次开通时创建；后续邀请只能添加公司员工。", 400);
     const projectId = payload.projectId?.trim() || null;
     const projectRole = projectId ? payload.projectRole?.trim() || null : null;
     if (projectId && !projectRole) return apiError("PROJECT_ROLE_REQUIRED", "分配项目时必须选择项目角色。", 400);

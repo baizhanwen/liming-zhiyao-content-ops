@@ -205,6 +205,12 @@ export const modelCalls = sqliteTable("model_calls", {
   status: text("status", { enum: ["started", "completed", "failed"] }).notNull(), inputHash: text("input_hash").notNull(), inputJson: text("input_json").notNull(), outputJson: text("output_json"), latencyMs: integer("latency_ms"), errorCode: text("error_code"), errorMessage: text("error_message"), createdBy: text("created_by").notNull(), createdAt: text("created_at").notNull(), completedAt: text("completed_at"),
 }, (table) => [index("idx_model_calls_project_created").on(table.organizationId, table.projectId, table.createdAt), index("idx_model_calls_topic_created").on(table.topicId, table.createdAt)]);
 
+export const generationSourceManifests = sqliteTable("generation_source_manifests", {
+  id: id(), traceId: text("trace_id").notNull(), userId: text("user_id").notNull().references(() => users.id), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id),
+  capability: text("capability").notNull(), modelProvider: text("model_provider"), modelName: text("model_name"), sourceManifestJson: text("source_manifest_json").notNull(), promptHash: text("prompt_hash"),
+  status: text("status", { enum: ["started", "completed", "failed", "blocked"] }).notNull().default("started"), errorCode: text("error_code"), createdAt: text("created_at").notNull(), completedAt: text("completed_at"),
+}, (table) => [uniqueIndex("idx_generation_source_manifests_trace").on(table.traceId), index("idx_generation_source_manifests_project_created").on(table.organizationId, table.projectId, table.createdAt), index("idx_generation_source_manifests_status_created").on(table.status, table.createdAt)]);
+
 export const contentItems = sqliteTable("content_items", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), topicId: text("topic_id").notNull().references(() => topicIdeas.id),
   title: text("title").notNull(), status: text("status", { enum: ["draft", "internal_revision", "internal_review", "client_review", "shooting_ready", "shot", "editing", "publish_ready", "published", "reviewed", "archived"] }).notNull().default("draft"), currentVersion: integer("current_version").notNull().default(1), assigneeUserId: text("assignee_user_id").references(() => users.id), dueAt: text("due_at"),

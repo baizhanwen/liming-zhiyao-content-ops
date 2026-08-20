@@ -1,7 +1,8 @@
-export const organizationRoles = ["admin", "member", "readonly"] as const;
+export const organizationRoles = ["admin", "member"] as const;
 export const projectRoles = ["owner", "planner", "creator", "reviewer", "client", "readonly"] as const;
 
-export type OrganizationRole = (typeof organizationRoles)[number];
+/** `readonly` remains in the type for forward-compatible reads of an older database; new writes never accept it. */
+export type OrganizationRole = (typeof organizationRoles)[number] | "readonly";
 export type ProjectRole = (typeof projectRoles)[number];
 export type AccessContext = { userId: string; organizationId: string; organizationRole: OrganizationRole; projectMemberships: ReadonlyMap<string, ProjectRole> };
 export type ProjectResource = { organizationId: string; projectId: string };
