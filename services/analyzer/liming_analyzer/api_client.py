@@ -34,7 +34,7 @@ class ClaimedJob:
     progress: int
     version: int
     source: Mapping[str, Any]
-    analysis_profile: str = "standard"
+    analysis_profile: str = "max"
     checkpoint_stage: str | None = None
     checkpoint: Mapping[str, Any] | None = None
     resume_count: int = 0
@@ -108,7 +108,7 @@ class AnalyzerApiClient:
             id=str(job["id"]), organization_id=str(job["organization_id"]), project_id=str(job["project_id"]),
             video_id=str(job["video_id"]), source_type=str(job["source_type"]), status=str(job["status"]),
             progress=int(job["progress"]), version=int(job["version"]), source=job["source"],
-            analysis_profile=str(job.get("analysis_profile") or "standard"),
+            analysis_profile=str(job.get("analysis_profile") or "max"),
             checkpoint_stage=str(job["checkpoint_stage"]) if job.get("checkpoint_stage") else None,
             checkpoint=job["checkpoint"] if isinstance(job.get("checkpoint"), dict) else None,
             resume_count=int(job.get("resume_count") or 0),

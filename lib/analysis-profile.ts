@@ -1,20 +1,19 @@
-export const analysisProfiles = ["economy", "standard", "deep"] as const;
+export const analysisProfiles = ["max"] as const;
+export const historicalAnalysisProfiles = ["economy", "standard", "deep"] as const;
 export type AnalysisProfile = typeof analysisProfiles[number];
+export type HistoricalAnalysisProfile = typeof historicalAnalysisProfiles[number];
+export type AnalysisProfileValue = AnalysisProfile | HistoricalAnalysisProfile | "shared";
 
 export const analysisProfileBudgets: Record<AnalysisProfile, {
   sourceTokens: number;
   outputTokens: number;
   promptTokens: number;
 }> = {
-  economy: { sourceTokens: 8_000, outputTokens: 2_000, promptTokens: 1_200 },
-  standard: { sourceTokens: 18_000, outputTokens: 4_000, promptTokens: 1_200 },
-  deep: { sourceTokens: 32_000, outputTokens: 6_000, promptTokens: 1_200 },
+  max: { sourceTokens: 64_000, outputTokens: 12_000, promptTokens: 1_600 },
 };
 
 export const analysisProfileSegmentLimits: Record<AnalysisProfile, number> = {
-  economy: 2,
-  standard: 4,
-  deep: 6,
+  max: 12,
 };
 
 export function estimateMediaSourceTokens(durationSeconds: number, profile: AnalysisProfile) {
@@ -31,5 +30,8 @@ export function estimateAnalysisMaximumTokens(durationSeconds: number, profile: 
 }
 
 export function normalizeAnalysisProfile(value: unknown): AnalysisProfile {
-  return typeof value === "string" && (analysisProfiles as readonly string[]).includes(value) ? value as AnalysisProfile : "standard";
+  // Historical profile values remain readable in old jobs and reports, but can
+  // never select the capability of a newly-created task.
+  void value;
+  return "max";
 }

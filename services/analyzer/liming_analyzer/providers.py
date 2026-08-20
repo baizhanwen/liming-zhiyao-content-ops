@@ -263,14 +263,14 @@ class PySceneDetectFrameExtractor:
         processor: FfmpegMediaProcessor,
         *,
         minimum_scene_seconds: float = 1.0,
-        maximum_frames: int = 24,
+        maximum_frames: int = 48,
         detector: Callable[[Path], Sequence[tuple[float, float]]] | None = None,
     ) -> None:
         self.processor = processor
         self.minimum_scene_seconds = minimum_scene_seconds
         self.maximum_frames = maximum_frames
         self.detector = detector or self._detect
-        self.fallback = FfmpegFrameExtractor(processor, interval_seconds=5)
+        self.fallback = FfmpegFrameExtractor(processor, interval_seconds=2)
 
     def _detect(self, source: Path) -> Sequence[tuple[float, float]]:
         try:
@@ -329,9 +329,9 @@ class InstructorStructureAnalyzer:
         model: str,
         provider: str,
         prompt_version: str = "video-analysis.v5",
-        max_source_tokens: int = 32_000,
-        max_output_tokens: int = 6_000,
-        window_tokens: int = 6_000,
+        max_source_tokens: int = 64_000,
+        max_output_tokens: int = 12_000,
+        window_tokens: int = 8_000,
         client: Any | None = None,
         report_model: Any | None = None,
     ) -> None:
@@ -431,9 +431,9 @@ class InstructorStructureAnalyzer:
         transcript_rows = _deduplicate_rows(raw_transcript_rows)
         visual_rows = _deduplicate_rows(raw_visual_rows, max_gap_ms=120_000)
         original_tokens = sum(_row_tokens(row) for row in transcript_rows + visual_rows)
-        profile = job.analysis_profile if job.analysis_profile in {"economy", "standard", "deep"} else "standard"
-        profile_budget = {"economy": 8_000, "standard": 18_000, "deep": 32_000}[profile]
-        profile_output_budget = {"economy": 2_000, "standard": 4_000, "deep": 6_000}[profile]
+        profile = job.analysis_profile if job.analysis_profile in {"max", "economy", "standard", "deep"} else "max"
+        profile_budget = {"max": 64_000, "economy": 8_000, "standard": 18_000, "deep": 32_000}[profile]
+        profile_output_budget = {"max": 12_000, "economy": 2_000, "standard": 4_000, "deep": 6_000}[profile]
         effective_source_tokens = min(self.max_source_tokens, profile_budget)
         effective_output_tokens = min(self.max_output_tokens, profile_output_budget)
         visual_budget = min(3_000, max(1_000, effective_source_tokens // 5))
@@ -503,7 +503,7 @@ class InstructorStructureAnalyzer:
 
         duration_is_long = media.info.duration_ms >= 1_800_000
         candidate_windows = _time_token_chunks(selected_transcript, self.window_tokens) if duration_is_long else _chunk_rows(selected_transcript, self.window_tokens)
-        segment_limit = {"economy": 2, "standard": 4, "deep": 6}[profile]
+        segment_limit = {"max": 12, "economy": 2, "standard": 4, "deep": 6}[profile]
         windows = _merge_chunks(candidate_windows, segment_limit) if duration_is_long else candidate_windows
         segmented = duration_is_long and len(windows) > 1 and effective_output_tokens >= 1_600
         partial_output_tokens = min(500, max(300, (effective_output_tokens - 1_200) // max(1, len(windows)))) if segmented else 0

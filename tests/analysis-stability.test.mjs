@@ -102,7 +102,7 @@ test("long analysis reports can be searched, navigated and exported locally", as
   assert.match(styles, /report-heading-actions/);
 });
 
-test("analysis quality profiles persist from submission through worker budgets", async () => {
+test("new analysis tasks use max capability while historical profiles remain readable", async () => {
   const [schema, migration, profiles, fromUrl, upload, claim, reanalyze, workspace, provider] = await Promise.all([
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0013_analysis_profiles.sql", import.meta.url), "utf8"),
@@ -117,14 +117,16 @@ test("analysis quality profiles persist from submission through worker budgets",
 
   assert.match(schema, /analysisProfile: text\("analysis_profile"/);
   assert.match(migration, /ADD `analysis_profile`/);
-  assert.match(profiles, /economy.*standard.*deep/);
+  assert.match(profiles, /analysisProfiles = \["max"\]/);
+  assert.match(profiles, /historicalAnalysisProfiles = \["economy", "standard", "deep"\]/);
   assert.match(fromUrl, /normalizeAnalysisProfile/);
   assert.match(upload, /analysisProfile/);
   assert.match(claim, /analysis_profile/);
   assert.match(reanalyze, /reanalysis_created/);
-  assert.match(workspace, /profileHints/);
-  assert.match(provider, /8_000/);
-  assert.match(provider, /32_000/);
+  assert.match(workspace, /profileHint/);
+  assert.match(workspace, /最高能力 · 新任务固定/);
+  assert.match(provider, /64_000/);
+  assert.match(provider, /12_000/);
 });
 
 test("analysis submissions expose duration estimates and enforce total token ceilings", async () => {
@@ -136,7 +138,7 @@ test("analysis submissions expose duration estimates and enforce total token cei
   ]);
 
   assert.match(profiles, /estimateMediaSourceTokens/);
-  assert.match(profiles, /outputTokens: 6_000/);
+  assert.match(profiles, /outputTokens: 12_000/);
   assert.match(workspace, /readMediaDuration/);
   assert.match(workspace, /短视频总预算/);
   assert.match(workspace, /30 分钟以上媒体/);

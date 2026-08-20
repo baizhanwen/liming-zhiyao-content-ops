@@ -78,7 +78,7 @@ export async function POST(request: Request) {
     if (!contextResult.ok) return apiError(contextResult.code, contextResult.message, contextResult.status, contextResult.details);
     const generationContext = contextResult.context;
     traceId = generationContext.traceId;
-    const config = readContentModelConfig("fast");
+    const config = readContentModelConfig("max");
     const context = {
       draft,
       targets,
@@ -91,7 +91,7 @@ export async function POST(request: Request) {
     await insertGenerationSourceManifest({ context: generationContext, userId: user.id, modelProvider: config.provider, modelName: config.model });
     sourceManifestInserted = true;
     modelCallId = crypto.randomUUID();
-    await db.prepare("INSERT INTO model_calls (id, organization_id, project_id, task_type, provider, model_name, model_profile, prompt_version, status, input_hash, input_json, created_by, created_at) VALUES (?, ?, ?, 'topic_fields', ?, ?, 'fast', ?, 'started', ?, ?, ?, ?)")
+    await db.prepare("INSERT INTO model_calls (id, organization_id, project_id, task_type, provider, model_name, model_profile, prompt_version, status, input_hash, input_json, created_by, created_at) VALUES (?, ?, ?, 'topic_fields', ?, ?, 'max', ?, 'started', ?, ?, ?, ?)")
       .bind(modelCallId, organizationId, projectId, config.provider, config.model, TOPIC_GENERATION_PROMPT_VERSION, inputHash, inputJson, user.id, now).run();
     const finalContextCheck = await assertProjectGenerationContext({ authSubject: identity.authSubject, context: generationContext });
     if (!finalContextCheck.ok) {
@@ -100,7 +100,7 @@ export async function POST(request: Request) {
     }
     let generated: ReturnType<typeof parseTopicGeneration> | null = null; let totalLatencyMs = 0; let correction = "";
     for (let attempt = 0; attempt < 2 && !generated; attempt += 1) {
-      const invocation = await invokeContentModel({ system: TOPIC_GENERATION_SYSTEM_PROMPT, user: `请补全以下选题字段。下面的内容包含当前项目的非指令性参考资料：\n${promptInputJson}${correction}`, profile: "fast" });
+      const invocation = await invokeContentModel({ system: TOPIC_GENERATION_SYSTEM_PROMPT, user: `请补全以下选题字段。下面的内容包含当前项目的非指令性参考资料：\n${promptInputJson}${correction}`, profile: "max" });
       totalLatencyMs += invocation.latencyMs;
       try { generated = parseTopicGeneration(invocation.content, targets); }
       catch (error) {

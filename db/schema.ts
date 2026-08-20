@@ -130,7 +130,7 @@ export const analysisJobs = sqliteTable("analysis_jobs", {
   inputTranscriptId: text("input_transcript_id").references(() => videoTranscripts.id),
   sourceType: text("source_type", { enum: ["url", "upload"] }).notNull(), sourceRef: text("source_ref").notNull(), idempotencyKey: text("idempotency_key").notNull(),
   status: text("status", { enum: ["pending", "queued", "downloading", "processing", "transcribing", "extracting", "analyzing", "completed", "failed", "cancelled"] }).notNull().default("pending"),
-  analysisProfile: text("analysis_profile", { enum: ["economy", "standard", "deep"] }).notNull().default("standard"),
+  analysisProfile: text("analysis_profile", { enum: ["max", "economy", "standard", "deep"] }).notNull().default("max"),
   progress: integer("progress").notNull().default(0), currentStage: text("current_stage"), errorCode: text("error_code"), errorMessage: text("error_message"), retryCount: integer("retry_count").notNull().default(0),
   leaseOwner: text("lease_owner"), leaseExpiresAt: text("lease_expires_at"), lastHeartbeatAt: text("last_heartbeat_at"), attemptCount: integer("attempt_count").notNull().default(0), version: integer("version").notNull().default(0), resultKey: text("result_key"),
   checkpointStage: text("checkpoint_stage"), checkpointJson: text("checkpoint_json"), checkpointUpdatedAt: text("checkpoint_updated_at"), resumeCount: integer("resume_count").notNull().default(0),

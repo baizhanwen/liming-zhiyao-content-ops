@@ -21,7 +21,8 @@ export async function POST(request: Request, context: { params: Promise<{ conten
   try {
     const parsed = generateContentSchema.safeParse(await request.json());
     if (!parsed.success) return apiError("INVALID_GENERATION_INPUT", "内容生成参数无效。", 400);
-    const { organizationId, projectId, modelProfile, benchmarkEntryIds } = parsed.data;
+    const { organizationId, projectId, benchmarkEntryIds } = parsed.data;
+    const modelProfile = "max" as const;
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
     if (!access || !canWriteProjectAccess(access)) return apiError("WRITE_ACCESS_REQUIRED", "当前角色不能生成内容。", 403);
     const user = await ensureUser(identity);

@@ -3,7 +3,7 @@ import { apiError, errorResponse } from "../../../../../lib/api-response";
 import { normalizeLeaseSeconds, normalizeWorkerId, requireAnalyzerService } from "../../../../../lib/service-auth";
 import type { WorkerJobRow } from "../../../../../lib/analysis-worker";
 
-type ClaimedJob = WorkerJobRow & { source_type: "url" | "upload"; source_ref: string; input_transcript_id: string | null; analysis_profile: "economy" | "standard" | "deep"; checkpoint_stage: string | null; checkpoint_json: string | null; checkpoint_updated_at: string | null; resume_count: number };
+type ClaimedJob = WorkerJobRow & { source_type: "url" | "upload"; source_ref: string; input_transcript_id: string | null; analysis_profile: "max" | "economy" | "standard" | "deep"; checkpoint_stage: string | null; checkpoint_json: string | null; checkpoint_updated_at: string | null; resume_count: number };
 type JobSource = { source_url: string | null; media_asset_id: string | null; r2_key: string | null; content_type: string | null; filename: string | null; size_bytes: number | null; sha256: string | null; transcript_id: string | null; transcript_version: number | null; transcript_language: string | null; transcript_segments_json: string | null };
 
 export const dynamic = "force-dynamic";

@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 
-type ModelProfile = "fast" | "standard" | "advanced";
+export type ModelProfile = "max";
 type ModelRuntimeEnv = typeof env & {
   CONTENT_MODEL_API_KEY?: string;
   CONTENT_MODEL_BASE_URL?: string;
@@ -82,9 +82,9 @@ export async function invokeContentModel(input: { system: string; user: string; 
     const requestBody: Record<string, unknown> = {
       model: config.model,
       messages: [{ role: "system", content: input.system }, { role: "user", content: input.user }],
-      temperature: input.profile === "advanced" ? 0.55 : 0.35,
+      temperature: 0.55,
       response_format: { type: "json_object" },
-      max_tokens: input.profile === "fast" ? 4_000 : input.profile === "advanced" ? 8_000 : 6_000,
+      max_tokens: 12_000,
     };
     if (isDeepSeek) requestBody.thinking = { type: "disabled" };
     const response = await fetch(`${config.baseUrl}/chat/completions`, {

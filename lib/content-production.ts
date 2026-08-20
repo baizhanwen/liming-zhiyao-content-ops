@@ -52,7 +52,9 @@ export const saveContentVersionSchema = z.object({
 export const generateContentSchema = z.object({
   organizationId: shortText(100),
   projectId: shortText(100),
-  modelProfile: z.enum(["fast", "standard", "advanced"]).default("standard"),
+  // Accepted only for backwards compatibility with older clients. The API
+  // deliberately ignores it and always runs new generation at max capability.
+  modelProfile: z.string().trim().max(40).optional(),
   benchmarkEntryIds: z.array(shortText(100)).max(5).default([]),
 }).strict();
 
