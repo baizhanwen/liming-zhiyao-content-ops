@@ -9,7 +9,7 @@ type BuildEnv = typeof env & {
 const runtime = env as BuildEnv;
 
 export const buildInfo = {
-  buildId: runtime.BUILD_ID?.trim() || "codex-gate1-20260820",
-  databaseMigrationVersion: runtime.DATABASE_MIGRATION_VERSION?.trim() || "0019_generation_source_manifests",
+  buildId: runtime.BUILD_ID?.trim() || "codex-gate6-20260820",
+  databaseMigrationVersion: runtime.DATABASE_MIGRATION_VERSION?.trim() || "0023_douyin_platform_metrics",
   analysisContractVersion: runtime.ANALYSIS_CONTRACT_VERSION?.trim() || "analysis.v6",
 } as const;
