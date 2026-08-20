@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 
 test("stage five persists import batches, publication snapshots, and frozen reports", async () => {
   const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
-  for (const table of ["performance_import_batches", "publication_metric_snapshots", "performance_reports"]) assert.match(schema, new RegExp(table));
+  for (const table of ["performance_import_batches", "publication_metric_snapshots", "platform_works", "platform_metric_import_batches", "platform_metric_snapshots", "platform_metric_import_errors", "performance_reports"]) assert.match(schema, new RegExp(table));
   assert.match(schema, /idx_performance_imports_project_hash/);
   assert.match(schema, /idx_publication_metrics_publication_observed/);
   assert.match(schema, /idx_performance_reports_project_period_type/);
@@ -36,6 +36,18 @@ test("performance contracts reject untraceable rows and freeze finalized report 
   assert.equal(analytics.createReportSchema.safeParse({ organizationId: "org-1", projectId: "project-1", reportType: "weekly", periodStart: "2026-08-05", periodEnd: "2026-08-01" }).success, false);
 });
 
+test("Douyin 16-field snapshots preserve signed followers and ratio distributions", async () => {
+  const analytics = await import("../lib/performance-analytics.ts");
+  const scope = { organizationId: "org-1", projectId: "project-1", source: "csv", format: "douyin_16", asOfAt: "2026-08-20T00:00:00.000Z" };
+  const row = { title: "作品一", publishedAt: "2026-08-01T00:00:00.000Z", genre: "知识", reviewStatus: "已通过", views: 100, completionRate: 50, fiveSecondCompletionRate: 70, coverCtr: 10, twoSecondBounceRate: 25, avgWatchMs: 12_000, likes: 10, shares: 2, comments: 1, saves: 3, homepageVisits: 20, followerDelta: -4 };
+  assert.equal(analytics.douyinPerformanceImportSchema.safeParse({ ...scope, rows: [row] }).success, true);
+  const snapshot = analytics.buildAnalyticsSnapshot([{ publication_id: "work-1", content_item_id: "", title: "作品一", platform: "douyin", external_url: null, published_at: row.publishedAt, observed_at: scope.asOfAt, genre: row.genre, review_status: row.reviewStatus, views: row.views, likes: row.likes, shares: row.shares, comments: row.comments, saves: row.saves, followers_gained: row.followerDelta, leads: 0, homepage_visits: row.homepageVisits, average_watch_seconds: 12, completion_rate_bps: 5000, five_second_completion_rate_bps: 7000, cover_ctr_bps: 1000, two_second_bounce_rate_bps: 2500 }], "2026-08-01", "2026-08-20");
+  assert.equal(snapshot.summary.followersGained, -4);
+  assert.equal(snapshot.summary.homepageVisits, 20);
+  assert.equal(snapshot.summary.completionRateDistribution.median, 50);
+  assert.equal(snapshot.summary.engagementRate, 0.16);
+});
+
 test("performance APIs enforce project access, deduplication, matching, and immutable final reports", async () => {
   const [performance, analytics, reports, finalize] = await Promise.all([
     readFile(new URL("../app/api/performance/route.ts", import.meta.url), "utf8"),
@@ -48,6 +60,10 @@ test("performance APIs enforce project access, deduplication, matching, and immu
   assert.match(performance, /duplicate\.status !== "failed"/);
   assert.match(performance, /未找到当前项目中对应的已发布作品/);
   assert.match(performance, /INSERT OR IGNORE INTO publication_metric_snapshots/);
+  assert.match(performance, /douyin_16/);
+  assert.match(performance, /AMBIGUOUS_WORK_MATCH/);
+  assert.match(performance, /const matched = ambiguous \? undefined/);
+  assert.match(performance, /platform_metric_import_batches/);
   assert.match(analytics, /loadPerformanceAnalytics/);
   assert.match(await readFile(new URL("../lib/performance-analytics.ts", import.meta.url), "utf8"), /b\.status = 'completed'/);
   assert.match(reports, /FINAL_REPORT_IMMUTABLE/);

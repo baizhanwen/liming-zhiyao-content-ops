@@ -175,7 +175,8 @@ test("analysis reports produce a reusable spoken script and specialist operating
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(provider, /video-analysis\.v5/);
+  assert.match(provider, /video-analysis\.v6/);
+  assert.match(provider, /spoken_script_set/);
   assert.match(provider, /spoken_script/);
   assert.match(provider, /hook_analysis/);
   assert.match(provider, /viral_points/);

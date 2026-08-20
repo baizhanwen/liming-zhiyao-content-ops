@@ -3,6 +3,8 @@ import type { getD1 } from "../db/runtime";
 
 const identifier = z.string().trim().min(1).max(200);
 const nonNegativeInteger = z.coerce.number().int().min(0).max(2_147_483_647);
+const signedInteger = z.coerce.number().int().min(-2_147_483_648).max(2_147_483_647);
+const percentage = z.preprocess((value) => typeof value === "string" ? value.replaceAll("%", "").replaceAll("％", "").replaceAll(",", "").trim() : value, z.coerce.number().min(0).max(100));
 
 export const performanceRowSchema = z.object({
   publicationId: identifier.optional(),
@@ -27,6 +29,36 @@ export const performanceImportSchema = z.object({
   rows: z.array(performanceRowSchema).min(1).max(500),
 }).strict();
 
+export const douyinMetricRowSchema = z.object({
+  platformWorkId: identifier.optional(),
+  title: z.string().trim().min(1).max(500),
+  publishedAt: z.iso.datetime({ offset: true }),
+  genre: z.string().trim().max(120).optional(),
+  reviewStatus: z.string().trim().max(120).optional(),
+  views: nonNegativeInteger,
+  completionRate: percentage.optional(),
+  fiveSecondCompletionRate: percentage.optional(),
+  coverCtr: percentage.optional(),
+  twoSecondBounceRate: percentage.optional(),
+  avgWatchMs: nonNegativeInteger.max(86_400_000).optional(),
+  likes: nonNegativeInteger.default(0),
+  shares: nonNegativeInteger.default(0),
+  comments: nonNegativeInteger.default(0),
+  saves: nonNegativeInteger.default(0),
+  homepageVisits: nonNegativeInteger.default(0),
+  followerDelta: signedInteger.default(0),
+}).strict();
+
+export const douyinPerformanceImportSchema = z.object({
+  organizationId: identifier,
+  projectId: identifier,
+  source: z.enum(["csv", "manual"]),
+  format: z.literal("douyin_16"),
+  asOfAt: z.iso.datetime({ offset: true }),
+  filename: z.string().trim().max(300).optional(),
+  rows: z.array(douyinMetricRowSchema).min(1).max(500),
+}).strict();
+
 export const createReportSchema = z.object({
   organizationId: identifier,
   projectId: identifier,
@@ -40,13 +72,22 @@ export const finalizeReportSchema = z.object({ organizationId: identifier, proje
 
 export type MetricSnapshotRow = {
   publication_id: string; content_item_id: string; title: string; platform: string; external_url: string | null; published_at: string | null; observed_at: string;
-  views: number; likes: number; comments: number; shares: number; saves: number; followers_gained: number; leads: number; average_watch_seconds: number | null; completion_rate_bps: number | null;
+  genre?: string | null; review_status?: string | null; views: number; likes: number; comments: number; shares: number; saves: number; followers_gained: number; leads: number; homepage_visits?: number; average_watch_seconds: number | null; completion_rate_bps: number | null; five_second_completion_rate_bps?: number | null; cover_ctr_bps?: number | null; two_second_bounce_rate_bps?: number | null;
 };
 
 export type AnalyticsSnapshot = ReturnType<typeof buildAnalyticsSnapshot>;
 
 function safeRate(numerator: number, denominator: number) { return denominator > 0 ? Math.round((numerator / denominator) * 10_000) / 10_000 : 0; }
 function interactions(row: MetricSnapshotRow) { return row.likes + row.comments + row.shares + row.saves; }
+function percentile(values: number[], ratio: number) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b); const index = (sorted.length - 1) * ratio; const lower = Math.floor(index); const upper = Math.ceil(index);
+  return sorted[lower] + (sorted[upper] - sorted[lower]) * (index - lower);
+}
+function distribution(values: Array<number | null | undefined>) {
+  const valid = values.filter((value): value is number => typeof value === "number");
+  return { count: valid.length, p25: percentile(valid, 0.25), median: percentile(valid, 0.5), p75: percentile(valid, 0.75), simpleMean: valid.length ? valid.reduce((sum, value) => sum + value, 0) / valid.length : null };
+}
 
 export function buildAnalyticsSnapshot(rows: MetricSnapshotRow[], periodStart: string, periodEnd: string) {
   const latest = new Map<string, MetricSnapshotRow>();
@@ -63,7 +104,8 @@ export function buildAnalyticsSnapshot(rows: MetricSnapshotRow[], periodStart: s
     interactions: sum.interactions + interactions(row),
     followersGained: sum.followersGained + row.followers_gained,
     leads: sum.leads + row.leads,
-  }), { views: 0, interactions: 0, followersGained: 0, leads: 0 });
+    homepageVisits: sum.homepageVisits + (row.homepage_visits || 0),
+  }), { views: 0, interactions: 0, followersGained: 0, leads: 0, homepageVisits: 0 });
   const completionRows = latestRows.filter((row) => row.completion_rate_bps !== null);
   const watchRows = latestRows.filter((row) => row.average_watch_seconds !== null);
   const summary = {
@@ -73,27 +115,44 @@ export function buildAnalyticsSnapshot(rows: MetricSnapshotRow[], periodStart: s
     leadRate: safeRate(totals.leads, totals.views),
     averageCompletionRate: completionRows.length ? completionRows.reduce((sum, row) => sum + (row.completion_rate_bps || 0), 0) / completionRows.length / 100 : null,
     averageWatchSeconds: watchRows.length ? watchRows.reduce((sum, row) => sum + (row.average_watch_seconds || 0), 0) / watchRows.length : null,
+    weightedAverageWatchSeconds: (() => { const weighted = latestRows.filter((row) => row.average_watch_seconds !== null && row.views > 0); const views = weighted.reduce((sum, row) => sum + row.views, 0); return views ? weighted.reduce((sum, row) => sum + (row.average_watch_seconds || 0) * row.views, 0) / views : null; })(),
+    homepageVisitRate: safeRate(totals.homepageVisits, totals.views),
+    playToFollowerRate: safeRate(totals.followersGained, totals.views),
+    homepageToFollowerRate: safeRate(totals.followersGained, totals.homepageVisits),
+    completionRateDistribution: distribution(latestRows.map((row) => row.completion_rate_bps === null ? null : row.completion_rate_bps / 100)),
+    fiveSecondCompletionRateDistribution: distribution(latestRows.map((row) => row.five_second_completion_rate_bps === null || row.five_second_completion_rate_bps === undefined ? null : row.five_second_completion_rate_bps / 100)),
+    coverCtrDistribution: distribution(latestRows.map((row) => row.cover_ctr_bps === null || row.cover_ctr_bps === undefined ? null : row.cover_ctr_bps / 100)),
+    twoSecondBounceRateDistribution: distribution(latestRows.map((row) => row.two_second_bounce_rate_bps === null || row.two_second_bounce_rate_bps === undefined ? null : row.two_second_bounce_rate_bps / 100)),
+    funnel: ["coverClick", "twoSecondRetention", "fiveSecondRetention", "completion", "interaction", "homepageVisit", "follow"].map((stage) => ({ stage, note: "按作品快照分布展示；比率不求和" })),
   };
   const seriesMap = new Map<string, { date: string; views: number; interactions: number; followersGained: number; leads: number }>();
   for (const row of daily.values()) { const date = row.observed_at.slice(0, 10); const current = seriesMap.get(date) || { date, views: 0, interactions: 0, followersGained: 0, leads: 0 }; current.views += row.views; current.interactions += interactions(row); current.followersGained += row.followers_gained; current.leads += row.leads; seriesMap.set(date, current); }
   const platformMap = new Map<string, { platform: string; views: number; interactions: number; contentCount: number }>();
   for (const row of latestRows) { const current = platformMap.get(row.platform) || { platform: row.platform, views: 0, interactions: 0, contentCount: 0 }; current.views += row.views; current.interactions += interactions(row); current.contentCount += 1; platformMap.set(row.platform, current); }
   const platforms = Array.from(platformMap.values()).map((item) => ({ ...item, engagementRate: safeRate(item.interactions, item.views) })).sort((a, b) => b.views - a.views);
-  const topContent = latestRows.map((row) => ({ publicationId: row.publication_id, contentItemId: row.content_item_id, title: row.title, platform: row.platform, externalUrl: row.external_url, publishedAt: row.published_at, observedAt: row.observed_at, views: row.views, interactions: interactions(row), engagementRate: safeRate(interactions(row), row.views), followersGained: row.followers_gained, leads: row.leads })).sort((a, b) => b.views - a.views || b.interactions - a.interactions).slice(0, 10);
+  const topContent = latestRows.map((row) => ({ publicationId: row.publication_id, contentItemId: row.content_item_id, title: row.title, platform: row.platform, genre: row.genre || null, reviewStatus: row.review_status || null, externalUrl: row.external_url, publishedAt: row.published_at, observedAt: row.observed_at, views: row.views, interactions: interactions(row), engagementRate: safeRate(interactions(row), row.views), followersGained: row.followers_gained, homepageVisits: row.homepage_visits || 0, leads: row.leads })).sort((a, b) => b.views - a.views || b.interactions - a.interactions).slice(0, 10);
   return { periodStart, periodEnd, summary, series: Array.from(seriesMap.values()).sort((a, b) => a.date.localeCompare(b.date)), platforms, topContent };
 }
 
 export async function loadPerformanceAnalytics(db: ReturnType<typeof getD1>, organizationId: string, projectId: string, periodStart: string, periodEnd: string) {
   const rows = await db.prepare(`
-    SELECT m.publication_id, m.content_item_id, c.title, p.platform, p.external_url, p.published_at, m.observed_at,
-      m.views, m.likes, m.comments, m.shares, m.saves, m.followers_gained, m.leads, m.average_watch_seconds, m.completion_rate_bps
-    FROM publication_metric_snapshots m
-    INNER JOIN publication_records p ON p.id = m.publication_id AND p.organization_id = m.organization_id AND p.project_id = m.project_id
-    INNER JOIN content_items c ON c.id = m.content_item_id AND c.organization_id = m.organization_id AND c.project_id = m.project_id
-    LEFT JOIN performance_import_batches b ON b.id = m.import_batch_id AND b.organization_id = m.organization_id AND b.project_id = m.project_id
-    WHERE m.organization_id = ? AND m.project_id = ? AND (m.import_batch_id IS NULL OR b.status = 'completed') AND substr(m.observed_at, 1, 10) BETWEEN ? AND ?
-    ORDER BY m.observed_at ASC LIMIT 10000
-  `).bind(organizationId, projectId, periodStart, periodEnd).all<MetricSnapshotRow>();
+    SELECT * FROM (
+      SELECT m.publication_id, m.content_item_id, c.title, p.platform, p.external_url, p.published_at, m.observed_at,
+        NULL AS genre, NULL AS review_status, m.views, m.likes, m.comments, m.shares, m.saves, m.followers_gained, m.leads, NULL AS homepage_visits, m.average_watch_seconds, m.completion_rate_bps, NULL AS five_second_completion_rate_bps, NULL AS cover_ctr_bps, NULL AS two_second_bounce_rate_bps
+      FROM publication_metric_snapshots m
+      INNER JOIN publication_records p ON p.id = m.publication_id AND p.organization_id = m.organization_id AND p.project_id = m.project_id
+      INNER JOIN content_items c ON c.id = m.content_item_id AND c.organization_id = m.organization_id AND c.project_id = m.project_id
+      LEFT JOIN performance_import_batches b ON b.id = m.import_batch_id AND b.organization_id = m.organization_id AND b.project_id = m.project_id
+      WHERE m.organization_id = ? AND m.project_id = ? AND (m.import_batch_id IS NULL OR b.status = 'completed') AND substr(m.observed_at, 1, 10) BETWEEN ? AND ?
+      UNION ALL
+      SELECT w.id AS publication_id, COALESCE(w.content_item_id, '') AS content_item_id, w.title, s.platform, NULL AS external_url, w.published_at, s.as_of_at AS observed_at,
+        w.genre, w.review_status, s.views, s.likes, s.comments, s.shares, s.saves, s.follower_delta AS followers_gained, 0 AS leads, s.homepage_visits, CAST(s.avg_watch_ms / 1000 AS INTEGER) AS average_watch_seconds, s.completion_rate_bps, s.five_second_completion_rate_bps, s.cover_ctr_bps, s.two_second_bounce_rate_bps
+      FROM platform_metric_snapshots s
+      INNER JOIN platform_works w ON w.id = s.work_id AND w.organization_id = s.organization_id AND w.project_id = s.project_id
+      INNER JOIN platform_metric_import_batches b ON b.id = s.import_batch_id AND b.organization_id = s.organization_id AND b.project_id = s.project_id AND b.status = 'completed'
+      WHERE s.organization_id = ? AND s.project_id = ? AND substr(s.as_of_at, 1, 10) BETWEEN ? AND ?
+    ) ORDER BY observed_at ASC LIMIT 10000
+  `).bind(organizationId, projectId, periodStart, periodEnd, organizationId, projectId, periodStart, periodEnd).all<MetricSnapshotRow>();
   return buildAnalyticsSnapshot(rows.results, periodStart, periodEnd);
 }
 

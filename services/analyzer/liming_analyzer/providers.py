@@ -107,6 +107,59 @@ def _merge_chunks(chunks: list[list[dict[str, Any]]], limit: int) -> list[list[d
     return [chunk for chunk in merged if chunk]
 
 
+def _script_paragraphs(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, Mapping):
+        paragraphs = value.get("paragraphs")
+        if isinstance(paragraphs, Sequence) and not isinstance(paragraphs, (str, bytes)):
+            return [str(item).strip() for item in paragraphs if str(item).strip()]
+        text = value.get("text")
+        return [str(text).strip()] if isinstance(text, str) and text.strip() else []
+    return []
+
+
+def _script_source_ids(paragraphs: list[str], source_rows: list[dict[str, Any]], explicit: Any) -> list[str]:
+    if isinstance(explicit, Sequence) and not isinstance(explicit, (str, bytes)):
+        ids = [str(item).strip() for item in explicit if str(item).strip()]
+        if ids:
+            return list(dict.fromkeys(ids))
+    matched: list[str] = []
+    for paragraph in paragraphs:
+        for row in source_rows:
+            source_text = str(row.get("text") or "")
+            if source_text and (source_text in paragraph or paragraph in source_text):
+                segment_id = str(row.get("segment_id") or "").strip()
+                if segment_id:
+                    matched.append(segment_id)
+    if matched:
+        return list(dict.fromkeys(matched))
+    return [str(row.get("segment_id")) for row in source_rows if row.get("segment_id")]
+
+
+def _build_spoken_script_set(report: dict[str, Any], source_rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    fallback = _script_paragraphs(report.get("spoken_script")) or [str(row.get("text") or "").strip() for row in source_rows if row.get("text")]
+    fallback = [item for item in fallback if item]
+    if not fallback:
+        raise RuntimeError("model report did not preserve a usable spoken script")
+    raw_set = report.get("spoken_script_set") if isinstance(report.get("spoken_script_set"), Mapping) else {}
+    result: dict[str, dict[str, Any]] = {}
+    for key in ("faithful_full", "light_rewrite", "restructured"):
+        raw = raw_set.get(key) if isinstance(raw_set, Mapping) else None
+        paragraphs = _script_paragraphs(raw) or fallback
+        explicit = raw.get("source_segment_ids") if isinstance(raw, Mapping) else None
+        result[key] = {
+            "text": "\n\n".join(paragraphs),
+            "paragraphs": paragraphs,
+            "source_segment_ids": _script_source_ids(paragraphs, source_rows, explicit),
+        }
+    report["spoken_script"] = result["faithful_full"]["paragraphs"]
+    report["spoken_script_set"] = result
+    return result
+
+
 class FunAsrSpeechRecognizer:
     def __init__(
         self,
@@ -328,7 +381,7 @@ class InstructorStructureAnalyzer:
         base_url: str,
         model: str,
         provider: str,
-        prompt_version: str = "video-analysis.v5",
+        prompt_version: str = "video-analysis.v6",
         max_source_tokens: int = 64_000,
         max_output_tokens: int = 12_000,
         window_tokens: int = 8_000,
@@ -358,6 +411,18 @@ class InstructorStructureAnalyzer:
                 item_index: int = Field(ge=0, le=29)
                 evidence_text: str = Field(min_length=1, max_length=1000)
 
+            class SpokenScriptVersion(BaseModel):
+                model_config = ConfigDict(extra="forbid")
+                text: str = Field(min_length=1, max_length=12_000)
+                paragraphs: list[str] = Field(min_length=1, max_length=16)
+                source_segment_ids: list[str] = Field(default_factory=list, max_length=200)
+
+            class SpokenScriptSet(BaseModel):
+                model_config = ConfigDict(extra="forbid")
+                faithful_full: SpokenScriptVersion | None = None
+                light_rewrite: SpokenScriptVersion | None = None
+                restructured: SpokenScriptVersion | None = None
+
             class Report(BaseModel):
                 model_config = ConfigDict(extra="forbid")
                 summary: str = Field(min_length=1, max_length=4000)
@@ -365,6 +430,7 @@ class InstructorStructureAnalyzer:
                 structure: list[str] = Field(min_length=1, max_length=20)
                 audience: str = Field(min_length=1, max_length=2000)
                 spoken_script: list[str] = Field(min_length=1, max_length=12)
+                spoken_script_set: SpokenScriptSet | None = None
                 hook_analysis: list[str] = Field(default_factory=list, max_length=12)
                 viral_points: list[str] = Field(default_factory=list, max_length=12)
                 rhythm_analysis: list[str] = Field(default_factory=list, max_length=12)
@@ -412,12 +478,13 @@ class InstructorStructureAnalyzer:
     ) -> StructureOutput:
         raw_transcript_rows = [
             {
+                "segment_id": f"t-{index + 1:04d}",
                 "start_ms": row.start_ms,
                 "end_ms": row.end_ms,
                 "text": row.text,
                 "confidence": row.confidence,
             }
-            for row in transcript.segments
+            for index, row in enumerate(transcript.segments)
         ]
         raw_visual_rows = [
             {
@@ -450,8 +517,10 @@ class InstructorStructureAnalyzer:
         system_prompt = (
             "你是短视频内容分析员。统计数字只能使用输入值，不能猜测。"
             "每条 evidence.text 必须逐字引用转写或 OCR，start_ms 必须来自同一证据。"
-            "最终报告必须包含按语义整理的 spoken_script：保留原意与事实，删除口头重复、语气词和无效停顿，"
-            "整理成不超过 8 个可以直接朗读的自然段，禁止补写来源中没有的事实。"
+            "最终报告必须包含按语义整理的 spoken_script，以及 spoken_script_set 三版口播："
+            "faithful_full 完整口播版、light_rewrite 微调同构版、restructured 内容等价重构版。"
+            "三版都必须保留原意与事实，删除口头重复、语气词和无效停顿，分别写出 paragraphs、text 和 source_segment_ids；"
+            "微调同构版必须与完整口播版保持段落数量和论点顺序一致，重构版允许调整顺序但不得新增事实。"
             "hook_analysis、viral_points、rhythm_analysis、emotion_curve、conversion_design "
             "分别分析开场钩子、传播爆点、节奏、情绪推进和转化设计，结论要简洁、具体、可执行。"
             "为这些专项结论以及 highlights、risks、recommendations 生成 insight_evidence：section 是字段名，"
@@ -557,6 +626,7 @@ class InstructorStructureAnalyzer:
                 },
                 effective_output_tokens,
             )
+        _build_spoken_script_set(report, raw_transcript_rows)
         evidence_text = {row.text for row in transcript.segments}
         evidence_text.update(row.text for row in visuals.observations)
         report["evidence"] = [
@@ -577,6 +647,7 @@ class InstructorStructureAnalyzer:
         estimated_model_input_tokens = selected_tokens + analysis_passes * 1_200 + (partial_output_budget if segmented else 0)
         maximum_model_input_tokens = effective_source_tokens + analysis_passes * 1_200 + (partial_output_budget if segmented else 0)
         report["analysis_meta"] = {
+            "contract_version": "analysis.v6",
             "mode": "full" if selected_tokens >= original_tokens else "budgeted",
             "processing_mode": "segmented" if segmented else "single_pass",
             "estimated_source_tokens": original_tokens,
@@ -602,7 +673,7 @@ class InstructorStructureAnalyzer:
                 "actual_total_tokens": actual_total_tokens,
             })
         return StructureOutput(
-            "analysis.v5",
+            "analysis.v6",
             report,
             _confidence(confidence),
             self.provider,
