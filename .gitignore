@@ -46,6 +46,16 @@ yarn-error.log*
 /backups/
 /deliveries/
 /.local/
+/.tmp/
+
+# local reference material and nested repositories
+/03_Skill库/
+/data/
+/dbskill/
+
+# npm/package-lock.json is the canonical package manager for delivery
+/pnpm-lock.yaml
+/pnpm-workspace.yaml
 
 # python
 __pycache__/
@@ -55,3 +65,4 @@ __pycache__/
 .ruff_cache/
 .venv/
 services/analyzer/model-cache/
+services/analyzer/build/

@@ -14,6 +14,7 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     ".local/**",
+    ".wrangler/**",
     "deliveries/**",
     "backups/**",
     "**/.venv/**",

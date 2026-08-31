@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
-import { rememberCurrentScope } from "../lib/client-scope";
+import { rememberCurrentScope, scopedFetch } from "../lib/client-scope";
 import { AppShell } from "./AppShell";
 
 type Organization = { id: string; name: string };
@@ -24,7 +24,7 @@ export function SearchWorkspace() {
       }
     })();
   }, []);
-  async function search(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const form = new FormData(event.currentTarget); const q = String(form.get("q") || "").trim(); if (!organizationId || q.length < 2) return; setLoading(true); setError(""); const response = await fetch(`/api/search?organizationId=${encodeURIComponent(organizationId)}&q=${encodeURIComponent(q)}`); const body = await response.json() as { results?: SearchResult[]; error?: { message?: string } }; if (!response.ok) setError(body.error?.message || "搜索失败。"); else setResults(body.results ?? []); setSearched(true); setLoading(false); }
+  async function search(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const form = new FormData(event.currentTarget); const q = String(form.get("q") || "").trim(); if (!organizationId || q.length < 2) return; setLoading(true); setError(""); const response = await scopedFetch(`/api/search?organizationId=${encodeURIComponent(organizationId)}&q=${encodeURIComponent(q)}`); const body = await response.json() as { results?: SearchResult[]; error?: { message?: string } }; if (!response.ok) setError(body.error?.message || "搜索失败。"); else setResults(body.results ?? []); setSearched(true); setLoading(false); }
   function resultHref(item: SearchResult) {
     const params = new URLSearchParams();
     params.set("organizationId", organizationId);

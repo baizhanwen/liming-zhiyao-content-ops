@@ -1,7 +1,7 @@
 import { getD1 } from "../../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../../lib/api-response";
 import { normalizeLeaseSeconds, normalizeWorkerId, requireAnalyzerService } from "../../../../../lib/service-auth";
-import type { WorkerJobRow } from "../../../../../lib/analysis-worker";
+import { parseAnalyzerBrowserAuth, type WorkerJobRow } from "../../../../../lib/analysis-worker";
 
 type ClaimedJob = WorkerJobRow & { source_type: "url" | "upload"; source_ref: string; input_transcript_id: string | null; analysis_profile: "max" | "economy" | "standard" | "deep"; checkpoint_stage: string | null; checkpoint_json: string | null; checkpoint_updated_at: string | null; resume_count: number };
 type JobSource = { source_url: string | null; media_asset_id: string | null; r2_key: string | null; content_type: string | null; filename: string | null; size_bytes: number | null; sha256: string | null; transcript_id: string | null; transcript_version: number | null; transcript_language: string | null; transcript_segments_json: string | null };
@@ -11,22 +11,24 @@ export const dynamic = "force-dynamic";
 export async function POST(request: Request) {
   const service = await requireAnalyzerService(request); if ("error" in service) return service.error;
   try {
-    const payload = await request.json() as { workerId?: unknown; leaseSeconds?: unknown };
+    const payload = await request.json() as { workerId?: unknown; leaseSeconds?: unknown; browserAuth?: unknown };
     const workerId = normalizeWorkerId(payload.workerId); if (!workerId) return apiError("INVALID_WORKER_ID", "workerId 格式无效。", 400);
-    const leaseSeconds = normalizeLeaseSeconds(payload.leaseSeconds); const now = new Date(); const nowIso = now.toISOString();
+    const leaseSeconds = normalizeLeaseSeconds(payload.leaseSeconds); const browserAuth = parseAnalyzerBrowserAuth(payload.browserAuth); const now = new Date(); const nowIso = now.toISOString();
     const leaseExpiresAt = new Date(now.getTime() + leaseSeconds * 1000).toISOString(); const actor = `service:${workerId}`; const db = getD1();
     await db.prepare(`
-      INSERT INTO analyzer_workers (worker_id, status, started_at, last_seen_at, updated_at)
-      VALUES (?, 'online', ?, ?, ?)
-      ON CONFLICT(worker_id) DO UPDATE SET status = 'online', last_seen_at = excluded.last_seen_at, last_error = NULL, updated_at = excluded.updated_at
-    `).bind(workerId, nowIso, nowIso, nowIso).run();
+      INSERT INTO analyzer_workers (worker_id, status, started_at, last_seen_at, browser_auth_status, browser_auth_browser, browser_auth_checked_at, browser_auth_message, updated_at)
+      VALUES (?, 'online', ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(worker_id) DO UPDATE SET status = 'online', last_seen_at = excluded.last_seen_at, last_error = NULL,
+        browser_auth_status = excluded.browser_auth_status, browser_auth_browser = excluded.browser_auth_browser,
+        browser_auth_checked_at = excluded.browser_auth_checked_at, browser_auth_message = excluded.browser_auth_message, updated_at = excluded.updated_at
+    `).bind(workerId, nowIso, nowIso, browserAuth?.status ?? "unknown", browserAuth?.browser ?? null, browserAuth?.checkedAt ?? null, browserAuth?.message ?? null, nowIso).run();
     const job = await db.prepare(`
       UPDATE analysis_jobs
       SET status = CASE WHEN status = 'pending' THEN 'queued' ELSE status END,
-          progress = CASE WHEN status = 'pending' AND checkpoint_stage = 'evidence_ready' THEN 82 WHEN status = 'pending' THEN 1 ELSE progress END,
-          current_stage = CASE WHEN checkpoint_stage = 'evidence_ready' THEN '分析服务已领取恢复任务' WHEN status = 'pending' THEN '分析服务已领取任务' ELSE current_stage END,
+          progress = CASE WHEN status = 'pending' AND checkpoint_stage IN ('evidence_ready', 'segment_progress') THEN 82 WHEN status = 'pending' THEN 1 ELSE progress END,
+          current_stage = CASE WHEN checkpoint_stage IN ('evidence_ready', 'segment_progress') THEN '分析服务已领取恢复任务' WHEN status = 'pending' THEN '分析服务已领取任务' ELSE current_stage END,
           lease_owner = ?, lease_expires_at = ?, last_heartbeat_at = ?, attempt_count = attempt_count + 1,
-          resume_count = resume_count + CASE WHEN checkpoint_stage = 'evidence_ready' THEN 1 ELSE 0 END,
+          resume_count = resume_count + CASE WHEN checkpoint_stage IN ('evidence_ready', 'segment_progress') THEN 1 ELSE 0 END,
           version = version + 1, updated_by = ?, updated_at = ?
       WHERE id = (
         SELECT j.id FROM analysis_jobs j
@@ -82,7 +84,7 @@ export async function POST(request: Request) {
       sha256: source.sha256,
     };
     let checkpoint: Record<string, unknown> | null = null;
-    if (job.checkpoint_stage === "evidence_ready" && job.checkpoint_json) {
+    if ((job.checkpoint_stage === "evidence_ready" || job.checkpoint_stage === "segment_progress") && job.checkpoint_json) {
       try {
         const parsed = JSON.parse(job.checkpoint_json) as unknown;
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) checkpoint = parsed as Record<string, unknown>;

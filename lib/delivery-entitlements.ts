@@ -4,7 +4,7 @@ export const deliveryPlan = {
   name: "开发完整版",
   features: {
     videoAnalysis: true,
-    wechatImages: true,
+    wechatImages: false,
     insights: true,
   },
   quotas: {

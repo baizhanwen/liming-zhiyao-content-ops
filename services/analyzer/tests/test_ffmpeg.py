@@ -23,6 +23,7 @@ class FfmpegTests(unittest.TestCase):
             media = FfmpegMediaProcessor(runner=runner).prepare(source, root / "out")
         self.assertEqual(media.info.duration_ms, 12500)
         self.assertIn("16000", commands[1])
+        self.assertIn("highpass=f=80,lowpass=f=7600,loudnorm=I=-16:LRA=11:TP=-1.5", commands[1])
         self.assertIn("pcm_s16le", commands[1])
         self.assertIsInstance(commands[1], list)
 

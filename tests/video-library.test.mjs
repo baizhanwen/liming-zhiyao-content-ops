@@ -14,16 +14,18 @@ test("company video library migration preserves canonical videos and project ref
   assert.match(migration, /'benchmark'/);
 });
 
-test("library access separates internal company browsing from project client references", async () => {
+test("library access is available to every employee assigned to a space", async () => {
   const [runtime, helper, references] = await Promise.all([
     read("../db/runtime.ts"), read("../lib/video-library.ts"), read("../app/api/video-library/references/route.ts"),
   ]);
-  assert.match(runtime, /pm\.role IN \('owner', 'planner', 'creator', 'reviewer'\)/);
-  assert.match(runtime, /if \(access\.organizationRole === "readonly"\) return false/);
+  assert.match(runtime, /pm\.status = 'active'/);
+  assert.doesNotMatch(runtime, /pm\.role IN \('owner', 'planner', 'creator', 'reviewer'\)/);
   assert.match(helper, /getProjectAccess\(authSubject, organizationId, projectId\)/);
   assert.match(helper, /project_video_references/);
   assert.match(references, /canWriteProjectAccess/);
   assert.match(references, /purpose = 'benchmark'/);
+  assert.match(references, /enqueueBenchmarkVideoAnalysisMemoryEventsWithDb/);
+  assert.match(references, /targetProjectId: projectId/);
 });
 
 test("material center supports search, classification, tags, import and removal", async () => {
@@ -31,6 +33,8 @@ test("material center supports search, classification, tags, import and removal"
     read("../components/VideoLibraryWorkspace.tsx"), read("../app/api/video-library/route.ts"), read("../app/api/video-library/references/route.ts"),
   ]);
   assert.match(component, /搜索标题、作者、账号、标签或来源项目/);
+  assert.match(component, /\["published", "已发布的视频"\]/);
+  assert.match(libraryRoute, /"published", "benchmark"/);
   assert.match(component, /导入当前项目/);
   assert.match(component, /移出项目/);
   assert.match(component, /library-grid/);
@@ -74,4 +78,12 @@ test("shared project references can read analysis artifacts without gaining edit
   assert.match(detailRoute, /\/api\/video-library\/\$\{libraryEntryId\}\/assets/);
   assert.match(detailRoute, /canWrite: !sharedReference && canWriteProjectAccess/);
   assert.match(detailComponent, /共享素材 · 原分析只读/);
+});
+
+test("material-center detail keeps same-space enterprise performance data", async () => {
+  const detailRoute = await read("../app/api/videos/[videoId]/route.ts");
+  assert.match(detailRoute, /Boolean\(requestedLibraryEntryId\) && projectId === sourceProjectId/);
+  assert.match(detailRoute, /canReadOwnedPerformance \? db\.prepare\(`/);
+  assert.match(detailRoute, /platform_metric_snapshots/);
+  assert.match(detailRoute, /w\.match_status = 'confirmed'/);
 });

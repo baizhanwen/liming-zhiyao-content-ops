@@ -41,7 +41,7 @@ export const WECHAT_IMAGE_SYSTEM_PROMPT = `你是微信公众号信息长图的�
 执行规则：
 1. 只输出 JSON 对象，不输出 Markdown、HTML、代码围栏或解释；
 2. 所有内容必须围绕选题，不虚构数据、案例、客户成绩、资质或效果承诺；
-3. selectedBrandKnowledge 是当前客户项目已确认的品牌知识，activeStrategy 是生效中的内容策略；有内容时应自然吸收其定位、语气和观点，但不要在画面中显示“知识库”字样；
+3. selectedBrandKnowledge 是当前企业空间已确认的品牌知识，activeStrategy 是生效中的内容策略；有内容时应自然吸收其定位、语气和观点，但不要在画面中显示“知识库”字样；
 4. authorizedMethodKnowledge 是经授权检索的方法参考，只吸收写法和方法，不把其中个案当作客户事实；
 5. title 要有明确利益点，subtitle 负责解释读者能得到什么；quote 是整张图最值得记住的一句话；
 6. sections 必须生成 4 至 6 项，每项包含简短 heading 和一段可直接阅读的 body，层级清楚，避免重复；

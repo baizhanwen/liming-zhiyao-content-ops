@@ -11,19 +11,15 @@ test("stage four persists version-bound reviews, comments, schedules, and public
   assert.match(schema, /idx_publication_records_project_status_updated/);
 });
 
-test("workflow permissions use one internal approval before production", async () => {
+test("every assigned employee can complete the internal workflow", async () => {
   const workflow = await import("../lib/content-workflow.ts");
   const base = { userId: "user-1", organizationId: "org-1", organizationRole: "member", projectId: "project-1" };
-  const creator = { ...base, projectRole: "creator" };
-  const reviewer = { ...base, projectRole: "reviewer" };
-  const client = { ...base, projectRole: "client" };
-  assert.equal(workflow.allowedWorkflowTransition(creator, "draft", "internal_review"), true);
-  assert.equal(workflow.allowedWorkflowTransition(creator, "internal_review", "shooting_ready"), false);
-  assert.equal(workflow.allowedWorkflowTransition(reviewer, "internal_review", "shooting_ready"), true);
-  assert.equal(workflow.allowedWorkflowTransition(client, "client_review", "shooting_ready"), false);
-  assert.equal(workflow.allowedWorkflowTransition(reviewer, "client_review", "shooting_ready"), true);
-  assert.equal(workflow.canCommentOnContent(client, "internal"), false);
-  assert.equal(workflow.canCommentOnContent(client, "client"), true);
+  const employee = { ...base, projectRole: "member" };
+  assert.equal(workflow.allowedWorkflowTransition(employee, "draft", "internal_review"), true);
+  assert.equal(workflow.allowedWorkflowTransition(employee, "internal_review", "shooting_ready"), true);
+  assert.equal(workflow.allowedWorkflowTransition(employee, "client_review", "shooting_ready"), true);
+  assert.equal(workflow.canCommentOnContent(employee, "internal"), true);
+  assert.equal(workflow.canCommentOnContent(employee, "client"), true);
 });
 
 test("workflow contracts require reasons and traceable publication outcomes", async () => {
@@ -33,6 +29,14 @@ test("workflow contracts require reasons and traceable publication outcomes", as
   assert.equal(workflow.workflowTransitionSchema.safeParse({ ...scope, toStatus: "internal_revision", note: "补充客户确认数据" }).success, true);
   assert.equal(workflow.publicationRecordSchema.safeParse({ ...scope, platform: "douyin", status: "published" }).success, false);
   assert.equal(workflow.publicationRecordSchema.safeParse({ ...scope, platform: "douyin", status: "published", externalUrl: "https://example.com/video/1" }).success, true);
+});
+
+test("returned review reasons become unclassified adoption candidates", async () => {
+  const transition = await readFile(new URL("../app/api/content-items/[contentId]/transition/route.ts", import.meta.url), "utf8");
+  assert.match(transition, /PROJECT_MEMORY_STORAGE_CATEGORY/);
+  assert.match(transition, /PROJECT_MEMORY_STORAGE_KIND/);
+  assert.match(transition, /'candidate'/);
+  assert.doesNotMatch(transition, /reviewFeedbackMemoryCategory|projectMemoryKind/);
 });
 
 test("stage four APIs keep tenant scope, client visibility, audit events, and optimistic state", async () => {
@@ -51,6 +55,10 @@ test("stage four APIs keep tenant scope, client visibility, audit events, and op
   assert.doesNotMatch(transition, /review_stage, round, decision, requested_by, requested_at\) VALUES \(\?, \?, \?, \?, \?, 'client'/);
   assert.match(transition, /content\.status\.changed/);
   assert.match(transition, /results\[0\]\.meta\.changes/);
+  assert.match(transition, /INSERT INTO project_memory_items/);
+  assert.match(transition, /INSERT INTO project_memory_evidence/);
+  assert.match(transition, /'review_feedback'/);
+  assert.ok(transition.indexOf("INSERT INTO project_memory_items") < transition.indexOf("db.batch(statements)"));
   assert.match(comments, /canCommentOnContent/);
   assert.match(schedule, /PUBLISH_READY_REQUIRED/);
   assert.match(publication, /external_url/);
@@ -72,8 +80,10 @@ test("review, calendar, and publishing navigation use one real workflow workspac
   assert.match(workspace, /CalendarView/);
   assert.match(workspace, /PublicationView/);
   assert.match(workspace, /ReviewContentPreview/);
+  assert.match(workspace, /退回原因已保存为项目记忆候选/);
+  assert.match(workspace, /查看记忆候选/);
   assert.match(workspace, /完整口播稿/);
   assert.match(workspace, /分镜脚本/);
   assert.match(collection, /v\.pack_json, v\.full_script, v\.short_script/);
-  assert.match(collection, /clientReviewPack/);
+  assert.doesNotMatch(collection, /clientReviewPack/);
 });

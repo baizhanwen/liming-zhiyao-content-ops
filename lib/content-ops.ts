@@ -10,7 +10,7 @@ export function includesValue<T extends readonly string[]>(values: T, value: unk
 }
 
 export function canManageProjectKnowledge(access: ProjectAccess) {
-  return access.organizationRole === "admin" || (access.organizationRole !== "readonly" && (access.projectRole === "owner" || access.projectRole === "planner"));
+  return access.organizationRole === "admin" || access.projectRole !== null;
 }
 
 export function cleanStringList(value: unknown, maxItems = 20) {

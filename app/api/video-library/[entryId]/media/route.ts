@@ -1,4 +1,4 @@
-import { getD1, getMediaBucket } from "../../../../../db/runtime";
+import { getD1, getMediaObject } from "../../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../../lib/api-response";
 import { readRequestIdentity } from "../../../../../lib/request-auth";
 import { privateR2Response } from "../../../../../lib/r2-response";
@@ -13,7 +13,7 @@ export async function GET(request: Request, context: { params: Promise<{ entryId
     if (!source) return apiError("ACCESS_DENIED", "无权读取该素材媒体。", 403);
     const row = await getD1().prepare(`SELECT a.r2_key FROM videos v INNER JOIN media_assets a ON a.id = v.media_asset_id AND a.status = 'active' WHERE v.id = ? AND v.organization_id = ? AND v.project_id = ? AND v.deleted_at IS NULL`).bind(source.video_id, organizationId, source.source_project_id).first<{ r2_key: string }>();
     if (!row) return apiError("MEDIA_NOT_FOUND", "该素材没有本地媒体文件。", 404);
-    const object = await getMediaBucket().get(row.r2_key, { range: request.headers }); if (!object) return apiError("MEDIA_NOT_FOUND", "素材媒体文件不存在。", 404);
-    return privateR2Response(object, request);
+    const located = await getMediaObject(row.r2_key, { range: request.headers }); if (!located) return apiError("MEDIA_NOT_FOUND", "素材媒体文件不存在。", 404);
+    return privateR2Response(located.object, request, { storageSource: located.source });
   } catch (error) { return errorResponse(error); }
 }

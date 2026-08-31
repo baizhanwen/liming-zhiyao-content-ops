@@ -1,4 +1,4 @@
-import { getD1, getMediaBucket } from "../../../../../../db/runtime";
+import { getD1, getMediaObject } from "../../../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../../../lib/api-response";
 import { privateR2Response } from "../../../../../../lib/r2-response";
 import { normalizeWorkerId, requireAnalyzerService } from "../../../../../../lib/service-auth";
@@ -17,7 +17,7 @@ export async function GET(request: Request, context: { params: Promise<{ jobId: 
       WHERE j.id = ? AND j.source_type = 'upload' AND j.lease_owner = ? AND j.lease_expires_at > ?
     `).bind(jobId, workerId, now).first<{ r2_key: string }>();
     if (!row) return apiError("SOURCE_NOT_AVAILABLE", "上传来源不存在或任务租约已经失效。", 409);
-    const object = await getMediaBucket().get(row.r2_key, { range: request.headers }); if (!object) return apiError("SOURCE_NOT_FOUND", "源媒体文件不存在。", 404);
-    return privateR2Response(object, request);
+    const located = await getMediaObject(row.r2_key, { range: request.headers }); if (!located) return apiError("SOURCE_NOT_FOUND", "源媒体文件不存在。", 404);
+    return privateR2Response(located.object, request, { storageSource: located.source });
   } catch (error) { return errorResponse(error); }
 }

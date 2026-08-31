@@ -55,6 +55,43 @@ def _manual_transcript(job: ClaimedJob) -> TranscriptOutput | None:
     return TranscriptOutput(language, tuple(rows), None)
 
 
+def _progress_count(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return max(0, int(value))
+
+
+def _visual_heartbeat_progress(
+    snapshot: Mapping[str, Any],
+) -> tuple[int, str]:
+    phase = str(snapshot.get("phase") or "")
+    keyframes_completed = _progress_count(snapshot.get("keyframes_completed"))
+    keyframes_total = _progress_count(snapshot.get("keyframes_total"))
+    batch_completed = _progress_count(snapshot.get("batch_completed"))
+    batch_total = _progress_count(snapshot.get("batch_total"))
+    details: list[str] = []
+    if keyframes_total:
+        details.append(
+            f"关键帧 {min(keyframes_completed, keyframes_total)}/{keyframes_total}"
+        )
+    if batch_total:
+        batch_label = "视觉补全" if phase == "vision_retry" else "视觉批次"
+        details.append(
+            f"{batch_label} {min(batch_completed, batch_total)}/{batch_total}"
+        )
+    if phase == "ocr" and keyframes_total:
+        progress = 40 + round(12 * keyframes_completed / keyframes_total)
+    elif phase == "vision" and batch_total:
+        progress = 52 + round(14 * batch_completed / batch_total)
+    elif phase == "vision_retry" and batch_total:
+        progress = 66 + round(2 * batch_completed / batch_total)
+    elif phase == "completed":
+        progress = 68
+    else:
+        progress = 40
+    return min(68, progress), " · ".join(details)
+
+
 def _metadata_payload(metadata: SourceMetadata | None) -> dict[str, Any] | None:
     if metadata is None:
         return None
@@ -88,7 +125,7 @@ def _evidence_checkpoint(media: NormalizedMedia, transcript: TranscriptOutput, v
 
 def _restore_evidence_checkpoint(job: ClaimedJob, workspace: Path) -> tuple[NormalizedMedia, TranscriptOutput, VisualOutput, SourceMetadata | None] | None:
     value = job.checkpoint
-    if job.checkpoint_stage != "evidence_ready" or not isinstance(value, Mapping) or value.get("checkpoint_version") != 1:
+    if job.checkpoint_stage not in {"evidence_ready", "segment_progress"} or not isinstance(value, Mapping) or value.get("checkpoint_version") != 1:
         return None
     try:
         media_value = value["media"]; transcript_value = value["transcript"]; visuals_value = value["visuals"]
@@ -153,6 +190,7 @@ class AnalysisPipeline:
         status: str,
         progress: int,
         stage: str,
+        on_current: Callable[[ClaimedJob], None] | None = None,
     ) -> tuple[ClaimedJob, T]:
         """Keep worker presence and the job lease alive during one blocking operation."""
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="liming-stage") as executor:
@@ -161,7 +199,42 @@ class AnalysisPipeline:
                 wait((future,), timeout=self.heartbeat_seconds, return_when=ALL_COMPLETED)
                 if not future.done():
                     current = heartbeat(status, progress, stage)
+                    if on_current is not None:
+                        on_current(current)
             return current, future.result()
+
+    def _run_structure(
+        self,
+        current: ClaimedJob,
+        media: NormalizedMedia,
+        transcript: TranscriptOutput,
+        visuals: VisualOutput,
+        source_metadata: SourceMetadata | None,
+        heartbeat,
+        progress: int,
+        stage: str,
+    ) -> tuple[ClaimedJob, Any]:
+        set_checkpoint = getattr(self.structure, "set_segment_checkpoint", None)
+        latest = [current]
+        if callable(set_checkpoint) and self.checkpoints is not None:
+            base_checkpoint = _evidence_checkpoint(media, transcript, visuals, source_metadata)
+
+            def persist_segment_progress(progress_payload: Mapping[str, Any]) -> None:
+                try:
+                    self.checkpoints.save(latest[0], "segment_progress", {**base_checkpoint, "segment_progress": dict(progress_payload)})
+                except Exception as error:  # noqa: BLE001 - checkpoint is resumability only
+                    logger.warning("Could not persist segment checkpoint: %s", error)
+
+            set_checkpoint(persist_segment_progress)
+        try:
+            return self._run_monitored(
+                lambda: self.structure.analyze(current, media, transcript, visuals),
+                current, heartbeat, "analyzing", progress, stage,
+                on_current=lambda job: latest.__setitem__(0, job),
+            )
+        finally:
+            if callable(set_checkpoint):
+                set_checkpoint(None)
 
     def process(self, job: ClaimedJob, heartbeat) -> AnalysisResult:
         with TemporaryDirectory(prefix="liming-analysis-") as temporary:
@@ -170,15 +243,11 @@ class AnalysisPipeline:
             if restored is not None:
                 media, transcript, visuals, source_metadata = restored
                 current = heartbeat("analyzing", max(84, job.progress), "已从证据检查点恢复，正在继续结构分析")
-                current, structure = self._run_monitored(
-                    lambda: self.structure.analyze(current, media, transcript, visuals),
-                    current,
-                    heartbeat,
-                    "analyzing",
-                    max(84, current.progress),
-                    "正在从证据检查点继续生成结构化结论",
-                )
+                current, structure = self._run_structure(current, media, transcript, visuals, source_metadata, heartbeat, max(84, current.progress), "正在从证据检查点继续生成结构化结论")
                 return build_analysis_result(transcript, structure, source_metadata)
+            configure_visual_profile = getattr(self.visual, "set_analysis_profile", None)
+            if callable(configure_visual_profile):
+                configure_visual_profile(job.analysis_profile)
             current = heartbeat("downloading", 5, "正在安全获取源媒体")
             current, acquired = self._run_monitored(
                 lambda: self.source.acquire(current, workspace / "source-media"),
@@ -200,6 +269,9 @@ class AnalysisPipeline:
                 "正在规范化媒体并保持分析服务在线",
             )
             manual_transcript = _manual_transcript(current)
+            configure_speech_context = getattr(self.speech, "set_context", None)
+            if callable(configure_speech_context):
+                configure_speech_context(acquired.metadata.title if acquired.metadata else None)
             current = heartbeat("transcribing", 35, "正在使用人工校正版并提取画面" if manual_transcript else "正在并行转写语音与提取画面")
 
             with ThreadPoolExecutor(max_workers=2, thread_name_prefix="liming-evidence") as executor:
@@ -212,8 +284,36 @@ class AnalysisPipeline:
                 while pending:
                     _done, pending = wait(pending, timeout=self.heartbeat_seconds, return_when=ALL_COMPLETED)
                     if pending:
-                        progress = min(64, progress + 4)
-                        current = heartbeat("transcribing", progress, "正在转写语音并识别关键画面")
+                        progress_snapshot = getattr(
+                            self.visual,
+                            "progress_snapshot",
+                            None,
+                        )
+                        snapshot = (
+                            progress_snapshot()
+                            if callable(progress_snapshot)
+                            else {}
+                        )
+                        if snapshot:
+                            visual_progress, detail = _visual_heartbeat_progress(snapshot)
+                            progress = max(progress, visual_progress)
+                        else:
+                            detail = ""
+                            progress = min(64, progress + 4)
+                        speech_pending = (
+                            transcript_future is not None
+                            and transcript_future in pending
+                        )
+                        visual_pending = visuals_future in pending
+                        if speech_pending and visual_pending:
+                            stage = "正在转写语音并识别关键画面"
+                        elif visual_pending:
+                            stage = "正在识别关键画面"
+                        else:
+                            stage = "正在转写语音"
+                        if detail:
+                            stage += f" · {detail}"
+                        current = heartbeat("transcribing", progress, stage)
                 transcript = manual_transcript or clean_transcript(transcript_future.result() if transcript_future else TranscriptOutput("zh-CN", ()))
                 visuals = visuals_future.result()
 
@@ -233,12 +333,5 @@ class AnalysisPipeline:
                 except Exception as error:  # noqa: BLE001 - checkpoint is resumability only
                     logger.warning("Could not persist the analysis checkpoint: %s", error)
             current = heartbeat("analyzing", 84, "正在生成可追溯结构化结论")
-            current, structure = self._run_monitored(
-                lambda: self.structure.analyze(current, media, transcript, visuals),
-                current,
-                heartbeat,
-                "analyzing",
-                88,
-                "模型正在生成可追溯结构化结论",
-            )
+            current, structure = self._run_structure(current, media, transcript, visuals, acquired.metadata, heartbeat, 88, "模型正在生成可追溯结构化结论")
             return build_analysis_result(transcript, structure, acquired.metadata)

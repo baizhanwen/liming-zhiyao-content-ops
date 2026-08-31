@@ -20,7 +20,7 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     if (!job) return apiError("JOB_NOT_FOUND", "分析任务不存在。", 404);
     if (job.lease_owner !== payload.workerId || !job.lease_expires_at || job.lease_expires_at <= now) return apiError("LEASE_NOT_OWNED", "当前 Worker 不再持有有效租约。", 409);
     if (job.version !== payload.version) return apiError("JOB_VERSION_CONFLICT", "任务版本已发生变化。", 409);
-    if (!["extracting", "analyzing"].includes(job.status)) return apiError("CHECKPOINT_STAGE_INVALID", "当前任务阶段不能保存证据检查点。", 409);
+    if (!["extracting", "analyzing"].includes(job.status)) return apiError("CHECKPOINT_STAGE_INVALID", "当前任务阶段不能保存分析检查点。", 409);
     const result = await db.prepare(`
       UPDATE analysis_jobs SET checkpoint_stage = ?, checkpoint_json = ?, checkpoint_updated_at = ?, updated_by = ?, updated_at = ?
       WHERE id = ? AND lease_owner = ? AND version = ? AND lease_expires_at > ?

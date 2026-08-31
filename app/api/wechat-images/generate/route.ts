@@ -29,7 +29,7 @@ export async function POST(request: Request) {
     const topic = text(payload.topic, 180);
     const templateId = text(payload.templateId, 40);
     const ratioId = text(payload.ratioId, 12);
-    if (!organizationId || !projectId) return apiError("PROJECT_SCOPE_REQUIRED", "请先选择客户项目。", 400);
+    if (!organizationId || !projectId) return apiError("PROJECT_SCOPE_REQUIRED", "请先选择企业空间。", 400);
     if (topic.length < 4) return apiError("WECHAT_IMAGE_TOPIC_REQUIRED", "选题至少需要 4 个字符。", 400);
     if (!wechatImageTemplateIds.includes(templateId as (typeof wechatImageTemplateIds)[number])) return apiError("INVALID_WECHAT_IMAGE_TEMPLATE", "请选择有效的图片模板。", 400);
     if (!wechatImageRatioIds.includes(ratioId as (typeof wechatImageRatioIds)[number])) return apiError("INVALID_WECHAT_IMAGE_RATIO", "请选择有效的图片比例。", 400);

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
@@ -34,7 +35,7 @@ class ClaimedJob:
     progress: int
     version: int
     source: Mapping[str, Any]
-    analysis_profile: str = "max"
+    analysis_profile: str = "standard"
     checkpoint_stage: str | None = None
     checkpoint: Mapping[str, Any] | None = None
     resume_count: int = 0
@@ -70,7 +71,7 @@ def _urllib_transport(method: str, url: str, headers: Mapping[str, str], body: b
 
 
 class AnalyzerApiClient:
-    def __init__(self, base_url: str, token: str, worker_id: str, transport: Transport | None = None) -> None:
+    def __init__(self, base_url: str, token: str, worker_id: str, transport: Transport | None = None, *, browser_auth_probe: Callable[[], Mapping[str, Any]] | None = None, browser_auth_interval_seconds: float = 60.0) -> None:
         if not base_url.startswith(("http://", "https://")):
             raise ValueError("base_url must be HTTP or HTTPS")
         if not token.strip() or not worker_id.strip():
@@ -79,7 +80,24 @@ class AnalyzerApiClient:
         self.worker_id = worker_id
         self._token = token
         self._transport = transport or _urllib_transport
+        self._browser_auth_probe = browser_auth_probe
+        self._browser_auth_interval_seconds = max(5.0, browser_auth_interval_seconds)
+        self._last_browser_auth: Mapping[str, Any] | None = None
+        self._last_browser_auth_at = 0.0
 
+    def _browser_auth(self) -> Mapping[str, Any] | None:
+        if self._browser_auth_probe is None:
+            return None
+        now = time.monotonic()
+        if self._last_browser_auth is not None and now - self._last_browser_auth_at < self._browser_auth_interval_seconds:
+            return self._last_browser_auth
+        try:
+            status = dict(self._browser_auth_probe())
+        except Exception:
+            status = {"status": "unavailable", "message": "暂时无法检测后台浏览器登录状态。"}
+        self._last_browser_auth = status
+        self._last_browser_auth_at = now
+        return status
     def _post(self, path: str, payload: Mapping[str, Any], *, allow_empty: bool = False) -> Mapping[str, Any] | None:
         status, raw = self._transport(
             "POST",
@@ -101,7 +119,11 @@ class AnalyzerApiClient:
         return data
 
     def claim(self, lease_seconds: int = 300) -> ClaimedJob | None:
-        response = self._post("/api/internal/analysis-jobs/claim", {"workerId": self.worker_id, "leaseSeconds": lease_seconds}, allow_empty=True)
+        payload: dict[str, Any] = {"workerId": self.worker_id, "leaseSeconds": lease_seconds}
+        browser_auth = self._browser_auth()
+        if browser_auth is not None:
+            payload["browserAuth"] = browser_auth
+        response = self._post("/api/internal/analysis-jobs/claim", payload, allow_empty=True)
         if response is None:
             return None
         job = response.get("job")
@@ -111,23 +133,27 @@ class AnalyzerApiClient:
             id=str(job["id"]), organization_id=str(job["organization_id"]), project_id=str(job["project_id"]),
             video_id=str(job["video_id"]), source_type=str(job["source_type"]), status=str(job["status"]),
             progress=int(job["progress"]), version=int(job["version"]), source=job["source"],
-            analysis_profile=str(job.get("analysis_profile") or "max"),
+            analysis_profile=str(job.get("analysis_profile") or "standard"),
             checkpoint_stage=str(job["checkpoint_stage"]) if job.get("checkpoint_stage") else None,
             checkpoint=job["checkpoint"] if isinstance(job.get("checkpoint"), dict) else None,
             resume_count=int(job.get("resume_count") or 0),
         )
 
     def heartbeat(self, job: ClaimedJob, status: str, progress: int, stage: str, lease_seconds: int = 300) -> ClaimedJob:
-        response = self._post(f"/api/internal/analysis-jobs/{job.id}/heartbeat", {
+        payload: dict[str, Any] = {
             "workerId": self.worker_id, "version": job.version, "status": status, "progress": progress,
             "stage": stage, "leaseSeconds": lease_seconds,
-        })
+        }
+        browser_auth = self._browser_auth()
+        if browser_auth is not None:
+            payload["browserAuth"] = browser_auth
+        response = self._post(f"/api/internal/analysis-jobs/{job.id}/heartbeat", payload)
         assert response is not None
         updated = response["job"]
         return replace(job, status=str(updated["status"]), progress=int(updated["progress"]), version=int(updated["version"]))
 
     def save_checkpoint(self, job: ClaimedJob, stage: str, checkpoint: Mapping[str, Any]) -> Mapping[str, Any]:
-        if stage != "evidence_ready":
+        if stage not in {"evidence_ready", "segment_progress"}:
             raise ValueError("unsupported analysis checkpoint stage")
         response = self._post(f"/api/internal/analysis-jobs/{job.id}/checkpoint", {
             "workerId": self.worker_id, "version": job.version, "stage": stage, "checkpoint": checkpoint,

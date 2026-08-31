@@ -16,7 +16,7 @@ def build_lazy_processor(settings: AnalyzerSettings, client: AnalyzerApiClient) 
         nonlocal pipeline
         current_job = job
         if pipeline is None:
-            warm_status = "analyzing" if job.checkpoint_stage == "evidence_ready" else "downloading"
+            warm_status = "analyzing" if job.checkpoint_stage in {"evidence_ready", "segment_progress"} else "downloading"
             warm_message = "正在初始化本地分析模型（首次使用可能需要下载）"
             current_job = heartbeat(warm_status, max(2, job.progress), warm_message)
             stop_heartbeat = threading.Event()

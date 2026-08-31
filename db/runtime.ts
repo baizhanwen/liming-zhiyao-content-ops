@@ -1,6 +1,8 @@
 import { env } from "cloudflare:workers";
+import { locateMediaObject } from "../lib/media-object-store";
 import type { RequestIdentity } from "../lib/request-auth";
 import type { OrganizationRole, ProjectRole } from "../lib/authorization";
+import { resolveProjectAccess } from "../lib/scope-access-state";
 
 export type UserRow = { id: string; auth_subject: string; email: string; display_name: string | null };
 export type OrganizationAccess = { userId: string; organizationId: string; organizationRole: OrganizationRole };
@@ -12,10 +14,27 @@ export function getD1() {
   return runtimeEnv.DB;
 }
 
+type MediaRuntimeEnv = typeof env & {
+  MEDIA?: R2Bucket;
+  MEDIA_LEGACY?: R2Bucket;
+};
+
 export function getMediaBucket() {
-  const runtimeEnv = env as typeof env & { MEDIA?: R2Bucket };
+  const runtimeEnv = env as MediaRuntimeEnv;
   if (!runtimeEnv.MEDIA) throw new Error("R2 binding MEDIA is unavailable");
   return runtimeEnv.MEDIA;
+}
+
+export function getLegacyMediaBucket() {
+  return (env as MediaRuntimeEnv).MEDIA_LEGACY ?? null;
+}
+
+export async function getMediaObject(key: string, options?: R2GetOptions) {
+  const located = await locateMediaObject(getMediaBucket(), getLegacyMediaBucket(), key, options);
+  if (located?.source === "legacy") {
+    console.info("media_object_legacy_fallback", { key });
+  }
+  return located;
 }
 
 export async function ensureUser(identity: RequestIdentity): Promise<UserRow> {
@@ -54,24 +73,25 @@ export async function getOrganizationAccess(authSubject: string, organizationId:
 }
 
 export async function getProjectAccess(authSubject: string, organizationId: string, projectId: string): Promise<ProjectAccess | null> {
-  const organization = await getOrganizationAccess(authSubject, organizationId);
-  if (!organization) return null;
-
-  const project = await getD1().prepare(`
-    SELECT id FROM projects
-    WHERE id = ? AND organization_id = ? AND deleted_at IS NULL AND status != 'archived'
-  `).bind(projectId, organizationId).first<{ id: string }>();
-  if (!project) return null;
-  if (organization.organizationRole === "admin") return { ...organization, projectId, projectRole: null };
-
-  const membership = await getD1().prepare(`
-    SELECT role AS projectRole
-    FROM project_members
-    WHERE organization_id = ? AND project_id = ? AND user_id = ? AND status = 'active'
-  `).bind(organizationId, projectId, organization.userId).first<{ projectRole: ProjectRole }>();
-  return membership ? { ...organization, projectId, projectRole: membership.projectRole } : null;
+  const row = await getD1().prepare(`
+    SELECT u.id AS userId, om.organization_id AS organizationId, om.role AS organizationRole,
+      p.id AS projectId, pm.role AS projectRole
+    FROM organization_members om
+    INNER JOIN users u ON u.id = om.user_id
+    INNER JOIN organizations o ON o.id = om.organization_id
+    INNER JOIN projects p ON p.id = ? AND p.organization_id = om.organization_id AND p.deleted_at IS NULL AND p.status != 'archived'
+    LEFT JOIN project_members pm ON pm.organization_id = p.organization_id AND pm.project_id = ? AND pm.project_id = p.id AND pm.user_id = u.id AND pm.status = 'active'
+    WHERE u.auth_subject = ?
+      AND om.organization_id = ?
+      AND u.status = 'active'
+      AND om.status = 'active'
+      AND o.status = 'active'
+  `).bind(projectId, projectId, authSubject, organizationId).first<ProjectAccess>();
+  if (!row) return null;
+  const organization = { organizationRole: row.organizationRole };
+  if (organization.organizationRole === "admin") return { ...row, projectRole: null };
+  return resolveProjectAccess(row);
 }
-
 export async function hashInvitationToken(token: string) {
   return sha256Hex(new TextEncoder().encode(token));
 }
@@ -85,19 +105,16 @@ export async function sha256Hex(input: ArrayBuffer | ArrayBufferView) {
 }
 
 export function canWriteProjectAccess(access: ProjectAccess) {
-  if (access.organizationRole === "admin") return true;
-  return access.organizationRole !== "readonly" && access.projectRole !== null && !["reviewer", "client", "readonly"].includes(access.projectRole);
+  return access.organizationRole === "admin" || access.projectRole !== null;
 }
 
 export async function canAccessOrganizationVideoLibrary(access: OrganizationAccess) {
   if (access.organizationRole === "admin") return true;
-  if (access.organizationRole === "readonly") return false;
   const membership = await getD1().prepare(`
     SELECT 1 AS allowed
     FROM project_members pm
     INNER JOIN projects p ON p.id = pm.project_id AND p.organization_id = pm.organization_id
     WHERE pm.organization_id = ? AND pm.user_id = ? AND pm.status = 'active'
-      AND pm.role IN ('owner', 'planner', 'creator', 'reviewer')
       AND p.deleted_at IS NULL AND p.status != 'archived'
     LIMIT 1
   `).bind(access.organizationId, access.userId).first<{ allowed: number }>();
@@ -105,18 +122,7 @@ export async function canAccessOrganizationVideoLibrary(access: OrganizationAcce
 }
 
 export async function canManageOrganizationVideoLibrary(access: OrganizationAccess) {
-  if (access.organizationRole === "admin") return true;
-  if (access.organizationRole === "readonly") return false;
-  const membership = await getD1().prepare(`
-    SELECT 1 AS allowed
-    FROM project_members pm
-    INNER JOIN projects p ON p.id = pm.project_id AND p.organization_id = pm.organization_id
-    WHERE pm.organization_id = ? AND pm.user_id = ? AND pm.status = 'active'
-      AND pm.role IN ('owner', 'planner', 'creator')
-      AND p.deleted_at IS NULL AND p.status != 'archived'
-    LIMIT 1
-  `).bind(access.organizationId, access.userId).first<{ allowed: number }>();
-  return Boolean(membership?.allowed);
+  return canAccessOrganizationVideoLibrary(access);
 }
 
 export function makeSlug(name: string, id: string) {

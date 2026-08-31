@@ -1,4 +1,6 @@
 export type AuthorizedKnowledgeTask = "topic" | "content" | "analysis";
+export type AuthorizedKnowledgeAtomType = "insight" | "principle" | "method" | "anti-pattern" | "case" | "tool";
+export type AuthorizedKnowledgeConfidence = "low" | "medium" | "high";
 
 /**
  * Stable, customer-safe identifiers for the licensed Liming Zhiyao method
@@ -113,12 +115,25 @@ function scoreAtom(atom: AuthorizedKnowledgeAtom, terms: string[], preferredSkil
 export async function retrieveAuthorizedKnowledge(
   db: KnowledgeDatabase,
   query: string,
-  options: { task: AuthorizedKnowledgeTask; limit?: number } = { task: "content" },
+  options: {
+    task: AuthorizedKnowledgeTask;
+    limit?: number;
+    allowedAtomTypes?: readonly AuthorizedKnowledgeAtomType[];
+    minimumConfidence?: AuthorizedKnowledgeConfidence;
+  } = { task: "content" },
 ) {
   const limit = Math.max(1, Math.min(20, options.limit ?? 6));
   const terms = authorizedKnowledgeSearchTerms(query);
   const preferredSkills = taskSkills[options.task];
   const filters: string[] = []; const bindings: string[] = [];
+  const guardFilters: string[] = []; const guardBindings: string[] = [];
+  const allowedAtomTypes = [...new Set(options.allowedAtomTypes ?? [])];
+  if (allowedAtomTypes.length) {
+    guardFilters.push(`atom_type IN (${allowedAtomTypes.map(() => "?").join(", ")})`);
+    guardBindings.push(...allowedAtomTypes);
+  }
+  if (options.minimumConfidence === "high") guardFilters.push("confidence = 'high'");
+  else if (options.minimumConfidence === "medium") guardFilters.push("confidence IN ('high', 'medium')");
   for (const term of terms) {
     filters.push("(knowledge LIKE ? ESCAPE '\\' OR original LIKE ? ESCAPE '\\' OR topics_json LIKE ? ESCAPE '\\')");
     const like = `%${escapeLike(term)}%`; bindings.push(like, like, like);
@@ -129,13 +144,16 @@ export async function retrieveAuthorizedKnowledge(
   const rows = await db.prepare(`
     SELECT id, source_id, knowledge, original, url, published_at, topics_json, skills_json, atom_type, confidence
     FROM authorized_knowledge_atoms
-    WHERE source_id = ? AND (${filters.join(" OR ")})
+    WHERE source_id = ? ${guardFilters.length ? `AND ${guardFilters.join(" AND ")}` : ""} AND (${filters.join(" OR ")})
     ORDER BY CASE confidence WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, published_at DESC
     LIMIT 240
-  `).bind(AUTHORIZED_KNOWLEDGE_SOURCE_ID, ...bindings).all<AuthorizedKnowledgeAtom>();
+  `).bind(AUTHORIZED_KNOWLEDGE_SOURCE_ID, ...guardBindings, ...bindings).all<AuthorizedKnowledgeAtom>();
 
   const unique = new Map<string, RetrievedAuthorizedKnowledge>();
   for (const atom of rows.results) {
+    if (allowedAtomTypes.length && !allowedAtomTypes.includes(atom.atom_type as AuthorizedKnowledgeAtomType)) continue;
+    if (options.minimumConfidence === "high" && atom.confidence !== "high") continue;
+    if (options.minimumConfidence === "medium" && !["high", "medium"].includes(atom.confidence)) continue;
     const scored = scoreAtom(atom, terms, preferredSkills);
     if (!scored.matchedTerms.length && !scored.skills.some((skill) => preferredSkills.includes(skill))) continue;
     const key = atom.knowledge.replace(/\s+/g, " ").trim();

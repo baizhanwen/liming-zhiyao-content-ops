@@ -99,7 +99,7 @@ export async function GET(request: Request) {
   if (!organizationId || !projectId || !contentId) return apiError("RECOMMENDATION_SCOPE_REQUIRED", "缺少公司、项目或内容任务范围。", 400);
   try {
     const projectAccess = await getProjectAccess(identity.authSubject, organizationId, projectId);
-    if (!projectAccess) return apiError("PROJECT_ACCESS_DENIED", "当前账号不能访问该客户项目。", 403);
+    if (!projectAccess) return apiError("PROJECT_ACCESS_DENIED", "当前账号不能访问该企业空间。", 403);
     const db = getD1();
     const [topic, strategy, candidateRows, feedbackRows] = await Promise.all([
       db.prepare(`SELECT t.title, t.angle, t.pillar, t.audience, t.objective, t.hook, t.rationale
@@ -120,7 +120,7 @@ export async function GET(request: Request) {
           SELECT latest_metric.id FROM video_metric_snapshots latest_metric WHERE latest_metric.organization_id = v.organization_id AND latest_metric.video_id = v.id ORDER BY latest_metric.collected_at DESC, latest_metric.created_at DESC LIMIT 1
         )
         WHERE refs.organization_id = ? AND refs.project_id = ? AND refs.purpose = 'benchmark' AND refs.status = 'active' AND v.status != 'archived'
-        ORDER BY library.updated_at DESC LIMIT 300`).bind(organizationId, projectId).all<CandidateRow>(),
+        ORDER BY analysis.created_at DESC, refs.created_at DESC LIMIT 300`).bind(organizationId, projectId).all<CandidateRow>(),
       db.prepare(`WITH cited AS (
           SELECT DISTINCT citation_id AS entry_id, content_item_id
           FROM content_citations
@@ -200,7 +200,7 @@ export async function GET(request: Request) {
         score: entry.score, scores: entry.scores, reasons: entry.reasons, matchedTerms: entry.matchedTerms,
         hasOutcomeData: entry.hasOutcomeData, recommended: entry.recommended, feedback: entry.feedback,
       })),
-      context: { topic: topic.title, candidateCount: candidates.length },
+      context: { topic: topic.title, candidateCount: candidates.length, materialScope: "project_benchmark" },
     });
   } catch (error) { return errorResponse(error); }
 }

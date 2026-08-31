@@ -25,14 +25,22 @@ test("stage six fixes organization capacity at delivery and enforces every expen
 });
 
 test("operations center monitors failures, heartbeats, overdue reviews, audit, and secret readiness", async () => {
-  const route = await readFile(new URL("../app/api/operations/route.ts", import.meta.url), "utf8");
+  const [route, modelStatuses] = await Promise.all([
+    readFile(new URL("../app/api/operations/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/model-service-status.ts", import.meta.url), "utf8"),
+  ]);
   assert.match(route, /getOrganizationAccess/);
   assert.match(route, /只有公司管理员可以查看系统运行、配额和完整审计/);
   assert.match(route, /STALE_ANALYSIS_JOBS/);
   assert.match(route, /FAILED_MODEL_CALLS/);
   assert.match(route, /OVERDUE_REVIEWS/);
   assert.match(route, /recentAudit/);
-  assert.match(route, /runtime\.CONTENT_MODEL_API_KEY \|\| runtime\.ANALYZER_LLM_API_KEY/);
+  assert.match(route, /readModelServiceStatuses/);
+  for (const service of ["contentGeneration", "analysisText", "visualUnderstanding", "projectAssistant"]) {
+    assert.match(modelStatuses, new RegExp(service));
+  }
+  assert.match(modelStatuses, /CONTENT_MODEL_API_KEY/);
+  assert.match(modelStatuses, /ANALYZER_LLM_API_KEY/);
   assert.match(route, /analyzerOnline/);
   assert.match(route, /analyzer_workers/);
   assert.doesNotMatch(route, /CONTENT_MODEL_API_KEY[^\n]*return Response\.json/);

@@ -27,5 +27,13 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules", "deliveries"]
+  "exclude": [
+    "node_modules",
+    "deliveries",
+    "03_Skill库",
+    "dbskill",
+    "data",
+    ".local",
+    ".tmp"
+  ]
 }

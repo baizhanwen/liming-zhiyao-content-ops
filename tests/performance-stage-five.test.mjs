@@ -29,8 +29,23 @@ test("analytics subtract period baselines instead of presenting lifetime totals 
   assert.deepEqual(snapshot.summary.baselineCoverage, { total: 2, complete: 2, partial: 0, newPublications: 1 });
   assert.equal(snapshot.comparison.changeRate.views, 1.7);
   assert.deepEqual(snapshot.series.map((item) => [item.date, item.views]), [["2026-08-01", 20], ["2026-08-02", 250]]);
+  assert.deepEqual(snapshot.publishedSeries.map((item) => [item.date, item.views, item.interactions]), [["2026-08-01", 350, 35]]);
+  assert.equal(snapshot.contentPerformance.length, 2);
 });
 
+test("chart datasets keep every work while the ranking remains capped", async () => {
+  const analytics = await import("../lib/performance-analytics.ts");
+  const rows = Array.from({ length: 12 }, (_, index) => ({
+    publication_id: `pub-${index}`, content_item_id: `content-${index}`, title: `作品${index}`, platform: "douyin", external_url: null,
+    published_at: `2026-08-${String(index + 1).padStart(2, "0")}T08:00:00.000Z`, observed_at: "2026-08-20T00:00:00.000Z",
+    views: 100 + index, likes: 10 + index, comments: 0, shares: 0, saves: 0, followers_gained: index, leads: 0,
+    average_watch_seconds: null, completion_rate_bps: null,
+  }));
+  const snapshot = analytics.buildAnalyticsSnapshot(rows, "2026-08-01", "2026-08-20");
+  assert.equal(snapshot.contentPerformance.length, 12);
+  assert.equal(snapshot.publishedSeries.length, 12);
+  assert.equal(snapshot.topContent.length, 10);
+});
 test("old publications without a pre-period snapshot start at the first visible anchor", async () => {
   const analytics = await import("../lib/performance-analytics.ts");
   const base = { publication_id: "pub-old", content_item_id: "content-old", title: "历史内容", platform: "douyin", external_url: null, published_at: "2026-06-01T00:00:00.000Z", likes: 50, comments: 0, shares: 0, saves: 0, followers_gained: 5, leads: 1, average_watch_seconds: null, completion_rate_bps: null };
@@ -87,6 +102,8 @@ test("performance APIs enforce project access, deduplication, matching, and immu
   assert.match(analyticsSource, /b\.status = 'completed'/);
   assert.match(analyticsSource, /SELECT MAX\(previous\.observed_at\)/);
   assert.match(analyticsSource, /safeDelta/);
+  assert.match(analyticsSource, /videoId: profile\.latest\.video_id/);
+  assert.match(analyticsSource, /LEFT JOIN videos v/);
   assert.match(reports, /FINAL_REPORT_IMMUTABLE/);
   assert.match(finalize, /status = 'draft'/);
   assert.match(finalize, /performance\.report\.finalized/);
@@ -100,6 +117,7 @@ test("insights routes use ECharts, Papa Parse, and real navigation entries", asy
     readFile(new URL("../components/InsightsWorkspace.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/EChart.tsx", import.meta.url), "utf8"),
   ]);
+  const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
   assert.match(pkg, /"echarts"/);
   assert.match(pkg, /"papaparse"/);
   assert.match(shell, /\/insights\?view=overview/);
@@ -107,5 +125,30 @@ test("insights routes use ECharts, Papa Parse, and real navigation entries", asy
   assert.match(page, /InsightsWorkspace/);
   assert.match(workspace, /Papa\.parse/);
   assert.match(workspace, /下载 CSV 模板/);
+  assert.match(workspace, /report-narrative-grid/);
+  assert.match(workspace, /diagnostic-detail-group/);
+  assert.match(workspace, /diagnostic-layer-head/);
+  assert.match(workspace, /diagnostic-layer-copy/);
+  assert.match(workspace, /暂无待补项/);
+  assert.match(css, /grid-template-columns: minmax\(135px, \.7fr\) 72px/);
+  assert.doesNotMatch(css, /diagnostic-layer\.watch > div span/);
+  assert.doesNotMatch(css, /diagnostic-layer::before/);
+  assert.match(workspace, /归因规则与数据依据/);
   assert.match(chart, /core\.init/);
+  assert.match(workspace, /按发布时间的作品表现/);
+  assert.match(workspace, /全部作品表现分布/);
+  assert.match(workspace, /analytics\.contentPerformance/);
+  assert.match(workspace, /type: "scatter"/);
+  assert.match(workspace, /formatter: performanceTooltip/);
+  assert.match(workspace, /trigger: "item", confine: true, enterable: true, hideDelay: 180[^\n]+formatter: publishedTrendTooltip/);
+  assert.match(workspace, /worksByDate/);
+  assert.match(workspace, /Array\.isArray\(params\) \? params : params && typeof params === "object" \? \[params\] : \[\]/);
+  assert.match(workspace, /悬停查看视频明细/);
+  assert.match(workspace, /已关联视频分析/);
+  assert.match(workspace, /查看视频分析/);
+  assert.match(workspace, /enterable: true/);
+  assert.doesNotMatch(workspace, /\{@\[0\]\}/);
+  assert.match(workspace, /height=\{380\}/);
+  assert.match(workspace, /singlePublishDate/);
+  assert.match(chart, /charts\.ScatterChart/);
 });

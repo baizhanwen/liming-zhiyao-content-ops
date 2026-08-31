@@ -23,19 +23,32 @@ function readStage(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 && value.trim().length <= 160 ? value.trim() : null;
 }
 
+export type AnalyzerBrowserAuthStatus = "unknown" | "logged_in" | "not_logged_in" | "unavailable" | "disabled";
+
+export function parseAnalyzerBrowserAuth(value: unknown) {
+  if (!isPlainRecord(value)) return null;
+  const status = typeof value.status === "string" && ["unknown", "logged_in", "not_logged_in", "unavailable", "disabled"].includes(value.status)
+    ? value.status as AnalyzerBrowserAuthStatus
+    : null;
+  const browser = typeof value.browser === "string" ? value.browser.trim().slice(0, 60) : "";
+  const checkedAt = typeof value.checkedAt === "string" && !Number.isNaN(Date.parse(value.checkedAt)) ? value.checkedAt : null;
+  const message = typeof value.message === "string" ? value.message.trim().slice(0, 300) : "";
+  if (!status || !checkedAt) return null;
+  return { status, browser: browser || null, checkedAt, message: message || null };
+}
 export function parseHeartbeatPayload(value: unknown) {
   if (!isPlainRecord(value)) return null;
   const workerId = normalizeWorkerId(value.workerId); const status = readStatus(value.status); const progress = readProgress(value.progress); const stage = readStage(value.stage);
   const version = typeof value.version === "number" && Number.isInteger(value.version) && value.version >= 0 ? value.version : null;
   if (!workerId || !status || !ACTIVE_WORKER_STATUSES.has(status) || progress === null || !stage || version === null) return null;
-  return { workerId, status, progress, stage, version, leaseSeconds: normalizeLeaseSeconds(value.leaseSeconds) };
+  return { workerId, status, progress, stage, version, leaseSeconds: normalizeLeaseSeconds(value.leaseSeconds), browserAuth: parseAnalyzerBrowserAuth(value.browserAuth) };
 }
 
 export function parseCheckpointPayload(value: unknown) {
   if (!isPlainRecord(value)) return null;
   const workerId = normalizeWorkerId(value.workerId);
   const version = typeof value.version === "number" && Number.isInteger(value.version) && value.version >= 0 ? value.version : null;
-  const stage = value.stage === "evidence_ready" ? value.stage : null;
+  const stage = value.stage === "evidence_ready" || value.stage === "segment_progress" ? value.stage : null;
   const checkpoint = isPlainRecord(value.checkpoint) ? value.checkpoint : null;
   if (!workerId || version === null || !stage || !checkpoint) return null;
   const checkpointJson = JSON.stringify(checkpoint);
@@ -115,5 +128,5 @@ export function validateHeartbeatTransition(job: WorkerJobRow, payload: NonNulla
 }
 
 export function canWorkerFail(status: AnalysisJobStatus) {
-  return status !== "pending" && status !== "completed" && status !== "failed" && status !== "cancelled";
+  return status !== "pending" && status !== "completed" && status !== "partial" && status !== "failed" && status !== "cancelled";
 }

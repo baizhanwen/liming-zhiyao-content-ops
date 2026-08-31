@@ -3,9 +3,11 @@ import unittest
 from dataclasses import replace
 
 from liming_analyzer.adapters import (
+    AcquiredSource,
     Keyframe,
     MediaInfo,
     NormalizedMedia,
+    SourceMetadata,
     StructureOutput,
     TranscriptOutput,
     TranscriptSegment,
@@ -13,7 +15,7 @@ from liming_analyzer.adapters import (
     VisualOutput,
 )
 from liming_analyzer.api_client import ClaimedJob
-from liming_analyzer.pipeline import AnalysisPipeline
+from liming_analyzer.pipeline import AnalysisPipeline, _visual_heartbeat_progress
 
 
 class Source:
@@ -36,6 +38,12 @@ class Speech:
 
 
 class Visual:
+    def __init__(self):
+        self.configured_profiles = []
+
+    def set_analysis_profile(self, profile):
+        self.configured_profiles.append(profile)
+
     def analyze(self, media, output_dir):
         return VisualOutput(
             (Keyframe(0, output_dir / "frame.jpg", "管理增长", 88),),
@@ -51,6 +59,18 @@ class Structure:
 
 
 class PipelineTests(unittest.TestCase):
+    def test_visual_heartbeat_reports_keyframes_and_batch_progress(self):
+        progress, detail = _visual_heartbeat_progress({
+            "phase": "vision",
+            "keyframes_completed": 45,
+            "keyframes_total": 67,
+            "batch_completed": 8,
+            "batch_total": 12,
+        })
+
+        self.assertEqual(progress, 61)
+        self.assertEqual(detail, "关键帧 45/67 · 视觉批次 8/12")
+
     def test_blocking_stages_keep_worker_presence_alive(self):
         class SlowSource(Source):
             def acquire(self, job, destination):
@@ -77,20 +97,37 @@ class PipelineTests(unittest.TestCase):
         self.assertGreaterEqual(sum(status == "analyzing" for status, *_ in stages), 3)
 
     def test_pipeline_preserves_evidence_and_emits_legal_stage_order(self):
-        job = ClaimedJob("job-1", "org-1", "project-1", "video-1", "upload", "queued", 1, 2, {})
-        structure = Structure(); stages = []
+        job = ClaimedJob("job-1", "org-1", "project-1", "video-1", "upload", "queued", 1, 2, {}, analysis_profile="max")
+        structure = Structure(); visual = Visual(); stages = []
 
         def heartbeat(status, progress, stage):
             stages.append((status, progress, stage))
             return job
 
-        result = AnalysisPipeline(Source(), Media(), Speech(), Visual(), structure).process(job, heartbeat)
+        result = AnalysisPipeline(Source(), Media(), Speech(), visual, structure).process(job, heartbeat)
         self.assertEqual([item[0] for item in stages], ["downloading", "processing", "transcribing", "extracting", "analyzing"])
         self.assertEqual(result.transcript.segments[0]["start_ms"], 0)
         self.assertEqual(result.report["evidence"][0]["text"], "先提出问题")
         self.assertEqual(result.confidence, 91)
         self.assertEqual(structure.inputs[3].stats["strategy"], "scene_plus_timeline")
+        self.assertEqual(visual.configured_profiles, ["max"])
 
+    def test_pipeline_passes_video_title_to_speech_recognizer(self):
+        class MetadataSource(Source):
+            def acquire(self, job, destination):
+                path = super().acquire(job, destination)
+                return AcquiredSource(path, SourceMetadata(title="你们那边天气怎么样？ #实习vlog"))
+
+        class ContextSpeech(Speech):
+            context = None
+
+            def set_context(self, title):
+                self.context = title
+
+        speech = ContextSpeech()
+        job = ClaimedJob("job-context", "org-1", "project-1", "video-1", "url", "queued", 1, 2, {})
+        AnalysisPipeline(MetadataSource(), Media(), speech, Visual(), Structure()).process(job, lambda *_: job)
+        self.assertEqual(speech.context, "你们那边天气怎么样？ #实习vlog")
     def test_manual_transcript_skips_asr_and_drives_reanalysis(self):
         class ForbiddenSpeech:
             def transcribe(self, _audio):

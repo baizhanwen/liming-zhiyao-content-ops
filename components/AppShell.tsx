@@ -3,7 +3,7 @@
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Bell, BookOpenText, BriefcaseBusiness, CalendarDays, ChartNoAxesCombined, ChevronDown, ClipboardCheck, FileChartColumn, FilePenLine, FolderOpen, Images, LayoutDashboard, LibraryBig, Lightbulb, LogOut, Search, Send, Settings, UsersRound, Video } from "lucide-react";
+import { Bell, BookOpenText, BrainCircuit, BriefcaseBusiness, CalendarDays, ChartNoAxesCombined, ChevronDown, ClipboardCheck, FileChartColumn, FilePenLine, FolderOpen, Images, LayoutDashboard, LibraryBig, Lightbulb, Sparkles, LogOut, Search, Send, Settings, UsersRound, Video, WandSparkles } from "lucide-react";
 import { preferredOrganizationId, preferredProjectId, scopeChangeEvent } from "../lib/client-scope";
 import { deliveryPlan, type DeliveryFeature } from "../lib/delivery-entitlements";
 
@@ -13,7 +13,7 @@ type NavigationGroup = { label: string; items: NavigationItem[] };
 const navGroups: NavigationGroup[] = [
   { label: "运营工作", items: [
     { label: "工作台", icon: LayoutDashboard, href: "/" },
-    { label: "客户项目", icon: BriefcaseBusiness, href: "/projects" },
+    { label: "企业空间", icon: BriefcaseBusiness, href: "/projects" },
     { label: "选题中心", icon: Lightbulb, href: "/topics" },
     { label: "内容生产", icon: FilePenLine, href: "/content" },
     { label: "公众号图片", icon: Images, href: "/wechat-images", feature: "wechatImages" },
@@ -22,8 +22,9 @@ const navGroups: NavigationGroup[] = [
   ] },
   { label: "研究与资产", items: [
     { label: "视频分析", icon: Video, href: "/analysis", feature: "videoAnalysis" },
+    { label: "口播改写", icon: WandSparkles, href: "/script-rewrite" },
     { label: "对标内容库", icon: LibraryBig, href: "/analysis?view=benchmark", feature: "videoAnalysis" },
-    { label: "品牌知识库", icon: BookOpenText, href: "/knowledge" },
+    { label: "品牌知识库", icon: BookOpenText, href: "/knowledge" }, { label: "项目记忆", icon: BrainCircuit, href: "/memory" }, { label: "灵感卡片", icon: Sparkles, href: "/inspiration" },
     { label: "素材中心", icon: FolderOpen, href: "/analysis?view=assets", feature: "videoAnalysis" },
   ] },
   { label: "增长复盘", items: [
@@ -79,13 +80,13 @@ export function AppShell({ children, activePath }: { children: ReactNode; active
     return () => { active = false; window.removeEventListener(scopeChangeEvent, onScopeChange); };
   }, []);
 
-  const projectName = project?.name || "尚未选择客户项目";
+  const projectName = project?.name || "尚未选择企业空间";
   const projectHref = organizationId && project ? `/projects?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(project.id)}` : "/projects";
   return (
     <div className="app-shell">
       <header className="topbar">
         <Link className="brand" href="/" aria-label="利明智耀工作台首页"><span className="brand-mark" aria-hidden="true">利</span><span>利明智耀</span></Link>
-        <Link className="project-switcher" href={projectHref} aria-label={`切换客户项目，当前为${projectName}`}><span className="project-logo">{project ? projectName.slice(0, 1) : "—"}</span><span className="project-copy"><small>当前客户项目</small><strong>{projectName}</strong></span><ChevronDown className="project-chevron" aria-hidden="true" /></Link>
+        <Link className="project-switcher" href={projectHref} aria-label={`切换企业空间，当前为${projectName}`}><span className="project-logo">{project ? projectName.slice(0, 1) : "—"}</span><span className="project-copy"><small>当前企业空间</small><strong>{projectName}</strong></span><ChevronDown className="project-chevron" aria-hidden="true" /></Link>
         <div className="top-actions">
           <Link className="search-button" href="/search" aria-label="全局搜索"><Search className="top-icon" aria-hidden="true" /><span>搜索内容、视频或成员</span><kbd>⌘ K</kbd></Link>
           <Link className="icon-button notification" href="/settings#alerts" aria-label="查看运行告警"><Bell className="top-icon" aria-hidden="true" /><i /></Link>

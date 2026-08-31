@@ -8,7 +8,7 @@ export async function POST(request: Request, context: { params: Promise<{ itemId
   try {
     const payload = await request.json() as { organizationId?: string; projectId?: string }; const organizationId = payload.organizationId?.trim() ?? ""; const projectId = payload.projectId?.trim() ?? ""; const { itemId } = await context.params;
     if (!organizationId || !projectId) return apiError("PROJECT_SCOPE_REQUIRED", "缺少公司或项目范围。", 400);
-    const access = await getProjectAccess(identity.authSubject, organizationId, projectId); if (!access || !canManageProjectKnowledge(access)) return apiError("KNOWLEDGE_MANAGER_REQUIRED", "只有项目负责人或策划可以确认品牌知识。", 403);
+    const access = await getProjectAccess(identity.authSubject, organizationId, projectId); if (!access || !canManageProjectKnowledge(access)) return apiError("KNOWLEDGE_MANAGER_REQUIRED", "只有公司管理员或已分配到当前企业空间的员工可以确认品牌知识。", 403);
     const user = await ensureUser(identity); const db = getD1(); const now = new Date().toISOString();
     const results = await db.batch([
       db.prepare("UPDATE knowledge_items SET status = 'confirmed', confirmed_by = ?, confirmed_at = ?, updated_by = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'draft' AND deleted_at IS NULL").bind(user.id, now, user.id, now, itemId, organizationId, projectId),

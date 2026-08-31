@@ -1,10 +1,11 @@
-export function privateR2Response(object: R2ObjectBody, request: Request) {
+export function privateR2Response(object: R2ObjectBody, request: Request, options?: { storageSource?: "primary" | "legacy" }) {
   const headers = new Headers();
   object.writeHttpMetadata(headers);
   headers.set("etag", object.httpEtag);
   headers.set("accept-ranges", "bytes");
   headers.set("cache-control", "private, no-store");
   if (!headers.has("content-type")) headers.set("content-type", "application/octet-stream");
+  if (options?.storageSource) headers.set("x-media-storage-source", options.storageSource);
   const partial = request.headers.has("range") && Boolean(object.range);
   if (partial && object.range) {
     const suffix = "suffix" in object.range ? Math.min(object.range.suffix ?? object.size, object.size) : null;

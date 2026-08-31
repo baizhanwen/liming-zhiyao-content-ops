@@ -8,7 +8,7 @@ export async function POST(request: Request, context: { params: Promise<{ strate
   try {
     const payload = await request.json() as { organizationId?: string; projectId?: string }; const organizationId = payload.organizationId?.trim() ?? ""; const projectId = payload.projectId?.trim() ?? ""; const { strategyId } = await context.params;
     if (!organizationId || !projectId) return apiError("PROJECT_SCOPE_REQUIRED", "缺少公司或项目范围。", 400);
-    const access = await getProjectAccess(identity.authSubject, organizationId, projectId); if (!access || !canManageProjectKnowledge(access)) return apiError("STRATEGY_MANAGER_REQUIRED", "只有项目负责人或策划可以启用策略。", 403);
+    const access = await getProjectAccess(identity.authSubject, organizationId, projectId); if (!access || !canManageProjectKnowledge(access)) return apiError("STRATEGY_MANAGER_REQUIRED", "只有公司管理员或已分配到当前企业空间的员工可以启用策略。", 403);
     const user = await ensureUser(identity); const db = getD1(); const target = await db.prepare("SELECT id, status, version FROM content_strategies WHERE id = ? AND organization_id = ? AND project_id = ?").bind(strategyId, organizationId, projectId).first<{ id: string; status: string; version: number }>();
     if (!target) return apiError("STRATEGY_NOT_FOUND", "内容策略不存在。", 404); if (target.status === "active") return Response.json({ strategy: target, idempotent: true });
     const now = new Date().toISOString(); const results = await db.batch([

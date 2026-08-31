@@ -1,6 +1,7 @@
 import { canAccessOrganizationVideoLibrary, getD1, getOrganizationAccess } from "../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../lib/api-response";
 import { readRequestIdentity } from "../../../../lib/request-auth";
+import { serializeVideoKnowledgeAtom, type VideoKnowledgeAtomSourceRow } from "../../../../lib/video-knowledge-atom-source";
 
 function parseJson(value: unknown) {
   if (typeof value !== "string") return null;
@@ -30,13 +31,14 @@ export async function GET(request: Request, context: { params: Promise<{ entryId
     `).bind(entryId, organizationId).first<Record<string, unknown>>();
     if (!video) return apiError("LIBRARY_ENTRY_NOT_FOUND", "公司素材不存在。", 404);
     const sourceProjectId = String(video.project_id); const videoId = String(video.id);
-    const [job, transcript, analyses, metrics, events, assets] = await Promise.all([
+    const [job, transcript, analyses, metrics, events, assets, atoms] = await Promise.all([
       db.prepare("SELECT id, status, progress, current_stage, error_code, error_message, retry_count, created_at, updated_at, completed_at FROM analysis_jobs WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY created_at DESC LIMIT 1").bind(organizationId, sourceProjectId, videoId).first<Record<string, unknown>>(),
       db.prepare("SELECT id, version, language, source, full_text, segments_json, confidence, created_at, updated_at FROM video_transcripts WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY version DESC LIMIT 1").bind(organizationId, sourceProjectId, videoId).first<Record<string, unknown>>(),
-      db.prepare("SELECT id, schema_version, report_json, confidence, model_provider, model_name, prompt_version, created_at FROM video_analyses WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY created_at DESC LIMIT 8").bind(organizationId, sourceProjectId, videoId).all<Record<string, unknown>>(),
+      db.prepare("SELECT id, analysis_job_id, schema_version, report_json, confidence, model_provider, model_name, prompt_version, created_at FROM video_analyses WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY created_at DESC LIMIT 8").bind(organizationId, sourceProjectId, videoId).all<Record<string, unknown>>(),
       db.prepare("SELECT source, plays, likes, comments, favorites, shares, followers_gained, collected_at FROM video_metric_snapshots WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY collected_at DESC LIMIT 10").bind(organizationId, sourceProjectId, videoId).all(),
       db.prepare("SELECT event_type, from_status, to_status, progress, details_json, created_at FROM analysis_job_events WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY created_at DESC LIMIT 50").bind(organizationId, sourceProjectId, videoId).all<Record<string, unknown>>(),
-      db.prepare("SELECT id, kind, filename, content_type, size_bytes, is_cover, quality_score, created_at FROM media_assets WHERE organization_id = ? AND project_id = ? AND video_id = ? AND kind IN ('keyframe', 'subtitle', 'report') AND status = 'active' ORDER BY kind, is_cover DESC, COALESCE(quality_score, 0) DESC, created_at ASC").bind(organizationId, sourceProjectId, videoId).all<Record<string, unknown>>(),
+      db.prepare("SELECT id, analysis_job_id, kind, filename, content_type, size_bytes, is_cover, quality_score, created_at FROM media_assets WHERE organization_id = ? AND project_id = ? AND video_id = ? AND kind IN ('keyframe', 'subtitle', 'report') AND status = 'active' ORDER BY kind, is_cover DESC, COALESCE(quality_score, 0) DESC, created_at ASC").bind(organizationId, sourceProjectId, videoId).all<Record<string, unknown>>(),
+      db.prepare("SELECT atom.id, atom.atom_key, atom.atom_type, atom.title, atom.content, atom.structured_json, atom.source_locator_json, atom.confidence, atom.report_hash, atom.extractor_version, atom.status, atom.superseded_by, atom.analysis_id, analysis.created_at AS analysis_created_at, v.id AS video_id, v.project_id, atom.created_at, atom.updated_at FROM video_knowledge_atoms atom INNER JOIN video_analyses analysis ON analysis.id = atom.analysis_id AND analysis.organization_id = atom.organization_id INNER JOIN videos v ON v.id = analysis.video_id AND v.organization_id = analysis.organization_id AND v.deleted_at IS NULL WHERE atom.organization_id = ? AND atom.library_entry_id = ? AND analysis.project_id = ? AND analysis.video_id = ? ORDER BY atom.created_at DESC").bind(organizationId, entryId, sourceProjectId, videoId).all<VideoKnowledgeAtomSourceRow>(),
     ]);
     return Response.json({
       entry: { ...video, tags: parseJson(video.tags_json) ?? [], tags_json: undefined },
@@ -46,6 +48,7 @@ export async function GET(request: Request, context: { params: Promise<{ entryId
       analyses: analyses.results.map((analysis) => ({ ...analysis, report: parseJson(analysis.report_json), report_json: undefined })),
       metrics: metrics.results,
       assets: assets.results.map((asset) => ({ ...asset, url: `/api/video-library/${encodeURIComponent(entryId)}/assets/${encodeURIComponent(String(asset.id))}?organizationId=${encodeURIComponent(organizationId)}` })),
+      knowledgeAtoms: atoms.results.map((atom) => serializeVideoKnowledgeAtom(atom)),
       events: events.results.map((event) => ({ ...event, details: parseJson(event.details_json), details_json: undefined })),
     });
   } catch (error) { return errorResponse(error); }

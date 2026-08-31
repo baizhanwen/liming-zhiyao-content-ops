@@ -107,31 +107,39 @@ class YtDlpPublicVideoResolver:
             "socket_timeout": 30,
             "retries": 2,
         }
-        using_cookie_file = self._cookie_file is not None and self._cookie_file.is_file()
-        if using_cookie_file:
-            options["cookiefile"] = str(self._cookie_file)
-        elif self._cookies_from_browser is not None:
-            options["cookiesfrombrowser"] = self._cookies_from_browser
-        try:
-            with self._factory(options) as downloader:
-                info = downloader.extract_info(url, download=True)
-        except Exception as error:
-            message = str(error)
-            if "cookie" in message.lower():
-                if using_cookie_file:
+        cookie_file_available = self._cookie_file is not None and self._cookie_file.is_file()
+        attempts: list[tuple[str, dict[str, Any]]] = []
+        if self._cookies_from_browser is not None:
+            attempts.append(("browser", {"cookiesfrombrowser": self._cookies_from_browser}))
+        if cookie_file_available:
+            attempts.append(("cookie_file", {"cookiefile": str(self._cookie_file)}))
+        if not attempts:
+            attempts.append(("none", {}))
+        info: Any = None
+        for attempt_index, (authentication_mode, authentication_options) in enumerate(attempts):
+            try:
+                with self._factory({**options, **authentication_options}) as downloader:
+                    info = downloader.extract_info(url, download=True)
+                break
+            except Exception as error:
+                if attempt_index < len(attempts) - 1:
+                    continue
+                message = str(error)
+                if "cookie" in message.lower():
+                    if authentication_mode == "cookie_file":
+                        raise RuntimeError(
+                            "本地浏览器登录态和备用 Cookie 都无法使用。请重新登录抖音，"
+                            "或更新备用 cookies.txt。"
+                        ) from error
+                    if authentication_mode == "browser":
+                        raise RuntimeError(
+                            "无法读取本地浏览器登录态。请确认 Edge 已登录抖音；"
+                            "仍失败时再导入备用 cookies.txt。"
+                        ) from error
                     raise RuntimeError(
-                        "抖音 Cookie 快照已失效。请在视频分析页点击“更新 Cookie”，"
-                        "重新选择从抖音导出的 cookies.txt。"
+                        "抖音要求登录态。请先在本机 Edge 登录抖音，或导入备用 cookies.txt。"
                     ) from error
-                if self._cookies_from_browser is None:
-                    raise RuntimeError(
-                        "抖音要求新鲜 Cookie。请在视频分析页点击“更新 Cookie”，或改用本地上传。"
-                    ) from error
-                raise RuntimeError(
-                    "无法读取浏览器 Cookie。请从 Edge 扩展导出 cookies.txt，"
-                    "再到视频分析页点击“更新 Cookie”。"
-                ) from error
-            raise
+                raise
         if not isinstance(info, dict):
             raise TypeError("public resolver returned invalid metadata")
         candidates: list[Path] = []

@@ -61,30 +61,28 @@ export const publicationRecordSchema = z.object({
   if (value.status === "failed" && !value.errorMessage) context.addIssue({ code: "custom", path: ["errorMessage"], message: "发布失败时必须填写原因" });
 });
 
-function isAdmin(access: ProjectAccess) { return access.organizationRole === "admin"; }
-function hasProjectRole(access: ProjectAccess, roles: readonly string[]) { return access.projectRole !== null && roles.includes(access.projectRole); }
+function hasProjectAccess(access: ProjectAccess) { return access.organizationRole === "admin" || access.projectRole !== null; }
 
 export function canSubmitContent(access: ProjectAccess) {
-  return isAdmin(access) || (access.organizationRole !== "readonly" && hasProjectRole(access, ["owner", "planner", "creator"]));
+  return hasProjectAccess(access);
 }
 
 export function canInternalReview(access: ProjectAccess) {
-  return isAdmin(access) || (access.organizationRole !== "readonly" && hasProjectRole(access, ["owner", "reviewer"]));
+  return hasProjectAccess(access);
 }
 
 export function canCommentOnContent(access: ProjectAccess, visibility: "internal" | "client") {
-  if (access.organizationRole === "readonly" || access.projectRole === "readonly") return false;
-  if (hasProjectRole(access, ["client"])) return visibility === "client";
-  return isAdmin(access) || access.projectRole !== null;
+  void visibility;
+  return hasProjectAccess(access);
 }
 
 export function canManagePublishing(access: ProjectAccess) {
-  return isAdmin(access) || (access.organizationRole !== "readonly" && hasProjectRole(access, ["owner", "planner", "creator"]));
+  return hasProjectAccess(access);
 }
 
 export function allowedWorkflowTransition(access: ProjectAccess, from: ContentStatus, to: ContentStatus) {
   if (from === to || from === "archived" || from === "reviewed") return false;
-  if (to === "archived") return isAdmin(access) || (access.organizationRole !== "readonly" && hasProjectRole(access, ["owner"]));
+  if (to === "archived") return hasProjectAccess(access);
   if ((from === "draft" || from === "internal_revision") && to === "internal_review") return canSubmitContent(access);
   if (from === "internal_review" && (to === "shooting_ready" || to === "internal_revision")) return canInternalReview(access);
   // 兼容旧数据：已经停留在 client_review 的内容由内部审核人直接处理，

@@ -70,9 +70,22 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     const bytes = await request.arrayBuffer();
     if (bytes.byteLength <= 0 || bytes.byteLength > sizeLimits[kind]) return apiError("INVALID_ARTIFACT_SIZE", "分析产物大小无效。", 413);
     const sha256 = await sha256Hex(bytes);
-    const assetId = crypto.randomUUID();
     const timestampMs = integerHeader(request, "x-artifact-timestamp-ms", 0, 86_400_000);
     const confidence = integerHeader(request, "x-artifact-confidence", 0, 100);
+    const existing = await db.prepare(`
+      SELECT id, kind, filename, content_type, size_bytes, sha256
+      FROM media_assets
+      WHERE organization_id = ? AND project_id = ? AND video_id = ?
+        AND analysis_job_id = ? AND kind = ? AND filename = ? AND sha256 = ? AND status = 'active'
+      LIMIT 1
+    `).bind(job.organization_id, job.project_id, job.video_id, jobId, kind, filename, sha256).first<Record<string, unknown>>();
+    if (existing) {
+      return Response.json({
+        asset: { id: existing.id, kind: existing.kind, filename: existing.filename, contentType: existing.content_type, sizeBytes: existing.size_bytes, sha256: existing.sha256, timestampMs, confidence },
+        reused: true,
+      });
+    }
+    const assetId = crypto.randomUUID();
     storedKey = `organizations/${job.organization_id}/projects/${job.project_id}/videos/${job.video_id}/${kind}/${assetId}-${filename}`;
     await getMediaBucket().put(storedKey, bytes, {
       httpMetadata: { contentType: rawContentType },
@@ -88,9 +101,9 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     });
     await db.prepare(`
       INSERT INTO media_assets
-        (id, organization_id, project_id, video_id, kind, r2_key, filename, content_type, size_bytes, sha256, status, created_by, updated_by, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
-    `).bind(assetId, job.organization_id, job.project_id, job.video_id, kind, storedKey, filename, rawContentType, bytes.byteLength, sha256, `service:${workerId}`, `service:${workerId}`, now, now).run();
+        (id, organization_id, project_id, video_id, analysis_job_id, kind, r2_key, filename, content_type, size_bytes, sha256, status, created_by, updated_by, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
+    `).bind(assetId, job.organization_id, job.project_id, job.video_id, jobId, kind, storedKey, filename, rawContentType, bytes.byteLength, sha256, `service:${workerId}`, `service:${workerId}`, now, now).run();
     storedKey = null;
     return Response.json({ asset: { id: assetId, kind, filename, contentType: rawContentType, sizeBytes: bytes.byteLength, sha256, timestampMs, confidence } }, { status: 201 });
   } catch (error) {

@@ -6,6 +6,7 @@ import { getOrganizationCapacity, readOrganizationUsage } from "../../../lib/ope
 import { hasLocalPassword } from "../../../lib/local-auth";
 import { readRequestIdentity } from "../../../lib/request-auth";
 import { deliveryPlan } from "../../../lib/delivery-entitlements";
+import { readModelServiceStatuses } from "../../../lib/model-service-status";
 
 const updateSchema = z.object({
   organizationId: z.string().uuid(),
@@ -26,7 +27,7 @@ export async function GET(request: Request) {
     const now = new Date();
     const since24h = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
     const staleBefore = new Date(now.getTime() - 10 * 60 * 1000).toISOString();
-    const [organization, capacity, usage, failedJobs, staleJobs, failedModels, failedPublications, overdueReviews, recentAudit, lastWorkerHeartbeat, localPasswordConfigured] = await Promise.all([
+    const [organization, capacity, usage, failedJobs, staleJobs, failedModels, failedPublications, overdueReviews, recentAudit, lastWorkerHeartbeat, localPasswordConfigured, latestVisionProbe] = await Promise.all([
       db.prepare("SELECT id, name, slug, status, created_at, updated_at FROM organizations WHERE id = ?").bind(organizationId).first<Record<string, unknown>>(),
       getOrganizationCapacity(organizationId, user.id),
       readOrganizationUsage(organizationId),
@@ -40,6 +41,7 @@ export async function GET(request: Request) {
         WHERE a.organization_id = ? ORDER BY a.created_at DESC LIMIT 30`).bind(organizationId).all(),
       db.prepare("SELECT MAX(last_seen_at) AS value FROM analyzer_workers WHERE status = 'online'").first<{ value: string | null }>(),
       hasLocalPassword(user.id),
+      db.prepare("SELECT metadata_json FROM audit_logs WHERE organization_id = ? AND action = 'model.vision_probe' AND target_id = 'visualUnderstanding' ORDER BY created_at DESC LIMIT 1").bind(organizationId).first<{ metadata_json: string }>(),
     ]);
 
     const alerts: Array<{ code: string; severity: "warning" | "critical"; title: string; message: string }> = [];
@@ -58,14 +60,15 @@ export async function GET(request: Request) {
     ] as const;
     for (const [code, label, current, limit] of quotaPairs) if (limit > 0 && current / limit >= 0.8) alerts.push({ code, severity: current >= limit ? "critical" : "warning", title: `${label}接近配额`, message: `已使用 ${current} / ${limit}，请清理数据或联系软件提供方升级授权。` });
 
-    const runtime = env as typeof env & { ANALYZER_SERVICE_TOKEN?: string; CONTENT_MODEL_API_KEY?: string; CONTENT_MODEL_BASE_URL?: string; CONTENT_MODEL_NAME?: string; ANALYZER_LLM_API_KEY?: string; ANALYZER_LLM_BASE_URL?: string; ANALYZER_LLM_MODEL?: string };
+    const runtime = env as typeof env & { ANALYZER_SERVICE_TOKEN?: string };
+    let visualProbe: unknown = null;
+    if (latestVisionProbe?.metadata_json) {
+      try { visualProbe = JSON.parse(latestVisionProbe.metadata_json); } catch { visualProbe = null; }
+    }
+    const modelServices = readModelServiceStatuses(runtime as unknown as Record<string, unknown>, { visualProbe });
     const workerLastSeen = lastWorkerHeartbeat?.value ?? null;
     const analyzerOnline = Boolean(workerLastSeen && new Date(workerLastSeen).getTime() >= Date.now() - 20_000);
-    const contentModelConfigured = Boolean(
-      (runtime.CONTENT_MODEL_API_KEY || runtime.ANALYZER_LLM_API_KEY)?.trim()
-      && (runtime.CONTENT_MODEL_BASE_URL || runtime.ANALYZER_LLM_BASE_URL)?.trim()
-      && (runtime.CONTENT_MODEL_NAME || runtime.ANALYZER_LLM_MODEL)?.trim()
-    );
+    const contentModelConfigured = modelServices.contentGeneration.configured;
     return Response.json({
       organization, organizationRole: access.organizationRole, capacity, usage, alerts,
       license: { planCode: deliveryPlan.code, planName: deliveryPlan.name, deliveryMode: deliveryPlan.deliveryMode, features: deliveryPlan.features },
@@ -74,6 +77,7 @@ export async function GET(request: Request) {
         analyzerCredentialConfigured: Boolean(runtime.ANALYZER_SERVICE_TOKEN?.trim()),
         analyzerOnline,
         contentModelConfigured,
+        models: modelServices,
         localPasswordConfigured,
         lastWorkerHeartbeat: workerLastSeen,
       },

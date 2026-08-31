@@ -66,7 +66,7 @@ test("historical style application objectively checks use and rejects copied pas
   assert.ok(copied.originality.longestSharedCharacters >= 18);
 });
 
-test("brand knowledge workspace exposes history memory, batch import and generation traces it", async () => {
+test("brand knowledge workspace hides history module while generation still traces published copy", async () => {
   const [schema, migration, workspace, batchImport, recordUpdate, historyApi, generation, publication, production, contentWorkspace] = await Promise.all([
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0016_published_copy_memory.sql", import.meta.url), "utf8"),
@@ -81,13 +81,10 @@ test("brand knowledge workspace exposes history memory, batch import and generat
   ]);
   assert.match(schema, /publishedCopyRecords/);
   assert.match(migration, /published_copy_records/);
-  assert.match(workspace, /历史发布文案/);
-  assert.match(workspace, /保存并分析文案/);
-  assert.match(workspace, /生成新文案时自动检索最多 5 篇/);
-  assert.match(workspace, /PublishedCopyBatchImport/);
-  assert.match(workspace, /高表现表达画像/);
-  assert.match(workspace, /PublishedCopyPerformanceEditor/);
-  assert.match(workspace, /按效果表现/);
+  assert.doesNotMatch(workspace, /历史发布文案/);
+  assert.doesNotMatch(workspace, /\/api\/published-copy/);
+  assert.doesNotMatch(workspace, /PublishedCopyBatchImport/);
+  assert.doesNotMatch(workspace, /PublishedCopyPerformanceEditor/);
   assert.match(batchImport, /publishedCopyImportRowSchema/);
   assert.match(batchImport, /与当前项目中已有文案重复/);
   assert.match(recordUpdate, /published_copy\.performance_updated/);

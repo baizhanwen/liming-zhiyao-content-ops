@@ -10,7 +10,8 @@ if (-not [Environment]::Is64BitOperatingSystem) {
 }
 
 $fileName = "python-$Version-amd64.exe"
-$downloadUrl = "https://www.python.org/ftp/python/$Version/$fileName"
+$mirrorDownloadUrl = "https://mirrors.aliyun.com/python-release/windows/$fileName"
+$officialDownloadUrl = "https://www.python.org/ftp/python/$Version/$fileName"
 $downloadDirectory = Join-Path ([IO.Path]::GetTempPath()) "LimingZhiyao"
 $installerPath = Join-Path $downloadDirectory $fileName
 New-Item -ItemType Directory -Force -Path $downloadDirectory | Out-Null
@@ -24,15 +25,31 @@ function Test-PythonInstaller([string]$Path) {
 
 if (-not (Test-PythonInstaller $installerPath)) {
     Remove-Item -LiteralPath $installerPath -Force -ErrorAction SilentlyContinue
-    Write-Host "[Liming Zhiyao] Downloading Python $Version (64-bit)..."
-    try {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        Invoke-WebRequest -UseBasicParsing -Uri $downloadUrl -OutFile $installerPath
-    } catch {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $downloadSources = @(
+        @{ Label = "Aliyun Python mirror"; Url = $mirrorDownloadUrl },
+        @{ Label = "official python.org"; Url = $officialDownloadUrl }
+    )
+    foreach ($source in $downloadSources) {
+        Write-Host "[Liming Zhiyao] Downloading Python $Version (64-bit) from $($source.Label)..."
         Remove-Item -LiteralPath $installerPath -Force -ErrorAction SilentlyContinue
-        Write-Host "[NOTICE] Direct download failed; retrying with Windows BITS..."
-        Import-Module BitsTransfer -ErrorAction Stop
-        Start-BitsTransfer -Source $downloadUrl -Destination $installerPath -ErrorAction Stop
+        try {
+            Invoke-WebRequest -UseBasicParsing -Uri $source.Url -OutFile $installerPath
+        } catch {
+            Remove-Item -LiteralPath $installerPath -Force -ErrorAction SilentlyContinue
+            Write-Host "[NOTICE] Direct download from $($source.Label) failed; retrying with Windows BITS..."
+            try {
+                Import-Module BitsTransfer -ErrorAction Stop
+                Start-BitsTransfer -Source $source.Url -Destination $installerPath -ErrorAction Stop
+            } catch {
+                Remove-Item -LiteralPath $installerPath -Force -ErrorAction SilentlyContinue
+            }
+        }
+        if (Test-PythonInstaller $installerPath) {
+            Write-Host "[OK] Python installer passed the official publisher signature check."
+            break
+        }
+        Write-Host "[NOTICE] $($source.Label) did not provide a valid signed installer; trying the next source."
     }
 }
 

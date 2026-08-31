@@ -5,6 +5,7 @@ from pathlib import Path
 
 from liming_analyzer.cookie_snapshot import (
     import_cookie_file,
+    inspect_browser_authentication,
     is_douyin_cookie,
     snapshot_browser_cookies,
 )
@@ -71,13 +72,26 @@ class SourceTests(unittest.TestCase):
         )
         with (
             tempfile.TemporaryDirectory() as directory,
-            self.assertRaisesRegex(RuntimeError, r"更新 Cookie"),
+            self.assertRaisesRegex(RuntimeError, r"本地浏览器登录态"),
         ):
             resolver.download(
                 "https://www.douyin.com/video/1",
                 Path(directory) / "source",
             )
 
+    def test_browser_auth_detects_real_session_cookie_without_exposing_values(self):
+        status = inspect_browser_authentication("edge", SnapshotDownloader)
+        self.assertEqual(status["status"], "logged_in")
+        self.assertEqual(status["browser"], "edge")
+        self.assertNotIn("value", status["message"])
+
+    def test_browser_auth_rejects_non_session_douyin_cookie(self):
+        class AnonymousDownloader(SnapshotDownloader):
+            def __init__(self, _options):
+                self.cookiejar = [make_cookie(".douyin.com", "ttwid")]
+
+        status = inspect_browser_authentication("edge", AnonymousDownloader)
+        self.assertEqual(status["status"], "not_logged_in")
     def test_cookie_snapshot_keeps_only_douyin_domains(self):
         self.assertTrue(is_douyin_cookie(make_cookie(".douyin.com", "sessionid")))
         self.assertFalse(is_douyin_cookie(make_cookie("example.com", "sessionid")))

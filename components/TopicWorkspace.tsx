@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
-import { preferredOrganizationId, preferredProjectId, rememberCurrentScope } from "../lib/client-scope";
+import { preferredOrganizationId, preferredProjectId, rememberCurrentScope, scopedFetch } from "../lib/client-scope";
 
 type Organization = { id: string; name: string };
 type Project = { id: string; name: string };
@@ -27,19 +27,20 @@ export function TopicWorkspace({ initialOrganizationId = "", initialProjectId = 
 
   const loadWorkspace = useCallback(async (orgId: string, projId: string) => {
     setSelectedKnowledgeIds([]); setDeleteCandidate(null); setDeleteConfirmation(""); if (!orgId || !projId) return; const query = `organizationId=${encodeURIComponent(orgId)}&projectId=${encodeURIComponent(projId)}`;
-    const [topicResponse, knowledgeResponse] = await Promise.all([fetch(`/api/topics?${query}`), fetch(`/api/knowledge?${query}`)]);
+    const [topicResponse, knowledgeResponse] = await Promise.all([scopedFetch(`/api/topics?${query}`), scopedFetch(`/api/knowledge?${query}`)]);
     if (!topicResponse.ok) throw new Error(await readError(topicResponse)); if (!knowledgeResponse.ok) throw new Error(await readError(knowledgeResponse));
     const topicBody = await topicResponse.json() as { topics: Topic[]; citations: Citation[]; canWrite: boolean; canDelete: boolean }; const knowledgeBody = await knowledgeResponse.json() as { items: KnowledgeItem[] };
     setTopics(topicBody.topics); setCitations(topicBody.citations); setCanWrite(topicBody.canWrite); setCanDelete(topicBody.canDelete); setKnowledge(knowledgeBody.items.filter((item) => item.status === "confirmed"));
   }, []);
-  const loadProjects = useCallback(async (orgId: string, preferred = "") => { const response = await fetch(`/api/projects?organizationId=${encodeURIComponent(orgId)}`); if (!response.ok) throw new Error(await readError(response)); const body = await response.json() as { projects: Project[] }; setProjects(body.projects); const selected = preferredProjectId(body.projects, preferred); setProjectId(selected); rememberCurrentScope(orgId, selected); await loadWorkspace(orgId, selected); }, [loadWorkspace]);
+  const loadProjects = useCallback(async (orgId: string, preferred = "") => {
+    rememberCurrentScope(orgId, ""); const response = await scopedFetch(`/api/projects?organizationId=${encodeURIComponent(orgId)}`); if (!response.ok) throw new Error(await readError(response)); const body = await response.json() as { projects: Project[] }; setProjects(body.projects); const selected = preferredProjectId(body.projects, preferred); setProjectId(selected); rememberCurrentScope(orgId, selected); await loadWorkspace(orgId, selected); }, [loadWorkspace]);
   useEffect(() => { let active = true; (async () => { try { const response = await fetch("/api/organizations"); if (!response.ok) throw new Error(await readError(response)); const body = await response.json() as { organizations: Organization[] }; if (!active) return; setOrganizations(body.organizations); const selected = preferredOrganizationId(body.organizations, initialOrganizationId); setOrganizationId(selected); if (selected) await loadProjects(selected, initialProjectId); } catch (reason) { if (active) setError(reason instanceof Error ? reason.message : "加载失败"); } finally { if (active) setLoading(false); } })(); return () => { active = false; }; }, [initialOrganizationId, initialProjectId, loadProjects]);
   useEffect(() => { if (deleteCandidate) deleteConfirmationInputRef.current?.focus(); }, [deleteCandidate]);
 
   async function createTopic(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setSaving(true); setError(""); const formElement = event.currentTarget; const form = new FormData(formElement); const sourceKnowledgeItemIds = selectedKnowledgeIds;
     const priority = String(form.get("priority") || "").trim();
-    const response = await fetch("/api/topics", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, sourceVideoId, sourceKnowledgeItemIds, title: form.get("title"), angle: form.get("angle"), pillar: form.get("pillar"), audience: form.get("audience"), objective: form.get("objective"), hook: form.get("hook"), rationale: form.get("rationale"), priority: priority ? Number(priority) : 50 }) });
+    const response = await scopedFetch("/api/topics", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, sourceVideoId, sourceKnowledgeItemIds, title: form.get("title"), angle: form.get("angle"), pillar: form.get("pillar"), audience: form.get("audience"), objective: form.get("objective"), hook: form.get("hook"), rationale: form.get("rationale"), priority: priority ? Number(priority) : 50 }) });
     if (!response.ok) { setError(await readError(response)); setSaving(false); return; } const body = await response.json() as { topic: Topic; citation: Citation | null; citations?: Citation[] }; const createdCitations = body.citations ?? (body.citation ? [body.citation] : []); setTopics((current) => [body.topic, ...current]); if (createdCitations.length) setCitations((current) => [...createdCitations, ...current]); formElement.reset(); setSelectedKnowledgeIds([]); setGenerationMessage(""); setSaving(false);
   }
 
@@ -48,7 +49,7 @@ export function TopicWorkspace({ initialOrganizationId = "", initialProjectId = 
     if (topic.status === "drafting") { window.location.assign(destination); return; }
     setMovingTopicId(topic.id); setError("");
     try {
-      const response = await fetch("/api/content-items", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, topicId: topic.id }) });
+      const response = await scopedFetch("/api/content-items", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, topicId: topic.id }) });
       if (!response.ok) throw new Error(await readError(response));
       window.location.assign(destination);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "选题进入内容生产失败，请稍后重试。"); setMovingTopicId(""); }
@@ -63,7 +64,7 @@ export function TopicWorkspace({ initialOrganizationId = "", initialProjectId = 
     event.preventDefault(); if (!deleteCandidate || deleteConfirmation.trim() !== deleteCandidate.title) return;
     const topic = deleteCandidate; setDeletingTopicId(topic.id); setError("");
     try {
-      const response = await fetch("/api/topics", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, topicId: topic.id, confirmationTitle: deleteConfirmation }) });
+      const response = await scopedFetch("/api/topics", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, topicId: topic.id, confirmationTitle: deleteConfirmation }) });
       if (!response.ok) throw new Error(await readError(response));
       setTopics((current) => current.filter((item) => item.id !== topic.id));
       setCitations((current) => current.filter((citation) => citation.topic_id !== topic.id));
@@ -84,7 +85,7 @@ export function TopicWorkspace({ initialOrganizationId = "", initialProjectId = 
     setGeneratingFields(targets); setGenerationMessage(""); setError("");
     try {
       const draft = { title, angle: formValue("angle"), pillar: formValue("pillar"), priority: formValue("priority"), audience: formValue("audience"), objective: formValue("objective"), hook: formValue("hook"), rationale: formValue("rationale") };
-      const response = await fetch("/api/topics/generate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, sourceVideoId, sourceKnowledgeItemIds: selectedKnowledgeIds, draft, targets }) });
+      const response = await scopedFetch("/api/topics/generate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, sourceVideoId, sourceKnowledgeItemIds: selectedKnowledgeIds, draft, targets }) });
       if (!response.ok) throw new Error(await readError(response));
       const body = await response.json() as { generated: Partial<Record<GeneratedField, string | number>> };
       for (const field of targets) {
@@ -92,7 +93,7 @@ export function TopicWorkspace({ initialOrganizationId = "", initialProjectId = 
         if (element && body.generated[field] !== undefined) element.value = String(body.generated[field]);
       }
       const baseMessage = targets.length === 1 ? `${generatedFieldLabels[targets[0]]}已重新生成，你可以直接修改或再次生成。` : `已补全 ${targets.length} 项空白内容，原有内容保持不变。`;
-      setGenerationMessage(`${baseMessage} 本次只使用当前客户项目内的资料。`);
+      setGenerationMessage(`${baseMessage} 本次只使用当前企业空间内的资料。`);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "选题内容生成失败，请稍后再试。"); }
     finally { setGeneratingFields([]); }
   }
@@ -115,9 +116,9 @@ export function TopicWorkspace({ initialOrganizationId = "", initialProjectId = 
   }
 
   if (loading) return <div className="management-state" role="status">正在载入选题中心…</div>;
-  if (error && organizations.length === 0) return <div className="management-state error-state"><strong>暂时无法进入选题中心</strong><p>{error}</p><small>请确认本地身份已启用，并先创建公司与客户项目。</small></div>;
-  if (!organizationId || !projectId) return <div className="empty-panel"><h2>请先创建客户项目</h2><p>选题必须归属于明确的客户项目。</p></div>;
-  return <div className="topic-workspace"><div className="management-toolbar topic-toolbar"><label>公司<select value={organizationId} onChange={async (event) => { const id = event.target.value; setOrganizationId(id); await loadProjects(id); }}>{organizations.map((organization) => <option key={organization.id} value={organization.id}>{organization.name}</option>)}</select></label><label>客户项目<select value={projectId} onChange={async (event) => { const id = event.target.value; setProjectId(id); rememberCurrentScope(organizationId, id); await loadWorkspace(organizationId, id); }}>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><span>{topics.length} 个选题</span></div>{error && <div className="inline-alert" role="alert">{error}</div>}
+  if (error && organizations.length === 0) return <div className="management-state error-state"><strong>暂时无法进入选题中心</strong><p>{error}</p><small>请确认本地身份已启用，并先创建公司与企业空间。</small></div>;
+  if (!organizationId || !projectId) return <div className="empty-panel"><h2>请先创建企业空间</h2><p>选题必须归属于明确的企业空间。</p></div>;
+  return <div className="topic-workspace"><div className="management-toolbar topic-toolbar"><label>公司<select value={organizationId} onChange={async (event) => { const id = event.target.value; setOrganizationId(id); await loadProjects(id); }}>{organizations.map((organization) => <option key={organization.id} value={organization.id}>{organization.name}</option>)}</select></label><label>企业空间<select value={projectId} onChange={async (event) => { const id = event.target.value; setProjectId(id); rememberCurrentScope(organizationId, id); await loadWorkspace(organizationId, id); }}>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><span>{topics.length} 个选题</span></div>{error && <div className="inline-alert" role="alert">{error}</div>}
     <div className="topic-layout"><section className="panel topic-list-panel"><div className="panel-heading"><div><p className="section-kicker">复用方法，不做近义词洗稿</p><h2>选题池</h2></div></div>{topics.length ? <div className="topic-list">{topics.map((topic) => { const topicCitations = citations.filter((citation) => citation.topic_id === topic.id); return <article key={topic.id}><div className="topic-card-head"><span className="topic-priority">P{topic.priority}</span><span className="status neutral">{topic.status === "idea" ? "想法" : topic.status === "selected" ? "已入选" : topic.status === "drafting" ? "生产中" : "已归档"}</span></div><h3>{topic.title}</h3>{topic.angle && <p>{topic.angle}</p>}<dl><div><dt>内容支柱</dt><dd>{topic.pillar || "待归类"}</dd></div><div><dt>目标人群</dt><dd>{topic.audience || "待补充"}</dd></div><div><dt>内容目标</dt><dd>{topic.objective || "待补充"}</dd></div></dl><footer><div><span>{sourceLabels[topic.source_type] || topic.source_type}</span>{topicCitations.length > 0 && <em title={topicCitations[0].quote || "已保留来源"}>已引用 {topicCitations.length} 条证据</em>}</div><div className="topic-card-actions">{canDelete && <button className="topic-delete-button" type="button" onClick={() => { setError(""); setDeleteCandidate(topic); setDeleteConfirmation(""); }}>删除</button>}{topic.status !== "archived" && (canWrite || topic.status === "drafting") && <button type="button" disabled={movingTopicId === topic.id} onClick={() => void moveTopicToProduction(topic)}>{movingTopicId === topic.id ? "正在流转…" : topic.status === "drafting" ? "继续生产 →" : "进入生产 →"}</button>}</div></footer></article>; })}</div> : <div className="list-empty">从品牌知识、视频分析或人工策划创建第一个选题。</div>}</section>
       {canWrite && <aside className="create-panel topic-create">
         <p className="section-kicker">新选题</p><h2>{sourceVideoId ? "从视频分析转为选题" : "加入项目选题池"}</h2>

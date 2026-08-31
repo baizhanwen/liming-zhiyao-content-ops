@@ -4,13 +4,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, Download, LayoutTemplate, RefreshCw, ShieldCheck, Sparkles, WandSparkles } from "lucide-react";
 import { toPng } from "html-to-image";
 import { WechatPosterCanvas } from "./WechatPosterCanvas";
-import { preferredOrganizationId, preferredProjectId, rememberCurrentScope } from "../lib/client-scope";
+import { preferredOrganizationId, preferredProjectId, rememberCurrentScope, scopedFetch } from "../lib/client-scope";
 import type { WechatImageContent, WechatImageRatioId, WechatImageTemplateId } from "../lib/wechat-image-generation";
 import { getInfographicTemplate, pickInfographicTemplate, templateChoicesForRatio } from "../lib/wechat-infographic";
 import { auditPosterElement, type PosterQualityReport } from "../lib/poster-visual-quality";
 
 type Organization = { id: string; name: string };
-type Project = { id: string; name: string; client_name: string };
+type Project = { id: string; name: string };
 type ContextUsed = { brandKnowledgeCount: number; brandKnowledgeTitles: string[]; hasActiveStrategy: boolean; methodKnowledgeCount: number };
 
 const visualThemes: Array<{ id: WechatImageTemplateId; name: string; description: string }> = [
@@ -64,7 +64,8 @@ export function WechatImageWorkspace({ initialOrganizationId = "", initialProjec
   const selectedLayout = getInfographicTemplate(effectiveLayoutTemplate);
 
   const loadProjects = useCallback(async (orgId: string, preferred = "") => {
-    const response = await fetch(`/api/projects?organizationId=${encodeURIComponent(orgId)}`);
+    rememberCurrentScope(orgId, "");
+    const response = await scopedFetch(`/api/projects?organizationId=${encodeURIComponent(orgId)}`);
     if (!response.ok) throw new Error(await messageFrom(response));
     const body = await response.json() as { projects: Project[] };
     setProjects(body.projects);
@@ -116,10 +117,10 @@ export function WechatImageWorkspace({ initialOrganizationId = "", initialProjec
 
   async function generate() {
     if (topic.trim().length < 4) { setError("请先填写至少 4 个字符的选题。"); return; }
-    if (!organizationId || !projectId) { setError("请先选择客户项目。"); return; }
+    if (!organizationId || !projectId) { setError("请先选择企业空间。"); return; }
     setGenerating(true); setError(""); setNotice("");
     try {
-      const response = await fetch("/api/wechat-images/generate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, topic: topic.trim(), templateId, ratioId }) });
+      const response = await scopedFetch("/api/wechat-images/generate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, topic: topic.trim(), templateId, ratioId }) });
       if (!response.ok) throw new Error(await messageFrom(response));
       const body = await response.json() as { generated: WechatImageContent; contextUsed: ContextUsed };
       const layout = pickInfographicTemplate(body.generated.structure, ratioId);
@@ -157,11 +158,11 @@ export function WechatImageWorkspace({ initialOrganizationId = "", initialProjec
   }
 
   if (loading) return <div className="management-state" role="status">正在载入公众号图片工作区…</div>;
-  if (!organizationId || !projectId) return <div className="empty-panel"><h2>请先创建客户项目</h2><p>图片会自动继承当前项目的品牌知识和内容策略。</p></div>;
+  if (!organizationId || !projectId) return <div className="empty-panel"><h2>请先创建企业空间</h2><p>图片会自动继承当前项目的品牌知识和内容策略。</p></div>;
 
   const project = projects.find((item) => item.id === projectId);
   return <div className="wechat-image-workspace">
-    <div className="management-toolbar wechat-image-toolbar"><label>公司<select value={organizationId} onChange={async (event) => { const id = event.target.value; setOrganizationId(id); setContent(null); await loadProjects(id); }}>{organizations.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label>客户项目<select value={projectId} onChange={(event) => { const id = event.target.value; setProjectId(id); setContent(null); rememberCurrentScope(organizationId, id); }}>{projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><span>导出尺寸 {selectedRatio.width} × {selectedRatio.height}</span></div>
+    <div className="management-toolbar wechat-image-toolbar"><label>公司<select value={organizationId} onChange={async (event) => { const id = event.target.value; setOrganizationId(id); setContent(null); await loadProjects(id); }}>{organizations.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label>企业空间<select value={projectId} onChange={(event) => { const id = event.target.value; setProjectId(id); setContent(null); rememberCurrentScope(organizationId, id); }}>{projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><span>导出尺寸 {selectedRatio.width} × {selectedRatio.height}</span></div>
     {error && <div className="inline-alert" role="alert">{error}</div>}
     {notice && <div className="wechat-image-notice" role="status">{notice}</div>}
     <div className="wechat-image-layout">
@@ -172,7 +173,7 @@ export function WechatImageWorkspace({ initialOrganizationId = "", initialProjec
           <fieldset><legend>选择比例</legend><div className="wechat-ratio-list">{ratios.map((ratio) => <button className={ratioId === ratio.id ? "active" : ""} type="button" key={ratio.id} onClick={() => { setRatioId(ratio.id); setRenderReady(false); }}><strong>{ratio.label}</strong><small>{ratio.use}</small></button>)}</div></fieldset>
           <fieldset><legend><LayoutTemplate aria-hidden="true" />选择视觉主题</legend><div className="wechat-template-list">{visualThemes.map((template) => <button className={templateId === template.id ? "active" : ""} type="button" key={template.id} onClick={() => { setTemplateId(template.id); setRenderReady(false); }}><i className={`wechat-template-swatch ${template.id}`} /><span><strong>{template.name}</strong><small>{template.description}</small></span></button>)}</div></fieldset>
           {content && <fieldset><legend><LayoutTemplate aria-hidden="true" />选择成熟版式</legend><div className="wechat-layout-choice-list">{layoutChoices.map((layout) => <button className={effectiveLayoutTemplate === layout.name ? "active" : ""} type="button" key={layout.name} onClick={() => { setLayoutTemplate(layout.name); setRenderReady(false); setNotice(`已切换为“${layout.label}”，不会重新调用模型。`); }}><i aria-hidden="true"><span /><span /><span /></i><strong>{layout.label}</strong></button>)}</div></fieldset>}
-          <div className="wechat-auto-context"><ShieldCheck aria-hidden="true" /><div><strong>品牌知识自动继承</strong><span>生成时会读取“{project?.client_name || project?.name}”已确认的品牌知识、内容策略和授权方法库。</span></div></div>
+          <div className="wechat-auto-context"><ShieldCheck aria-hidden="true" /><div><strong>品牌知识自动继承</strong><span>生成时会读取“{project?.name}”已确认的品牌知识、内容策略和系统方法。</span></div></div>
           <button className="primary-button wechat-generate-button" type="button" disabled={generating} aria-busy={generating} onClick={() => void generate()}>{generating ? "正在组织内容与版式…" : content ? <><RefreshCw aria-hidden="true" />重新生成</> : <><Sparkles aria-hidden="true" />生成公众号图片</>}</button>
           {contextUsed && <div className="wechat-context-summary"><strong>本次提供给模型的上下文</strong><span>{contextUsed.brandKnowledgeCount} 条品牌知识 · {contextUsed.hasActiveStrategy ? "包含生效策略" : "暂无生效策略"} · {contextUsed.methodKnowledgeCount} 条方法参考</span>{contextUsed.brandKnowledgeTitles.length > 0 && <small title={contextUsed.brandKnowledgeTitles.join("、")}>候选品牌知识：{contextUsed.brandKnowledgeTitles.join("、")}</small>}</div>}
         </div>

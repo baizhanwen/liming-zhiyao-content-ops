@@ -16,6 +16,10 @@
     {
       "binding": "MEDIA",
       "bucket_name": "liming-zhiyao-media"
+    },
+    {
+      "binding": "MEDIA_LEGACY",
+      "bucket_name": "site-creator-r2"
     }
   ]
 }

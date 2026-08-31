@@ -2,6 +2,7 @@ import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess } from "../.
 import { apiError, errorResponse } from "../../../../lib/api-response";
 import { analysisReportSourceText, citationQuoteMatchesSource, saveContentVersionSchema } from "../../../../lib/content-production";
 import { AUTHORIZED_KNOWLEDGE_SOURCE_ID } from "../../../../lib/authorized-knowledge";
+import { authorizedMethodologyApplicationPromptSource } from "../../../../lib/authorized-methodology-router";
 import { buildPublishedCopyProfile, publishedCopyPromptSource, validateHistoricalStyleApplication, type PublishedCopyRecord } from "../../../../lib/published-copy";
 import { readRequestIdentity } from "../../../../lib/request-auth";
 
@@ -25,19 +26,22 @@ export async function PATCH(request: Request, context: { params: Promise<{ conte
       UNION ALL SELECT 'knowledge:' || k.id, v.body FROM knowledge_items k INNER JOIN knowledge_item_versions v ON v.item_id = k.id AND v.version = k.current_version AND v.organization_id = k.organization_id AND v.project_id = k.project_id WHERE k.organization_id = ? AND k.project_id = ? AND k.status = 'confirmed' AND k.deleted_at IS NULL
       UNION ALL SELECT 'video_analysis:' || a.id, a.report_json FROM video_analyses a INNER JOIN videos v ON v.id = a.video_id AND v.organization_id = a.organization_id AND v.project_id = a.project_id WHERE a.organization_id = ? AND a.project_id = ? AND v.deleted_at IS NULL
       UNION ALL SELECT 'strategy:' || id, name || char(10) || positioning || char(10) || COALESCE(persona, '') || char(10) || target_audience || char(10) || pain_points_json || char(10) || pillars_json || char(10) || topic_mix_json || char(10) || COALESCE(style_notes, '') || char(10) || COALESCE(cadence, '') || char(10) || COALESCE(conversion_path, '') || char(10) || objectives_json FROM content_strategies WHERE organization_id = ? AND project_id = ?
-    `).bind(item.topic_id, organizationId, projectId, organizationId, projectId, organizationId, projectId, organizationId, projectId).all<{ source_key: string; source_text: string }>();
+      UNION ALL SELECT 'memory:' || id, content FROM project_memory_items WHERE organization_id = ? AND project_id = ? AND status = 'confirmed' AND (expires_at IS NULL OR expires_at > datetime('now'))
+      UNION ALL SELECT 'video_atom:' || a.id, a.content FROM video_knowledge_atoms a INNER JOIN project_video_references refs ON refs.library_entry_id = a.library_entry_id AND refs.organization_id = a.organization_id AND refs.project_id = ? AND refs.status = 'active' WHERE a.organization_id = ? AND a.status = 'active' AND (refs.purpose = 'analysis' OR refs.purpose = 'benchmark')
+      UNION ALL SELECT 'inspiration:' || id, core_insight || char(10) || evidence_json FROM project_inspiration_cards WHERE organization_id = ? AND project_id = ? AND status = 'confirmed' AND (expires_at IS NULL OR expires_at > datetime('now'))    `).bind(item.topic_id, organizationId, projectId, organizationId, projectId, organizationId, projectId, organizationId, projectId, organizationId, projectId, projectId, organizationId, organizationId, projectId).all<{ source_key: string; source_text: string }>();
     for (const row of sourceRows.results) allowed.set(row.source_key, row.source_text);
     const benchmarkRows = await db.prepare(`
       SELECT library.id AS library_entry_id, analysis.report_json
-      FROM video_library_entries library
+      FROM project_video_references refs
+      INNER JOIN video_library_entries library ON library.id = refs.library_entry_id AND library.organization_id = refs.organization_id
       INNER JOIN videos v ON v.id = library.source_video_id AND v.organization_id = library.organization_id AND v.deleted_at IS NULL
       INNER JOIN video_analyses analysis ON analysis.id = (
         SELECT latest.id FROM video_analyses latest
         WHERE latest.organization_id = v.organization_id AND latest.video_id = v.id
         ORDER BY latest.created_at DESC LIMIT 1
       )
-      WHERE library.organization_id = ?
-    `).bind(organizationId).all<{ library_entry_id: string; report_json: string }>();
+      WHERE refs.organization_id = ? AND refs.project_id = ? AND refs.purpose = 'benchmark' AND refs.status = 'active'
+    `).bind(organizationId, projectId).all<{ library_entry_id: string; report_json: string }>();
     for (const row of benchmarkRows.results) allowed.set(`benchmark:${row.library_entry_id}`, analysisReportSourceText(row.report_json));
     const historicalCopyIds = pack.citations.filter((citation) => citation.sourceType === "historical_copy").map((citation) => citation.sourceId);
     let historicalRowsForValidation: PublishedCopyRecord[] = [];
@@ -61,10 +65,16 @@ export async function PATCH(request: Request, context: { params: Promise<{ conte
       for (const row of historicalRows.results) if (citedIds.has(row.id)) allowed.set(`historical_copy:${row.id}`, publishedCopyPromptSource(row));
     }
     const methodKnowledgeIds = pack.citations.filter((citation) => citation.sourceType === "method_knowledge").map((citation) => citation.sourceId);
-    if (methodKnowledgeIds.length) {
-      const placeholders = methodKnowledgeIds.map(() => "?").join(", ");
-      const methodRows = await db.prepare(`SELECT id, knowledge, original FROM authorized_knowledge_atoms WHERE source_id = ? AND id IN (${placeholders})`).bind(AUTHORIZED_KNOWLEDGE_SOURCE_ID, ...methodKnowledgeIds).all<{ id: string; knowledge: string; original: string }>();
+    const atomicMethodKnowledgeIds = methodKnowledgeIds.filter((id) => !id.startsWith("methodology."));
+    if (atomicMethodKnowledgeIds.length) {
+      const placeholders = atomicMethodKnowledgeIds.map(() => "?").join(", ");
+      const methodRows = await db.prepare(`SELECT id, knowledge, original FROM authorized_knowledge_atoms WHERE source_id = ? AND id IN (${placeholders})`).bind(AUTHORIZED_KNOWLEDGE_SOURCE_ID, ...atomicMethodKnowledgeIds).all<{ id: string; knowledge: string; original: string }>();
       for (const row of methodRows.results) allowed.set(`method_knowledge:${row.id}`, `${row.knowledge}\n${row.original}`);
+    }
+    const methodologyApplication = pack.qualityReview?.methodologyApplication;
+    if (methodologyApplication && methodKnowledgeIds.includes(methodologyApplication.planId)) {
+      const methodologySource = authorizedMethodologyApplicationPromptSource(methodologyApplication);
+      if (methodologySource) allowed.set(`method_knowledge:${methodologyApplication.planId}`, methodologySource);
     }
     const invalidCitation = pack.citations.some((citation) => {
       const source = allowed.get(`${citation.sourceType}:${citation.sourceId}`);

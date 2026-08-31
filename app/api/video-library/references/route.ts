@@ -1,6 +1,9 @@
 import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess } from "../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../lib/api-response";
 import { readRequestIdentity } from "../../../../lib/request-auth";
+import { upsertProjectVideoReference } from "../../../../lib/video-library";
+import { enqueueBenchmarkVideoAnalysisMemoryEventsWithDb } from "../../../../lib/benchmark-memory-events";
+import type { ProjectAssistantDatabase } from "../../../../lib/project-memory-events";
 
 export async function GET(request: Request) {
   const identity = await readRequestIdentity(request);
@@ -11,7 +14,7 @@ export async function GET(request: Request) {
   try {
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
     if (!access) return apiError("ACCESS_DENIED", "无权访问该项目的对标内容库。", 403);
-    const clauses = ["refs.organization_id = ?", "refs.project_id = ?", "refs.purpose = 'benchmark'", "v.deleted_at IS NULL"];
+    const clauses = ["refs.organization_id = ?", "refs.project_id = ?", "refs.purpose = 'benchmark' AND refs.status = 'active'", "v.deleted_at IS NULL"];
     const bindings: unknown[] = [organizationId, projectId];
     if (q) { const term = `%${q}%`; clauses.push("(COALESCE(v.title, '') LIKE ? OR COALESCE(v.author_name, '') LIKE ? OR COALESCE(library.tags_json, '') LIKE ?)"); bindings.push(term, term, term); }
     if (category) { clauses.push("library.category = ?"); bindings.push(category); }
@@ -58,11 +61,22 @@ export async function POST(request: Request) {
     const existing = await db.prepare(`SELECT id FROM video_library_entries WHERE organization_id = ? AND id IN (${placeholders})`).bind(organizationId, ...entryIds).all<{ id: string }>();
     const validIds = existing.results.map((row) => row.id);
     if (!validIds.length) return apiError("LIBRARY_ENTRY_NOT_FOUND", "所选素材不存在或不属于当前公司。", 404);
-    await db.batch([
-      ...validIds.map((entryId) => db.prepare("INSERT OR IGNORE INTO project_video_references (id, organization_id, project_id, library_entry_id, purpose, created_by, created_at) VALUES (?, ?, ?, ?, 'benchmark', ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, entryId, user.id, now)),
-      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'video_library.imported', 'project', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, projectId, JSON.stringify({ entryIds: validIds }), now),
-    ]);
-    return Response.json({ imported: validIds.length, entryIds: validIds }, { status: 201 });
+    const actions = [];
+    for (const entryId of validIds) {
+      const action = await upsertProjectVideoReference({ db, organizationId, projectId, libraryEntryId: entryId, purpose: "benchmark", userId: user.id, now });
+      actions.push(action);
+      try {
+        await enqueueBenchmarkVideoAnalysisMemoryEventsWithDb(db as unknown as ProjectAssistantDatabase, {
+          organizationId,
+          libraryEntryId: entryId,
+          targetProjectId: projectId,
+        });
+      } catch (eventError) {
+        console.error("benchmark_memory_event_enqueue_failed", { entryId, projectId, message: eventError instanceof Error ? eventError.message : "unknown" });
+      }
+    }
+    await db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'video_library.imported', 'project', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, projectId, JSON.stringify({ entryIds: validIds, actions }), now).run();
+    return Response.json({ imported: validIds.length, entryIds: validIds, actions }, { status: 201 });
   } catch (error) { return errorResponse(error); }
 }
 
@@ -76,7 +90,7 @@ export async function DELETE(request: Request) {
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
     if (!access || !canWriteProjectAccess(access)) return apiError("WRITE_ACCESS_REQUIRED", "当前角色不能移出项目对标素材。", 403);
     const user = await ensureUser(identity); const db = getD1(); const now = new Date().toISOString();
-    const result = await db.prepare("DELETE FROM project_video_references WHERE id = ? AND organization_id = ? AND project_id = ? AND purpose = 'benchmark'").bind(referenceId, organizationId, projectId).run();
+    const result = await db.prepare("UPDATE project_video_references SET status = 'revoked', revoked_by = ?, revoked_at = ?, revoke_reason = 'manual' WHERE id = ? AND organization_id = ? AND project_id = ? AND purpose = 'benchmark' AND status = 'active'").bind(user.id, now, referenceId, organizationId, projectId).run();
     if (!result.meta.changes) return apiError("LIBRARY_REFERENCE_NOT_FOUND", "该对标素材已经不在当前项目中。", 404);
     await db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'video_library.removed', 'project_video_reference', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, referenceId, JSON.stringify({ projectId }), now).run();
     return Response.json({ removed: referenceId });

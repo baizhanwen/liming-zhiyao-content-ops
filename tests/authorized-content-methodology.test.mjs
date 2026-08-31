@@ -14,10 +14,11 @@ test("authorized Liming Zhiyao methodology is versioned and used by topic and co
   assert.equal(methodology.AUTHORIZED_METHODOLOGY_SOURCE.revision.length, 40);
   assert.match(production.CONTENT_SYSTEM_PROMPT, /单一核心机制/);
   assert.match(production.CONTENT_SYSTEM_PROMPT, /选题、已启用策略/);
-  assert.match(production.CONTENT_PROMPT_VERSION, /v10-material-feedback-loop$/);
+  assert.match(production.CONTENT_PROMPT_VERSION, /v12-output-bounds$/);
+  assert.match(production.CONTENT_SYSTEM_PROMPT, /方法论、对标样本、历史文案和灵感均不能支撑事实/);
   assert.match(topics, /TOPIC_CREATION_METHODOLOGY/);
-  assert.match(topics, /topic-fields\.v3-knowledge/);
-  assert.match(analyzer, /video-analysis\.v6/);
+  assert.match(topics, /topic-fields\.v4-methodology-plan/);
+  assert.match(analyzer, /video-analysis\.v9-cta-v1/);
 });
 
 test("new production packs expose a visible structured quality review", async () => {
@@ -92,5 +93,5 @@ test("authorized library remains manageable while generation routes stay project
   assert.match(knowledgeApi, /item_count/);
   assert.match(workspace, /授权方法库/);
   assert.match(workspace, /查看授权原文与来源/);
-  assert.match(topicWorkspace, /本次只使用当前客户项目内的资料/);
+  assert.match(topicWorkspace, /本次只使用当前企业空间内的资料/);
 });

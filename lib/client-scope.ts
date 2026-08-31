@@ -1,3 +1,6 @@
+import { resetClientScope } from "./client-scope-request.ts";
+export { scopedFetch, ScopeChangedError } from "./client-scope-request.ts";
+
 export const scopeChangeEvent = "liming:scope-change";
 
 const organizationKey = "liming.currentOrganizationId";
@@ -20,9 +23,14 @@ export function preferredProjectId(items: Array<{ id: string }>, requested = "")
 
 export function rememberCurrentScope(organizationId: string, projectId = "") {
   if (typeof window === "undefined") return;
+  const previousOrganizationId = stored(organizationKey);
+  resetClientScope({ organizationId, projectId });
   try {
     if (organizationId) window.localStorage.setItem(organizationKey, organizationId);
-    if (projectId) window.localStorage.setItem(projectKey, projectId); else window.localStorage.removeItem(projectKey);
+    if (projectId) window.localStorage.setItem(projectKey, projectId);
   } catch { /* Keep current-page behavior when browser storage is unavailable. */ }
+  if (previousOrganizationId && previousOrganizationId !== organizationId) {
+    try { window.sessionStorage.removeItem(`liming.scope.cache.${previousOrganizationId}`); } catch { /* Storage is optional. */ }
+  }
   window.dispatchEvent(new CustomEvent(scopeChangeEvent, { detail: { organizationId, projectId } }));
 }

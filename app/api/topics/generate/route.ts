@@ -2,6 +2,8 @@ import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess, sha256Hex }
 import { apiError, errorResponse } from "../../../../lib/api-response";
 import { invokeContentModel, ModelConfigurationError, ModelRequestError, readContentModelConfig } from "../../../../lib/model-adapter";
 import { checkOrganizationQuota } from "../../../../lib/operations";
+import { retrieveDefaultProjectGenerationSources } from "../../../../lib/generation-context-sources";
+import { methodologyPlanPromptSource, selectAuthorizedMethodologyPlan } from "../../../../lib/authorized-methodology-router";
 import { assertProjectGenerationContext, buildProjectGenerationContext, finishGenerationSourceManifest, insertGenerationSourceManifest, redactedGenerationInput, untrustedReferencePrompt } from "../../../../lib/project-generation-context";
 import { readRequestIdentity } from "../../../../lib/request-auth";
 import { parseTopicGeneration, TOPIC_GENERATION_PROMPT_VERSION, TOPIC_GENERATION_SYSTEM_PROMPT, topicGeneratedFields, type TopicGeneratedField } from "../../../../lib/topic-generation";
@@ -68,12 +70,30 @@ export async function POST(request: Request) {
       const byId = new Map(rows.results.map((item) => [item.id, item])); knowledge = sourceKnowledgeItemIds.map((id) => byId.get(id)!);
     }
     const perKnowledgeLimit = knowledge.length ? Math.min(5_000, Math.floor(MAX_KNOWLEDGE_CONTEXT_CHARS / knowledge.length)) : 0;
-    const generationSources = [
-      { sourceType: "topic" as const, sourceId: `draft:${crypto.randomUUID()}`, title: draft.title, text: JSON.stringify(draft) },
-      ...(strategy ? [{ sourceType: "strategy" as const, sourceId: strategy.id || `strategy:${projectId}`, title: strategy.name || "当前内容策略", text: JSON.stringify(strategy) }] : []),
-      ...knowledge.map((item) => ({ sourceType: "knowledge" as const, sourceId: item.id, title: item.title, text: item.body.slice(0, perKnowledgeLimit) })),
-      ...(analysis ? [{ sourceType: "video_analysis" as const, sourceId: sourceVideoId, title: "当前项目视频分析", text: JSON.stringify(compactAnalysis(analysis.report_json)) }] : []),
+    const defaultProjectSources = await retrieveDefaultProjectGenerationSources({
+      organizationId,
+      projectId,
+      userId: user.id,
+      purpose: "topic_generation",
+      query: Object.values(draft).join("\n"),
+      methodologyTask: "topic",
+      maxCharacters: MAX_KNOWLEDGE_CONTEXT_CHARS,
+    });
+    const methodologyPlan = selectAuthorizedMethodologyPlan({
+      task: "topic",
+      query: Object.values(draft).join("\n"),
+      availableMethodSources: defaultProjectSources.methodologySources,
+    });
+    const methodologyPlanText = methodologyPlanPromptSource(methodologyPlan);
+    const sourceCandidates = [
+      ...defaultProjectSources.sources,
+      { sourceType: "method_knowledge" as const, sourceId: methodologyPlan.id, title: "本次确定性选题方法计划", text: methodologyPlanText, systemMethodology: true },
+      { sourceType: "topic" as const, sourceId: "draft:" + crypto.randomUUID(), title: draft.title, text: JSON.stringify(draft) },
+      ...(strategy ? [{ sourceType: "strategy" as const, sourceId: strategy.id || "strategy:" + projectId, title: strategy.name || "当前内容策略", text: JSON.stringify(strategy), organizationId, projectId }] : []),
+      ...knowledge.map((item) => ({ sourceType: "knowledge" as const, sourceId: item.id, title: item.title, text: item.body.slice(0, perKnowledgeLimit), organizationId, projectId })),
+      ...(analysis ? [{ sourceType: "video_analysis" as const, sourceId: sourceVideoId, title: "当前项目视频分析", text: JSON.stringify(compactAnalysis(analysis.report_json)), organizationId, projectId }] : []),
     ];
+    const generationSources = Array.from(new Map(sourceCandidates.map((source) => [source.sourceType + ":" + source.sourceId, source])).values());
     const contextResult = await buildProjectGenerationContext({ authSubject: identity.authSubject, userId: user.id, organizationId, projectId, capability: "topic", sources: generationSources });
     if (!contextResult.ok) return apiError(contextResult.code, contextResult.message, contextResult.status, contextResult.details);
     const generationContext = contextResult.context;
@@ -85,9 +105,13 @@ export async function POST(request: Request) {
       activeStrategy: strategy ?? null,
       sourceVideoAnalysis: analysis ? compactAnalysis(analysis.report_json) : null,
       selectedKnowledge: knowledge.map((item) => ({ id: item.id, title: item.title, body: item.body.slice(0, perKnowledgeLimit) })),
-      projectReferences: untrustedReferencePrompt(generationContext.sources),
+      defaultProjectSources: defaultProjectSources.sources.map(({ sourceType, sourceId, title }) => ({ sourceType, sourceId, title })),
+      methodologyPlan: methodologyPlan.snapshot,
+      methodology: methodologyPlanText,
+      supportingMethodReferences: untrustedReferencePrompt(generationContext.sources.filter((source) => source.systemMethodology && source.sourceId !== methodologyPlan.id)),
+      projectReferences: untrustedReferencePrompt(generationContext.sources.filter((source) => !source.systemMethodology)),
     };
-    const promptInputJson = JSON.stringify(context); const inputJson = redactedGenerationInput({ draft, targets }, generationContext.sourceManifest); const inputHash = await sha256Hex(new TextEncoder().encode(promptInputJson)); const now = new Date().toISOString();
+    const promptInputJson = JSON.stringify(context); const inputJson = redactedGenerationInput({ draft, targets, methodologyPlan: methodologyPlan.snapshot }, generationContext.sourceManifest); const inputHash = await sha256Hex(new TextEncoder().encode(promptInputJson)); const now = new Date().toISOString();
     await insertGenerationSourceManifest({ context: generationContext, userId: user.id, modelProvider: config.provider, modelName: config.model });
     sourceManifestInserted = true;
     modelCallId = crypto.randomUUID();
@@ -112,10 +136,10 @@ export async function POST(request: Request) {
     const completedAt = new Date().toISOString(); const outputJson = JSON.stringify(generated);
     await db.batch([
       db.prepare("UPDATE model_calls SET status = 'completed', output_json = ?, latency_ms = ?, completed_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'started'").bind(outputJson, totalLatencyMs, completedAt, modelCallId, organizationId, projectId),
-      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'topic.fields_generated', 'topic_draft', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, projectId, JSON.stringify({ targets, modelCallId }), completedAt),
+      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'topic.fields_generated', 'topic_draft', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, projectId, JSON.stringify({ targets, modelCallId, methodologyPlan: methodologyPlan.snapshot }), completedAt),
     ]);
     try { await finishGenerationSourceManifest(traceId, "completed", { promptHash: inputHash }); } catch { /* best-effort security trace; generation result remains valid */ }
-    return Response.json({ generated, targets, modelCallId });
+    return Response.json({ generated, targets, modelCallId, methodologyPlan: methodologyPlan.snapshot, sourcesUsed: generationContext.sourceManifest });
   } catch (error) {
     if (modelCallId) {
       try {
@@ -126,7 +150,7 @@ export async function POST(request: Request) {
     if (sourceManifestInserted && traceId) {
       try { await finishGenerationSourceManifest(traceId, "failed", { errorCode: error instanceof ModelRequestError ? error.code : "TOPIC_GENERATION_FAILED" }); } catch { /* best-effort security trace */ }
     }
-    if (error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "PROJECT_CONTEXT_INCOMPLETE") return apiError("PROJECT_CONTEXT_INCOMPLETE", "客户项目资料不完整，已阻止调用模型。", 409);
+    if (error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "PROJECT_CONTEXT_INCOMPLETE") return apiError("PROJECT_CONTEXT_INCOMPLETE", "企业空间资料不完整，已阻止调用模型。", 409);
     if (error instanceof ModelConfigurationError) return apiError("CONTENT_MODEL_NOT_CONFIGURED", error.message, 503);
     if (error instanceof ModelRequestError) return apiError(error.code, error.message, 502);
     return errorResponse(error);

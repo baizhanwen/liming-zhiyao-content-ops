@@ -2,7 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { contentStatusLabels, type ContentStatus } from "../lib/content-workflow";
-import { preferredOrganizationId, preferredProjectId, rememberCurrentScope } from "../lib/client-scope";
+import { preferredOrganizationId, preferredProjectId, rememberCurrentScope, scopedFetch } from "../lib/client-scope";
 import type { ProductionPack } from "../lib/content-production";
 import { deliveryPlan } from "../lib/delivery-entitlements";
 
@@ -30,15 +30,16 @@ export function WorkflowWorkspace({ initialView, initialOrganizationId = "", ini
   const [organizations, setOrganizations] = useState<Organization[]>([]); const [organizationId, setOrganizationId] = useState("");
   const [projects, setProjects] = useState<Project[]>([]); const [projectId, setProjectId] = useState("");
   const [data, setData] = useState<WorkflowBody>({ items: [], reviews: [], comments: [], schedules: [], publications: [], permissions: emptyPermissions });
-  const [selectedId, setSelectedId] = useState(initialContentId); const [loading, setLoading] = useState(true); const [busy, setBusy] = useState(""); const [error, setError] = useState(""); const [decisionNote, setDecisionNote] = useState("");
+  const [selectedId, setSelectedId] = useState(initialContentId); const [loading, setLoading] = useState(true); const [busy, setBusy] = useState(""); const [error, setError] = useState(""); const [notice, setNotice] = useState(""); const [decisionNote, setDecisionNote] = useState("");
 
   const loadWorkspace = useCallback(async (orgId: string, projId: string) => {
     if (!orgId || !projId) return;
-    const response = await fetch(`/api/workflow?organizationId=${encodeURIComponent(orgId)}&projectId=${encodeURIComponent(projId)}`);
+    const response = await scopedFetch(`/api/workflow?organizationId=${encodeURIComponent(orgId)}&projectId=${encodeURIComponent(projId)}`);
     if (!response.ok) throw new Error(await readError(response));
     const body = await response.json() as WorkflowBody; setData(body); setSelectedId((current) => body.items.some((item) => item.id === current) ? current : body.items[0]?.id || "");
   }, []);
-  const loadProjects = useCallback(async (orgId: string, preferred = "") => { const response = await fetch(`/api/projects?organizationId=${encodeURIComponent(orgId)}`); if (!response.ok) throw new Error(await readError(response)); const body = await response.json() as { projects: Project[] }; setProjects(body.projects); const next = preferredProjectId(body.projects, preferred); setProjectId(next); rememberCurrentScope(orgId, next); await loadWorkspace(orgId, next); }, [loadWorkspace]);
+  const loadProjects = useCallback(async (orgId: string, preferred = "") => {
+    rememberCurrentScope(orgId, ""); const response = await scopedFetch(`/api/projects?organizationId=${encodeURIComponent(orgId)}`); if (!response.ok) throw new Error(await readError(response)); const body = await response.json() as { projects: Project[] }; setProjects(body.projects); const next = preferredProjectId(body.projects, preferred); setProjectId(next); rememberCurrentScope(orgId, next); await loadWorkspace(orgId, next); }, [loadWorkspace]);
   useEffect(() => { let active = true; void (async () => { try { const response = await fetch("/api/organizations"); if (!response.ok) throw new Error(await readError(response)); const body = await response.json() as { organizations: Organization[] }; if (!active) return; setOrganizations(body.organizations); const next = preferredOrganizationId(body.organizations, initialOrganizationId); setOrganizationId(next); if (next) await loadProjects(next, initialProjectId); } catch (reason) { if (active) setError(reason instanceof Error ? reason.message : "协作工作台加载失败"); } finally { if (active) setLoading(false); } })(); return () => { active = false; }; }, [initialOrganizationId, initialProjectId, loadProjects]);
 
   const selected = data.items.find((item) => item.id === selectedId) || null;
@@ -50,35 +51,35 @@ export function WorkflowWorkspace({ initialView, initialOrganizationId = "", ini
 
   async function reload() { await loadWorkspace(organizationId, projectId); }
   async function transition(toStatus: ContentStatus) {
-    if (!selected) return; setBusy(`transition:${toStatus}`); setError("");
-    const response = await fetch(`/api/content-items/${selected.id}/transition`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, toStatus, note: decisionNote || undefined }) });
-    if (!response.ok) setError(await readError(response)); else { setDecisionNote(""); await reload(); } setBusy("");
+    if (!selected) return; setBusy(`transition:${toStatus}`); setError(""); setNotice("");
+    const response = await scopedFetch(`/api/content-items/${selected.id}/transition`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, toStatus, note: decisionNote || undefined }) });
+    if (!response.ok) setError(await readError(response)); else { const body = await response.json() as { memoryCandidate?: { id: string; status: "candidate" } | null }; if (body.memoryCandidate) setNotice("退回原因已保存为项目记忆候选，确认后才会用于选题和内容生成。"); setDecisionNote(""); await reload(); } setBusy("");
   }
   async function addComment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (!selected) return; setBusy("comment"); setError(""); const formElement = event.currentTarget; const form = new FormData(formElement);
-    const response = await fetch(`/api/content-items/${selected.id}/comments`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, visibility: data.permissions.clientOnly ? "client" : form.get("visibility"), body: form.get("body") }) });
+    const response = await scopedFetch(`/api/content-items/${selected.id}/comments`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, visibility: data.permissions.clientOnly ? "client" : form.get("visibility"), body: form.get("body") }) });
     if (!response.ok) setError(await readError(response)); else { formElement.reset(); await reload(); } setBusy("");
   }
   async function resolveComment(comment: Comment) {
-    setBusy(`comment:${comment.id}`); const response = await fetch(`/api/content-comments/${comment.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, resolved: !comment.resolved_at }) });
+    setBusy(`comment:${comment.id}`); const response = await scopedFetch(`/api/content-comments/${comment.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, resolved: !comment.resolved_at }) });
     if (!response.ok) setError(await readError(response)); else await reload(); setBusy("");
   }
   async function saveSchedule(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (!selected) return; setBusy("schedule"); setError(""); const form = new FormData(event.currentTarget); const scheduledAt = new Date(String(form.get("scheduledAt"))).toISOString();
-    const response = await fetch(`/api/content-items/${selected.id}/schedule`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, platform: form.get("platform"), scheduledAt, timezone: "Asia/Shanghai", status: form.get("status"), notes: form.get("notes") }) });
+    const response = await scopedFetch(`/api/content-items/${selected.id}/schedule`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, platform: form.get("platform"), scheduledAt, timezone: "Asia/Shanghai", status: form.get("status"), notes: form.get("notes") }) });
     if (!response.ok) setError(await readError(response)); else await reload(); setBusy("");
   }
   async function savePublication(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (!selected) return; setBusy("publication"); setError(""); const formElement = event.currentTarget; const form = new FormData(formElement);
-    const response = await fetch(`/api/content-items/${selected.id}/publications`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, platform: form.get("platform"), status: form.get("status"), externalUrl: form.get("externalUrl"), errorMessage: form.get("errorMessage") }) });
+    const response = await scopedFetch(`/api/content-items/${selected.id}/publications`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, platform: form.get("platform"), status: form.get("status"), externalUrl: form.get("externalUrl"), errorMessage: form.get("errorMessage") }) });
     if (!response.ok) setError(await readError(response)); else { formElement.reset(); await reload(); } setBusy("");
   }
 
   if (loading) return <div className="management-state" role="status">正在载入协作工作台…</div>;
-  if (!organizationId || !projectId) return <div className="empty-panel"><h2>请先创建客户项目</h2><p>审核、排期和发布记录必须归属于明确项目。</p></div>;
+  if (!organizationId || !projectId) return <div className="empty-panel"><h2>请先创建企业空间</h2><p>审核、排期和发布记录必须归属于明确的企业空间。</p></div>;
   return <div className="workflow-workspace">
-    <div className="management-toolbar workflow-toolbar"><label>公司<select value={organizationId} onChange={async (event) => { setOrganizationId(event.target.value); await loadProjects(event.target.value); }}>{organizations.map((organization) => <option value={organization.id} key={organization.id}>{organization.name}</option>)}</select></label><label>客户项目<select value={projectId} onChange={async (event) => { setProjectId(event.target.value); rememberCurrentScope(organizationId, event.target.value); await loadWorkspace(organizationId, event.target.value); }}>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select></label><nav aria-label="协作工作台视图"><a className={initialView === "review" ? "active" : ""} href={`/workflow?view=review&organizationId=${organizationId}&projectId=${projectId}`}>审核</a><a className={initialView === "calendar" ? "active" : ""} href={`/workflow?view=calendar&organizationId=${organizationId}&projectId=${projectId}`}>日历</a><a className={initialView === "publish" ? "active" : ""} href={`/workflow?view=publish&organizationId=${organizationId}&projectId=${projectId}`}>发布</a></nav></div>
-    {error && <div className="inline-alert" role="alert">{error}</div>}
+    <div className="management-toolbar workflow-toolbar"><label>公司<select value={organizationId} onChange={async (event) => { setOrganizationId(event.target.value); await loadProjects(event.target.value); }}>{organizations.map((organization) => <option value={organization.id} key={organization.id}>{organization.name}</option>)}</select></label><label>企业空间<select value={projectId} onChange={async (event) => { setProjectId(event.target.value); rememberCurrentScope(organizationId, event.target.value); await loadWorkspace(organizationId, event.target.value); }}>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select></label><nav aria-label="协作工作台视图"><a className={initialView === "review" ? "active" : ""} href={`/workflow?view=review&organizationId=${organizationId}&projectId=${projectId}`}>审核</a><a className={initialView === "calendar" ? "active" : ""} href={`/workflow?view=calendar&organizationId=${organizationId}&projectId=${projectId}`}>日历</a><a className={initialView === "publish" ? "active" : ""} href={`/workflow?view=publish&organizationId=${organizationId}&projectId=${projectId}`}>发布</a></nav></div>
+    {error && <div className="inline-alert" role="alert">{error}</div>}{notice && <div className="workflow-memory-notice" role="status"><span>{notice}</span><a href={`/memory?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`}>查看记忆候选 →</a></div>}
     <div className="workflow-summary"><article><strong>{data.items.filter((item) => item.status === "internal_review" || item.status === "client_review").length}</strong><span>待内部审核</span></article><article><strong>{data.items.filter((item) => item.status === "internal_revision").length}</strong><span>待修改</span></article><article><strong>{data.schedules.filter((schedule) => schedule.status !== "cancelled" && new Date(schedule.scheduled_at) > new Date()).length}</strong><span>未来排期</span></article><article><strong>{data.publications.filter((publication) => publication.status === "published").length}</strong><span>已发布记录</span></article></div>
     <div className="workflow-main">
       <section className="panel workflow-canvas">{initialView === "review" ? <ReviewBoard items={data.items} selectedId={selectedId} onSelect={setSelectedId} /> : initialView === "calendar" ? <CalendarView items={data.items} schedules={data.schedules} selectedId={selectedId} onSelect={setSelectedId} /> : <PublicationView items={data.items} schedules={data.schedules} publications={data.publications} selectedId={selectedId} onSelect={setSelectedId} />}</section>

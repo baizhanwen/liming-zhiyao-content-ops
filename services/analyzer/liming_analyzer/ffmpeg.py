@@ -58,7 +58,12 @@ class FfmpegMediaProcessor:
         if not info.audio_codec:
             return NormalizedMedia(source, None, info)
         audio_path = output_dir / "audio-16k-mono.wav"
-        self._execute([self.ffmpeg, "-nostdin", "-y", "-v", "error", "-i", str(source), "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(audio_path)])
+        self._execute([
+            self.ffmpeg, "-nostdin", "-y", "-v", "error", "-i", str(source),
+            "-vn", "-ac", "1", "-ar", "16000",
+            "-af", "highpass=f=80,lowpass=f=7600,loudnorm=I=-16:LRA=11:TP=-1.5",
+            "-c:a", "pcm_s16le", str(audio_path),
+        ])
         return NormalizedMedia(source, audio_path, info)
 
 

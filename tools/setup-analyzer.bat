@@ -3,8 +3,11 @@ setlocal
 set "PROJECT_ROOT=%~dp0.."
 cd /d "%PROJECT_ROOT%"
 
+call :parse_arguments %*
+if errorlevel 1 exit /b 2
+
 call :find_python
-if /i "%~1"=="--check-python" goto :check_python
+if defined CHECK_PYTHON_ONLY goto :check_python
 if not defined PYTHON_EXE goto :install_python
 
 :setup_analyzer
@@ -49,7 +52,6 @@ set "PIP_CONSTRAINT="
 set "PIP_REQUIRE_HASHES="
 set "PIP_FIND_LINKS="
 set "PIP_NO_INDEX="
-set "PYPI_INDEX=https://pypi.org/simple"
 if defined LocalAppData (
   set "PIP_CACHE_DIR=%LocalAppData%\LimingZhiyao\pip-cache"
 ) else (
@@ -60,10 +62,11 @@ if not exist "%PYTHON_CONSTRAINT%" (
   echo [ERROR] The analyzer dependency constraint file is missing.
   exit /b 1
 )
-echo [Liming Zhiyao] Preparing the official Python package installer...
+echo [Liming Zhiyao] Preparing the bundled Python package installer...
 "services\analyzer\.venv\Scripts\python.exe" -m ensurepip --upgrade
 if errorlevel 1 exit /b 1
-"services\analyzer\.venv\Scripts\python.exe" -m pip install --disable-pip-version-check --retries 20 --timeout 120 --index-url "%PYPI_INDEX%" --constraint "%PYTHON_CONSTRAINT%" --upgrade "pip==26.2.1" "setuptools==81.0.0" "wheel==0.48.0"
+echo [Liming Zhiyao] Python package source: %PYPI_PRIMARY_LABEL%
+call :pip_install --constraint "%PYTHON_CONSTRAINT%" --upgrade "pip==26.2.1" "setuptools==81.0.0" "wheel==0.48.0"
 if errorlevel 1 exit /b 1
 set "REPAIR_OPENCV_NAMESPACE="
 "services\analyzer\.venv\Scripts\python.exe" -c "import importlib.metadata as m,sys; names=('opencv-python','opencv-python-headless','opencv-contrib-python-headless','scenedetect'); sys.exit(0 if any(m.packages_distributions().get(name.replace('-','_')) for name in names) or any(any(dist.metadata.get('Name','').lower()==name for dist in m.distributions()) for name in names) else 1)" >nul 2>nul
@@ -72,17 +75,18 @@ if not errorlevel 1 (
   set "REPAIR_OPENCV_NAMESPACE=1"
   "services\analyzer\.venv\Scripts\python.exe" -m pip uninstall -y opencv-python opencv-python-headless opencv-contrib-python-headless scenedetect >nul 2>nul
 )
-echo [Liming Zhiyao] Installing video analysis dependencies from the official PyPI source...
-"services\analyzer\.venv\Scripts\python.exe" -m pip install --disable-pip-version-check --retries 20 --timeout 120 --resume-retries 20 --index-url "%PYPI_INDEX%" --constraint "%PYTHON_CONSTRAINT%" --upgrade "services\analyzer[media]"
+echo [Liming Zhiyao] Installing video analysis dependencies...
+echo [NOTICE] Downloaded packages are kept in %PIP_CACHE_DIR% for retries and future repairs.
+call :pip_install --constraint "%PYTHON_CONSTRAINT%" --upgrade "services\analyzer[media]"
 if errorlevel 1 (
-  echo [NOTICE] The first dependency download failed. Clearing pip cache and retrying once...
+  echo [NOTICE] Both configured package sources failed. Clearing pip cache and retrying once...
   "services\analyzer\.venv\Scripts\python.exe" -m pip cache purge >nul 2>nul
-  "services\analyzer\.venv\Scripts\python.exe" -m pip install --disable-pip-version-check --no-cache-dir --retries 20 --timeout 120 --resume-retries 20 --index-url "%PYPI_INDEX%" --constraint "%PYTHON_CONSTRAINT%" --upgrade "services\analyzer[media]"
+  call :pip_install --no-cache-dir --constraint "%PYTHON_CONSTRAINT%" --upgrade "services\analyzer[media]"
   if errorlevel 1 exit /b 1
 )
 if defined REPAIR_OPENCV_NAMESPACE (
   echo [Liming Zhiyao] Rebuilding the single supported OpenCV namespace...
-  "services\analyzer\.venv\Scripts\python.exe" -m pip install --disable-pip-version-check --retries 20 --timeout 120 --index-url "%PYPI_INDEX%" --constraint "%PYTHON_CONSTRAINT%" --force-reinstall --no-deps "opencv-contrib-python==4.10.0.84"
+  call :pip_install --constraint "%PYTHON_CONSTRAINT%" --force-reinstall --no-deps "opencv-contrib-python==4.10.0.84"
   if errorlevel 1 exit /b 1
 )
 echo [Liming Zhiyao] Verifying the Windows OCR runtime compatibility pin...
@@ -92,17 +96,70 @@ if errorlevel 1 (
   exit /b 1
 )
 echo [Liming Zhiyao] Verifying the complete locked analyzer runtime...
-"services\analyzer\.venv\Scripts\python.exe" -c "import importlib.metadata as m,sys; expected={'funasr':'1.4.1','paddleocr':'3.7.0','paddlepaddle':'3.2.0','paddlex':'3.7.2','torch':'2.11.0','torchaudio':'2.11.0'}; wrong=[f'{name}={m.version(name)} expected {version}' for name,version in expected.items() if m.version(name)!=version]; print('Analyzer runtime versions are locked.' if not wrong else '; '.join(wrong)); sys.exit(1 if wrong else 0)"
+"services\analyzer\.venv\Scripts\python.exe" -c "import importlib.metadata as m,sys; expected={'funasr':'1.4.1','paddleocr':'3.7.0','paddlepaddle':'3.2.0','paddlex':'3.7.2','torch':'2.11.0','torchaudio':'2.11.0','mcp':'2.1.0','mcp-types':'2.1.0','minimax-coding-plan-mcp':'0.0.5'}; wrong=[f'{name}={m.version(name)} expected {version}' for name,version in expected.items() if m.version(name)!=version]; print('Analyzer runtime versions are locked.' if not wrong else '; '.join(wrong)); sys.exit(1 if wrong else 0)"
 if errorlevel 1 exit /b 1
 "services\analyzer\.venv\Scripts\python.exe" -m pip check
 if errorlevel 1 exit /b 1
 echo [Liming Zhiyao] Loading native analyzer modules...
-"services\analyzer\.venv\Scripts\python.exe" -c "import importlib.metadata as m,platform,sys; assert platform.machine().upper() in ('AMD64','X86_64'); forbidden=('opencv-python','opencv-python-headless','opencv-contrib-python-headless','scenedetect'); installed={dist.metadata.get('Name','').lower() for dist in m.distributions()}; assert not installed.intersection(forbidden), 'incompatible video packages remain installed'; import torch,torchaudio,paddle,cv2; from paddleocr import PaddleOCR; assert m.version('opencv-contrib-python') == '4.10.0.84'; assert cv2.__version__ == '4.10.0'; print('Native analyzer modules loaded on ' + platform.machine() + ' / Python ' + platform.python_version())"
+"services\analyzer\.venv\Scripts\python.exe" -c "import importlib.metadata as m,importlib.util,platform,sys; assert platform.machine().upper() in ('AMD64','X86_64'); forbidden=('opencv-python','opencv-python-headless','opencv-contrib-python-headless','scenedetect'); installed={dist.metadata.get('Name','').lower() for dist in m.distributions()}; assert not installed.intersection(forbidden), 'incompatible video packages remain installed'; import torch,torchaudio,paddle,cv2,mcp; from paddleocr import PaddleOCR; assert importlib.util.find_spec('minimax_mcp.server'), 'MiniMax MCP server entrypoint is unavailable'; assert m.version('opencv-contrib-python') == '4.10.0.84'; assert cv2.__version__ == '4.10.0'; print('Native analyzer and MiniMax MCP modules loaded on ' + platform.machine() + ' / Python ' + platform.python_version())"
 if errorlevel 1 (
   echo [ERROR] A native analyzer module could not be loaded. Run tools\check-analyzer.bat and send the result to support.
   exit /b 1
 )
 exit /b 0
+
+:pip_install
+"services\analyzer\.venv\Scripts\python.exe" -m pip install --disable-pip-version-check --prefer-binary --retries 20 --timeout 120 --resume-retries 20 --index-url "%PYPI_PRIMARY%" %*
+if not errorlevel 1 exit /b 0
+if not defined PYPI_FALLBACK exit /b 1
+echo.
+echo [NOTICE] %PYPI_PRIMARY_LABEL% failed. Keeping the download cache and retrying with official PyPI...
+"services\analyzer\.venv\Scripts\python.exe" -m pip install --disable-pip-version-check --prefer-binary --retries 20 --timeout 120 --resume-retries 20 --index-url "%PYPI_FALLBACK%" %*
+exit /b %errorlevel%
+
+:parse_arguments
+set "CHECK_PYTHON_ONLY="
+set "PYPI_PRIMARY=https://mirrors.aliyun.com/pypi/simple"
+set "PYPI_PRIMARY_LABEL=Aliyun PyPI mirror"
+set "PYPI_FALLBACK=https://pypi.org/simple"
+:parse_arguments_loop
+if "%~1"=="" exit /b 0
+if /i "%~1"=="--check-python" (
+  set "CHECK_PYTHON_ONLY=1"
+  shift
+  goto :parse_arguments_loop
+)
+if /i "%~1"=="--index" goto :parse_index
+echo [ERROR] Unknown setup option: %~1
+echo Usage: tools\setup-analyzer.bat [--index aliyun^|official] [--check-python]
+exit /b 1
+
+:parse_index
+if "%~2"=="" (
+  echo [ERROR] --index requires aliyun or official.
+  exit /b 1
+)
+if /i "%~2"=="aliyun" goto :use_aliyun
+if /i "%~2"=="official" goto :use_official
+echo [ERROR] Unsupported Python package source: %~2
+echo Usage: tools\setup-analyzer.bat [--index aliyun^|official] [--check-python]
+exit /b 1
+
+:use_aliyun
+set "PYPI_PRIMARY=https://mirrors.aliyun.com/pypi/simple"
+set "PYPI_PRIMARY_LABEL=Aliyun PyPI mirror"
+set "PYPI_FALLBACK=https://pypi.org/simple"
+shift
+shift
+goto :parse_arguments_loop
+
+:use_official
+set "PYPI_PRIMARY=https://pypi.org/simple"
+set "PYPI_PRIMARY_LABEL=official PyPI"
+set "PYPI_FALLBACK="
+shift
+shift
+goto :parse_arguments_loop
 
 :start_analyzer_if_app_is_running
 if not exist ".local\app.port" (
@@ -129,7 +186,7 @@ exit /b 0
 :install_python
 echo.
 echo [NOTICE] 64-bit Python 3.11 was not found.
-echo [ACTION] Downloading and installing Python 3.11 automatically from python.org...
+echo [ACTION] Downloading and installing Python 3.11 from the Aliyun mirror with official fallback...
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%PROJECT_ROOT%\scripts\install-python311.ps1"
 if errorlevel 1 goto :python_install_failed
 call :find_python

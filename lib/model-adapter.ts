@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { modelPolicyError } from "./model-policy.ts";
 
 export type ModelProfile = "max";
 type ModelRuntimeEnv = typeof env & {
@@ -10,6 +11,8 @@ type ModelRuntimeEnv = typeof env & {
   ANALYZER_LLM_BASE_URL?: string;
   ANALYZER_LLM_MODEL?: string;
   ANALYZER_LLM_PROVIDER?: string;
+  CONTENT_MODEL_ALLOWED_PROVIDERS?: string;
+  CONTENT_MODEL_ALLOWED_MODELS?: string;
 };
 
 export class ModelConfigurationError extends Error {}
@@ -33,6 +36,8 @@ export function readContentModelConfig(profile: ModelProfile) {
   const model = (runtime.CONTENT_MODEL_NAME || runtime.ANALYZER_LLM_MODEL)?.trim();
   const provider = (runtime.CONTENT_MODEL_PROVIDER || runtime.ANALYZER_LLM_PROVIDER)?.trim() || "openai-compatible";
   if (!apiKey || !baseUrl || !model) throw new ModelConfigurationError("模型尚未配置。请在本地配置中填写模型地址、名称和密钥。");
+  const policyError = modelPolicyError({ provider, model, allowedProviders: runtime.CONTENT_MODEL_ALLOWED_PROVIDERS, allowedModels: runtime.CONTENT_MODEL_ALLOWED_MODELS });
+  if (policyError) throw new ModelConfigurationError(policyError);
   return { apiKey, baseUrl, model, provider, profile };
 }
 
@@ -72,7 +77,7 @@ export function extractModelResponseText(payload: unknown) {
   return null;
 }
 
-export async function invokeContentModel(input: { system: string; user: string; profile: ModelProfile; nativeJson?: boolean }): Promise<ModelInvocation> {
+export async function invokeContentModel(input: { system: string; user: string; profile: ModelProfile; nativeJson?: boolean; temperature?: number; maxTokens?: number }): Promise<ModelInvocation> {
   const config = readContentModelConfig(input.profile);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 90_000);
@@ -82,8 +87,8 @@ export async function invokeContentModel(input: { system: string; user: string; 
     const requestBody: Record<string, unknown> = {
       model: config.model,
       messages: [{ role: "system", content: input.system }, { role: "user", content: input.user }],
-      temperature: 0.55,
-      max_tokens: 12_000,
+      temperature: Math.max(0, Math.min(1, input.temperature ?? 0.55)),
+      max_tokens: Math.max(600, Math.min(12_000, Math.trunc(input.maxTokens ?? 12_000))),
     };
     if (input.nativeJson !== false) requestBody.response_format = { type: "json_object" };
     if (isDeepSeek) requestBody.thinking = { type: "disabled" };
@@ -98,11 +103,13 @@ export async function invokeContentModel(input: { system: string; user: string; 
       const detail = raw && typeof raw === "object" && "error" in raw ? JSON.stringify((raw as { error: unknown }).error).slice(0, 500) : `HTTP ${response.status}`;
       throw new ModelRequestError(`内容模型调用失败：${detail}`, `MODEL_HTTP_${response.status}`);
     }
+    const finishReason = raw && typeof raw === "object" && Array.isArray((raw as { choices?: unknown }).choices) ? ((raw as { choices: Array<{ finish_reason?: unknown }> }).choices[0]?.finish_reason) : null;
     const content = extractModelResponseText(raw);
+    if (finishReason === "length") {
+      throw new ModelRequestError("内容模型输出达到长度上限，返回的 JSON 不完整。系统将切换兼容模式重试。", "MODEL_OUTPUT_TRUNCATED");
+    }
     if (!content) {
-      const finishReason = raw && typeof raw === "object" && Array.isArray((raw as { choices?: unknown }).choices) ? ((raw as { choices: Array<{ finish_reason?: unknown }> }).choices[0]?.finish_reason) : null;
-      const suffix = finishReason === "length" ? "模型输出达到当前最高能力长度上限，请缩小单次输入后重试。" : "DeepSeek 的原生 JSON 模式偶尔会返回空内容，系统将切换兼容模式重试。";
-      throw new ModelRequestError(`内容模型没有返回可解析的文本。${suffix}`, finishReason === "length" ? "MODEL_OUTPUT_TRUNCATED" : "MODEL_EMPTY_RESPONSE");
+      throw new ModelRequestError("内容模型没有返回可解析的文本。DeepSeek 的原生 JSON 模式偶尔会返回空内容，系统将切换兼容模式重试。", "MODEL_EMPTY_RESPONSE");
     }
     return { provider: config.provider, model: config.model, profile: config.profile, content, raw, latencyMs: Date.now() - started };
   } catch (error) {

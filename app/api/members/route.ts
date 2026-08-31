@@ -1,7 +1,6 @@
 import { env } from "cloudflare:workers";
 import { ensureUser, getD1, getOrganizationAccess, hashInvitationToken } from "../../../db/runtime";
 import { apiError, errorResponse } from "../../../lib/api-response";
-import { isProjectRoleCompatible, organizationRoles, projectRoles } from "../../../lib/authorization";
 import { readRequestIdentity } from "../../../lib/request-auth";
 import { checkOrganizationQuota } from "../../../lib/operations";
 
@@ -17,8 +16,8 @@ export async function GET(request: Request) {
     const db = getD1();
     const [members, invitations, projectMemberships] = await Promise.all([
       db.prepare(`SELECT u.id, u.email, u.display_name, om.role, om.status, om.created_at FROM organization_members om INNER JOIN users u ON u.id = om.user_id WHERE om.organization_id = ? AND om.status != 'removed' ORDER BY om.created_at ASC`).bind(organizationId).all(),
-      db.prepare(`SELECT i.id, i.email, i.organization_role, i.project_id, i.project_role, i.status, i.expires_at, i.created_at, p.name AS project_name FROM invitations i LEFT JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id WHERE i.organization_id = ? AND i.status = 'pending' AND julianday(i.expires_at) > julianday('now') ORDER BY i.created_at DESC`).bind(organizationId).all(),
-      db.prepare(`SELECT pm.user_id AS member_id, pm.project_id, pm.role AS project_role FROM project_members pm INNER JOIN projects p ON p.id = pm.project_id AND p.organization_id = pm.organization_id INNER JOIN organization_members om ON om.organization_id = pm.organization_id AND om.user_id = pm.user_id AND om.status != 'removed' WHERE pm.organization_id = ? AND pm.status = 'active' AND p.deleted_at IS NULL AND p.status != 'archived' ORDER BY p.created_at ASC, pm.created_at ASC`).bind(organizationId).all(),
+      db.prepare(`SELECT i.id, i.email, i.organization_role, i.project_id, i.status, i.expires_at, i.created_at, p.name AS project_name FROM invitations i LEFT JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id WHERE i.organization_id = ? AND i.status = 'pending' AND julianday(i.expires_at) > julianday('now') ORDER BY i.created_at DESC`).bind(organizationId).all(),
+      db.prepare(`SELECT pm.user_id AS member_id, pm.project_id FROM project_members pm INNER JOIN projects p ON p.id = pm.project_id AND p.organization_id = pm.organization_id INNER JOIN organization_members om ON om.organization_id = pm.organization_id AND om.user_id = pm.user_id AND om.role = 'member' AND om.status = 'active' WHERE pm.organization_id = ? AND pm.status = 'active' AND p.deleted_at IS NULL AND p.status != 'archived' ORDER BY p.created_at ASC, pm.created_at ASC`).bind(organizationId).all(),
     ]);
     return Response.json({ members: members.results, invitations: invitations.results, projectMemberships: projectMemberships.results, organizationRole: access.organizationRole, currentUserId: access.userId });
   } catch (error) { return errorResponse(error); }
@@ -28,7 +27,7 @@ export async function PATCH(request: Request) {
   const identity = await readRequestIdentity(request);
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再管理成员。", 401);
   try {
-    const payload = await request.json() as { organizationId?: string; memberId?: string; invitationId?: string; role?: string; status?: string; projectId?: string; projectRole?: string; projectAction?: string };
+    const payload = await request.json() as { organizationId?: string; memberId?: string; invitationId?: string; role?: string; status?: string; projectId?: string; projectAction?: string };
     const organizationId = payload.organizationId?.trim() ?? "";
     if (!organizationId) return apiError("ORGANIZATION_REQUIRED", "缺少公司范围。", 400);
     const access = await getOrganizationAccess(identity.authSubject, organizationId);
@@ -44,38 +43,28 @@ export async function PATCH(request: Request) {
       const memberId = payload.memberId?.trim() ?? "";
       const projectId = payload.projectId?.trim() ?? "";
       const action = payload.projectAction?.trim() ?? "";
-      if (!memberId || !projectId || !["assign", "remove"].includes(action)) return apiError("INVALID_PROJECT_MEMBER_UPDATE", "请选择有效的成员、客户项目和操作。", 400);
-      if (action === "assign" && !projectRoles.includes(payload.projectRole as never)) return apiError("INVALID_PROJECT_ROLE", "项目角色无效。", 400);
+      if (!memberId || !projectId || !["assign", "remove"].includes(action)) return apiError("INVALID_PROJECT_MEMBER_UPDATE", "请选择有效的成员、企业空间和操作。", 400);
       const [target, project, previous] = await Promise.all([
         db.prepare("SELECT role, status FROM organization_members WHERE organization_id = ? AND user_id = ? AND status = 'active'").bind(organizationId, memberId).first<{ role: string; status: string }>(),
         db.prepare("SELECT id, name FROM projects WHERE id = ? AND organization_id = ? AND deleted_at IS NULL AND status != 'archived'").bind(projectId, organizationId).first<{ id: string; name: string }>(),
         db.prepare("SELECT role, status FROM project_members WHERE organization_id = ? AND project_id = ? AND user_id = ?").bind(organizationId, projectId, memberId).first<{ role: string; status: string }>(),
       ]);
       if (!target) return apiError("MEMBER_NOT_ACTIVE", "只能给当前公司的有效成员分配项目。", 409);
-      if (!project) return apiError("PROJECT_NOT_FOUND", "客户项目不存在、已归档或已删除。", 404);
-      if (action === "assign" && !isProjectRoleCompatible(target.role as (typeof organizationRoles)[number], payload.projectRole as (typeof projectRoles)[number])) return apiError("INCOMPATIBLE_ROLE_SCOPE", "公司只读成员只能分配为项目只读角色。", 409);
-      if (action === "assign" && previous?.role === "owner" && previous.status === "active" && payload.projectRole !== "owner") {
-        const owners = await db.prepare(`SELECT COUNT(*) AS value FROM project_members pm INNER JOIN organization_members om ON om.organization_id = pm.organization_id AND om.user_id = pm.user_id AND om.status = 'active' WHERE pm.organization_id = ? AND pm.project_id = ? AND pm.user_id != ? AND pm.role = 'owner' AND pm.status = 'active'`).bind(organizationId, projectId, memberId).first<{ value: number }>();
-        if ((owners?.value ?? 0) < 1) return apiError("LAST_PROJECT_OWNER_REQUIRED", "项目必须保留至少一位实际项目负责人，请先把其他成员设为项目负责人。", 409);
-      }
+      if (target.role !== "member") return apiError("EMPLOYEE_REQUIRED", "公司管理员默认可访问全部企业空间，无需重复分配。", 409);
+      if (!project) return apiError("PROJECT_NOT_FOUND", "企业空间不存在、已归档或已删除。", 404);
       if (action === "remove") {
         if (!previous || previous.status !== "active") return apiError("PROJECT_MEMBERSHIP_NOT_ACTIVE", "该成员当前没有这个项目的权限。", 409);
-        if (previous.role === "owner") {
-          const owners = await db.prepare(`SELECT COUNT(*) AS value FROM project_members pm INNER JOIN organization_members om ON om.organization_id = pm.organization_id AND om.user_id = pm.user_id AND om.status = 'active' WHERE pm.organization_id = ? AND pm.project_id = ? AND pm.role = 'owner' AND pm.status = 'active'`).bind(organizationId, projectId).first<{ value: number }>();
-          if ((owners?.value ?? 0) <= 1) return apiError("LAST_PROJECT_OWNER_REQUIRED", "项目必须保留至少一位实际项目负责人，请先把其他成员设为项目负责人。", 409);
-        }
         await db.batch([
           db.prepare("UPDATE project_members SET status = 'removed', updated_by = ?, updated_at = ? WHERE organization_id = ? AND project_id = ? AND user_id = ? AND status = 'active'").bind(user.id, now, organizationId, projectId, memberId),
           db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'project.member_removed', 'user', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, memberId, JSON.stringify({ projectName: project.name, previousRole: previous.role }), now),
         ]);
         return Response.json({ projectMembership: { member_id: memberId, project_id: projectId, status: "removed" } });
       }
-      const projectRole = payload.projectRole as (typeof projectRoles)[number];
       await db.batch([
-        db.prepare(`INSERT INTO project_members (id, organization_id, project_id, user_id, role, status, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?) ON CONFLICT(project_id, user_id) DO UPDATE SET role = excluded.role, status = 'active', updated_by = excluded.updated_by, updated_at = excluded.updated_at`).bind(crypto.randomUUID(), organizationId, projectId, memberId, projectRole, user.id, user.id, now, now),
-        db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'project.member_assigned', 'user', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, memberId, JSON.stringify({ projectName: project.name, previousRole: previous?.role ?? null, projectRole }), now),
+        db.prepare(`INSERT INTO project_members (id, organization_id, project_id, user_id, role, status, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, 'member', 'active', ?, ?, ?, ?) ON CONFLICT(project_id, user_id) DO UPDATE SET role = 'member', status = 'active', updated_by = excluded.updated_by, updated_at = excluded.updated_at`).bind(crypto.randomUUID(), organizationId, projectId, memberId, user.id, user.id, now, now),
+        db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'project.member_assigned', 'user', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, memberId, JSON.stringify({ projectName: project.name, previousRole: previous?.role ?? null }), now),
       ]);
-      return Response.json({ projectMembership: { member_id: memberId, project_id: projectId, project_role: projectRole, status: "active" } });
+      return Response.json({ projectMembership: { member_id: memberId, project_id: projectId, status: "active" } });
     }
     const memberId = payload.memberId?.trim() ?? "";
     if (!memberId || !["admin", "member"].includes(payload.role ?? "") || !["active", "suspended", "removed"].includes(payload.status ?? "")) return apiError("INVALID_MEMBER_UPDATE", "成员角色或状态无效。公司成员身份只能是管理员或员工。", 400);
@@ -84,10 +73,6 @@ export async function PATCH(request: Request) {
     if (target.role !== "admin" && payload.role === "admin") return apiError("ADMIN_ROLE_NOT_TRANSFERABLE", "公司管理员身份不可转让；后续成员只能是公司员工。", 409);
     if (memberId === access.userId && (payload.status !== "active" || payload.role !== target.role)) return apiError("CANNOT_CHANGE_SELF", "唯一管理员不能修改自己的公司角色、暂停或移除自己。", 409);
     if (target.role === "admin" && (payload.role !== "admin" || payload.status !== "active")) return apiError("ADMIN_ROLE_NOT_TRANSFERABLE", "本地管理员身份不可转让、暂停或移除。", 409);
-    if (payload.status !== "active") {
-      const ownerProject = await db.prepare(`SELECT p.name FROM project_members pm INNER JOIN projects p ON p.id = pm.project_id AND p.organization_id = pm.organization_id WHERE pm.organization_id = ? AND pm.user_id = ? AND pm.role = 'owner' AND pm.status = 'active' AND p.deleted_at IS NULL AND p.status != 'archived' AND NOT EXISTS (SELECT 1 FROM project_members other INNER JOIN organization_members om ON om.organization_id = other.organization_id AND om.user_id = other.user_id AND om.status = 'active' WHERE other.organization_id = pm.organization_id AND other.project_id = pm.project_id AND other.user_id != ? AND other.role = 'owner' AND other.status = 'active') LIMIT 1`).bind(organizationId, memberId, memberId).first<{ name: string }>();
-      if (ownerProject) return apiError("LAST_PROJECT_OWNER_REQUIRED", `“${ownerProject.name}”必须保留至少一位实际项目负责人，请先转交负责人角色。`, 409);
-    }
     const statements = [
       db.prepare("UPDATE organization_members SET role = ?, status = ?, updated_by = ?, updated_at = ? WHERE organization_id = ? AND user_id = ?").bind(payload.role, payload.status, user.id, now, organizationId, memberId),
       db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, NULL, ?, 'organization.member_updated', 'user', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, user.id, memberId, JSON.stringify({ previousRole: target.role, previousStatus: target.status, role: payload.role, status: payload.status, projectAccessRemoved: payload.status === "removed" }), now),
@@ -102,17 +87,14 @@ export async function POST(request: Request) {
   const identity = await readRequestIdentity(request);
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再邀请成员。", 401);
   try {
-    const payload = await request.json() as { organizationId?: string; email?: string; organizationRole?: string; projectId?: string; projectRole?: string };
+    const payload = await request.json() as { organizationId?: string; email?: string; organizationRole?: string; projectId?: string };
     const organizationId = payload.organizationId?.trim() ?? "";
     const email = payload.email?.trim().toLowerCase() ?? "";
     if (!organizationId) return apiError("ORGANIZATION_REQUIRED", "缺少公司范围。", 400);
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return apiError("INVALID_EMAIL", "请输入有效邮箱地址。", 400);
     if (payload.organizationRole !== "member") return apiError("INVALID_ORGANIZATION_ROLE", "公司管理员只能在首次开通时创建；后续邀请只能添加公司员工。", 400);
     const projectId = payload.projectId?.trim() || null;
-    const projectRole = projectId ? payload.projectRole?.trim() || null : null;
-    if (projectId && !projectRole) return apiError("PROJECT_ROLE_REQUIRED", "分配项目时必须选择项目角色。", 400);
-    if (projectRole && !projectRoles.includes(projectRole as never)) return apiError("INVALID_PROJECT_ROLE", "项目角色无效。", 400);
-    if (projectRole && !isProjectRoleCompatible("member", projectRole as (typeof projectRoles)[number])) return apiError("INCOMPATIBLE_ROLE_SCOPE", "项目角色与公司员工身份不兼容。", 409);
+    const projectRole = projectId ? "member" : null;
     const access = await getOrganizationAccess(identity.authSubject, organizationId);
     if (!access || access.organizationRole !== "admin") return apiError("ADMIN_REQUIRED", "只有公司管理员可以邀请成员。", 403);
     const db = getD1();
@@ -135,8 +117,8 @@ export async function POST(request: Request) {
     const now = new Date();
     const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
     await db.batch([
-      db.prepare("INSERT INTO invitations (id, organization_id, project_id, email, organization_role, project_role, token_hash, status, expires_at, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)").bind(invitationId, organizationId, projectId, email, payload.organizationRole, projectRole, tokenHash, expiresAt, user.id, user.id, now.toISOString(), now.toISOString()),
-      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'invitation.created', 'invitation', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, invitationId, JSON.stringify({ email, organizationRole: payload.organizationRole, projectRole }), now.toISOString()),
+      db.prepare("INSERT INTO invitations (id, organization_id, project_id, email, organization_role, project_role, token_hash, status, expires_at, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, 'member', ?, ?, 'pending', ?, ?, ?, ?, ?)").bind(invitationId, organizationId, projectId, email, projectRole, tokenHash, expiresAt, user.id, user.id, now.toISOString(), now.toISOString()),
+      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'invitation.created', 'invitation', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, invitationId, JSON.stringify({ email, organizationRole: "member", assignedToProject: Boolean(projectId) }), now.toISOString()),
     ]);
     const relativeAcceptUrl = `/accept-invitation?token=${token}`;
     const configuredOrigin = ((env as typeof env & { LAN_ACCESS_ORIGIN?: string }).LAN_ACCESS_ORIGIN ?? "").trim().replace(/\/$/u, "");

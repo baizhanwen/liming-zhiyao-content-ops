@@ -5,6 +5,7 @@ import { readRequestIdentity } from "../../../../lib/request-auth";
 import { checkOrganizationQuota } from "../../../../lib/operations";
 import { extractDouyinUrl } from "../../../../lib/douyin-url";
 import { normalizeAnalysisProfile } from "../../../../lib/analysis-profile";
+import { upsertProjectVideoReference } from "../../../../lib/video-library";
 
 export async function POST(request: Request) {
   const identity = await readRequestIdentity(request);
@@ -32,12 +33,11 @@ export async function POST(request: Request) {
       LIMIT 1
     `).bind(organizationId, sourceUrl, sourceHash).first<Record<string, unknown>>();
     if (canonical) {
-      await db.batch([
-        db.prepare("INSERT OR IGNORE INTO project_video_references (id, organization_id, project_id, library_entry_id, purpose, created_by, created_at) VALUES (?, ?, ?, ?, 'analysis', ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, canonical.library_entry_id, user.id, now),
-        db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'video.analysis_reused', 'video_library_entry', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, canonical.library_entry_id, JSON.stringify({ sourceUrl, sourceVideoId: canonical.id }), now),
-      ]);
+      const reference = await upsertProjectVideoReference({ db, organizationId, projectId, libraryEntryId: String(canonical.library_entry_id), purpose: "analysis", userId: user.id, now });
+      await db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'video.analysis_reused', 'video_library_entry', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, canonical.library_entry_id, JSON.stringify({ sourceUrl, sourceVideoId: canonical.id, referenceAction: reference.action }), now).run();
       return Response.json({
         reused: true,
+        referenceAction: reference.action,
         video: { id: canonical.id, platform: canonical.platform, source_type: canonical.source_type, source_url: canonical.source_url, title: canonical.title, author_name: canonical.author_name, status: canonical.status, created_at: canonical.created_at, is_reference: true, library_entry_id: canonical.library_entry_id },
         job: canonical.job_id ? { id: canonical.job_id, video_id: canonical.id, status: canonical.job_status, progress: canonical.progress, current_stage: canonical.current_stage, error_code: canonical.error_code, error_message: canonical.error_message, retry_count: canonical.retry_count, analysis_profile: canonical.analysis_profile, created_at: canonical.job_created_at, updated_at: canonical.job_updated_at } : { id: `reused-${canonical.id}`, video_id: canonical.id, status: canonical.status === "ready" ? "completed" : "pending", progress: canonical.status === "ready" ? 100 : 0, current_stage: "复用公司素材库分析", retry_count: 0, analysis_profile: "shared", created_at: canonical.created_at, updated_at: canonical.created_at },
       });

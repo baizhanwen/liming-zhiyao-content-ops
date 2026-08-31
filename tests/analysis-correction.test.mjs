@@ -18,7 +18,7 @@ test("manual transcript correction is versioned, tenant-scoped, and auditable", 
   assert.match(route, /input_transcript_id/);
   assert.match(schema, /inputTranscriptId: text\("input_transcript_id"\)/);
   assert.match(migration, /ADD `input_transcript_id`/);
-  assert.match(detail, /保存并重新分析/);
+  assert.match(detail, /保存并以\$\{analysisProfileNames\[rerunProfile\]\}重新分析/);
   assert.match(detail, /校正转写/);
 });
 
@@ -49,5 +49,5 @@ test("analysis workspace reports readiness and uploads multiple files sequential
   assert.match(videos, /modelConfigured/);
   assert.match(videos, /lastWorkerHeartbeat/);
   assert.match(videos, /publicLinkCookieConfigured/);
-  assert.match(workspace, /抖音链接 Cookie/);
+  assert.match(workspace, /抖音登录方式/);
 });

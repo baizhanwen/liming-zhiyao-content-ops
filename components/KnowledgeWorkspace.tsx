@@ -1,54 +1,128 @@
 "use client";
 
-import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { preferredOrganizationId, preferredProjectId, rememberCurrentScope } from "../lib/client-scope";
-import { PublishedCopyBatchImport } from "./PublishedCopyBatchImport";
-import { PublishedCopyPerformanceEditor } from "./PublishedCopyPerformanceEditor";
+import { ChangeEvent, FormEvent, useCallback, useEffect, useState } from "react";
+import { Archive, Check, Database, FileSearch, History, Lightbulb, PencilLine, Save, Search, ShieldCheck, Video, Workflow } from "lucide-react";
+import { preferredOrganizationId, preferredProjectId, rememberCurrentScope, scopedFetch } from "../lib/client-scope";
 
 type Organization = { id: string; name: string };
 type Project = { id: string; name: string };
-type KnowledgeItem = { id: string; category: string; title: string; status: string; current_version: number; body: string; source_type: string; source_ref: string | null; confirmed_at: string | null; updated_at: string };
+type KnowledgeItem = { id: string; category: string; title: string; status: string; current_version: number; body: string; source_type: string; source_ref: string | null; confirmed_at: string | null; updated_at: string }; type KnowledgeVersion = { version: number; body: string; source_type: string; source_ref: string | null; change_summary: string | null; created_at: string };
 type Strategy = { id: string; version: number; name: string; status: string; positioning: string; target_audience: string; pain_points: string[]; pillars: string[]; objectives: string[]; cadence: string | null; conversion_path: string | null; effective_from: string | null; updated_at: string };
 type MethodSource = { id: string; name: string; revision: string; item_count: number; synced_at: string };
 type MethodAtom = { id: string; knowledge: string; original: string; url: string | null; published_at: string | null; topics: string[]; skills: string[]; type: string; confidence: string; matchedTerms: string[] };
-type PublishedCopy = { id: string; title: string; body: string; platform: string; content_format: string; source_type: string; published_at: string | null; external_url: string | null; character_count: number; paragraph_count: number; monetization_types: string[]; monetization_detail: string | null; analysis: { hookType?: string; ctaType?: string; toneTags?: string[] }; performance: Record<string, number>; performance_score: number; created_at: string; updated_at: string };
-type Frequency = { value: string; count: number; score?: number };
-type PublishedCopyProfile = { count: number; averageCharacters: number; minCharacters: number; maxCharacters: number; suggestedMinCharacters: number; suggestedMaxCharacters: number; performanceSampleSize: number; confidence: "low" | "medium" | "high"; bestHookType: Frequency | null; bestCtaType: Frequency | null; bestMonetizationType: Frequency | null; topPerformers: Array<{ id: string; title: string; score: number; views: number; saves: number; leads: number; conversions: number }>; commonPlatforms: Frequency[]; monetizationTypes: Frequency[]; hookTypes: Frequency[]; toneTags: Frequency[] };
+type MethodologyTask = "topic" | "content" | "analysis";
+type MethodologyKind = "core_playbook" | "module" | "rule";
+type MethodologyEntry = { id: string; title: string; task: MethodologyTask | "all"; kind: MethodologyKind; stage: string; platform: string; mode: string; risk: "low" | "medium" | "high"; version: string; instruction: string; requiredEvidence: string[]; keywords: string[]; source: { package: string; document: string; revision: string; note: string } };
+type MethodologyGroup = { task: MethodologyTask; label: string; description: string; entries: MethodologyEntry[] };
+type MethodologyCatalogResponse = {
+  catalog: {
+    id: string; name: string; version: string; entryCount: number;
+    taskCounts: Record<MethodologyTask, number>;
+    kindCounts: Record<MethodologyKind, number>;
+    frameworks: {
+      contentStrategyFamilyCount: number;
+      contentHookTypeCount: number;
+      analysisRubricDimensionCount: number;
+      contentStrategyFamilies: Array<{ id: string; name: string; use: string }>;
+      contentHookTypes: string[];
+      analysisRubricDimensions: Array<{ id: string; name: string; evidence: string }>;
+    };
+  };
+  groups: MethodologyGroup[];
+  resultCount: number;
+};
 
 const categoryLabels: Record<string, string> = { brand_story: "品牌故事", founder: "创始人/出镜人", case_study: "成功案例", customer_question: "客户问题", sales_script: "销售话术", high_performing_copy: "历史优质文案", industry_term: "行业术语", compliance: "禁用词与合规", brand_voice: "品牌语气", client_preference: "客户修改偏好", other: "其他" };
 const sourceLabels: Record<string, string> = { manual: "人工录入", document: "客户资料", url: "网页来源", client_feedback: "客户反馈", analysis: "分析沉淀" };
-const platformLabels: Record<string, string> = { douyin: "抖音", xiaohongshu: "小红书", wechat_official: "微信公众号", wechat_channels: "视频号", bilibili: "哔哩哔哩", other: "其他平台" };
-const formatLabels: Record<string, string> = { spoken_script: "口播稿", article: "长文章", caption: "发布配文", newsletter: "公众号推文", other: "其他" };
-const monetizationLabels: Record<string, string> = { none: "无直接变现", private_message: "私信引导", consultation: "咨询转化", course: "课程成交", community: "社群引流", product: "产品销售", lead_magnet: "资料留资", brand_awareness: "品牌认知", other: "其他" };
-const hookLabels: Record<string, string> = { question: "问题开场", numbered: "数字清单", contrast: "对比开场", story: "故事开场", pain_point: "痛点开场", direct: "直接陈述" };
-const ctaLabels: Record<string, string> = { private_message: "引导私信", comment: "引导评论", follow: "引导关注", consultation: "预约咨询", purchase: "直接购买", join: "加入社群", download: "领取资料", save_share: "收藏转发", none: "无行动引导" };
-const confidenceLabels = { low: "待积累", medium: "中等", high: "较高" } as const;
+const AUTHORIZED_METHOD_LIBRARY_VISIBLE = false;
 async function readError(response: Response) { const body = await response.json().catch(() => null) as { error?: { message?: string } } | null; return body?.error?.message ?? "请求没有完成，请稍后重试。"; }
 function splitList(value: FormDataEntryValue | null) { return String(value || "").split(/[，,\n]/).map((item) => item.trim()).filter(Boolean); }
 function equalTopicMix(pillars: string[]) { const base = pillars.length ? Math.floor(100 / pillars.length) : 0; const remainder = 100 - base * pillars.length; return pillars.map((pillar, index) => ({ pillar, ratio: base + (index < remainder ? 1 : 0) })); }
 function dateLabel(value: string | null) { return value ? new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric" }).format(new Date(value)) : "—"; }
-function metricLabel(value: number | undefined) { return new Intl.NumberFormat("zh-CN", { notation: "compact", maximumFractionDigits: 1 }).format(Number(value || 0)); }
+
+const methodologyTaskLabels: Record<MethodologyTask, { title: string; caption: string }> = {
+  topic: { title: "选题规划", caption: "先确定受众、问题和内容目标" },
+  content: { title: "内容生成", caption: "再组织钩子、结构和口播表达" },
+  analysis: { title: "视频诊断", caption: "最后用时间码和画面证据复盘" },
+};
+const methodologyKindLabels: Record<MethodologyKind, string> = { core_playbook: "核心流程", module: "方法模块", rule: "强制门禁" };
+const methodologyStageLabels: Record<string, string> = { routing: "任务路由", planning: "规划", hook: "开头", structure: "结构", drafting: "成稿", evidence: "证据", diagnosis: "诊断", verification: "验收" };
+
+function MethodTaskIcon({ task }: { task: MethodologyTask }) {
+  if (task === "topic") return <Lightbulb aria-hidden="true" />;
+  if (task === "analysis") return <Video aria-hidden="true" />;
+  return <Workflow aria-hidden="true" />;
+}
+
+function MethodologyCard({ entry }: { entry: MethodologyEntry }) {
+  return <article className={`methodology-card kind-${entry.kind}`}>
+    <header><span>{methodologyKindLabels[entry.kind]} · {methodologyStageLabels[entry.stage] || entry.stage}</span><em>{entry.risk === "high" ? "严格约束" : entry.risk === "medium" ? "需核验" : "通用"}</em></header>
+    <h4>{entry.title}</h4><p>{entry.instruction}</p>
+    <details><summary>查看证据要求与来源</summary><div className="methodology-card-detail"><section><strong>执行前需要</strong><ul>{entry.requiredEvidence.map((item) => <li key={item}>{item}</li>)}</ul></section><section><strong>适用范围</strong><p>{entry.platform === "all" ? "全平台" : entry.platform} · {entry.mode === "all" ? "全部模式" : entry.mode} · v{entry.version}</p></section><small>{entry.source.package} / {entry.source.document}<br />修订 {entry.source.revision} · {entry.source.note}</small><code>{entry.id}</code></div></details>
+  </article>;
+}
+
+function MethodologyTrack({ group }: { group: MethodologyGroup }) {
+  const core = group.entries.filter((entry) => entry.kind === "core_playbook");
+  const modules = group.entries.filter((entry) => entry.kind === "module");
+  const rules = group.entries.filter((entry) => entry.kind === "rule");
+  return <section className={`methodology-track task-${group.task}`}>
+    <header className="methodology-track-heading"><span className="methodology-track-icon"><MethodTaskIcon task={group.task} /></span><div><p>{methodologyTaskLabels[group.task].caption}</p><h3>{methodologyTaskLabels[group.task].title}</h3><small>{group.description}</small></div><em>{group.entries.length} 项方法</em></header>
+    {core.length > 0 && <div className="methodology-core-row">{core.map((entry) => <MethodologyCard key={entry.id} entry={entry} />)}</div>}
+    {modules.length > 0 && <section className="methodology-method-section"><header><strong>本环节的方法模块</strong><span>{modules.length} 项</span></header><div className="methodology-card-grid">{modules.map((entry) => <MethodologyCard key={entry.id} entry={entry} />)}</div></section>}
+    {rules.length > 0 && <section className="methodology-method-section rules"><header><strong>不可跳过的质量门禁</strong><span>{rules.length} 项</span></header><div className="methodology-card-grid">{rules.map((entry) => <MethodologyCard key={entry.id} entry={entry} />)}</div></section>}
+  </section>;
+}
+
+function KnowledgeCard({ item, canManage, saving, action, onConfirm, onEdit, onArchive, onHistory }: {
+  item: KnowledgeItem; canManage: boolean; saving: boolean; action: string;
+  onConfirm: () => void; onEdit: (event: FormEvent<HTMLFormElement>) => void; onArchive: () => void; onHistory: () => void;
+}) {
+  const busy = Boolean(action);
+  return <article className="knowledge-card">
+    <div className="knowledge-card-head"><span>{categoryLabels[item.category] || item.category}</span><em className={`status ${item.status === "confirmed" ? "success" : "neutral"}`}>{item.status === "confirmed" ? "已确认" : item.status === "draft" ? "待确认" : "已归档"}</em></div>
+    <h3>{item.title}</h3><p>{item.body}</p>
+    <footer className="knowledge-card-footer"><span>{sourceLabels[item.source_type] || item.source_type} · v{item.current_version} · {dateLabel(item.updated_at)}</span><div className="knowledge-card-actions">
+      {item.status === "draft" && canManage && <button className="knowledge-action-button confirm" type="button" disabled={busy} onClick={onConfirm}><Check aria-hidden="true" />{action.startsWith("confirm:") ? "确认中…" : "确认沉淀"}</button>}
+      <button className="knowledge-action-button" type="button" disabled={busy} onClick={onHistory}><History aria-hidden="true" />{action.startsWith("history:") ? "读取中…" : "历史"}</button>
+      {canManage && item.status !== "archived" && <><details className="knowledge-edit-menu"><summary className="knowledge-action-button"><PencilLine aria-hidden="true" />编辑</summary><form className="stack-form knowledge-edit-form" onSubmit={onEdit}><div className="knowledge-edit-heading"><strong>编辑新版本</strong><span>原版本会继续保留</span></div><label>标题<input name="title" defaultValue={item.title} required minLength={2} maxLength={120} /></label><label>分类<select name="category" defaultValue={item.category}>{Object.entries(categoryLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label>正文<textarea name="body" defaultValue={item.body} required minLength={10} maxLength={20000} rows={5} /></label><label>来源<select name="sourceType" defaultValue={item.source_type}>{Object.entries(sourceLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label>来源说明<input name="sourceRef" defaultValue={item.source_ref || ""} maxLength={1000} /></label><label>变更说明<input name="changeSummary" defaultValue="编辑产生新版本" maxLength={500} /></label><button className="knowledge-editor-save" disabled={saving}><Save aria-hidden="true" />{saving ? "保存中…" : "保存新版本"}</button></form></details><button className="knowledge-action-button danger" type="button" disabled={busy} onClick={onArchive}><Archive aria-hidden="true" />{action.startsWith("archive:") ? "归档中…" : "归档"}</button></>}
+    </div></footer>
+  </article>;
+}
 
 export function KnowledgeWorkspace({ initialOrganizationId = "", initialProjectId = "" }: { initialOrganizationId?: string; initialProjectId?: string }) {
   const [organizations, setOrganizations] = useState<Organization[]>([]); const [organizationId, setOrganizationId] = useState("");
-  const [projects, setProjects] = useState<Project[]>([]); const [projectId, setProjectId] = useState(""); const [tab, setTab] = useState<"knowledge" | "strategy" | "history" | "method">("knowledge");
-  const [items, setItems] = useState<KnowledgeItem[]>([]); const [strategies, setStrategies] = useState<Strategy[]>([]); const [canWrite, setCanWrite] = useState(false); const [canManage, setCanManage] = useState(false);
+  const [projects, setProjects] = useState<Project[]>([]); const [projectId, setProjectId] = useState(""); const [tab, setTab] = useState<"knowledge" | "strategy" | "method">("knowledge");
+  const [items, setItems] = useState<KnowledgeItem[]>([]); const [strategies, setStrategies] = useState<Strategy[]>([]); const [canWrite, setCanWrite] = useState(false); const [canManage, setCanManage] = useState(false); const [knowledgeHistory, setKnowledgeHistory] = useState<KnowledgeVersion[] | null>(null);
+  const [knowledgeAction, setKnowledgeAction] = useState("");
   const [methodSource, setMethodSource] = useState<MethodSource | null>(null); const [methodAtoms, setMethodAtoms] = useState<MethodAtom[]>([]); const [methodQuery, setMethodQuery] = useState(""); const [methodSearching, setMethodSearching] = useState(false); const [canTransferMethods, setCanTransferMethods] = useState(false); const [methodTransferring, setMethodTransferring] = useState(false);
-  const [publishedCopies, setPublishedCopies] = useState<PublishedCopy[]>([]); const [copyProfile, setCopyProfile] = useState<PublishedCopyProfile | null>(null); const [copyQuery, setCopyQuery] = useState(""); const [copyMonetization, setCopyMonetization] = useState(""); const [copySort, setCopySort] = useState<"latest" | "performance">("latest");
+  const [methodologyCatalog, setMethodologyCatalog] = useState<MethodologyCatalogResponse | null>(null); const [methodologyTask, setMethodologyTask] = useState<"all" | MethodologyTask>("all"); const [methodologyQuery, setMethodologyQuery] = useState("");
   const [loading, setLoading] = useState(true); const [saving, setSaving] = useState(false); const [error, setError] = useState("");
 
   const loadWorkspace = useCallback(async (orgId: string, projId: string) => {
-    if (!orgId || !projId) { setItems([]); setStrategies([]); setMethodSource(null); setMethodAtoms([]); setPublishedCopies([]); setCopyProfile(null); return; }
+    if (!orgId || !projId) { setItems([]); setStrategies([]); setMethodSource(null); setMethodAtoms([]); setMethodologyCatalog(null); return; }
     const query = `organizationId=${encodeURIComponent(orgId)}&projectId=${encodeURIComponent(projId)}`;
-    const [knowledgeResponse, strategyResponse, historyResponse, methodResponse] = await Promise.all([fetch(`/api/knowledge?${query}`), fetch(`/api/strategies?${query}`), fetch(`/api/published-copy?${query}`), fetch(`/api/authorized-knowledge?${query}`)]);
-    if (!knowledgeResponse.ok) throw new Error(await readError(knowledgeResponse)); if (!strategyResponse.ok) throw new Error(await readError(strategyResponse)); if (!historyResponse.ok) throw new Error(await readError(historyResponse)); if (!methodResponse.ok) throw new Error(await readError(methodResponse));
-    const knowledge = await knowledgeResponse.json() as { items: KnowledgeItem[]; canWrite: boolean; canManage: boolean }; const strategy = await strategyResponse.json() as { strategies: Strategy[]; canWrite: boolean; canManage: boolean }; const history = await historyResponse.json() as { records: PublishedCopy[]; profile: PublishedCopyProfile; canWrite: boolean; canManage: boolean }; const method = await methodResponse.json() as { source: MethodSource | null; atoms: MethodAtom[]; canTransfer: boolean };
-    setItems(knowledge.items); setStrategies(strategy.strategies); setPublishedCopies(history.records); setCopyProfile(history.profile); setCanWrite(knowledge.canWrite && strategy.canWrite && history.canWrite); setCanManage(knowledge.canManage && strategy.canManage && history.canManage);
-    setMethodSource(method.source); setMethodAtoms(method.atoms); setCanTransferMethods(Boolean(method.canTransfer));
+    const [knowledgeResponse, strategyResponse, methodResponse, methodologyResponse] = await Promise.all([
+      scopedFetch(`/api/knowledge?${query}`),
+      scopedFetch(`/api/strategies?${query}`),
+      AUTHORIZED_METHOD_LIBRARY_VISIBLE ? scopedFetch(`/api/authorized-knowledge?${query}&metadataOnly=1`) : Promise.resolve(null),
+      AUTHORIZED_METHOD_LIBRARY_VISIBLE ? scopedFetch(`/api/authorized-methodology?${query}`) : Promise.resolve(null),
+    ]);
+    if (!knowledgeResponse.ok) throw new Error(await readError(knowledgeResponse)); if (!strategyResponse.ok) throw new Error(await readError(strategyResponse));
+    if (methodResponse && !methodResponse.ok) throw new Error(await readError(methodResponse)); if (methodologyResponse && !methodologyResponse.ok) throw new Error(await readError(methodologyResponse));
+    const knowledge = await knowledgeResponse.json() as { items: KnowledgeItem[]; canWrite: boolean; canManage: boolean }; const strategy = await strategyResponse.json() as { strategies: Strategy[]; canWrite: boolean; canManage: boolean };
+    setItems(knowledge.items); setStrategies(strategy.strategies); setCanWrite(knowledge.canWrite && strategy.canWrite); setCanManage(knowledge.canManage && strategy.canManage);
+    if (methodResponse && methodologyResponse) {
+      const method = await methodResponse.json() as { source: MethodSource | null; atoms: MethodAtom[]; canTransfer: boolean }; const methodology = await methodologyResponse.json() as MethodologyCatalogResponse;
+      setMethodSource(method.source); setMethodAtoms(method.atoms); setCanTransferMethods(Boolean(method.canTransfer)); setMethodologyCatalog(methodology);
+    } else {
+      setMethodSource(null); setMethodAtoms([]); setCanTransferMethods(false); setMethodologyCatalog(null);
+    }
   }, []);
 
   const loadProjects = useCallback(async (orgId: string, preferred = "") => {
-    const response = await fetch(`/api/projects?organizationId=${encodeURIComponent(orgId)}`); if (!response.ok) throw new Error(await readError(response));
+    rememberCurrentScope(orgId, "");
+    const response = await scopedFetch(`/api/projects?organizationId=${encodeURIComponent(orgId)}`); if (!response.ok) throw new Error(await readError(response));
     const body = await response.json() as { projects: Project[] }; setProjects(body.projects); const selected = preferredProjectId(body.projects, preferred); setProjectId(selected); rememberCurrentScope(orgId, selected); await loadWorkspace(orgId, selected);
   }, [loadWorkspace]);
 
@@ -56,24 +130,44 @@ export function KnowledgeWorkspace({ initialOrganizationId = "", initialProjectI
 
   async function createKnowledge(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setSaving(true); setError(""); const formElement = event.currentTarget; const form = new FormData(formElement);
-    const response = await fetch("/api/knowledge", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, title: form.get("title"), category: form.get("category"), body: form.get("body"), sourceType: form.get("sourceType"), sourceRef: form.get("sourceRef") }) });
+    const response = await scopedFetch("/api/knowledge", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, title: form.get("title"), category: form.get("category"), body: form.get("body"), sourceType: form.get("sourceType"), sourceRef: form.get("sourceRef") }) });
     if (!response.ok) { setError(await readError(response)); setSaving(false); return; } const body = await response.json() as { item: KnowledgeItem }; setItems((current) => [body.item, ...current]); formElement.reset(); setSaving(false);
   }
 
   async function confirmKnowledge(itemId: string) {
-    setError(""); const response = await fetch(`/api/knowledge/${itemId}/confirm`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId }) });
-    if (!response.ok) { setError(await readError(response)); return; } const body = await response.json() as { item: { status: string; confirmed_at: string } }; setItems((current) => current.map((item) => item.id === itemId ? { ...item, ...body.item } : item));
+    setKnowledgeAction(`confirm:${itemId}`); setError(""); try { const response = await scopedFetch(`/api/knowledge/${itemId}/confirm`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId }) });
+      if (!response.ok) { setError(await readError(response)); return; } const body = await response.json() as { item: { status: string; confirmed_at: string } }; setItems((current) => current.map((item) => item.id === itemId ? { ...item, ...body.item } : item));
+    } finally { setKnowledgeAction(""); }
   }
 
+  async function editKnowledge(itemId: string, event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setSaving(true); setError(""); const formElement = event.currentTarget; const form = new FormData(formElement);
+    const response = await scopedFetch(`/api/knowledge/${itemId}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, title: form.get("title"), category: form.get("category"), body: form.get("body"), sourceType: form.get("sourceType"), sourceRef: form.get("sourceRef"), changeSummary: form.get("changeSummary") }) });
+    if (!response.ok) { setError(await readError(response)); setSaving(false); return; }
+    setSaving(false); await loadWorkspace(organizationId, projectId);
+  }
+
+  async function showKnowledgeHistory(itemId: string) {
+    setKnowledgeAction(`history:${itemId}`); setError(""); try { const response = await scopedFetch(`/api/knowledge/${itemId}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`);
+      if (!response.ok) { setError(await readError(response)); return; } const body = await response.json() as { history: KnowledgeVersion[] }; setKnowledgeHistory(body.history);
+    } finally { setKnowledgeAction(""); }
+  }
+
+  async function archiveKnowledge(itemId: string) {
+    if (!window.confirm("确认归档这条品牌知识？历史版本保留，但新生成不再检索。")) return;
+    setKnowledgeAction(`archive:${itemId}`); setError(""); try { const response = await scopedFetch(`/api/knowledge/${itemId}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`, { method: "DELETE" });
+      if (!response.ok) { setError(await readError(response)); return; } await loadWorkspace(organizationId, projectId);
+    } finally { setKnowledgeAction(""); }
+  }
   async function createStrategy(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setSaving(true); setError(""); const formElement = event.currentTarget; const form = new FormData(formElement);
     const pillars = splitList(form.get("pillars"));
-    const response = await fetch("/api/strategies", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, name: form.get("name"), positioning: form.get("positioning"), persona: form.get("persona"), targetAudience: form.get("targetAudience"), painPoints: splitList(form.get("painPoints")), pillars, objectives: splitList(form.get("objectives")), cadence: form.get("cadence"), conversionPath: form.get("conversionPath"), styleNotes: form.get("styleNotes"), topicMix: equalTopicMix(pillars) }) });
+    const response = await scopedFetch("/api/strategies", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, name: form.get("name"), positioning: form.get("positioning"), persona: form.get("persona"), targetAudience: form.get("targetAudience"), painPoints: splitList(form.get("painPoints")), pillars, objectives: splitList(form.get("objectives")), cadence: form.get("cadence"), conversionPath: form.get("conversionPath"), styleNotes: form.get("styleNotes"), topicMix: equalTopicMix(pillars) }) });
     if (!response.ok) { setError(await readError(response)); setSaving(false); return; } const body = await response.json() as { strategy: Strategy }; setStrategies((current) => [body.strategy, ...current]); formElement.reset(); setSaving(false);
   }
 
   async function activateStrategy(strategyId: string) {
-    setError(""); const response = await fetch(`/api/strategies/${strategyId}/activate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId }) });
+    setError(""); const response = await scopedFetch(`/api/strategies/${strategyId}/activate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId }) });
     if (!response.ok) { setError(await readError(response)); return; } const body = await response.json() as { strategy: { id: string; status: string; effective_from: string } }; setStrategies((current) => current.map((strategy) => strategy.id === strategyId ? { ...strategy, status: "active", effective_from: body.strategy.effective_from } : strategy.status === "active" ? { ...strategy, status: "retired" } : strategy));
   }
 
@@ -81,7 +175,7 @@ export function KnowledgeWorkspace({ initialOrganizationId = "", initialProjectI
     event.preventDefault(); if (!organizationId || !projectId) return; setMethodSearching(true); setError("");
     try {
       const query = `organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}&q=${encodeURIComponent(methodQuery)}`;
-      const response = await fetch(`/api/authorized-knowledge?${query}`); if (!response.ok) throw new Error(await readError(response));
+      const response = await scopedFetch(`/api/authorized-knowledge?${query}`); if (!response.ok) throw new Error(await readError(response));
       const body = await response.json() as { source: MethodSource | null; atoms: MethodAtom[]; canTransfer: boolean }; setMethodSource(body.source); setMethodAtoms(body.atoms); setCanTransferMethods(Boolean(body.canTransfer));
     } catch (reason) { setError(reason instanceof Error ? reason.message : "授权方法知识检索失败。"); }
     finally { setMethodSearching(false); }
@@ -90,7 +184,7 @@ export function KnowledgeWorkspace({ initialOrganizationId = "", initialProjectI
   async function exportMethodLibrary() {
     if (!organizationId || !canTransferMethods) return; setMethodTransferring(true); setError("");
     try {
-      const response = await fetch(`/api/authorized-knowledge/transfer?organizationId=${encodeURIComponent(organizationId)}`); if (!response.ok) throw new Error(await readError(response));
+      const response = await scopedFetch(`/api/authorized-knowledge/transfer?organizationId=${encodeURIComponent(organizationId)}`); if (!response.ok) throw new Error(await readError(response));
       const blob = await response.blob(); const href = URL.createObjectURL(blob); const anchor = document.createElement("a");
       anchor.href = href; anchor.download = `利明智耀授权方法库-${new Date().toISOString().slice(0, 10)}.json`; anchor.click(); URL.revokeObjectURL(href);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "授权方法库导出失败。"); }
@@ -103,53 +197,48 @@ export function KnowledgeWorkspace({ initialOrganizationId = "", initialProjectI
     try {
       if (file.size > 20 * 1024 * 1024) throw new Error("方法库文件不能超过 20 MB。");
       const payload = JSON.parse(await file.text()) as Record<string, unknown>;
-      const response = await fetch("/api/authorized-knowledge/transfer", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...payload, organizationId }) });
+      const response = await scopedFetch("/api/authorized-knowledge/transfer", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...payload, organizationId }) });
       if (!response.ok) throw new Error(await readError(response)); await loadWorkspace(organizationId, projectId);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "授权方法库导入失败。"); }
     finally { setMethodTransferring(false); }
   }
 
-  async function createPublishedCopy(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setSaving(true); setError(""); const formElement = event.currentTarget; const form = new FormData(formElement);
-    const metric = (name: string) => { const value = String(form.get(name) || "").trim(); return value ? Number(value) : undefined; };
-    const publishedAt = String(form.get("publishedAt") || "").trim();
-    const response = await fetch("/api/published-copy", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, title: form.get("title"), body: form.get("body"), platform: form.get("platform"), contentFormat: form.get("contentFormat"), publishedAt: publishedAt ? new Date(publishedAt).toISOString() : "", externalUrl: form.get("externalUrl"), monetizationTypes: form.getAll("monetizationTypes"), monetizationDetail: form.get("monetizationDetail"), performance: { views: metric("views"), likes: metric("likes"), saves: metric("saves"), leads: metric("leads"), conversions: metric("conversions") } }) });
-    if (!response.ok) { setError(await readError(response)); setSaving(false); return; }
-    const body = await response.json() as { record: PublishedCopy }; setPublishedCopies((current) => [body.record, ...current]); formElement.reset(); setSaving(false); await loadWorkspace(organizationId, projectId);
-  }
-
-  async function deletePublishedCopy(recordId: string) {
-    if (!window.confirm("确认删除这条历史发布文案？删除后新内容不再学习它。")) return;
-    setError(""); const query = `organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`;
-    const response = await fetch(`/api/published-copy/${recordId}?${query}`, { method: "DELETE" });
-    if (!response.ok) { setError(await readError(response)); return; }
-    setPublishedCopies((current) => current.filter((record) => record.id !== recordId)); await loadWorkspace(organizationId, projectId);
-  }
-
-  const filteredPublishedCopies = useMemo(() => {
-    const query = copyQuery.trim().toLocaleLowerCase("zh-CN");
-    const matches = publishedCopies.filter((record) => (!query || `${record.title}\n${record.body}`.toLocaleLowerCase("zh-CN").includes(query)) && (!copyMonetization || record.monetization_types.includes(copyMonetization)));
-    return copySort === "performance" ? [...matches].sort((left, right) => right.performance_score - left.performance_score) : matches;
-  }, [copyMonetization, copyQuery, copySort, publishedCopies]);
-
   if (loading) return <div className="management-state" role="status">正在载入品牌知识空间…</div>;
-  if (error && organizations.length === 0) return <div className="management-state error-state"><strong>暂时无法进入知识库</strong><p>{error}</p><small>请确认本地身份已启用，并先创建公司与客户项目。</small></div>;
-  if (!organizationId || !projectId) return <div className="empty-panel"><h2>请先创建客户项目</h2><p>品牌知识和内容策略必须归属于明确的客户项目。</p></div>;
+  if (error && organizations.length === 0) return <div className="management-state error-state"><strong>暂时无法进入知识库</strong><p>{error}</p><small>请确认本地身份已启用，并先创建公司与企业空间。</small></div>;
+  if (!organizationId || !projectId) return <div className="empty-panel"><h2>请先创建企业空间</h2><p>品牌知识和内容策略必须归属于明确的企业空间。</p></div>;
+  const normalizedMethodologyQuery = methodologyQuery.trim().toLocaleLowerCase("zh-CN");
+  const visibleMethodologyGroups = (methodologyCatalog?.groups ?? []).filter((group) => methodologyTask === "all" || group.task === methodologyTask).map((group) => ({
+    ...group,
+    entries: normalizedMethodologyQuery ? group.entries.filter((entry) => [entry.title, entry.instruction, entry.id, ...entry.keywords, ...entry.requiredEvidence].join(" ").toLocaleLowerCase("zh-CN").includes(normalizedMethodologyQuery)) : group.entries,
+  })).filter((group) => group.entries.length > 0);
 
   return <div className="knowledge-workspace">
-    <div className="management-toolbar knowledge-toolbar"><label>公司<select value={organizationId} onChange={async (event) => { const id = event.target.value; setOrganizationId(id); await loadProjects(id); }}>{organizations.map((organization) => <option key={organization.id} value={organization.id}>{organization.name}</option>)}</select></label><label>客户项目<select value={projectId} onChange={async (event) => { const id = event.target.value; setProjectId(id); rememberCurrentScope(organizationId, id); await loadWorkspace(organizationId, id); }}>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><div className="segmented-control" aria-label="知识库视图"><button className={tab === "knowledge" ? "active" : ""} type="button" onClick={() => setTab("knowledge")}>品牌知识</button><button className={tab === "strategy" ? "active" : ""} type="button" onClick={() => setTab("strategy")}>内容策略</button><button className={tab === "history" ? "active" : ""} type="button" onClick={() => setTab("history")}>历史发布文案</button><button className={tab === "method" ? "active" : ""} type="button" onClick={() => setTab("method")}>授权方法库</button></div></div>
+    <div className="management-toolbar knowledge-toolbar"><label>公司<select value={organizationId} onChange={async (event) => { const id = event.target.value; setOrganizationId(id); await loadProjects(id); }}>{organizations.map((organization) => <option key={organization.id} value={organization.id}>{organization.name}</option>)}</select></label><label>企业空间<select value={projectId} onChange={async (event) => { const id = event.target.value; setProjectId(id); rememberCurrentScope(organizationId, id); await loadWorkspace(organizationId, id); }}>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><div className="segmented-control" aria-label="知识库视图"><button className={tab === "knowledge" ? "active" : ""} type="button" onClick={() => setTab("knowledge")}>品牌知识</button><button className={tab === "strategy" ? "active" : ""} type="button" onClick={() => setTab("strategy")}>内容策略</button>{AUTHORIZED_METHOD_LIBRARY_VISIBLE && <button className={tab === "method" ? "active" : ""} type="button" onClick={() => setTab("method")}>授权方法论</button>}</div></div>
     {error && <div className="inline-alert" role="alert">{error}</div>}
-    {tab === "method" && <section className="method-knowledge-view"><header className="panel method-knowledge-summary"><div><p className="section-kicker">全局授权方法知识</p><h2>{methodSource ? `${methodSource.item_count.toLocaleString()} 条知识原子已同步` : "授权知识库尚未同步"}</h2><span>{methodSource ? `${methodSource.name} · 版本 ${methodSource.revision.slice(0, 7)} · 同步于 ${dateLabel(methodSource.synced_at)}` : "管理员可导入利明智耀授权方法包。"}</span>{canTransferMethods && <div className="method-transfer-actions"><button type="button" disabled={methodTransferring || !methodSource} onClick={() => void exportMethodLibrary()}>导出方法库</button><label className={methodTransferring ? "disabled" : ""}>导入方法库<input type="file" accept="application/json,.json" disabled={methodTransferring} onChange={(event) => void importMethodLibrary(event)} /></label></div>}</div><form onSubmit={searchMethodKnowledge}><input aria-label="搜索授权方法知识" value={methodQuery} onChange={(event) => setMethodQuery(event.target.value)} maxLength={500} placeholder="搜索选题、开头、对标、口播或具体业务问题" /><button disabled={methodSearching}>{methodSearching ? "检索中…" : "检索方法"}</button></form></header>{methodAtoms.length ? <div className="method-knowledge-results">{methodAtoms.map((atom) => <article className="panel" key={atom.id}><div><span>{atom.type} · {atom.confidence === "high" ? "高置信度" : atom.confidence === "medium" ? "中置信度" : "低置信度"}</span><em>{atom.id}</em></div><h3>{atom.knowledge}</h3><details><summary>查看授权原文与来源</summary><p>{atom.original}</p>{atom.url && <a href={atom.url} target="_blank" rel="noreferrer">打开来源 ↗</a>}</details><footer>{atom.topics.map((topic) => <span key={topic}>{topic}</span>)}</footer></article>)}</div> : <div className="empty-panel"><h2>没有匹配的方法知识</h2><p>换一个更具体的业务问题重新检索，或由管理员导入方法包。</p></div>}</section>}
-    {tab === "history" && <section className="published-copy-view">
-      <header className="panel published-copy-profile"><div><p className="section-kicker">高表现表达画像</p><h2>{copyProfile?.count || 0} 篇历史发布文案</h2><span>效果数据会提高优质样本权重；没有数据的文案仍参与品牌语气学习。</span></div><div className="published-copy-stats"><article><strong>{copyProfile?.count ? `${copyProfile.suggestedMinCharacters}–${copyProfile.suggestedMaxCharacters}` : "—"}</strong><span>建议字数</span></article><article><strong>{copyProfile?.bestHookType ? hookLabels[copyProfile.bestHookType.value] || copyProfile.bestHookType.value : "待积累"}</strong><span>高表现开场</span></article><article><strong>{copyProfile?.bestCtaType ? ctaLabels[copyProfile.bestCtaType.value] || copyProfile.bestCtaType.value : "待积累"}</strong><span>高表现行动引导</span></article><article><strong>{copyProfile?.bestMonetizationType ? monetizationLabels[copyProfile.bestMonetizationType.value] || copyProfile.bestMonetizationType.value : "待积累"}</strong><span>主要变现</span></article></div><div className="published-copy-profile-tags"><span className={`profile-confidence ${copyProfile?.confidence || "low"}`}>画像置信度：{confidenceLabels[copyProfile?.confidence || "low"]} · {copyProfile?.performanceSampleSize || 0} 篇有效果数据</span>{copyProfile?.toneTags.map((item) => <span key={item.value}>{item.value} · {item.count}</span>)}{copyProfile?.hookTypes.map((item) => <span key={item.value}>{hookLabels[item.value] || item.value} · {item.count}</span>)}</div></header>
-      <PublishedCopyBatchImport organizationId={organizationId} projectId={projectId} canWrite={canWrite} onImported={() => loadWorkspace(organizationId, projectId)} onError={setError} />
-      {!!copyProfile?.topPerformers.length && <section className="panel published-copy-leaderboard"><header><div><p className="section-kicker">有数据支撑的表达</p><h2>高表现文案</h2></div><span>效果指数只用于同项目内相对比较</span></header><div>{copyProfile.topPerformers.slice(0, 5).map((item, index) => <article key={item.id}><em>{String(index + 1).padStart(2, "0")}</em><div><strong>{item.title}</strong><span>播放 {metricLabel(item.views)} · 收藏 {metricLabel(item.saves)} · 咨询 {metricLabel(item.leads)} · 成交 {metricLabel(item.conversions)}</span></div><b>{item.score.toFixed(1)}</b></article>)}</div></section>}
-      <div className="published-copy-layout"><section className="panel published-copy-library"><div className="panel-heading"><div><p className="section-kicker">可检索的历史内容</p><h2>已发布文案库</h2></div><span>生成新文案时自动检索最多 5 篇</span></div><div className="published-copy-filters"><input type="search" aria-label="搜索历史发布文案" value={copyQuery} onChange={(event) => setCopyQuery(event.target.value)} placeholder="搜索标题或正文" /><select aria-label="按变现形式筛选" value={copyMonetization} onChange={(event) => setCopyMonetization(event.target.value)}><option value="">全部变现形式</option>{Object.entries(monetizationLabels).filter(([value]) => value !== "none").map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><select aria-label="历史文案排序" value={copySort} onChange={(event) => setCopySort(event.target.value as "latest" | "performance")}><option value="latest">按发布时间</option><option value="performance">按效果表现</option></select></div>{filteredPublishedCopies.length ? <div className="published-copy-list">{filteredPublishedCopies.map((record) => <article key={record.id}><header><div><span>{platformLabels[record.platform] || record.platform}</span><em>{record.source_type === "publication" ? "发布流程自动沉淀" : record.source_type === "csv_import" ? "批量导入" : "历史补录"}</em></div>{canManage && <button type="button" onClick={() => void deletePublishedCopy(record.id)}>删除</button>}</header><h3>{record.title}</h3><p>{record.body}</p><div className="published-copy-signals"><span>{record.character_count} 字</span><span>{record.paragraph_count} 段</span><span>{hookLabels[record.analysis.hookType || ""] || "结构待分析"}</span>{record.monetization_types.map((type) => <span key={type}>{monetizationLabels[type] || type}</span>)}</div>{record.performance_score > 0 && <div className="published-copy-effect-strip"><strong>效果 {record.performance_score.toFixed(1)}</strong><span>播放 {metricLabel(record.performance.views)}</span><span>收藏 {metricLabel(record.performance.saves)}</span><span>咨询 {metricLabel(record.performance.leads)}</span><span>成交 {metricLabel(record.performance.conversions)}</span></div>}<footer><span>{formatLabels[record.content_format] || record.content_format} · {dateLabel(record.published_at || record.created_at)}</span>{record.external_url && <a href={record.external_url} target="_blank" rel="noreferrer">查看原文 ↗</a>}</footer>{canWrite && <PublishedCopyPerformanceEditor organizationId={organizationId} projectId={projectId} recordId={record.id} sourceType={record.source_type} performance={record.performance} onUpdated={() => loadWorkspace(organizationId, projectId)} onError={setError} />}</article>)}</div> : <div className="list-empty">{publishedCopies.length ? "没有符合当前筛选条件的文案。" : "补录过去发布过的文案，或在发布管理中标记新内容为已发布。"}</div>}</section>
-        {canWrite && <aside className="create-panel published-copy-create"><p className="section-kicker">补录历史内容</p><h2>保存原文，自动生成表达画像</h2><form className="stack-form" onSubmit={createPublishedCopy}><label>文案标题<input name="title" required minLength={2} maxLength={160} placeholder="填写发布时使用的标题" /></label><div className="form-row"><label>发布平台<select name="platform" defaultValue="douyin">{Object.entries(platformLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label>内容形式<select name="contentFormat" defaultValue="spoken_script">{Object.entries(formatLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label></div><label>历史文案原文<textarea name="body" required minLength={20} maxLength={50000} rows={12} placeholder="粘贴当时实际发布的完整文案" /></label><div className="form-row"><label>发布时间<input type="datetime-local" name="publishedAt" /></label><label>线上链接<input type="url" name="externalUrl" placeholder="可选" /></label></div><fieldset className="published-copy-monetization"><legend>这篇内容采用了哪些变现形式？</legend>{Object.entries(monetizationLabels).filter(([value]) => value !== "none").map(([value, label]) => <label key={value}><input type="checkbox" name="monetizationTypes" value={value} />{label}</label>)}</fieldset><label>变现说明<textarea name="monetizationDetail" rows={2} maxLength={1000} placeholder="例如：评论区引导私信，随后预约企业 AI 诊断" /></label><details className="published-copy-performance"><summary>补充效果数据（可选）</summary><div className="metric-grid"><label>阅读/播放<input name="views" type="number" min="0" /></label><label>点赞<input name="likes" type="number" min="0" /></label><label>收藏<input name="saves" type="number" min="0" /></label><label>咨询<input name="leads" type="number" min="0" /></label><label>成交<input name="conversions" type="number" min="0" /></label></div></details><button className="primary-button" disabled={saving}>{saving ? "正在分析并保存…" : "保存并分析文案"}</button></form></aside>}
-      </div>
+    {AUTHORIZED_METHOD_LIBRARY_VISIBLE && tab === "method" && methodologyCatalog && <section className="methodology-view">
+      <header className="panel methodology-hero">
+        <div className="methodology-hero-copy"><p className="section-kicker">授权方法论 · 目录 {methodologyCatalog.catalog.version}</p><h2>系统按任务选择方法，不把整库塞给模型</h2><span>方法只规定怎么策划、创作和诊断；客户事实来自品牌知识与项目记忆，视频判断仍然必须绑定转写、画面和时间码。</span><div className="methodology-flow-map" aria-label="方法论调用链">{(["topic", "content", "analysis"] as const).map((task, index) => <div key={task}><i><MethodTaskIcon task={task} /></i><span><strong>{methodologyTaskLabels[task].title}</strong><small>{methodologyTaskLabels[task].caption}</small></span>{index < 2 && <b aria-hidden="true" />}</div>)}</div></div>
+        <dl><div><dt>业务方法链</dt><dd>3</dd><small>选题 · 生成 · 分析</small></div><div><dt>核心流程</dt><dd>{methodologyCatalog.catalog.kindCounts.core_playbook}</dd><small>每次任务选择一套</small></div><div><dt>方法模块</dt><dd>{methodologyCatalog.catalog.kindCounts.module}</dd><small>按场景组合调用</small></div><div><dt>质量门禁</dt><dd>{methodologyCatalog.catalog.kindCounts.rule}</dd><small>事实与证据不可跳过</small></div></dl>
+      </header>
+
+      <section className="panel methodology-command-bar"><div><p className="section-kicker">查看系统实际会调用的方法</p><div className="methodology-task-tabs" role="tablist" aria-label="方法论业务环节"><button className={methodologyTask === "all" ? "active" : ""} type="button" onClick={() => setMethodologyTask("all")}>全部方法 <span>{methodologyCatalog.catalog.entryCount}</span></button>{(["topic", "content", "analysis"] as const).map((task) => <button className={methodologyTask === task ? "active" : ""} type="button" key={task} onClick={() => setMethodologyTask(task)}>{methodologyTaskLabels[task].title} <span>{methodologyCatalog.catalog.taskCounts[task]}</span></button>)}</div></div><label><Search aria-hidden="true" /><input value={methodologyQuery} onChange={(event) => setMethodologyQuery(event.target.value)} maxLength={200} placeholder="搜索方法、执行规则或证据要求" /></label></section>
+
+      {visibleMethodologyGroups.length ? <div className="methodology-tracks">{visibleMethodologyGroups.map((group) => <MethodologyTrack key={group.task} group={group} />)}</div> : <div className="empty-panel"><FileSearch aria-hidden="true" /><h2>没有匹配的方法论</h2><p>换一个更具体的关键词，或切换到全部方法。</p></div>}
+
+      <section className="methodology-framework-library"><header><div><p className="section-kicker">已整理成可调用结构</p><h2>辅助框架</h2></div><span>框架用于选方法，不直接提供客户事实</span></header><div className="methodology-framework-grid">
+        <article><header><Lightbulb aria-hidden="true" /><div><strong>{methodologyCatalog.catalog.frameworks.contentStrategyFamilyCount} 类内容策略</strong><span>决定从什么角度进入问题</span></div></header><ul className="strategy-family-list">{methodologyCatalog.catalog.frameworks.contentStrategyFamilies.map((item) => <li key={item.id}><strong>{item.name}</strong><span>{item.use}</span></li>)}</ul></article>
+        <article><header><Workflow aria-hidden="true" /><div><strong>{methodologyCatalog.catalog.frameworks.contentHookTypeCount} 类安全钩子</strong><span>开头必须由正文兑现</span></div></header><div className="methodology-hook-cloud">{methodologyCatalog.catalog.frameworks.contentHookTypes.map((item) => <span key={item}>{item}</span>)}</div></article>
+        <article><header><Video aria-hidden="true" /><div><strong>{methodologyCatalog.catalog.frameworks.analysisRubricDimensionCount} 维分析量表</strong><span>每个判断都对应证据类型</span></div></header><ul className="rubric-dimension-list">{methodologyCatalog.catalog.frameworks.analysisRubricDimensions.map((item) => <li key={item.id}><strong>{item.name}</strong><span>{item.evidence}</span></li>)}</ul></article>
+      </div></section>
+
+      <details className="panel methodology-source-vault"><summary><span><Database aria-hidden="true" /><span><strong>来源追溯与底层授权方法库</strong><small>{methodSource ? `${methodSource.item_count.toLocaleString()} 条原子 · 修订 ${methodSource.revision.slice(0, 7)} · ${dateLabel(methodSource.synced_at)} 同步` : "尚未同步底层授权来源"}</small></span></span><em>展开管理</em></summary><div className="methodology-source-body"><header><div><p>原子库用于补充方法出处和检索，不再作为这个页面的主体，也不会被整库直接送入模型。</p>{methodSource && <small>{methodSource.name} · 完整版本 {methodSource.revision}</small>}</div>{canTransferMethods && <div className="method-transfer-actions"><button type="button" disabled={methodTransferring || !methodSource} onClick={() => void exportMethodLibrary()}>导出方法库</button><label className={methodTransferring ? "disabled" : ""}>导入方法库<input type="file" accept="application/json,.json" disabled={methodTransferring} onChange={(event) => void importMethodLibrary(event)} /></label></div>}</header><form className="method-source-search" onSubmit={searchMethodKnowledge}><label><Search aria-hidden="true" /><input aria-label="搜索底层授权来源" value={methodQuery} onChange={(event) => setMethodQuery(event.target.value)} maxLength={500} placeholder="按业务问题检索底层来源" /></label><button disabled={methodSearching}>{methodSearching ? "检索中…" : "检索来源"}</button></form>{methodAtoms.length ? <div className="method-knowledge-results compact">{methodAtoms.map((atom) => <article key={atom.id}><div><span>{atom.type} · {atom.confidence === "high" ? "高置信度" : atom.confidence === "medium" ? "中置信度" : "低置信度"}</span><em>{atom.id}</em></div><h3>{atom.knowledge}</h3><details><summary>查看授权原文与来源</summary><p>{atom.original}</p>{atom.url && <a href={atom.url} target="_blank" rel="noreferrer">打开来源 ↗</a>}</details><footer>{atom.topics.map((topic) => <span key={topic}>{topic}</span>)}</footer></article>)}</div> : <div className="list-empty">{methodQuery.trim() ? "没有匹配的底层来源。" : "输入具体业务问题后检索对应的授权来源。"}</div>}</div></details>
     </section>}
     <div style={{ display: tab === "knowledge" || tab === "strategy" ? "contents" : "none" }}>
-    {tab === "knowledge" ? <div className="knowledge-layout"><section className="panel knowledge-list-panel"><div className="panel-heading"><div><p className="section-kicker">已确认知识才参与生成</p><h2>{items.filter((item) => item.status === "confirmed").length} 条正式知识 · {items.filter((item) => item.status === "draft").length} 条待确认</h2></div></div>{items.length ? <div className="knowledge-list">{items.map((item) => <article key={item.id}><div className="knowledge-card-head"><span>{categoryLabels[item.category] || item.category}</span><em className={`status ${item.status === "confirmed" ? "success" : "neutral"}`}>{item.status === "confirmed" ? "已确认" : item.status === "draft" ? "待确认" : "已归档"}</em></div><h3>{item.title}</h3><p>{item.body}</p><footer><span>{sourceLabels[item.source_type] || item.source_type} · v{item.current_version} · {dateLabel(item.updated_at)}</span>{item.status === "draft" && canManage && <button type="button" onClick={() => confirmKnowledge(item.id)}>确认沉淀</button>}</footer></article>)}</div> : <div className="list-empty">先录入品牌故事、案例、客户问题、语气或合规要求。</div>}</section>{canWrite && <aside className="create-panel knowledge-create"><p className="section-kicker">新增知识草稿</p><h2>保留来源，再由负责人确认</h2><form className="stack-form" onSubmit={createKnowledge}><label>标题<input name="title" required minLength={2} maxLength={120} /></label><div className="form-row"><label>分类<select name="category" defaultValue="brand_story">{Object.entries(categoryLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label>来源<select name="sourceType" defaultValue="manual">{Object.entries(sourceLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label></div><label>知识正文<textarea name="body" required minLength={10} maxLength={20000} rows={7} /></label><label>来源说明或链接<input name="sourceRef" maxLength={1000} placeholder="文件名、网页链接或反馈记录" /></label><button className="primary-button" disabled={saving}>{saving ? "正在保存…" : "保存为待确认知识"}</button></form></aside>}</div> : <div className="strategy-layout"><section className="strategy-list">{strategies.length ? strategies.map((strategy) => <article className={`panel strategy-card ${strategy.status}`} key={strategy.id}><div className="panel-heading"><div><p className="section-kicker">策略 v{strategy.version}</p><h2>{strategy.name}</h2></div><span className={`status ${strategy.status === "active" ? "success" : "neutral"}`}>{strategy.status === "active" ? "当前启用" : strategy.status === "draft" ? "草稿" : "历史版本"}</span></div><div className="strategy-body"><section><h3>账号定位</h3><p>{strategy.positioning}</p></section><section><h3>目标人群</h3><p>{strategy.target_audience}</p></section><section><h3>内容支柱</h3><div className="plain-chips">{strategy.pillars?.map((pillar) => <span key={pillar}>{pillar}</span>)}</div></section><section><h3>阶段目标</h3><ul>{strategy.objectives?.map((objective) => <li key={objective}>{objective}</li>)}</ul></section></div><footer><span>{strategy.status === "active" ? `启用于 ${dateLabel(strategy.effective_from)}` : `更新于 ${dateLabel(strategy.updated_at)}`}</span>{strategy.status !== "active" && canManage && <button type="button" onClick={() => activateStrategy(strategy.id)}>启用此版本</button>}</footer></article>) : <div className="empty-panel"><span aria-hidden="true">⌁</span><h2>还没有内容策略</h2><p>建立第一版账号定位、目标人群、内容支柱和阶段目标。</p></div>}</section>{canWrite && <aside className="create-panel strategy-create"><p className="section-kicker">新策略版本</p><h2>创建后先保存为草稿</h2><form className="stack-form" onSubmit={createStrategy}><label>版本名称<input name="name" required minLength={2} maxLength={100} placeholder="例如：专业管理顾问增长策略" /></label><label>账号定位<textarea name="positioning" required minLength={5} rows={3} /></label><label>人设定位<input name="persona" maxLength={1000} /></label><label>目标人群<textarea name="targetAudience" required minLength={2} rows={2} /></label><label>用户痛点（逗号分隔）<textarea name="painPoints" required rows={2} /></label><label>内容支柱（逗号分隔）<input name="pillars" required /></label><label>阶段目标（逗号分隔）<textarea name="objectives" required rows={2} /></label><div className="form-row"><label>更新频率<input name="cadence" placeholder="每周 3 条" /></label><label>转化路径<input name="conversionPath" /></label></div><label>内容风格<textarea name="styleNotes" rows={2} /></label><button className="primary-button" disabled={saving}>{saving ? "正在保存…" : "创建策略草稿"}</button></form></aside>}</div>}
+    {knowledgeHistory && <aside className="panel knowledge-history-panel" role="dialog" aria-label="知识版本历史"><div className="panel-heading"><div><p className="section-kicker">只读版本记录</p><h2>知识版本历史</h2></div><button type="button" onClick={() => setKnowledgeHistory(null)}>关闭</button></div>{knowledgeHistory.length ? <ol className="knowledge-history-list">{knowledgeHistory.map((version) => <li key={version.version}><div><strong>v{version.version}</strong><span>{dateLabel(version.created_at)} · {sourceLabels[version.source_type] || version.source_type}</span></div><p>{version.body}</p>{version.change_summary && <small>{version.change_summary}</small>}</li>)}</ol> : <div className="list-empty">暂无历史版本。</div>}</aside>}
+    {tab === "knowledge" ? <div className="knowledge-layout">
+      <section className="panel knowledge-list-panel"><div className="panel-heading"><div><p className="section-kicker">已确认知识才参与生成</p><h2>{items.filter((item) => item.status === "confirmed").length} 条正式知识 · {items.filter((item) => item.status === "draft").length} 条待确认</h2></div></div>{items.length ? <div className="knowledge-list">{items.map((item) => <KnowledgeCard key={item.id} item={item} canManage={canManage} saving={saving} action={knowledgeAction.endsWith(item.id) ? knowledgeAction : ""} onConfirm={() => void confirmKnowledge(item.id)} onEdit={(event) => void editKnowledge(item.id, event)} onArchive={() => void archiveKnowledge(item.id)} onHistory={() => void showKnowledgeHistory(item.id)} />)}</div> : <div className="list-empty">先录入品牌故事、案例、客户问题、语气或合规要求。</div>}</section>
+      {canWrite && <aside className="create-panel knowledge-create"><p className="section-kicker">新增知识草稿</p><h2>保留来源，再由负责人确认</h2><form className="stack-form" onSubmit={createKnowledge}><label>标题<input name="title" required minLength={2} maxLength={120} /></label><div className="form-row"><label>分类<select name="category" defaultValue="brand_story">{Object.entries(categoryLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label>来源<select name="sourceType" defaultValue="manual">{Object.entries(sourceLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label></div><label>知识正文<textarea name="body" required minLength={10} maxLength={20000} rows={7} /></label><label>来源说明或链接<input name="sourceRef" maxLength={1000} placeholder="文件名、网页链接或反馈记录" /></label><button className="primary-button" disabled={saving}>{saving ? "正在保存…" : "保存为待确认知识"}</button></form></aside>}
+    </div> : <div className="strategy-layout"><section className="strategy-list">{strategies.length ? strategies.map((strategy) => <article className={`panel strategy-card ${strategy.status}`} key={strategy.id}><div className="panel-heading"><div><p className="section-kicker">策略 v{strategy.version}</p><h2>{strategy.name}</h2></div><span className={`status ${strategy.status === "active" ? "success" : "neutral"}`}>{strategy.status === "active" ? "当前启用" : strategy.status === "draft" ? "草稿" : "历史版本"}</span></div><div className="strategy-body"><section><h3>账号定位</h3><p>{strategy.positioning}</p></section><section><h3>目标人群</h3><p>{strategy.target_audience}</p></section><section><h3>内容支柱</h3><div className="plain-chips">{strategy.pillars?.map((pillar) => <span key={pillar}>{pillar}</span>)}</div></section><section><h3>阶段目标</h3><ul>{strategy.objectives?.map((objective) => <li key={objective}>{objective}</li>)}</ul></section></div><footer><span>{strategy.status === "active" ? `启用于 ${dateLabel(strategy.effective_from)}` : `更新于 ${dateLabel(strategy.updated_at)}`}</span>{strategy.status !== "active" && canManage && <button type="button" onClick={() => activateStrategy(strategy.id)}>启用此版本</button>}</footer></article>) : <div className="empty-panel"><span aria-hidden="true">⌁</span><h2>还没有内容策略</h2><p>建立第一版账号定位、目标人群、内容支柱和阶段目标。</p></div>}</section>{canWrite && <aside className="create-panel strategy-create"><p className="section-kicker">新策略版本</p><h2>创建后先保存为草稿</h2><form className="stack-form" onSubmit={createStrategy}><label>版本名称<input name="name" required minLength={2} maxLength={100} placeholder="例如：专业管理顾问增长策略" /></label><label>账号定位<textarea name="positioning" required minLength={5} rows={3} /></label><label>人设定位<input name="persona" maxLength={1000} /></label><label>目标人群<textarea name="targetAudience" required minLength={2} rows={2} /></label><label>用户痛点（逗号分隔）<textarea name="painPoints" required rows={2} /></label><label>内容支柱（逗号分隔）<input name="pillars" required /></label><label>阶段目标（逗号分隔）<textarea name="objectives" required rows={2} /></label><div className="form-row"><label>更新频率<input name="cadence" placeholder="每周 3 条" /></label><label>转化路径<input name="conversionPath" /></label></div><label>内容风格<textarea name="styleNotes" rows={2} /></label><button className="primary-button" disabled={saving}>{saving ? "正在保存…" : "创建策略草稿"}</button></form></aside>}</div>}
     </div>
   </div>;
 }

@@ -23,7 +23,7 @@ test("member status controls explain self protection and confirm suspension or r
   assert.match(styles, /self-protection-note/);
 });
 
-test("administrators can assign existing members to projects after invitation acceptance", async () => {
+test("administrators assign employees to spaces without secondary roles", async () => {
   const [manager, route, invitationRoute, projectsRoute, runtime, authorization, workflow, contentOps, operations, styles] = await Promise.all([
     readFile(new URL("../components/MemberManager.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/members/route.ts", import.meta.url), "utf8"),
@@ -43,24 +43,24 @@ test("administrators can assign existing members to projects after invitation ac
   assert.match(route, /project\.member_assigned/);
   assert.match(route, /project\.member_removed/);
   assert.match(route, /MEMBER_NOT_ACTIVE/);
-  assert.match(manager, /分配客户项目/);
+  assert.match(manager, /分配企业空间/);
   assert.match(manager, /updateProjectMembership/);
-  assert.match(manager, /成员加入公司后，仍可随时增加项目、调整角色或移除项目权限/);
+  assert.match(manager, /勾选员工即授予当前空间全部业务操作权限/);
   assert.match(manager, /new URLSearchParams\(window\.location\.search\)/);
-  assert.match(manager, /已分配项目/);
-  assert.match(manager, /实际项目成员/);
+  assert.match(manager, /已分配空间/);
+  assert.match(manager, /位已分配员工/);
   assert.match(manager, /另有全局管理权/);
-  assert.match(manager, /activeMembers\.map/);
+  assert.match(manager, /activeEmployees\.map/);
   assert.doesNotMatch(manager, /member\.role === "admin" \? <span className="member-project-count">全部项目/);
   assert.doesNotMatch(manager, /requestMemberRoleChange/);
   assert.match(manager, /organizationRole: "member"/);
-  assert.match(manager, /<option value="member">公司员工<\/option>/);
+  assert.match(manager, /value="公司员工" readOnly/);
   assert.match(manager, /inviteProjectId/);
   assert.match(projectsRoute, /pm\.organization_id = p\.organization_id/);
   assert.match(projectsRoute, /all_pm\.organization_id = p\.organization_id/);
   assert.match(projectsRoute, /organization_members all_om/);
-  assert.match(route, /INCOMPATIBLE_ROLE_SCOPE/);
-  assert.match(route, /LAST_PROJECT_OWNER_REQUIRED/);
+  assert.doesNotMatch(route, /INCOMPATIBLE_ROLE_SCOPE/);
+  assert.doesNotMatch(route, /LAST_PROJECT_OWNER_REQUIRED/);
   assert.match(route, /MEMBER_ALREADY_EXISTS/);
   assert.match(route, /INVITATION_ALREADY_PENDING/);
   assert.match(route, /ADMIN_ROLE_NOT_TRANSFERABLE/);
@@ -69,9 +69,9 @@ test("administrators can assign existing members to projects after invitation ac
   assert.match(invitationRoute, /INVITATION_PROJECT_UNAVAILABLE/);
   assert.match(invitationRoute, /MEMBER_ALREADY_EXISTS/);
   assert.match(runtime, /organization\.organizationRole === "admin"/);
-  assert.match(authorization, /organizationRole !== "readonly"/);
-  assert.match(workflow, /access\.organizationRole !== "readonly"/);
-  assert.match(contentOps, /access\.organizationRole !== "readonly"/);
+  assert.match(authorization, /projectRoles = \["member"\]/);
+  assert.match(workflow, /access\.projectRole !== null/);
+  assert.match(contentOps, /access\.projectRole !== null/);
   assert.match(operations, /julianday\(expires_at\) > julianday\('now'\)/);
   assert.match(styles, /project-assignment-list/);
 });

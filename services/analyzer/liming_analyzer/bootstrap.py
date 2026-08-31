@@ -9,17 +9,21 @@ from pathlib import Path
 from typing import TypeVar
 
 from .api_client import AnalyzerApiClient
+from .cookie_snapshot import inspect_browser_authentication
 from .artifacts import ApiArtifactStore
 from .ffmpeg import FfmpegMediaProcessor
+from .minimax_vision import MiniMaxTokenPlanMcpVisionEngine
 from .pipeline import AnalysisPipeline
 from .providers import (
     FunAsrSpeechRecognizer,
     InstructorStructureAnalyzer,
     PaddleOcrEngine,
     PySceneDetectFrameExtractor,
+    SparseTailFallbackSpeechRecognizer,
 )
 from .sources import PlatformSourceProvider, YtDlpPublicVideoResolver
-from .visual import KeyframeVisualAnalyzer
+from .vision_capabilities import resolve_vision_capability
+from .visual import KeyframeVisualAnalyzer, OpenAiCompatibleVisionEngine
 
 T = TypeVar("T")
 
@@ -98,7 +102,13 @@ class AnalyzerSettings:
     llm_base_url: str
     llm_model: str
     llm_provider: str
+    vision_api_key: str = ""
+    vision_base_url: str = ""
+    vision_model: str = ""
+    vision_provider: str = ""
+    vision_concurrency: int = 2
     asr_model: str = "paraformer-zh"
+    asr_fallback_model: str = "iic/SenseVoiceSmall"
     asr_device: str = "cpu"
     paddle_ocr_detection_model: str = "PP-OCRv5_mobile_det"
     paddle_ocr_recognition_model: str = "PP-OCRv5_mobile_rec"
@@ -106,7 +116,7 @@ class AnalyzerSettings:
     ffmpeg: str = "ffmpeg"
     ffprobe: str = "ffprobe"
     model_cache: str = field(default_factory=_default_model_cache)
-    yt_dlp_cookies_from_browser: str = ""
+    yt_dlp_cookies_from_browser: str = "edge"
     yt_dlp_cookie_file: str = ".local/douyin-cookies.txt"
 
     @classmethod
@@ -124,9 +134,27 @@ class AnalyzerSettings:
         missing = [required[field] for field, value in values.items() if not value]
         if missing:
             raise RuntimeError(f"missing analyzer settings: {', '.join(missing)}")
+        vision_concurrency_value = os.environ.get(
+            "ANALYZER_VISION_CONCURRENCY",
+            "2",
+        ).strip()
+        try:
+            vision_concurrency = int(vision_concurrency_value)
+        except ValueError as error:
+            raise RuntimeError("ANALYZER_VISION_CONCURRENCY must be an integer") from error
+        if not 1 <= vision_concurrency <= 3:
+            raise RuntimeError("ANALYZER_VISION_CONCURRENCY must be between 1 and 3")
         return cls(
             **values,
+            vision_api_key=os.environ.get("ANALYZER_VISION_API_KEY", "").strip(),
+            vision_base_url=os.environ.get("ANALYZER_VISION_BASE_URL", "").strip(),
+            vision_model=os.environ.get("ANALYZER_VISION_MODEL", "").strip(),
+            vision_provider=os.environ.get("ANALYZER_VISION_PROVIDER", "").strip(),
+            vision_concurrency=vision_concurrency,
             asr_model=os.environ.get("ANALYZER_ASR_MODEL", "paraformer-zh").strip(),
+            asr_fallback_model=os.environ.get(
+                "ANALYZER_ASR_FALLBACK_MODEL", "iic/SenseVoiceSmall"
+            ).strip(),
             asr_device=os.environ.get("ANALYZER_ASR_DEVICE", "cpu").strip(),
             paddle_ocr_detection_model=os.environ.get(
                 "ANALYZER_PADDLE_OCR_DETECTION_MODEL", "PP-OCRv5_mobile_det"
@@ -141,7 +169,7 @@ class AnalyzerSettings:
             ffprobe=os.environ.get("ANALYZER_FFPROBE", "ffprobe").strip(),
             model_cache=_normalize_model_cache(os.environ.get("ANALYZER_MODEL_CACHE", "")),
             yt_dlp_cookies_from_browser=os.environ.get(
-                "ANALYZER_YTDLP_COOKIES_FROM_BROWSER", ""
+                "ANALYZER_YTDLP_COOKIES_FROM_BROWSER", "edge"
             ).strip(),
             yt_dlp_cookie_file=os.environ.get(
                 "ANALYZER_YTDLP_COOKIE_FILE", ".local/douyin-cookies.txt"
@@ -171,6 +199,9 @@ def build_client(settings: AnalyzerSettings) -> AnalyzerApiClient:
         settings.base_url,
         settings.service_token,
         settings.worker_id,
+        browser_auth_probe=lambda: inspect_browser_authentication(
+            settings.yt_dlp_cookies_from_browser
+        ),
     )
 
 
@@ -271,7 +302,7 @@ def build_pipeline(settings: AnalyzerSettings, client: AnalyzerApiClient) -> Ana
     os.environ["MODELSCOPE_CACHE"] = str(model_cache / "modelscope")
     os.environ["HF_HOME"] = str(model_cache / "huggingface")
     media = FfmpegMediaProcessor(settings.ffmpeg, settings.ffprobe)
-    speech = _initialize_model_with_cache_repair(
+    primary_speech = _initialize_model_with_cache_repair(
         "FunASR speech recognition",
         lambda: FunAsrSpeechRecognizer(
             settings.asr_model,
@@ -280,6 +311,51 @@ def build_pipeline(settings: AnalyzerSettings, client: AnalyzerApiClient) -> Ana
         model_cache / "modelscope",
         _FUNASR_CACHE_PATHS,
     )
+    speech = primary_speech
+    if settings.asr_fallback_model and settings.asr_fallback_model != settings.asr_model:
+        speech = SparseTailFallbackSpeechRecognizer(
+            primary_speech,
+            lambda: FunAsrSpeechRecognizer(
+                settings.asr_fallback_model,
+                device=settings.asr_device,
+                punc_model=None,
+            ),
+        )
+    vision_values = (
+        settings.vision_api_key,
+        settings.vision_base_url,
+        settings.vision_model,
+        settings.vision_provider,
+    )
+    vision_capability = resolve_vision_capability(
+        provider=settings.vision_provider,
+        model=settings.vision_model,
+        api_key=settings.vision_api_key,
+        base_url=settings.vision_base_url,
+    )
+    if vision_capability.adapter == "minimax_token_plan_mcp":
+        vision_engine = MiniMaxTokenPlanMcpVisionEngine(
+            api_key=settings.vision_api_key,
+            api_host=vision_capability.api_host,
+            concurrency=settings.vision_concurrency,
+        )
+        vision_unavailable_reason = ""
+    elif vision_capability.adapter == "openai_compatible":
+        vision_engine = OpenAiCompatibleVisionEngine(
+            api_key=settings.vision_api_key,
+            base_url=settings.vision_base_url,
+            model=settings.vision_model,
+            provider=settings.vision_provider,
+        )
+        vision_unavailable_reason = ""
+    elif any(vision_values):
+        vision_engine = None
+        vision_unavailable_reason = vision_capability.reason
+    else:
+        vision_engine = None
+        vision_unavailable_reason = (
+            "独立视觉模型未配置；OCR 结果不会被当作真实画面分析。"
+        )
     visual = KeyframeVisualAnalyzer(
         PySceneDetectFrameExtractor(media),
         _initialize_model_with_cache_repair(
@@ -291,6 +367,8 @@ def build_pipeline(settings: AnalyzerSettings, client: AnalyzerApiClient) -> Ana
             model_cache / "paddlex",
             _paddlex_cache_paths(settings),
         ),
+        vision_engine,
+        vision_unavailable_reason=vision_unavailable_reason,
     )
     structure = InstructorStructureAnalyzer(
         api_key=settings.llm_api_key,

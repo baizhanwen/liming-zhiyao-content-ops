@@ -5,14 +5,6 @@ import { readRequestIdentity } from "../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
-function clientReviewPack(value: unknown) {
-  if (typeof value !== "string") return "{}";
-  try {
-    const pack = JSON.parse(value) as Record<string, unknown>;
-    return JSON.stringify({ fullScript: pack.fullScript, shortScript: pack.shortScript, storyboard: pack.storyboard, coverCopy: pack.coverCopy, publishTitles: pack.publishTitles, hashtags: pack.hashtags, adaptations: pack.adaptations });
-  } catch { return "{}"; }
-}
-
 export async function GET(request: Request) {
   const identity = await readRequestIdentity(request);
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再访问协作工作台。", 401);
@@ -23,7 +15,7 @@ export async function GET(request: Request) {
   try {
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
     if (!access) return apiError("ACCESS_DENIED", "无权访问该项目的协作工作台。", 403);
-    const clientOnly = access.projectRole === "client";
+    const clientOnly = false;
     const db = getD1();
     const [items, reviews, comments, schedules, publications] = await Promise.all([
       db.prepare(`
@@ -56,9 +48,8 @@ export async function GET(request: Request) {
       db.prepare("SELECT id, content_item_id, content_version_id, platform, scheduled_at, timezone, status, notes, updated_at FROM content_schedules WHERE organization_id = ? AND project_id = ? ORDER BY scheduled_at ASC LIMIT 1000").bind(organizationId, projectId).all(),
       db.prepare("SELECT id, content_item_id, content_version_id, schedule_id, platform, status, external_id, external_url, published_at, error_message, updated_at FROM publication_records WHERE organization_id = ? AND project_id = ? ORDER BY updated_at DESC LIMIT 1000").bind(organizationId, projectId).all(),
     ]);
-    const visibleItems = clientOnly ? items.results.map((item) => ({ ...item, pack_json: clientReviewPack((item as { pack_json?: unknown }).pack_json) })) : items.results;
     return Response.json({
-      items: visibleItems,
+      items: items.results,
       reviews: reviews.results,
       comments: comments.results,
       schedules: schedules.results,

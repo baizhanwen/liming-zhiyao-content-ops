@@ -80,13 +80,13 @@ test("analysis results and navigation expose the knowledge-to-topic workflow", a
   assert.match(topicsPage, /TopicWorkspace/);
 });
 
-test("content input helpers reject malformed lists and protect management roles", async () => {
+test("content input helpers reject malformed lists and allow assigned employees", async () => {
   const helpers = await import("../lib/content-ops.ts");
   assert.deepEqual(helpers.cleanStringList([" 痛点一 ", "", 3]), ["痛点一"]);
   assert.equal(helpers.cleanStringList("痛点一"), null);
   assert.equal(helpers.canManageProjectKnowledge({ organizationRole: "admin", projectRole: null }), true);
-  assert.equal(helpers.canManageProjectKnowledge({ organizationRole: "member", projectRole: "planner" }), true);
-  assert.equal(helpers.canManageProjectKnowledge({ organizationRole: "member", projectRole: "creator" }), false);
+  assert.equal(helpers.canManageProjectKnowledge({ organizationRole: "member", projectRole: "member" }), true);
+  assert.equal(helpers.canManageProjectKnowledge({ organizationRole: "member", projectRole: null }), false);
 });
 
 test("content lineage flows from analysis through production, publishing, and performance", async () => {

@@ -1,15 +1,10 @@
 export const organizationRoles = ["admin", "member"] as const;
-export const projectRoles = ["owner", "planner", "creator", "reviewer", "client", "readonly"] as const;
+export const projectRoles = ["member"] as const;
 
-/** `readonly` remains in the type for forward-compatible reads of an older database; new writes never accept it. */
-export type OrganizationRole = (typeof organizationRoles)[number] | "readonly";
+export type OrganizationRole = (typeof organizationRoles)[number];
 export type ProjectRole = (typeof projectRoles)[number];
 export type AccessContext = { userId: string; organizationId: string; organizationRole: OrganizationRole; projectMemberships: ReadonlyMap<string, ProjectRole> };
 export type ProjectResource = { organizationId: string; projectId: string };
-
-export function isProjectRoleCompatible(organizationRole: OrganizationRole, projectRole: ProjectRole | null) {
-  return projectRole === null || organizationRole !== "readonly" || projectRole === "readonly";
-}
 
 export function canReadProject(context: AccessContext, resource: ProjectResource) {
   if (context.organizationId !== resource.organizationId) return false;
@@ -18,15 +13,11 @@ export function canReadProject(context: AccessContext, resource: ProjectResource
 }
 
 export function canWriteProject(context: AccessContext, resource: ProjectResource) {
-  if (!canReadProject(context, resource) || context.organizationRole === "readonly") return false;
-  const role = context.projectMemberships.get(resource.projectId);
-  return context.organizationRole === "admin" || (role !== undefined && role !== "client" && role !== "readonly");
+  return canReadProject(context, resource);
 }
 
 export function canReviewContent(context: AccessContext, resource: ProjectResource) {
-  if (!canReadProject(context, resource)) return false;
-  const role = context.projectMemberships.get(resource.projectId);
-  return context.organizationRole === "admin" || (context.organizationRole !== "readonly" && (role === "owner" || role === "reviewer" || role === "client"));
+  return canReadProject(context, resource);
 }
 
 export function assertProjectAccess(context: AccessContext, resource: ProjectResource) {

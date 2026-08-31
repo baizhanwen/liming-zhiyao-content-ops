@@ -45,7 +45,7 @@ export async function DELETE(request: Request, context: { params: Promise<{ reco
     const url = new URL(request.url); const organizationId = url.searchParams.get("organizationId")?.trim() || ""; const projectId = url.searchParams.get("projectId")?.trim() || "";
     if (!organizationId || !projectId) return apiError("PROJECT_SCOPE_REQUIRED", "缺少公司或项目范围。", 400);
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
-    if (!access || !canManageProjectKnowledge(access)) return apiError("MANAGE_ACCESS_REQUIRED", "只有项目负责人或管理员可以删除历史发布文案。", 403);
+    if (!access || !canManageProjectKnowledge(access)) return apiError("MANAGE_ACCESS_REQUIRED", "只有公司管理员或已分配到当前企业空间的员工可以删除历史发布文案。", 403);
     const { recordId } = await context.params; const user = await ensureUser(identity); const db = getD1(); const now = new Date().toISOString();
     const result = await db.prepare("UPDATE published_copy_records SET deleted_at = ?, updated_by = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND deleted_at IS NULL").bind(now, user.id, now, recordId, organizationId, projectId).run();
     if (!result.meta.changes) return apiError("PUBLISHED_COPY_NOT_FOUND", "历史发布文案不存在或已经删除。", 404);

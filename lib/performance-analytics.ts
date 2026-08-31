@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { getD1 } from "../db/runtime";
+import { buildPerformanceDiagnostics } from "./performance-diagnostics.ts";
 
 const identifier = z.string().trim().min(1).max(200);
 const nonNegativeInteger = z.coerce.number().int().min(0).max(2_147_483_647);
@@ -24,14 +25,14 @@ export const performanceRowSchema = z.object({
 export const performanceImportSchema = z.object({
   organizationId: identifier,
   projectId: identifier,
-  source: z.enum(["csv", "manual"]),
+  source: z.enum(["csv", "xlsx", "manual"]),
   filename: z.string().trim().max(300).optional(),
   rows: z.array(performanceRowSchema).min(1).max(500),
 }).strict();
 
 export const douyinMetricRowSchema = z.object({
   platformWorkId: identifier.optional(),
-  title: z.string().trim().min(1).max(500),
+  title: z.string().trim().min(1).max(2_000),
   publishedAt: z.iso.datetime({ offset: true }),
   genre: z.string().trim().max(120).optional(),
   reviewStatus: z.string().trim().max(120).optional(),
@@ -52,7 +53,7 @@ export const douyinMetricRowSchema = z.object({
 export const douyinPerformanceImportSchema = z.object({
   organizationId: identifier,
   projectId: identifier,
-  source: z.enum(["csv", "manual"]),
+  source: z.enum(["csv", "xlsx", "manual"]),
   format: z.literal("douyin_16"),
   asOfAt: z.iso.datetime({ offset: true }),
   filename: z.string().trim().max(300).optional(),
@@ -72,10 +73,32 @@ export const finalizeReportSchema = z.object({ organizationId: identifier, proje
 
 export type MetricSnapshotRow = {
   publication_id: string; content_item_id: string; title: string; platform: string; external_url: string | null; published_at: string | null; observed_at: string;
+  video_id?: string | null; video_title?: string | null; video_duration_sec?: number | null;
   genre?: string | null; review_status?: string | null; views: number; likes: number; comments: number; shares: number; saves: number; followers_gained: number; leads: number; homepage_visits?: number; average_watch_seconds: number | null; completion_rate_bps: number | null; five_second_completion_rate_bps?: number | null; cover_ctr_bps?: number | null; two_second_bounce_rate_bps?: number | null;
 };
 
 export type AnalyticsSnapshot = ReturnType<typeof buildAnalyticsSnapshot>;
+export type PerformanceEvidenceRef = {
+  kind: "video_segment" | "script_structure" | "material";
+  contentItemId: string;
+  sourceType: string;
+  sourceId: string;
+  label: string;
+  quote: string | null;
+  locator: string | null;
+};
+
+export type ContentEvidenceRow = {
+  content_item_id: string;
+  content_version_id: string;
+  version: number;
+  pack_json: string;
+  citation_type: string;
+  citation_id: string;
+  quote: string | null;
+  source_title?: string | null;
+  source_locator_json?: string | null;
+};
 
 function safeRate(numerator: number, denominator: number) { return denominator > 0 ? Math.round((numerator / denominator) * 10_000) / 10_000 : 0; }
 function interactions(row: MetricSnapshotRow) { return row.likes + row.comments + row.shares + row.saves; }
@@ -103,6 +126,81 @@ function previousPeriod(periodStart: string, periodEnd: string) {
   return { periodStart: previousStart.toISOString().slice(0, 10), periodEnd: previousEnd.toISOString().slice(0, 10) };
 }
 function changeRate(current: number, previous: number) { return previous > 0 ? Math.round(((current - previous) / previous) * 10_000) / 10_000 : null; }
+function parseEvidenceLocator(value: string | null | undefined) {
+  if (!value?.trim()) return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" ? JSON.stringify(parsed) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function buildPerformanceEvidence(rows: ContentEvidenceRow[]): PerformanceEvidenceRef[] {
+  const result: PerformanceEvidenceRef[] = [];
+  const seen = new Set<string>();
+  const scriptVersions = new Set<string>();
+  for (const row of rows) {
+    if (!scriptVersions.has(row.content_version_id)) {
+      scriptVersions.add(row.content_version_id);
+      try {
+        const pack = JSON.parse(row.pack_json) as { storyboard?: unknown };
+        const storyboard = Array.isArray(pack.storyboard) ? pack.storyboard : [];
+        storyboard.slice(0, 3).forEach((shot, index) => {
+          if (!shot || typeof shot !== "object") return;
+          const value = shot as Record<string, unknown>;
+          const script = typeof value.script === "string" ? value.script.trim() : "";
+          const shotName = typeof value.shot === "string" ? value.shot.trim() : "镜头 " + (index + 1);
+          if (!script) return;
+          result.push({
+            kind: "script_structure",
+            contentItemId: row.content_item_id,
+            sourceType: "content_version",
+            sourceId: row.content_version_id + ":storyboard:" + index,
+            label: "脚本结构：" + shotName,
+            quote: script.slice(0, 240),
+            locator: "storyboard[" + index + "]",
+          });
+        });
+      } catch {
+        // A historical hand-written version may have no structured production pack.
+      }
+    }
+    const key = row.content_item_id + ":" + row.citation_type + ":" + row.citation_id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const isVideo = row.citation_type === "video_atom" || row.citation_type === "video_analysis";
+    result.push({
+      kind: isVideo ? "video_segment" : "material",
+      contentItemId: row.content_item_id,
+      sourceType: row.citation_type,
+      sourceId: row.citation_id,
+      label: (isVideo ? "视频证据：" : "素材证据：") + (row.source_title || row.citation_type),
+      quote: row.quote || null,
+      locator: row.source_locator_json ? parseEvidenceLocator(row.source_locator_json) : null,
+    });
+  }
+  return result.slice(0, 240);
+}
+function buildPeerGroups(rows: MetricSnapshotRow[], periodStart: string, periodEnd: string) {
+  const groups = new Map<string, MetricSnapshotRow[]>();
+  for (const row of rows) {
+    const key = row.genre?.trim() || "未分类";
+    const list = groups.get(key) || [];
+    list.push(row);
+    groups.set(key, list);
+  }
+  return Array.from(groups.entries()).map(([key, group]) => ({
+    key,
+    label: key,
+    sampleSize: group.length,
+    medianViews: percentile(group.map((row) => row.views), 0.5),
+    medianCompletionRate: (() => { const values = group.map((row) => row.completion_rate_bps === null || row.completion_rate_bps === undefined ? null : row.completion_rate_bps / 100).filter((value): value is number => value !== null); return values.length ? percentile(values, 0.5) : null; })(),
+    medianEngagementRate: percentile(group.map((row) => safeRate(interactions(row), row.views)), 0.5),
+    periodStart,
+    periodEnd,
+  })).sort((left, right) => right.sampleSize - left.sampleSize || left.label.localeCompare(right.label)).slice(0, 20);
+}
 
 export function buildAnalyticsSnapshot(rows: MetricSnapshotRow[], periodStart: string, periodEnd: string, comparison: null | { periodStart: string; periodEnd: string; summary: { views: number; interactions: number; followersGained: number; leads: number } } = null) {
   const byPublication = new Map<string, MetricSnapshotRow[]>();
@@ -171,15 +269,35 @@ export function buildAnalyticsSnapshot(rows: MetricSnapshotRow[], periodStart: s
   const platformMap = new Map<string, { platform: string; views: number; interactions: number; contentCount: number }>();
   for (const profile of profiles) { const current = platformMap.get(profile.latest.platform) || { platform: profile.latest.platform, views: 0, interactions: 0, contentCount: 0 }; current.views += profile.delta.views; current.interactions += profile.delta.interactions; current.contentCount += 1; platformMap.set(profile.latest.platform, current); }
   const platforms = Array.from(platformMap.values()).map((item) => ({ ...item, engagementRate: safeRate(item.interactions, item.views) })).sort((a, b) => b.views - a.views);
+  const contentPerformance = profiles.map((profile) => ({
+    publicationId: profile.latest.publication_id, title: profile.latest.title, platform: profile.latest.platform,
+    externalUrl: profile.latest.external_url, publishedAt: profile.latest.published_at,
+    videoId: profile.latest.video_id || null, videoTitle: profile.latest.video_title || null, videoDurationSec: profile.latest.video_duration_sec ?? null,
+    views: profile.latest.views,
+    interactions: interactions(profile.latest), engagementRate: safeRate(interactions(profile.latest), profile.latest.views),
+    followersGained: profile.latest.followers_gained, leads: profile.latest.leads,
+  })).sort((a, b) => b.views - a.views || b.interactions - a.interactions);
+  const publishedSeriesMap = new Map<string, { date: string; views: number; interactions: number; contentCount: number }>();
+  for (const item of contentPerformance) {
+    const date = item.publishedAt?.slice(0, 10);
+    if (!date || date < periodStart || date > periodEnd) continue;
+    const current = publishedSeriesMap.get(date) || { date, views: 0, interactions: 0, contentCount: 0 };
+    current.views += item.views; current.interactions += item.interactions; current.contentCount += 1;
+    publishedSeriesMap.set(date, current);
+  }
+  const publishedSeries = Array.from(publishedSeriesMap.values()).sort((left, right) => left.date.localeCompare(right.date));
   const topContent = profiles.map((profile) => ({ publicationId: profile.latest.publication_id, contentItemId: profile.latest.content_item_id, title: profile.latest.title, platform: profile.latest.platform, genre: profile.latest.genre || null, reviewStatus: profile.latest.review_status || null, externalUrl: profile.latest.external_url, publishedAt: profile.latest.published_at, observedAt: profile.latest.observed_at, views: profile.delta.views, cumulativeViews: profile.latest.views, interactions: profile.delta.interactions, cumulativeInteractions: interactions(profile.latest), engagementRate: safeRate(profile.delta.interactions, profile.delta.views), followersGained: profile.delta.followersGained, homepageVisits: profile.delta.homepageVisits, cumulativeHomepageVisits: profile.latest.homepage_visits || 0, leads: profile.delta.leads, baselineMode: profile.baselineMode })).sort((a, b) => b.views - a.views || b.interactions - a.interactions).slice(0, 10);
   const comparisonSummary = comparison ? { periodStart: comparison.periodStart, periodEnd: comparison.periodEnd, previous: comparison.summary, changeRate: { views: changeRate(summary.views, comparison.summary.views), interactions: changeRate(summary.interactions, comparison.summary.interactions), followersGained: changeRate(summary.followersGained, comparison.summary.followersGained), leads: changeRate(summary.leads, comparison.summary.leads) } } : null;
-  return { periodStart, periodEnd, summary, comparison: comparisonSummary, series: Array.from(seriesMap.values()).sort((a, b) => a.date.localeCompare(b.date)), platforms, topContent };
+  const peerGroups = buildPeerGroups(latestRows, periodStart, periodEnd);
+  const snapshot = { periodStart, periodEnd, summary, comparison: comparisonSummary, series: Array.from(seriesMap.values()).sort((a, b) => a.date.localeCompare(b.date)), publishedSeries, platforms, contentPerformance, topContent, peerGroups, evidence: [] as PerformanceEvidenceRef[] };
+  return { ...snapshot, diagnostics: buildPerformanceDiagnostics(snapshot) };
 }
 
 async function loadPerformancePeriodRows(db: ReturnType<typeof getD1>, organizationId: string, projectId: string, periodStart: string, periodEnd: string) {
   const rows = await db.prepare(`
     WITH combined AS (
       SELECT m.publication_id, m.content_item_id, c.title, p.platform, p.external_url, p.published_at, m.observed_at,
+        NULL AS video_id, NULL AS video_title, NULL AS video_duration_sec,
         NULL AS genre, NULL AS review_status, m.views, m.likes, m.comments, m.shares, m.saves, m.followers_gained, m.leads,
         0 AS homepage_visits, m.average_watch_seconds, m.completion_rate_bps,
         NULL AS five_second_completion_rate_bps, NULL AS cover_ctr_bps, NULL AS two_second_bounce_rate_bps
@@ -190,14 +308,19 @@ async function loadPerformancePeriodRows(db: ReturnType<typeof getD1>, organizat
       WHERE m.organization_id = ? AND m.project_id = ? AND (m.import_batch_id IS NULL OR b.status = 'completed')
       UNION ALL
       SELECT 'platform:' || w.id AS publication_id, COALESCE(w.content_item_id, '') AS content_item_id, w.title, s.platform,
-        NULL AS external_url, w.published_at, s.as_of_at AS observed_at, w.genre, w.review_status,
+        v.source_url AS external_url, w.published_at, s.as_of_at AS observed_at,
+        w.video_id AS video_id, v.title AS video_title, v.duration_sec AS video_duration_sec, w.genre, w.review_status,
         s.views, s.likes, s.comments, s.shares, s.saves, s.follower_delta AS followers_gained, 0 AS leads,
         s.homepage_visits, CAST(s.avg_watch_ms / 1000 AS INTEGER) AS average_watch_seconds, s.completion_rate_bps,
         s.five_second_completion_rate_bps, s.cover_ctr_bps, s.two_second_bounce_rate_bps
       FROM platform_metric_snapshots s
       INNER JOIN platform_works w ON w.id = s.work_id AND w.organization_id = s.organization_id AND w.project_id = s.project_id
+      LEFT JOIN videos v ON v.id = w.video_id AND v.organization_id = w.organization_id AND v.project_id = w.project_id AND v.deleted_at IS NULL
       INNER JOIN platform_metric_import_batches b ON b.id = s.import_batch_id AND b.organization_id = s.organization_id AND b.project_id = s.project_id AND b.status = 'completed'
       WHERE s.organization_id = ? AND s.project_id = ?
+        AND COALESCE(w.review_status, '') NOT LIKE '%自见%'
+        AND COALESCE(w.review_status, '') NOT LIKE '%仅自己%'
+        AND COALESCE(w.review_status, '') NOT LIKE '%私密%'
     )
     SELECT current.* FROM combined current
     WHERE substr(current.observed_at, 1, 10) BETWEEN ? AND ? OR (
@@ -211,26 +334,47 @@ async function loadPerformancePeriodRows(db: ReturnType<typeof getD1>, organizat
   return rows.results;
 }
 
-export async function loadPerformanceAnalytics(db: ReturnType<typeof getD1>, organizationId: string, projectId: string, periodStart: string, periodEnd: string) {
+async function loadContentEvidence(db: ReturnType<typeof getD1>, organizationId: string, projectId: string, contentItemIds: string[]) {
+  const ids = Array.from(new Set(contentItemIds.filter(Boolean)));
+  if (!ids.length) return [] as PerformanceEvidenceRef[];
+  const placeholders = ids.map(() => "?").join(", ");
+  const rows = await db.prepare(
+    "SELECT cc.content_item_id, cc.content_version_id, cv.version, cv.pack_json, cc.citation_type, cc.citation_id, cc.quote, COALESCE(a.title, '') AS source_title, a.source_locator_json " +
+    "FROM content_citations cc " +
+    "INNER JOIN content_versions cv ON cv.id = cc.content_version_id AND cv.organization_id = cc.organization_id AND cv.project_id = cc.project_id " +
+    "INNER JOIN content_items ci ON ci.id = cc.content_item_id AND ci.organization_id = cc.organization_id AND ci.project_id = cc.project_id AND ci.current_version = cv.version " +
+    "LEFT JOIN video_knowledge_atoms a ON a.id = cc.citation_id AND a.organization_id = cc.organization_id " +
+    "WHERE cc.organization_id = ? AND cc.project_id = ? AND cc.content_item_id IN (" + placeholders + ") " +
+    "ORDER BY cc.created_at ASC LIMIT 500",
+  ).bind(organizationId, projectId, ...ids).all<ContentEvidenceRow>();
+  return buildPerformanceEvidence(rows.results);
+}export async function loadPerformanceAnalytics(db: ReturnType<typeof getD1>, organizationId: string, projectId: string, periodStart: string, periodEnd: string) {
   const previous = previousPeriod(periodStart, periodEnd);
   const [currentRows, previousRows] = await Promise.all([
     loadPerformancePeriodRows(db, organizationId, projectId, periodStart, periodEnd),
     loadPerformancePeriodRows(db, organizationId, projectId, previous.periodStart, previous.periodEnd),
   ]);
   const previousSnapshot = buildAnalyticsSnapshot(previousRows, previous.periodStart, previous.periodEnd);
-  return buildAnalyticsSnapshot(currentRows, periodStart, periodEnd, { periodStart: previous.periodStart, periodEnd: previous.periodEnd, summary: previousSnapshot.summary });
+  const snapshot = buildAnalyticsSnapshot(currentRows, periodStart, periodEnd, { periodStart: previous.periodStart, periodEnd: previous.periodEnd, summary: previousSnapshot.summary });
+  const evidence = await loadContentEvidence(db, organizationId, projectId, snapshot.topContent.map((item) => item.contentItemId));
+  return { ...snapshot, evidence, diagnostics: buildPerformanceDiagnostics({ ...snapshot, evidence }) };
 }
 
 export function buildReportNarrative(snapshot: AnalyticsSnapshot) {
   const { summary, topContent } = snapshot;
   if (!summary.contentCount) return { summary: "本报告周期内尚未导入已发布内容的数据快照。", highlights: ["当前没有可计算的内容表现数据。"], recommendations: ["从发布管理下载模板并导入至少一条作品快照。", "统一在固定时间记录累计播放和互动数据，保证周期可比。"] };
   const best = topContent[0]; const engagement = (summary.engagementRate * 100).toFixed(2); const qualifier = summary.baselineCoverage.partial ? "可确认" : "";
+  const triggeredRules = snapshot.diagnostics.rules.filter((item) => item.status === "triggered").slice(0, 3);
   const coverageNote = summary.baselineCoverage.partial ? `其中 ${summary.baselineCoverage.partial} 条历史作品缺少期初快照，增量从本期首条快照起计算。` : "全部纳入作品均有期初快照，或为本期新发布作品。";
   const viewsChange = snapshot.comparison?.changeRate.views;
   const comparisonHighlight = viewsChange === null || viewsChange === undefined ? "前一周期没有可比较的新增播放数据。" : `新增播放较前一周期${viewsChange >= 0 ? "增长" : "下降"} ${Math.abs(viewsChange * 100).toFixed(1)}%。`;
   return {
     summary: `本周期纳入 ${summary.contentCount} 条已发布内容，${qualifier}新增播放 ${summary.views.toLocaleString("zh-CN")}，周期互动率 ${engagement}%，${qualifier}新增线索 ${summary.leads.toLocaleString("zh-CN")}。${coverageNote}`,
     highlights: [best ? `周期新增播放最高内容《${best.title}》获得 ${best.views.toLocaleString("zh-CN")} 次新增播放。` : "暂无头部内容。", comparisonHighlight, `${qualifier}新增关注 ${summary.followersGained.toLocaleString("zh-CN")} 个。`, `本周期新增点赞、评论、分享与收藏合计 ${summary.interactions.toLocaleString("zh-CN")} 次。`],
-    recommendations: [summary.engagementRate < 0.03 ? "当前总互动率低于 3%，优先复盘开头承诺、互动提问和内容受众匹配。" : "互动率表现稳定，继续复用高互动内容的选题角度与开头结构。", summary.leads === 0 ? "尚未记录线索，建议统一转化动作并在下一周期补录线索数据。" : "已有线索反馈，下一周期按内容主题拆分线索贡献。", best ? `将《${best.title}》的结构沉淀回知识库和选题模板。` : "持续积累可比较的数据快照。"],
-  };
+    recommendations: [
+      summary.engagementRate < 0.03 ? "当前总互动率低于 3%，优先复盘开头承诺、互动提问和内容受众匹配。" : "互动率表现稳定，继续复用高互动内容的选题角度与开头结构。",
+      summary.leads === 0 ? "尚未记录线索，建议统一转化动作并在下一周期补录线索数据。" : "已有线索反馈，下一周期按内容主题拆分线索贡献。",
+      best ? "将《" + best.title + "》的结构沉淀回知识库和选题模板。" : "持续积累可比较的数据快照。",
+      ...triggeredRules.map((item) => "复盘规则：" + item.label + "。依据：" + item.evidence[0] + "；" + item.uncertainty),
+    ],  };
 }

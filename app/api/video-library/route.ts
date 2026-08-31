@@ -2,7 +2,7 @@ import { canAccessOrganizationVideoLibrary, canManageOrganizationVideoLibrary, e
 import { apiError, errorResponse } from "../../../lib/api-response";
 import { readRequestIdentity } from "../../../lib/request-auth";
 
-const categories = ["benchmark", "industry", "case", "trend", "creative", "other"] as const;
+const categories = ["published", "benchmark", "industry", "case", "trend", "creative", "other"] as const;
 type Category = typeof categories[number];
 
 function isCategory(value: unknown): value is Category {
@@ -47,10 +47,10 @@ export async function GET(request: Request) {
         v.id AS video_id, v.platform, v.source_type, v.source_url, v.title, v.author_name, v.published_at, v.duration_sec, v.status,
         p.id AS source_project_id, p.name AS source_project_name, a.display_name AS account_name,
         j.status AS job_status, j.progress AS job_progress, j.current_stage,
-        (SELECT COUNT(*) FROM project_video_references refs WHERE refs.organization_id = library.organization_id AND refs.library_entry_id = library.id AND refs.purpose = 'benchmark') AS reference_count,
+        (SELECT COUNT(*) FROM project_video_references refs WHERE refs.organization_id = library.organization_id AND refs.library_entry_id = library.id AND refs.purpose = 'benchmark' AND refs.status = 'active') AS reference_count,
         CASE WHEN ? != '' AND EXISTS (
           SELECT 1 FROM project_video_references own_ref
-          WHERE own_ref.organization_id = library.organization_id AND own_ref.project_id = ? AND own_ref.library_entry_id = library.id AND own_ref.purpose = 'benchmark'
+          WHERE own_ref.organization_id = library.organization_id AND own_ref.project_id = ? AND own_ref.library_entry_id = library.id AND own_ref.purpose = 'benchmark' AND own_ref.status = 'active'
         ) THEN 1 ELSE 0 END AS imported_to_project,
         (SELECT frame.id FROM media_assets frame WHERE frame.organization_id = v.organization_id AND frame.project_id = v.project_id AND frame.video_id = v.id AND frame.kind = 'keyframe' AND frame.status = 'active' ORDER BY frame.is_cover DESC, COALESCE(frame.quality_score, 0) DESC, frame.created_at ASC LIMIT 1) AS cover_asset_id
       FROM video_library_entries library

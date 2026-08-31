@@ -50,6 +50,8 @@ test("analysis job state machine only allows explicit forward transitions and re
   assert.equal(jobs.canTransitionAnalysisJob("pending", "queued"), true);
   assert.equal(jobs.canTransitionAnalysisJob("pending", "completed"), false);
   assert.equal(jobs.canTransitionAnalysisJob("completed", "pending"), false);
+  assert.equal(jobs.canTransitionAnalysisJob("analyzing", "partial"), true);
+  assert.equal(jobs.canRetryAnalysisJob("partial"), true);
   assert.equal(jobs.canRetryAnalysisJob("failed"), true);
   assert.equal(jobs.canRetryAnalysisJob("cancelled"), true);
   assert.equal(jobs.canRetryAnalysisJob("analyzing"), false);
@@ -70,6 +72,6 @@ test("video ingestion checks project access before media buffering and uses priv
   assert.match(fromUrl, /extractDouyinUrl/);
   assert.match(douyinUrl, /host\.endsWith\(`\.\$\{domain\}`\)/);
   assert.match(fromUrl, /VIDEO_ALREADY_EXISTS/);
-  assert.match(retry, /status IN \('failed', 'cancelled'\)/);
+  assert.match(retry, /status IN \('partial', 'failed', 'cancelled'\)/);
   assert.match(runtime, /R2 binding MEDIA is unavailable/);
 });

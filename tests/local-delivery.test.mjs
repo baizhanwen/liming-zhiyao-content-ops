@@ -106,6 +106,9 @@ test("team launch scripts install, migrate, start analysis automatically, stop s
   assert.match(analyzerSetup, /PIP_CONFIG_FILE=NUL/);
   assert.match(analyzerSetup, /PIP_REQUIRE_HASHES=/);
   assert.match(analyzerSetup, /https:\/\/pypi\.org\/simple/);
+  assert.match(analyzerSetup, /https:\/\/mirrors\.aliyun\.com\/pypi\/simple/);
+  assert.match(analyzerSetup, /PYPI_FALLBACK/);
+  assert.match(analyzerSetup, /--index aliyun\^\|official/);
   assert.match(analyzerSetup, /--no-cache-dir/);
   assert.match(analyzerSetup, /setuptools==81\.0\.0/);
   assert.match(analyzerSetup, /--retries 20 --timeout 120/);
@@ -119,13 +122,14 @@ test("team launch scripts install, migrate, start analysis automatically, stop s
   assert.doesNotMatch(analyzerSetup, / -e "services\\analyzer\[media\]"/);
   assert.match(manualAnalyzerStart, /\.local\\app\.port/);
   assert.match(manualAnalyzerStart, /-BaseUrl "http:\/\/127\.0\.0\.1:%LOCAL_APP_PORT%"/);
-  for (const pinned of ["paddlepaddle==3.2.0", "paddleocr==3.7.0", "paddlex==3.7.2", "torch==2.11.0", "torchaudio==2.11.0", "opencv-contrib-python==4.10.0.84"]) {
+  for (const pinned of ["paddlepaddle==3.2.0", "paddleocr==3.7.0", "paddlex==3.7.2", "torch==2.11.0", "torchaudio==2.11.0", "opencv-contrib-python==4.10.0.84", "mcp==2.1.0", "mcp-types==2.1.0", "minimax-coding-plan-mcp==0.0.5"]) {
     assert.match(analyzerConstraints, new RegExp(pinned.replaceAll(".", "\\.")));
   }
   assert.doesNotMatch(analyzerConstraints, /^opencv-python==/m);
   assert.doesNotMatch(analyzerConstraints, /^scenedetect==/m);
   assert.match(analyzerSetup, /pip cache purge/);
   assert.match(analyzerSetup, /Loading native analyzer modules/);
+  assert.match(analyzerSetup, /minimax_mcp\.server/);
   assert.match(analyzerSetup, /platform\.machine/);
   assert.match(analyzerDiagnostic, /pip check/);
   assert.match(analyzerDiagnostic, /torch,torchaudio,paddle,cv2/);
@@ -135,6 +139,7 @@ test("team launch scripts install, migrate, start analysis automatically, stop s
   assert.match(analyzerDiagnostic, /Secret values are not printed/);
   assert.doesNotMatch(analyzerSetup, /winget|start "" "https:\/\//i);
   assert.match(pythonInstaller, /https:\/\/www\.python\.org\/ftp\/python\/\$Version\/\$fileName/);
+  assert.match(pythonInstaller, /https:\/\/mirrors\.aliyun\.com\/python-release\/windows\/\$fileName/);
   assert.match(pythonInstaller, /Invoke-WebRequest/);
   assert.match(pythonInstaller, /Start-BitsTransfer/);
   assert.match(pythonInstaller, /Get-AuthenticodeSignature/);

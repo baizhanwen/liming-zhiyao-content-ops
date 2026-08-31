@@ -35,8 +35,14 @@ Worker 需要以下环境变量：
 - `ANALYZER_LLM_BASE_URL`
 - `ANALYZER_LLM_MODEL`
 - `ANALYZER_LLM_PROVIDER`
+- `ANALYZER_VISION_API_KEY`：MiniMax Token Plan Key（`sk-cp` 开头），与其他文本模型密钥隔离
+- `ANALYZER_VISION_BASE_URL`：国内 Token Plan 使用 `https://api.minimaxi.com`，不要附加 `/v1`
+- `ANALYZER_VISION_MODEL`：固定填写 `understand_image`；旧的 `MiniMax-M3` 会被识别为文本模型并改走 Token Plan MCP
+- `ANALYZER_VISION_PROVIDER`：推荐 `minimax-token-plan`；Worker 通过官方 MCP stdio 服务处理带帧号和时间码的联系表，OCR 不会冒充画面理解
+- `ANALYZER_VISION_CONCURRENCY`：视觉批次并发数，默认 `2`，允许 `1`～`3`；建议稳定运行后再从 `2` 调到 `3`
 - `ANALYZER_YTDLP_COOKIES_FROM_BROWSER`：可选，公开视频链接建议设置为 `edge`、`chrome` 或 `firefox`；也可使用 `edge:Default` 指定配置文件。Worker 只在本机读取浏览器 Cookie，不会把 Cookie 上传到网站或数据库。
 - `ANALYZER_ASR_MODEL`，默认 `paraformer-zh`；可切换 `iic/SenseVoiceSmall`
+- ANALYZER_ASR_FALLBACK_MODEL，默认 iic/SenseVoiceSmall；仅在末尾转写异常稀疏且能找回更多文字时延迟调用，设为空可关闭
 - `ANALYZER_ASR_DEVICE`，默认 `cpu`
 - `ANALYZER_PADDLE_OCR_DETECTION_MODEL`，默认 `PP-OCRv5_mobile_det`
 - `ANALYZER_PADDLE_OCR_RECOGNITION_MODEL`，默认 `PP-OCRv5_mobile_rec`

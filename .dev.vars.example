@@ -11,11 +11,12 @@ LOCAL_DEV_USER_NAME=本地管理员
 # strips client-supplied copies. Keep disabled for local and LAN operation.
 TRUST_FORWARDED_IDENTITY=0
 
-# P0 safety switch. Keep enabled until the A/B/C isolation matrix passes.
-GENERATION_P0_FREEZE=1
+# P0 safety switch. Unset/0 keeps generation available for ordinary members in
+# development and test. Set to 1 explicitly in production to freeze generation.
+GENERATION_P0_FREEZE=0
 BUILD_ID=codex-gate6-20260820
-DATABASE_MIGRATION_VERSION=0023_douyin_platform_metrics
-ANALYSIS_CONTRACT_VERSION=analysis.v6
+DATABASE_MIGRATION_VERSION=0028_project_assistant_memory_chat
+ANALYSIS_CONTRACT_VERSION=analysis.v7
 
 # The Python analyzer must use the same token. Change this before enabling the
 # analyzer on a shared machine.
@@ -33,11 +34,29 @@ ANALYZER_YTDLP_COOKIE_FILE=.local/douyin-cookies.txt
 CONTENT_MODEL_PROVIDER=deepseek
 CONTENT_MODEL_BASE_URL=https://api.deepseek.com/v1
 CONTENT_MODEL_NAME=
+# Optional allowlists. Leave empty to preserve the current configured provider/model.
+CONTENT_MODEL_ALLOWED_PROVIDERS=
+CONTENT_MODEL_ALLOWED_MODELS=
 CONTENT_MODEL_API_KEY=
 ANALYZER_LLM_PROVIDER=deepseek
 ANALYZER_LLM_BASE_URL=https://api.deepseek.com/v1
 ANALYZER_LLM_MODEL=
 ANALYZER_LLM_API_KEY=
+
+# MiniMax Token Plan visual understanding through the official MCP understand_image tool.
+# The Key must come from Token Plan and begin with sk-cp; OCR stays separate.
+ANALYZER_VISION_PROVIDER=minimax-token-plan
+ANALYZER_VISION_BASE_URL=https://api.minimaxi.com
+ANALYZER_VISION_MODEL=understand_image
+ANALYZER_VISION_API_KEY=
+ANALYZER_VISION_CONCURRENCY=2
+# Independent project-assistant model for automatic project memory and
+# inspiration conversations. Configure all four values. There is deliberately
+# no fallback to CONTENT_MODEL_* or ANALYZER_LLM_*.
+PROJECT_ASSISTANT_MODEL_PROVIDER=
+PROJECT_ASSISTANT_MODEL_BASE_URL=
+PROJECT_ASSISTANT_MODEL_NAME=
+PROJECT_ASSISTANT_MODEL_API_KEY=
 
 # Local media models. First use downloads model files into the English-only
 # cache directory chosen automatically by the Python worker.

@@ -32,6 +32,21 @@ class ApiClientTests(unittest.TestCase):
         self.assertIsNone(client.claim())
         self.assertEqual(transport.requests[0][2]["Authorization"], "Bearer secret")
 
+    def test_browser_auth_status_is_sent_on_claim_and_heartbeat(self):
+        auth = {"status": "logged_in", "browser": "edge", "checkedAt": "2026-08-28T00:00:00Z", "message": "ready"}
+        transport = FakeTransport([
+            (204, None),
+            (200, {"job": {"status": "processing", "progress": 20, "version": 4}}),
+        ])
+        client = AnalyzerApiClient(
+            "https://example.test", "secret", "worker-01", transport,
+            browser_auth_probe=lambda: auth,
+        )
+        self.assertIsNone(client.claim())
+        job = ClaimedJob("job-1", "org-1", "project-1", "video-1", "url", "queued", 1, 3, {})
+        client.heartbeat(job, "processing", 20, "规范化媒体")
+        self.assertEqual(transport.requests[0][3]["browserAuth"], auth)
+        self.assertEqual(transport.requests[1][3]["browserAuth"], auth)
     def test_claim_preserves_analysis_profile(self):
         transport = FakeTransport([(200, {"job": {
             "id": "job-1", "organization_id": "org-1", "project_id": "project-1", "video_id": "video-1",
@@ -70,6 +85,15 @@ class ApiClientTests(unittest.TestCase):
         self.assertEqual(restored.checkpoint_stage, "evidence_ready")
         self.assertEqual(restored.resume_count, 1)
         self.assertEqual(restored.checkpoint["checkpoint_version"], 1)
+
+    def test_segment_checkpoint_uses_same_lease_and_stage(self):
+        checkpoint = {"checkpoint_version": 1, "segment_progress": {"window_keys": ["a"], "segments": [{"status": "completed"}]}}
+        transport = FakeTransport([(201, {"checkpoint": {"stage": "segment_progress"}})])
+        client = AnalyzerApiClient("https://example.test", "secret", "worker-01", transport)
+        job = ClaimedJob("job-1", "org-1", "project-1", "video-1", "url", "analyzing", 88, 3, {})
+        client.save_checkpoint(job, "segment_progress", checkpoint)
+        self.assertEqual(transport.requests[0][3]["stage"], "segment_progress")
+        self.assertEqual(transport.requests[0][3]["version"], 3)
 
     def test_completion_uses_result_key_for_idempotency(self):
         transport = FakeTransport([(200, {"job": {"status": "completed"}, "idempotent": False})])

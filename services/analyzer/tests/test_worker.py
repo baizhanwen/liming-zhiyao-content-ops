@@ -1,5 +1,6 @@
 import unittest
 import urllib.error
+from dataclasses import replace
 from unittest.mock import patch
 
 from liming_analyzer.__main__ import build_lazy_processor
@@ -181,6 +182,34 @@ class WorkerTests(unittest.TestCase):
         )
         self.assertEqual(processed_versions, [self.job.version + 1])
 
+    def test_lazy_processor_treats_segment_checkpoint_as_analysis_resume(self):
+        heartbeat_calls = []
+        processed = []
+        resumed = replace(
+            self.job,
+            progress=82,
+            checkpoint_stage="segment_progress",
+            checkpoint={"checkpoint_version": 1, "segment_progress": {}},
+        )
+
+        class Pipeline:
+            def process(self, job, _heartbeat):
+                processed.append(job)
+                return AnalysisResult("analysis.v1", {})
+
+        def heartbeat(status, progress, stage):
+            heartbeat_calls.append((status, progress, stage))
+            return replace(resumed, status=status, progress=progress, version=resumed.version + 1)
+
+        with patch("liming_analyzer.__main__.build_pipeline", return_value=Pipeline()):
+            processor = build_lazy_processor(object(), FakeClient(None))
+            processor(resumed, heartbeat)
+
+        self.assertEqual(
+            heartbeat_calls[0],
+            ("analyzing", 82, "正在初始化本地分析模型（首次使用可能需要下载）"),
+        )
+        self.assertEqual(processed[0].checkpoint_stage, "segment_progress")
 
 if __name__ == "__main__":
     unittest.main()

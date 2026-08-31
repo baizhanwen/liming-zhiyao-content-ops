@@ -10,7 +10,7 @@ export function EChart({ option, label, height = 280 }: { option: EChartsCoreOpt
     let disposed = false; let observer: ResizeObserver | undefined; let chart: { setOption: (value: EChartsCoreOption, options: { notMerge: boolean }) => void; resize: () => void; dispose: () => void } | undefined; const element = host.current;
     void (async () => {
       const [core, charts, components, renderers] = await Promise.all([import("echarts/core"), import("echarts/charts"), import("echarts/components"), import("echarts/renderers")]);
-      core.use([charts.BarChart, charts.LineChart, charts.PieChart, components.GridComponent, components.LegendComponent, components.TooltipComponent, renderers.CanvasRenderer]);
+      core.use([charts.BarChart, charts.LineChart, charts.PieChart, charts.ScatterChart, components.GridComponent, components.LegendComponent, components.TooltipComponent, components.MarkLineComponent, renderers.CanvasRenderer]);
       if (disposed || !element) return; chart = core.init(element, undefined, { renderer: "canvas" }); chart.setOption(option, { notMerge: true }); observer = new ResizeObserver(() => chart?.resize()); observer.observe(element);
     })();
     return () => { disposed = true; observer?.disconnect(); chart?.dispose(); };

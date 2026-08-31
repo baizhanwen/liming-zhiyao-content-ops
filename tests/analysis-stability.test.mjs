@@ -10,7 +10,7 @@ test("analysis preflight rejects work that cannot finish", async () => {
   ]);
 
   assert.match(readiness, /ANALYZER_OFFLINE/);
-  assert.match(readiness, /DOUYIN_COOKIE_REQUIRED/);
+  assert.match(readiness, /DOUYIN_LOGIN_REQUIRED/);
   assert.match(fromUrl, /analyzerReadinessError\(await readAnalyzerReadiness\(organizationId\), true\)/);
   assert.match(upload, /analyzerReadinessError\(await readAnalyzerReadiness\(organizationId\), false\)/);
 });
@@ -45,9 +45,12 @@ test("analysis retries resume from a durable evidence checkpoint", async () => {
   assert.match(migration, /ADD `checkpoint_json`/);
   assert.match(checkpoint, /parseCheckpointPayload/);
   assert.match(checkpoint, /lease_expires_at > \?/);
-  assert.match(claim, /checkpoint_stage = 'evidence_ready'/);
+  assert.match(claim, /checkpoint_stage IN \('evidence_ready', 'segment_progress'\)/);
+  assert.match(claim, /job\.checkpoint_stage === "evidence_ready" \|\| job\.checkpoint_stage === "segment_progress"/);
+  assert.match(retry, /\["partial", "failed"\]\.includes\(job\.status\)/);
   assert.match(retry, /等待从证据检查点继续结构分析/);
-  assert.match(complete, /checkpoint_json = NULL/);
+  assert.match(complete, /checkpoint_json = \?/);
+  assert.match(complete, /previous_spoken_script_set/);
   assert.match(pipeline, /_restore_evidence_checkpoint/);
   assert.match(workspace, /从检查点继续/);
 });
@@ -105,7 +108,7 @@ test("long analysis reports can be searched, navigated and exported locally", as
   assert.match(styles, /report-heading-actions/);
 });
 
-test("new analysis tasks use max capability while historical profiles remain readable", async () => {
+test("new analysis tasks support standard and max while legacy values remain readable", async () => {
   const [schema, migration, profiles, fromUrl, upload, claim, reanalyze, workspace, provider] = await Promise.all([
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0013_analysis_profiles.sql", import.meta.url), "utf8"),
@@ -120,16 +123,19 @@ test("new analysis tasks use max capability while historical profiles remain rea
 
   assert.match(schema, /analysisProfile: text\("analysis_profile"/);
   assert.match(migration, /ADD `analysis_profile`/);
-  assert.match(profiles, /analysisProfiles = \["max"\]/);
-  assert.match(profiles, /historicalAnalysisProfiles = \["economy", "standard", "deep"\]/);
+  assert.match(profiles, /analysisProfiles = \["standard", "max"\]/);
+  assert.match(profiles, /historicalAnalysisProfiles = \["economy", "deep"\]/);
   assert.match(fromUrl, /normalizeAnalysisProfile/);
   assert.match(upload, /analysisProfile/);
   assert.match(claim, /analysis_profile/);
   assert.match(reanalyze, /reanalysis_created/);
-  assert.match(workspace, /analysisProfile: AnalysisProfile = "max"/);
-  assert.match(workspace, /最高能力 · 固定启用/);
+  assert.match(workspace, /useState<AnalysisProfile>\("standard"\)/);
+  assert.match(workspace, /标准模式 · 推荐/);
+  assert.match(workspace, /liming\.analysisProfile\.v1/);
   assert.match(provider, /64_000/);
   assert.match(provider, /12_000/);
+  assert.match(provider, /profile_segment_limit = 12 if profile == "max" else 6/);
+  assert.match(provider, /single_pass_standard/);
 });
 
 test("analysis submissions expose duration estimates and enforce total token ceilings", async () => {
@@ -143,8 +149,8 @@ test("analysis submissions expose duration estimates and enforce total token cei
   assert.match(profiles, /estimateMediaSourceTokens/);
   assert.match(profiles, /outputTokens: 12_000/);
   assert.match(workspace, /readMediaDuration/);
-  assert.match(workspace, /短视频最高预算/);
-  assert.match(workspace, /最高能力策略/);
+  assert.match(workspace, /短视频总预算上限/);
+  assert.match(workspace, /profileLabels\[analysisProfile\]/);
   assert.match(workspace, /30 分钟以上媒体/);
   assert.match(provider, /"max_tokens": output_tokens/);
   assert.match(provider, /"maximum_total_tokens"/);
@@ -172,18 +178,18 @@ test("thirty minute videos use bounded multi-pass analysis and cleaned evidence"
   assert.match(detail, /分段分析后汇总/);
 });
 
-test("analysis reports produce a reusable spoken script and specialist operating insights", async () => {
+test("analysis reports produce one faithful AI-corrected script and specialist operating insights", async () => {
   const [provider, detail, styles] = await Promise.all([
     readFile(new URL("../services/analyzer/liming_analyzer/providers.py", import.meta.url), "utf8"),
     readFile(new URL("../components/AnalysisDetail.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(provider, /video-analysis\.v6/);
+  assert.match(provider, /video-analysis\.v9-cta-v1/);
   assert.match(provider, /DeepCoreReport/);
   assert.match(provider, /DeepInsightReport/);
   assert.match(provider, /dual_pass_full/);
-  assert.match(provider, /profile_output_budget = 12_000/);
+  assert.match(provider, /profile_output_budget = 12_000 if profile == "max" else 6_000/);
   assert.match(provider, /length_contract/);
   assert.match(provider, /target_maximum_chinese_characters/);
   assert.match(provider, /instructor\.Mode\.JSON/);
@@ -192,27 +198,41 @@ test("analysis reports produce a reusable spoken script and specialist operating
   assert.match(provider, /_assess_report_quality/);
   assert.match(provider, /quality_audit/);
   assert.match(provider, /spoken_script_set/);
-  assert.match(provider, /faithful_full/);
-  assert.match(provider, /light_rewrite/);
-  assert.match(provider, /restructured/);
-  assert.match(provider, /spoken_script/);
+  assert.match(provider, /def _generate_corrected_script/);
+  assert.match(provider, /corrected_original/);
+  assert.match(provider, /model_transcript_correction/);
+  assert.match(provider, /spoken-script-correction\.v1/);
+  assert.match(provider, /rewrite_variant_requests/);
+  assert.match(provider, /transcript_correction/);
+  assert.match(provider, /token_usage_by_stage/);
+  assert.match(provider, /主体报告禁止输出 spoken_script/);
   assert.match(provider, /hook_analysis/);
   assert.match(provider, /viral_points/);
   assert.match(provider, /rhythm_analysis/);
   assert.match(provider, /emotion_curve/);
   assert.match(provider, /conversion_design/);
+  assert.match(provider, /class CTAAnalysis/);
+  assert.match(provider, /cta_analysis: CTAAnalysis/);
+  assert.match(provider, /def _normalize_cta_analysis/);
+  assert.match(provider, /"contract_version": "analysis\.v9"/);
+  assert.match(provider, /"cta_validation"/);
   assert.match(provider, /insight_evidence/);
   assert.match(provider, /SegmentReport/);
   assert.match(provider, /_repair_report_evidence/);
   assert.match(provider, /evidence_repair/);
   assert.doesNotMatch(provider, /model report did not preserve exact source evidence/);
   assert.match(detail, /copySpokenScript/);
-  assert.match(detail, /完整口播版/);
-  assert.match(detail, /微调同构版/);
-  assert.match(detail, /内容等价重构版/);
+  assert.match(detail, /原版口播文案/);
+  assert.match(detail, /只做原稿纠错/);
+  assert.match(detail, /历史原稿兼容展示/);
+  assert.doesNotMatch(detail, /retrySpokenScript/);
+  assert.doesNotMatch(detail, /spoken-script-tabs/);
+  assert.doesNotMatch(detail, /微调同构版/);
+  assert.doesNotMatch(detail, /内容等价重构版/);
+  assert.match(detail, /visual-understanding-status/);
   assert.match(detail, /传播爆点/);
   assert.match(detail, /analysis-comparison-panel/);
-  assert.match(detail, /linked-insight-list/);
+  assert.doesNotMatch(detail, /linked-insight-list/);
   assert.match(detail, /analysis-quality-audit/);
   assert.match(styles, /spoken-script-panel/);
   assert.match(styles, /analysis-comparison-panel/);

@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 from collections.abc import Callable, Mapping
+from datetime import datetime, timezone
 from http.cookiejar import Cookie, LoadError, MozillaCookieJar
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,47 @@ def is_douyin_cookie(cookie: Cookie) -> bool:
         (".douyin.com", ".iesdouyin.com")
     )
 
+
+_AUTHENTICATED_COOKIE_NAMES = frozenset({
+    "sessionid", "sessionid_ss", "sid_tt", "sid_guard", "uid_tt", "uid_tt_ss"
+})
+
+
+def inspect_browser_authentication(
+    browser: str,
+    factory: Callable[[Mapping[str, Any]], Any] | None = None,
+) -> dict[str, Any]:
+    """Return a non-sensitive Douyin login status for the selected browser."""
+    checked_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    browser_name = browser.split(":", 1)[0].strip().lower() or None
+    browser_spec = parse_browser_cookie_spec(browser)
+    if browser_spec is None:
+        return {"status": "disabled", "browser": browser_name, "checkedAt": checked_at, "message": "未启用浏览器登录检测。"}
+    if factory is None:
+        from yt_dlp import YoutubeDL
+        factory = YoutubeDL
+    try:
+        with factory({"cookiesfrombrowser": browser_spec, "quiet": True, "no_warnings": True}) as downloader:
+            cookies = [cookie for cookie in downloader.cookiejar if is_douyin_cookie(cookie)]
+    except Exception as error:
+        message = str(error)
+        if "Could not copy Chrome cookie database" in message or "Permission denied" in message:
+            message = "Edge 正在占用登录信息；关闭其他 Edge 窗口后会自动重试，或上传备用 Cookie。"
+        elif "DPAPI" in message or "app-bound" in message.lower():
+            message = "浏览器登录信息受系统保护，暂时无法读取；可上传备用 Cookie。"
+        else:
+            message = "暂时无法读取后台浏览器登录状态。"
+        return {"status": "unavailable", "browser": browser_name, "checkedAt": checked_at, "message": message}
+    authenticated = any(
+        cookie.name.lower() in _AUTHENTICATED_COOKIE_NAMES and bool(cookie.value)
+        for cookie in cookies
+    )
+    return {
+        "status": "logged_in" if authenticated else "not_logged_in",
+        "browser": browser_name,
+        "checkedAt": checked_at,
+        "message": "检测到抖音账号已登录，无需 Cookie 文件。" if authenticated else "后台浏览器尚未登录抖音。",
+    }
 
 def _write_snapshot(cookies: list[Cookie], output: Path) -> int:
     output = output.expanduser().resolve()

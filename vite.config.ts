@@ -42,6 +42,10 @@ const localBindingConfig = {
           binding: r2,
           bucket_name: "liming-zhiyao-media",
         },
+        {
+          binding: "MEDIA_LEGACY",
+          bucket_name: "site-creator-r2",
+        },
       ]
     : [],
   ...(lanAccessOrigin ? { vars: { LAN_ACCESS_ORIGIN: lanAccessOrigin } } : {}),

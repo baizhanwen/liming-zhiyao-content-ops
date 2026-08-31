@@ -1,6 +1,7 @@
 import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess } from "../../../db/runtime";
 import { apiError, errorResponse } from "../../../lib/api-response";
 import { readRequestIdentity } from "../../../lib/request-auth";
+import { retrieveDefaultProjectGenerationSources } from "../../../lib/generation-context-sources";
 
 const MAX_KNOWLEDGE_SOURCES = 20;
 
@@ -64,15 +65,38 @@ export async function POST(request: Request) {
       citations.push(...sourceKnowledgeItemIds.map((id) => ({ type: "knowledge", id, quote: byId.get(id)!.body.slice(0, 500) })));
     }
     const text = (key: string, max = 1000) => typeof payload[key] === "string" && payload[key].trim() ? payload[key].trim().slice(0, max) : null;
+    const defaultProjectSources = await retrieveDefaultProjectGenerationSources({
+      organizationId,
+      projectId,
+      userId: user.id,
+      purpose: "topic_creation",
+      query: [title, angle, text("pillar", 200), text("audience"), text("objective"), text("hook", 500), text("rationale", 2000)].filter(Boolean).join("\n"),
+      methodologyTask: "topic",
+      maxCharacters: 24_000,
+    });
+    const sourceManifestSnapshot = defaultProjectSources.sources.map(({ sourceType, sourceId, title, score, rank, confidence }) => ({ sourceType, sourceId, title, score, rank, confidence }));
+    const missingContext = [
+      !defaultProjectSources.sources.some((source) => source.sourceType === "strategy") ? "ACTIVE_STRATEGY" : null,
+      !defaultProjectSources.sources.some((source) => source.sourceType === "knowledge") ? "CONFIRMED_BRAND_KNOWLEDGE" : null,
+    ].filter((value): value is string => Boolean(value));
+    const riskNotes = missingContext.length
+      ? ["以下上下文缺失，生成结果不得补造客户事实：" + missingContext.join("、")]
+      : ["灵感与授权方法仅作参考，客户事实必须来自当前项目已确认来源。"];    const citationKeys = new Set(citations.map((citation) => citation.type + ":" + citation.id));
+    for (const source of defaultProjectSources.sources) {
+      const key = source.sourceType + ":" + source.sourceId;
+      if (citationKeys.has(key)) continue;
+      citationKeys.add(key);
+      citations.push({ type: source.sourceType, id: source.sourceId, quote: source.text.slice(0, 500) });
+    }
     const priority = typeof payload.priority === "number" && Number.isFinite(payload.priority) ? Math.max(0, Math.min(100, Math.trunc(payload.priority))) : 50; const topicId = crypto.randomUUID(); const now = new Date().toISOString();
     const statements = [
-      db.prepare("INSERT INTO topic_ideas (id, organization_id, project_id, title, angle, source_type, source_ref, pillar, audience, objective, hook, rationale, priority, status, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'idea', ?, ?, ?, ?)").bind(topicId, organizationId, projectId, title, angle, sourceType, sourceRef, text("pillar", 200), text("audience"), text("objective"), text("hook", 500), text("rationale", 2000), priority, user.id, user.id, now, now),
-      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'topic.created', 'topic_idea', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, topicId, JSON.stringify({ sourceType, sourceRef, sourceVideoId: sourceVideoId || null, sourceKnowledgeItemIds }), now),
+      db.prepare("INSERT INTO topic_ideas (id, organization_id, project_id, title, angle, source_type, source_ref, pillar, audience, objective, hook, rationale, priority, source_manifest_json, missing_context_json, risk_notes_json, context_snapshot_id, status, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'idea', ?, ?, ?, ?)").bind(topicId, organizationId, projectId, title, angle, sourceType, sourceRef, text("pillar", 200), text("audience"), text("objective"), text("hook", 500), text("rationale", 2000), priority, JSON.stringify(sourceManifestSnapshot), JSON.stringify(missingContext), JSON.stringify(riskNotes), defaultProjectSources.memorySnapshotId, user.id, user.id, now, now),
+      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'topic.created', 'topic_idea', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, topicId, JSON.stringify({ sourceType, sourceRef, sourceVideoId: sourceVideoId || null, sourceKnowledgeItemIds, sourceCount: sourceManifestSnapshot.length, missingContext, riskNotes }), now),
     ];
     const citationRecords = citations.map((citation) => ({ id: crypto.randomUUID(), topic_id: topicId, citation_type: citation.type, citation_id: citation.id, quote: citation.quote }));
     for (const citation of citationRecords) statements.push(db.prepare("INSERT INTO topic_citations (id, organization_id, project_id, topic_id, citation_type, citation_id, quote, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(citation.id, organizationId, projectId, topicId, citation.citation_type, citation.citation_id, citation.quote, user.id, now));
     await db.batch(statements);
-    return Response.json({ topic: { id: topicId, title, angle, source_type: sourceType, source_ref: sourceRef, pillar: text("pillar", 200), audience: text("audience"), objective: text("objective"), hook: text("hook", 500), rationale: text("rationale", 2000), priority, status: "idea", created_at: now, updated_at: now }, citation: citationRecords[0] ?? null, citations: citationRecords }, { status: 201 });
+    return Response.json({ topic: { id: topicId, title, angle, source_type: sourceType, source_ref: sourceRef, pillar: text("pillar", 200), audience: text("audience"), objective: text("objective"), hook: text("hook", 500), rationale: text("rationale", 2000), priority, status: "idea", created_at: now, updated_at: now }, citation: citationRecords[0] ?? null, citations: citationRecords, sourcesUsed: sourceManifestSnapshot, missingContext, riskNotes }, { status: 201 });
   } catch (error) { return errorResponse(error); }
 }
 

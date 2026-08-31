@@ -1,12 +1,13 @@
 import { env } from "cloudflare:workers";
 import { getD1, getProjectAccess, sha256Hex } from "../db/runtime";
+import { isGenerationFrozen } from "./generation-freeze.mjs";
 
 type RuntimeEnv = typeof env & { GENERATION_P0_FREEZE?: string };
 
 export type ProjectGenerationCapability = "topic" | "content" | "wechat_image" | "analysis";
 
 export type ProjectGenerationSource = {
-  sourceType: "topic" | "knowledge" | "video_analysis" | "strategy" | "benchmark" | "historical_copy" | "system_methodology";
+  sourceType: "topic" | "memory" | "knowledge" | "video_atom" | "inspiration" | "video_analysis" | "strategy" | "benchmark" | "method_knowledge" | "historical_copy" | "system_methodology";
   sourceId: string;
   title: string;
   text: string;
@@ -14,6 +15,11 @@ export type ProjectGenerationSource = {
   organizationId?: string;
   projectId?: string;
   systemMethodology?: boolean;
+  score?: number;
+  rank?: number;
+  matchedTerms?: string[];
+  confidence?: number | string | null;
+  feedbackReuse?: boolean;
 };
 
 export type GenerationSourceManifestEntry = {
@@ -24,6 +30,11 @@ export type GenerationSourceManifestEntry = {
   contentHash: string;
   characterCount: number;
   systemMethodology: boolean;
+  score?: number;
+  rank?: number;
+  matchedTerms?: string[];
+  confidence?: number | string | null;
+  feedbackReuse: boolean;
 };
 
 export type GenerationReadiness = {
@@ -49,8 +60,7 @@ export type ProjectGenerationContextResult =
   | { ok: false; code: "GENERATION_FROZEN" | "PROJECT_CONTEXT_INCOMPLETE" | "PROJECT_ACCESS_DENIED" | "UNSAFE_GENERATION_SOURCE"; message: string; status: 403 | 409; details?: Record<string, unknown> };
 
 function isP0FreezeEnabled() {
-  const value = (env as RuntimeEnv).GENERATION_P0_FREEZE?.trim().toLowerCase();
-  return value !== "0" && value !== "false" && value !== "off";
+  return isGenerationFrozen((env as RuntimeEnv).GENERATION_P0_FREEZE);
 }
 
 function nonEmpty(value: string | null | undefined) {
@@ -80,10 +90,11 @@ async function readGenerationReadiness(organizationId: string, projectId: string
 }
 
 function sourceScopeError(source: ProjectGenerationSource, organizationId: string, projectId: string) {
+  const isSystemMethodology = source.sourceType === "system_methodology" || source.systemMethodology === true;
   if (source.organizationId && source.organizationId !== organizationId) return true;
   if (source.projectId && source.projectId !== projectId) return true;
-  if (source.sourceType === "system_methodology" && !source.systemMethodology) return true;
-  if (source.sourceType !== "system_methodology" && source.systemMethodology) return true;
+  if (isSystemMethodology && !source.systemMethodology) return true;
+  if (!isSystemMethodology && source.systemMethodology) return true;
   return false;
 }
 
@@ -97,7 +108,7 @@ export async function buildProjectGenerationContext(input: {
   sources: ProjectGenerationSource[];
 }): Promise<ProjectGenerationContextResult> {
   const access = await getProjectAccess(input.authSubject, input.organizationId, input.projectId);
-  if (!access) return { ok: false, code: "PROJECT_ACCESS_DENIED", message: "当前用户无权访问该客户项目。", status: 403 };
+  if (!access) return { ok: false, code: "PROJECT_ACCESS_DENIED", message: "当前用户无权访问该企业空间。", status: 403 };
   if (isP0FreezeEnabled() && access.organizationRole !== "admin") {
     return { ok: false, code: "GENERATION_FROZEN", message: "风险隔离期间仅公司管理员可以执行 AI 生成。", status: 403 };
   }
@@ -106,7 +117,7 @@ export async function buildProjectGenerationContext(input: {
     return {
       ok: false,
       code: "PROJECT_CONTEXT_INCOMPLETE",
-      message: "客户项目资料不完整，已阻止调用模型。请先补齐项目必填资料。",
+      message: "企业空间资料不完整，已阻止调用模型。请先补齐项目必填资料。",
       status: 409,
       details: { generationReadiness: readiness },
     };
@@ -118,11 +129,16 @@ export async function buildProjectGenerationContext(input: {
   const sourceManifest = await Promise.all(input.sources.map(async (source) => ({
     sourceType: source.sourceType,
     sourceId: source.sourceId,
-    organizationId: source.sourceType === "system_methodology" ? "system" : input.organizationId,
-    projectId: source.sourceType === "system_methodology" ? "system" : input.projectId,
+    organizationId: source.systemMethodology || source.sourceType === "system_methodology" ? "system" : input.organizationId,
+    projectId: source.systemMethodology || source.sourceType === "system_methodology" ? "system" : input.projectId,
     contentHash: await sha256Hex(new TextEncoder().encode(source.text)),
     characterCount: source.text.length,
-    systemMethodology: source.sourceType === "system_methodology",
+    systemMethodology: source.systemMethodology || source.sourceType === "system_methodology",
+    score: source.score,
+    rank: source.rank,
+    matchedTerms: source.matchedTerms,
+    confidence: source.confidence,
+    feedbackReuse: Boolean(source.feedbackReuse),
   })));
   return {
     ok: true,
@@ -131,7 +147,7 @@ export async function buildProjectGenerationContext(input: {
       organizationId: input.organizationId,
       projectId: input.projectId,
       capability: input.capability,
-      sources: input.sources.map((source) => ({ ...source, organizationId: source.sourceType === "system_methodology" ? undefined : input.organizationId, projectId: source.sourceType === "system_methodology" ? undefined : input.projectId, systemMethodology: source.sourceType === "system_methodology" })),
+      sources: input.sources.map((source) => ({ ...source, organizationId: source.systemMethodology || source.sourceType === "system_methodology" ? undefined : input.organizationId, projectId: source.systemMethodology || source.sourceType === "system_methodology" ? undefined : input.projectId, systemMethodology: source.systemMethodology || source.sourceType === "system_methodology" })),
       sourceManifest,
       readiness,
     },
@@ -141,9 +157,9 @@ export async function buildProjectGenerationContext(input: {
 /** Re-check the authenticated project boundary immediately before a model request. */
 export async function assertProjectGenerationContext(input: { authSubject: string; context: ProjectGenerationContext }): Promise<ProjectGenerationContextResult> {
   const access = await getProjectAccess(input.authSubject, input.context.organizationId, input.context.projectId);
-  if (!access) return { ok: false, code: "PROJECT_ACCESS_DENIED", message: "当前用户已失去该客户项目权限，已阻止模型调用。", status: 403 };
+  if (!access) return { ok: false, code: "PROJECT_ACCESS_DENIED", message: "当前用户已失去该企业空间权限，已阻止模型调用。", status: 403 };
   if (isP0FreezeEnabled() && access.organizationRole !== "admin") return { ok: false, code: "GENERATION_FROZEN", message: "风险隔离期间仅公司管理员可以执行 AI 生成。", status: 403 };
-  if (input.context.sources.some((source) => source.sourceType !== "system_methodology" && (source.organizationId !== input.context.organizationId || source.projectId !== input.context.projectId))) {
+  if (input.context.sources.some((source) => !source.systemMethodology && source.sourceType !== "system_methodology" && (source.organizationId !== input.context.organizationId || source.projectId !== input.context.projectId))) {
     return { ok: false, code: "UNSAFE_GENERATION_SOURCE", message: "模型调用前检测到项目来源边界变化，已阻止本次调用。", status: 409 };
   }
   return { ok: true, context: input.context };
@@ -181,6 +197,11 @@ export function redactedGenerationInput(input: Record<string, unknown>, sourceMa
       contentHash: source.contentHash,
       characterCount: source.characterCount,
       systemMethodology: source.systemMethodology,
+      score: source.score,
+      rank: source.rank,
+      matchedTerms: source.matchedTerms,
+      confidence: source.confidence,
+      feedbackReuse: source.feedbackReuse,
     })),
   });
 }

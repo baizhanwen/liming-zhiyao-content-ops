@@ -45,7 +45,7 @@ export const organizationSettings = sqliteTable("organization_settings", {
 
 export const organizationMembers = sqliteTable("organization_members", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), userId: text("user_id").notNull().references(() => users.id),
-  role: text("role", { enum: ["admin", "member", "readonly"] }).notNull(), status: text("status", { enum: ["active", "suspended", "removed"] }).notNull().default("active"),
+  role: text("role", { enum: ["admin", "member"] }).notNull(), status: text("status", { enum: ["active", "suspended", "removed"] }).notNull().default("active"),
   createdBy: text("created_by").notNull(), updatedBy: text("updated_by").notNull(), ...timestamps,
 }, (table) => [uniqueIndex("idx_organization_members_org_user").on(table.organizationId, table.userId), index("idx_organization_members_org_status").on(table.organizationId, table.status)]);
 
@@ -57,13 +57,13 @@ export const projects = sqliteTable("projects", {
 
 export const projectMembers = sqliteTable("project_members", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id),
-  userId: text("user_id").notNull().references(() => users.id), role: text("role", { enum: ["owner", "planner", "creator", "reviewer", "client", "readonly"] }).notNull(),
+  userId: text("user_id").notNull().references(() => users.id), role: text("role", { enum: ["member"] }).notNull(),
   status: text("status", { enum: ["active", "removed"] }).notNull().default("active"), createdBy: text("created_by").notNull(), updatedBy: text("updated_by").notNull(), ...timestamps,
 }, (table) => [uniqueIndex("idx_project_members_project_user").on(table.projectId, table.userId), index("idx_project_members_org_project").on(table.organizationId, table.projectId)]);
 
 export const invitations = sqliteTable("invitations", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").references(() => projects.id), email: text("email").notNull(),
-  organizationRole: text("organization_role", { enum: ["admin", "member", "readonly"] }).notNull(), projectRole: text("project_role", { enum: ["owner", "planner", "creator", "reviewer", "client", "readonly"] }),
+  organizationRole: text("organization_role", { enum: ["admin", "member"] }).notNull(), projectRole: text("project_role", { enum: ["member"] }),
   tokenHash: text("token_hash").notNull(), status: text("status", { enum: ["pending", "accepted", "declined", "revoked", "expired"] }).notNull().default("pending"), expiresAt: text("expires_at").notNull(),
   acceptedAt: text("accepted_at"), createdBy: text("created_by").notNull(), updatedBy: text("updated_by").notNull(), ...timestamps,
 }, (table) => [uniqueIndex("idx_invitations_token_hash").on(table.tokenHash), index("idx_invitations_org_status").on(table.organizationId, table.status)]);
@@ -78,6 +78,7 @@ export const socialAccounts = sqliteTable("social_accounts", {
 export const mediaAssets = sqliteTable("media_assets", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id),
   videoId: text("video_id").references((): AnySQLiteColumn => videos.id),
+  analysisJobId: text("analysis_job_id"),
   kind: text("kind", { enum: ["source_video", "source_audio", "keyframe", "subtitle", "report"] }).notNull(), r2Key: text("r2_key").notNull(), isCover: integer("is_cover").notNull().default(0), qualityScore: integer("quality_score"),
   filename: text("filename").notNull(), contentType: text("content_type").notNull(), sizeBytes: integer("size_bytes").notNull(), sha256: text("sha256").notNull(),
   status: text("status", { enum: ["active", "deleted"] }).notNull().default("active"), createdBy: text("created_by").notNull(), updatedBy: text("updated_by").notNull(), ...timestamps,
@@ -85,6 +86,7 @@ export const mediaAssets = sqliteTable("media_assets", {
   uniqueIndex("idx_media_assets_r2_key").on(table.r2Key),
   index("idx_media_assets_project_kind").on(table.organizationId, table.projectId, table.kind),
   index("idx_media_assets_video_kind").on(table.organizationId, table.projectId, table.videoId, table.kind),
+  index("idx_media_assets_analysis_job_kind").on(table.analysisJobId, table.kind, table.status),
 ]);
 
 export const videos = sqliteTable("videos", {
@@ -98,7 +100,7 @@ export const videos = sqliteTable("videos", {
 
 export const videoLibraryEntries = sqliteTable("video_library_entries", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), sourceVideoId: text("source_video_id").notNull().references(() => videos.id),
-  category: text("category", { enum: ["benchmark", "industry", "case", "trend", "creative", "other"] }).notNull().default("other"),
+  category: text("category", { enum: ["published", "benchmark", "industry", "case", "trend", "creative", "other"] }).notNull().default("other"),
   tagsJson: text("tags_json").notNull().default("[]"), notes: text("notes"), createdBy: text("created_by").notNull(), updatedBy: text("updated_by").notNull(), ...timestamps,
 }, (table) => [
   uniqueIndex("idx_video_library_org_source").on(table.organizationId, table.sourceVideoId),
@@ -108,12 +110,18 @@ export const videoLibraryEntries = sqliteTable("video_library_entries", {
 export const projectVideoReferences = sqliteTable("project_video_references", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id),
   libraryEntryId: text("library_entry_id").notNull().references(() => videoLibraryEntries.id), purpose: text("purpose", { enum: ["analysis", "benchmark"] }).notNull().default("benchmark"),
-  createdBy: text("created_by").notNull(), createdAt: text("created_at").notNull(),
+  status: text("status", { enum: ["active", "revoked"] }).notNull().default("active"), createdBy: text("created_by").notNull(), createdAt: text("created_at").notNull(),
+  revokedBy: text("revoked_by").references(() => users.id), revokedAt: text("revoked_at"), revokeReason: text("revoke_reason"),
 }, (table) => [
   uniqueIndex("idx_project_video_refs_unique").on(table.projectId, table.libraryEntryId, table.purpose),
-  index("idx_project_video_refs_project_purpose_created").on(table.organizationId, table.projectId, table.purpose, table.createdAt),
+  index("idx_project_video_refs_project_purpose_status_created").on(table.organizationId, table.projectId, table.purpose, table.status, table.createdAt),
   index("idx_project_video_refs_library").on(table.organizationId, table.libraryEntryId),
 ]);
+
+export const videoKnowledgeAtoms = sqliteTable("video_knowledge_atoms", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), libraryEntryId: text("library_entry_id").notNull().references(() => videoLibraryEntries.id), analysisId: text("analysis_id").notNull().references(() => videoAnalyses.id),
+  atomKey: text("atom_key").notNull(), atomType: text("atom_type").notNull(), title: text("title").notNull(), content: text("content").notNull(), structuredJson: text("structured_json").notNull().default("{}"), sourceLocatorJson: text("source_locator_json").notNull().default("{}"), confidence: integer("confidence"), reportHash: text("report_hash").notNull(), extractorVersion: text("extractor_version").notNull(), status: text("status", { enum: ["active", "superseded", "unsupported"] }).notNull().default("active"), supersededBy: text("superseded_by"), createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull(),
+}, (table) => [uniqueIndex("idx_video_atoms_analysis_key").on(table.analysisId, table.atomKey), index("idx_video_atoms_org_library_status").on(table.organizationId, table.libraryEntryId, table.status), index("idx_video_atoms_org_type").on(table.organizationId, table.atomType)]);
 
 export const videoMetricSnapshots = sqliteTable("video_metric_snapshots", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), videoId: text("video_id").notNull().references(() => videos.id),
@@ -129,17 +137,18 @@ export const videoTranscripts = sqliteTable("video_transcripts", {
 
 export const videoAnalyses = sqliteTable("video_analyses", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), videoId: text("video_id").notNull().references(() => videos.id),
+  analysisJobId: text("analysis_job_id"),
   schemaVersion: text("schema_version").notNull(), reportJson: text("report_json").notNull(), confidence: integer("confidence"), modelProvider: text("model_provider"), modelName: text("model_name"), promptVersion: text("prompt_version"),
   createdBy: text("created_by").notNull(), ...timestamps,
-}, (table) => [index("idx_video_analyses_video_created").on(table.organizationId, table.projectId, table.videoId, table.createdAt)]);
+}, (table) => [index("idx_video_analyses_video_created").on(table.organizationId, table.projectId, table.videoId, table.createdAt), index("idx_video_analyses_analysis_job").on(table.analysisJobId)]);
 
 export const analysisJobs = sqliteTable("analysis_jobs", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id),
   videoId: text("video_id").references(() => videos.id),
   inputTranscriptId: text("input_transcript_id").references(() => videoTranscripts.id),
   sourceType: text("source_type", { enum: ["url", "upload"] }).notNull(), sourceRef: text("source_ref").notNull(), idempotencyKey: text("idempotency_key").notNull(),
-  status: text("status", { enum: ["pending", "queued", "downloading", "processing", "transcribing", "extracting", "analyzing", "completed", "failed", "cancelled"] }).notNull().default("pending"),
-  analysisProfile: text("analysis_profile", { enum: ["max", "economy", "standard", "deep"] }).notNull().default("max"),
+  status: text("status", { enum: ["pending", "queued", "downloading", "processing", "transcribing", "extracting", "analyzing", "completed", "partial", "failed", "cancelled"] }).notNull().default("pending"),
+  analysisProfile: text("analysis_profile", { enum: ["max", "economy", "standard", "deep"] }).notNull().default("standard"),
   progress: integer("progress").notNull().default(0), currentStage: text("current_stage"), errorCode: text("error_code"), errorMessage: text("error_message"), retryCount: integer("retry_count").notNull().default(0),
   leaseOwner: text("lease_owner"), leaseExpiresAt: text("lease_expires_at"), lastHeartbeatAt: text("last_heartbeat_at"), attemptCount: integer("attempt_count").notNull().default(0), version: integer("version").notNull().default(0), resultKey: text("result_key"),
   checkpointStage: text("checkpoint_stage"), checkpointJson: text("checkpoint_json"), checkpointUpdatedAt: text("checkpoint_updated_at"), resumeCount: integer("resume_count").notNull().default(0),
@@ -152,13 +161,16 @@ export const analysisJobs = sqliteTable("analysis_jobs", {
 
 export const analyzerWorkers = sqliteTable("analyzer_workers", {
   workerId: text("worker_id").primaryKey(), status: text("status", { enum: ["online", "stopped", "error"] }).notNull().default("online"),
-  startedAt: text("started_at").notNull(), lastSeenAt: text("last_seen_at").notNull(), lastError: text("last_error"), updatedAt: text("updated_at").notNull(),
+  startedAt: text("started_at").notNull(), lastSeenAt: text("last_seen_at").notNull(), lastError: text("last_error"),
+  browserAuthStatus: text("browser_auth_status", { enum: ["unknown", "logged_in", "not_logged_in", "unavailable", "disabled"] }).notNull().default("unknown"),
+  browserAuthBrowser: text("browser_auth_browser"), browserAuthCheckedAt: text("browser_auth_checked_at"), browserAuthMessage: text("browser_auth_message"),
+  updatedAt: text("updated_at").notNull(),
 }, (table) => [index("idx_analyzer_workers_last_seen").on(table.lastSeenAt)]);
 
 export const analysisJobEvents = sqliteTable("analysis_job_events", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id),
   jobId: text("job_id").notNull().references(() => analysisJobs.id), videoId: text("video_id").references(() => videos.id),
-  eventType: text("event_type", { enum: ["claimed", "heartbeat", "stage_changed", "completed", "failed", "lease_expired"] }).notNull(),
+  eventType: text("event_type", { enum: ["claimed", "heartbeat", "stage_changed", "completed", "partial", "failed", "lease_expired"] }).notNull(),
   fromStatus: text("from_status"), toStatus: text("to_status"), progress: integer("progress"), workerId: text("worker_id"), detailsJson: text("details_json"), createdAt: text("created_at").notNull(),
 }, (table) => [index("idx_analysis_job_events_job_created").on(table.jobId, table.createdAt), index("idx_analysis_job_events_tenant_created").on(table.organizationId, table.projectId, table.createdAt)]);
 
@@ -168,6 +180,47 @@ export const knowledgeItems = sqliteTable("knowledge_items", {
   title: text("title").notNull(), status: text("status", { enum: ["draft", "confirmed", "archived"] }).notNull().default("draft"), currentVersion: integer("current_version").notNull().default(1),
   createdBy: text("created_by").notNull(), updatedBy: text("updated_by").notNull(), confirmedBy: text("confirmed_by"), confirmedAt: text("confirmed_at"), deletedAt: text("deleted_at"), ...timestamps,
 }, (table) => [index("idx_knowledge_items_project_status_category").on(table.organizationId, table.projectId, table.status, table.category), index("idx_knowledge_items_project_updated").on(table.organizationId, table.projectId, table.updatedAt)]);
+
+export const projectMemoryItems = sqliteTable("project_memory_items", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), canonicalKey: text("canonical_key").notNull(), category: text("category").notNull().default("memory"), kind: text("kind").notNull().default("soft"), status: text("status", { enum: ["candidate", "confirmed", "rejected", "superseded", "expired"] }).notNull().default("candidate"), title: text("title").notNull(), content: text("content").notNull(), valueJson: text("value_json").notNull().default("{}"), sourceType: text("source_type").notNull(), sourceId: text("source_id"), revision: integer("revision").notNull().default(1), contentHash: text("content_hash").notNull(), createdBy: text("created_by").notNull().references(() => users.id), confirmedBy: text("confirmed_by").references(() => users.id), confirmedAt: text("confirmed_at"), rejectedBy: text("rejected_by").references(() => users.id), rejectedAt: text("rejected_at"), supersededBy: text("superseded_by"), expiresAt: text("expires_at"), ...timestamps,
+}, (table) => [uniqueIndex("idx_project_memory_canonical_revision").on(table.organizationId, table.projectId, table.canonicalKey, table.revision), index("idx_project_memory_scope_status_kind").on(table.organizationId, table.projectId, table.status, table.kind), index("idx_project_memory_scope_status_category").on(table.organizationId, table.projectId, table.status, table.category), index("idx_project_memory_scope_key").on(table.organizationId, table.projectId, table.canonicalKey)]);
+
+export const projectMemoryEvidence = sqliteTable("project_memory_evidence", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), memoryItemId: text("memory_item_id").notNull().references(() => projectMemoryItems.id), sourceType: text("source_type").notNull(), sourceId: text("source_id").notNull(), quote: text("quote"), relevance: integer("relevance"), createdBy: text("created_by").notNull().references(() => users.id), createdAt: text("created_at").notNull(),
+}, (table) => [index("idx_memory_evidence_item").on(table.memoryItemId), index("idx_memory_evidence_scope").on(table.organizationId, table.projectId, table.createdAt)]);
+
+export const projectMemorySnapshots = sqliteTable("project_memory_snapshots", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), purpose: text("purpose").notNull(), query: text("query"), snapshotHash: text("snapshot_hash").notNull(), createdBy: text("created_by").notNull().references(() => users.id), createdAt: text("created_at").notNull(),
+}, (table) => [index("idx_memory_snapshots_scope_created").on(table.organizationId, table.projectId, table.createdAt)]);
+
+export const projectInspirationCards = sqliteTable("project_inspiration_cards", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), canonicalKey: text("canonical_key").notNull(), version: integer("version").notNull().default(1), status: text("status").notNull().default("candidate"), title: text("title").notNull(), coreInsight: text("core_insight").notNull(), applicableScenariosJson: text("applicable_scenarios_json").notNull().default("[]"), excludedScenariosJson: text("excluded_scenarios_json").notNull().default("[]"), evidenceJson: text("evidence_json").notNull().default("[]"), sourceType: text("source_type").notNull(), sourceId: text("source_id"), tagsJson: text("tags_json").notNull().default("[]"), confidence: integer("confidence"), contentHash: text("content_hash").notNull(), createdBy: text("created_by").notNull().references(() => users.id), confirmedBy: text("confirmed_by").references(() => users.id), confirmedAt: text("confirmed_at"), rejectedBy: text("rejected_by").references(() => users.id), rejectedAt: text("rejected_at"), supersededBy: text("superseded_by"), expiresAt: text("expires_at"), createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull(),
+}, (table) => [uniqueIndex("idx_inspiration_cards_scope_key_version").on(table.organizationId, table.projectId, table.canonicalKey, table.version), index("idx_inspiration_cards_scope_status_updated").on(table.organizationId, table.projectId, table.status, table.updatedAt), index("idx_inspiration_cards_source").on(table.organizationId, table.sourceType, table.sourceId)]);
+
+export const projectMemoryEvents = sqliteTable("project_memory_events", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id),
+  eventType: text("event_type").notNull(), sourceType: text("source_type").notNull(), sourceId: text("source_id"), dedupeKey: text("dedupe_key").notNull(), payloadJson: text("payload_json").notNull().default("{}"), payloadHash: text("payload_hash").notNull(),
+  status: text("status", { enum: ["pending", "processing", "completed", "blocked", "failed"] }).notNull().default("pending"), operationSummaryJson: text("operation_summary_json").notNull().default("[]"), attemptCount: integer("attempt_count").notNull().default(0),
+  errorCode: text("error_code"), errorMessage: text("error_message"), modelProvider: text("model_provider"), modelName: text("model_name"), promptVersion: text("prompt_version"), createdBy: text("created_by").notNull().references(() => users.id), processedAt: text("processed_at"), createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull(),
+}, (table) => [uniqueIndex("idx_project_memory_events_dedupe").on(table.organizationId, table.projectId, table.dedupeKey), index("idx_project_memory_events_scope_status").on(table.organizationId, table.projectId, table.status, table.createdAt)]);
+
+export const projectAssistantConversations = sqliteTable("project_assistant_conversations", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), title: text("title").notNull(), status: text("status", { enum: ["active", "archived"] }).notNull().default("active"), createdBy: text("created_by").notNull().references(() => users.id), createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull(),
+}, (table) => [index("idx_project_assistant_conversations_scope_updated").on(table.organizationId, table.projectId, table.status, table.updatedAt)]);
+
+export const projectAssistantMessages = sqliteTable("project_assistant_messages", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), conversationId: text("conversation_id").notNull().references(() => projectAssistantConversations.id, { onDelete: "cascade" }),
+  role: text("role", { enum: ["user", "assistant"] }).notNull(), status: text("status", { enum: ["completed", "failed"] }).notNull().default("completed"), content: text("content").notNull(), suggestionsJson: text("suggestions_json").notNull().default("[]"), citationsJson: text("citations_json").notNull().default("[]"), memoryOperationsJson: text("memory_operations_json").notNull().default("[]"),
+  modelProvider: text("model_provider"), modelName: text("model_name"), promptVersion: text("prompt_version"), errorCode: text("error_code"), createdBy: text("created_by").notNull().references(() => users.id), createdAt: text("created_at").notNull(),
+}, (table) => [index("idx_project_assistant_messages_conversation_created").on(table.conversationId, table.createdAt), index("idx_project_assistant_messages_scope_created").on(table.organizationId, table.projectId, table.createdAt)]);
+
+export const projectInspirationCardSources = sqliteTable("project_inspiration_card_sources", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), cardId: text("card_id").notNull().references(() => projectInspirationCards.id, { onDelete: "cascade" }),
+  conversationId: text("conversation_id").references(() => projectAssistantConversations.id), messageId: text("message_id").references(() => projectAssistantMessages.id), memoryItemId: text("memory_item_id").references(() => projectMemoryItems.id), createdAt: text("created_at").notNull(),
+}, (table) => [uniqueIndex("idx_inspiration_card_sources_unique").on(table.cardId, table.messageId, table.memoryItemId), index("idx_inspiration_card_sources_scope").on(table.organizationId, table.projectId, table.cardId)]);
+export const projectMemorySnapshotItems = sqliteTable("project_memory_snapshot_items", {
+  id: id(), snapshotId: text("snapshot_id").notNull().references(() => projectMemorySnapshots.id, { onDelete: "cascade" }), memoryItemId: text("memory_item_id").notNull().references(() => projectMemoryItems.id), revision: integer("revision").notNull(), rank: integer("rank").notNull(), contentHash: text("content_hash").notNull(),
+}, (table) => [uniqueIndex("idx_memory_snapshot_items_unique").on(table.snapshotId, table.memoryItemId), index("idx_memory_snapshot_items_item").on(table.memoryItemId)]);
 
 export const knowledgeItemVersions = sqliteTable("knowledge_item_versions", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), itemId: text("item_id").notNull().references(() => knowledgeItems.id),
@@ -191,12 +244,13 @@ export const topicIdeas = sqliteTable("topic_ideas", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id),
   title: text("title").notNull(), angle: text("angle"), sourceType: text("source_type", { enum: ["knowledge", "video_analysis", "performance", "trend", "comment", "manual"] }).notNull(), sourceRef: text("source_ref"),
   pillar: text("pillar"), audience: text("audience"), objective: text("objective"), hook: text("hook"), rationale: text("rationale"), priority: integer("priority").notNull().default(50),
+  sourceManifestJson: text("source_manifest_json").notNull().default("[]"), missingContextJson: text("missing_context_json").notNull().default("[]"), riskNotesJson: text("risk_notes_json").notNull().default("[]"), contextSnapshotId: text("context_snapshot_id"),
   status: text("status", { enum: ["idea", "selected", "drafting", "archived"] }).notNull().default("idea"), createdBy: text("created_by").notNull(), updatedBy: text("updated_by").notNull(), deletedAt: text("deleted_at"), ...timestamps,
 }, (table) => [index("idx_topic_ideas_project_status_priority").on(table.organizationId, table.projectId, table.status, table.priority), index("idx_topic_ideas_project_created").on(table.organizationId, table.projectId, table.createdAt)]);
 
 export const topicCitations = sqliteTable("topic_citations", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), topicId: text("topic_id").notNull().references(() => topicIdeas.id),
-  citationType: text("citation_type", { enum: ["knowledge", "video_analysis", "metric", "external"] }).notNull(), citationId: text("citation_id").notNull(), quote: text("quote"), createdBy: text("created_by").notNull(), createdAt: text("created_at").notNull(),
+  citationType: text("citation_type", { enum: ["knowledge", "video_analysis", "memory", "video_atom", "inspiration", "strategy", "method_knowledge", "metric", "external"] }).notNull(), citationId: text("citation_id").notNull(), quote: text("quote"), createdBy: text("created_by").notNull(), createdAt: text("created_at").notNull(),
 }, (table) => [uniqueIndex("idx_topic_citations_topic_source").on(table.topicId, table.citationType, table.citationId), index("idx_topic_citations_tenant_topic").on(table.organizationId, table.projectId, table.topicId)]);
 
 export const promptTemplates = sqliteTable("prompt_templates", {
@@ -213,6 +267,27 @@ export const modelCalls = sqliteTable("model_calls", {
   promptTemplateId: text("prompt_template_id").references(() => promptTemplates.id), taskType: text("task_type").notNull(), provider: text("provider").notNull(), modelName: text("model_name").notNull(), modelProfile: text("model_profile").notNull(), promptVersion: text("prompt_version").notNull(),
   status: text("status", { enum: ["started", "completed", "failed"] }).notNull(), inputHash: text("input_hash").notNull(), inputJson: text("input_json").notNull(), outputJson: text("output_json"), latencyMs: integer("latency_ms"), errorCode: text("error_code"), errorMessage: text("error_message"), createdBy: text("created_by").notNull(), createdAt: text("created_at").notNull(), completedAt: text("completed_at"),
 }, (table) => [index("idx_model_calls_project_created").on(table.organizationId, table.projectId, table.createdAt), index("idx_model_calls_topic_created").on(table.topicId, table.createdAt)]);
+
+export const scriptRewriteWorkspaces = sqliteTable("script_rewrite_workspaces", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id),
+  title: text("title").notNull(), sourceType: text("source_type", { enum: ["pasted", "video"] }).notNull(), sourceVideoId: text("source_video_id").references(() => videos.id),
+  sourceTranscriptId: text("source_transcript_id").references(() => videoTranscripts.id), sourceTranscriptVersion: integer("source_transcript_version"), sourceAnalysisId: text("source_analysis_id").references(() => videoAnalyses.id),
+  sourceLabel: text("source_label").notNull(), sourceText: text("source_text").notNull(), sourceHash: text("source_hash").notNull(), sourceCharacterCount: integer("source_character_count").notNull(),
+  status: text("status", { enum: ["active", "archived"] }).notNull().default("active"), createdBy: text("created_by").notNull().references(() => users.id), updatedBy: text("updated_by").notNull().references(() => users.id), ...timestamps,
+}, (table) => [index("idx_script_rewrites_scope_updated").on(table.organizationId, table.projectId, table.status, table.updatedAt), index("idx_script_rewrites_video").on(table.organizationId, table.projectId, table.sourceVideoId)]);
+
+export const scriptRewriteRuns = sqliteTable("script_rewrite_runs", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), workspaceId: text("workspace_id").notNull().references(() => scriptRewriteWorkspaces.id, { onDelete: "cascade" }),
+  variant: text("variant", { enum: ["light_rewrite", "restructured"] }).notNull(), status: text("status", { enum: ["started", "completed", "failed"] }).notNull().default("started"), sourceVersionId: text("source_version_id").notNull(), resultVersionId: text("result_version_id"), retryOfRunId: text("retry_of_run_id"),
+  estimatedCallCount: integer("estimated_call_count").notNull(), estimatedInputTokens: integer("estimated_input_tokens").notNull(), maximumOutputTokens: integer("maximum_output_tokens").notNull(), actualInputTokens: integer("actual_input_tokens").notNull().default(0), actualOutputTokens: integer("actual_output_tokens").notNull().default(0), actualTotalTokens: integer("actual_total_tokens").notNull().default(0),
+  modelCallId: text("model_call_id").references(() => modelCalls.id), promptVersion: text("prompt_version").notNull(), validationJson: text("validation_json").notNull().default("{}"), errorCode: text("error_code"), errorMessage: text("error_message"), createdBy: text("created_by").notNull().references(() => users.id), createdAt: text("created_at").notNull(), completedAt: text("completed_at"),
+}, (table) => [index("idx_script_rewrite_runs_workspace_created").on(table.organizationId, table.projectId, table.workspaceId, table.createdAt), index("idx_script_rewrite_runs_status_created").on(table.status, table.createdAt)]);
+
+export const scriptRewriteVersions = sqliteTable("script_rewrite_versions", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), workspaceId: text("workspace_id").notNull().references(() => scriptRewriteWorkspaces.id, { onDelete: "cascade" }),
+  version: integer("version").notNull(), variant: text("variant", { enum: ["source", "light_rewrite", "restructured", "manual"] }).notNull(), parentVersionId: text("parent_version_id"), runId: text("run_id").references(() => scriptRewriteRuns.id), text: text("text").notNull(), paragraphsJson: text("paragraphs_json").notNull().default("[]"), sourceMappingJson: text("source_mapping_json").notNull().default("[]"), outlineJson: text("outline_json").notNull().default("[]"), validationJson: text("validation_json").notNull().default("{}"),
+  modelProvider: text("model_provider"), modelName: text("model_name"), promptVersion: text("prompt_version"), modelCallId: text("model_call_id").references(() => modelCalls.id), changeSummary: text("change_summary"), createdBy: text("created_by").notNull().references(() => users.id), createdAt: text("created_at").notNull(),
+}, (table) => [uniqueIndex("idx_script_rewrite_versions_workspace_version").on(table.workspaceId, table.version), index("idx_script_rewrite_versions_scope_workspace").on(table.organizationId, table.projectId, table.workspaceId, table.createdAt)]);
 
 export const generationSourceManifests = sqliteTable("generation_source_manifests", {
   id: id(), traceId: text("trace_id").notNull(), userId: text("user_id").notNull().references(() => users.id), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id),
@@ -232,12 +307,12 @@ export const contentItems = sqliteTable("content_items", {
 
 export const contentVersions = sqliteTable("content_versions", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), contentItemId: text("content_item_id").notNull().references(() => contentItems.id),
-  version: integer("version").notNull(), generationMode: text("generation_mode", { enum: ["scaffold", "ai", "manual"] }).notNull(), packJson: text("pack_json").notNull(), fullScript: text("full_script").notNull(), shortScript: text("short_script").notNull(), changeSummary: text("change_summary"), promptVersion: text("prompt_version"), modelCallId: text("model_call_id").references(() => modelCalls.id), createdBy: text("created_by").notNull(), createdAt: text("created_at").notNull(),
+  version: integer("version").notNull(), generationMode: text("generation_mode", { enum: ["scaffold", "ai", "manual"] }).notNull(), packJson: text("pack_json").notNull(), fullScript: text("full_script").notNull(), shortScript: text("short_script").notNull(), changeSummary: text("change_summary"), promptVersion: text("prompt_version"), modelCallId: text("model_call_id").references(() => modelCalls.id), inputSnapshotJson: text("input_snapshot_json"), inputSnapshotHash: text("input_snapshot_hash"), sourceManifestJson: text("source_manifest_json").notNull().default("[]"), contextSnapshotId: text("context_snapshot_id"), createdBy: text("created_by").notNull(), createdAt: text("created_at").notNull(),
 }, (table) => [uniqueIndex("idx_content_versions_item_version").on(table.contentItemId, table.version), index("idx_content_versions_tenant_item").on(table.organizationId, table.projectId, table.contentItemId)]);
 
 export const contentCitations = sqliteTable("content_citations", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), contentItemId: text("content_item_id").notNull().references(() => contentItems.id), contentVersionId: text("content_version_id").notNull().references(() => contentVersions.id),
-  citationType: text("citation_type", { enum: ["topic", "knowledge", "video_analysis", "strategy", "benchmark", "method_knowledge"] }).notNull(), citationId: text("citation_id").notNull(), quote: text("quote"), createdBy: text("created_by").notNull(), createdAt: text("created_at").notNull(),
+  citationType: text("citation_type", { enum: ["topic", "memory", "knowledge", "video_atom", "inspiration", "video_analysis", "strategy", "benchmark", "method_knowledge", "historical_copy"] }).notNull(), citationId: text("citation_id").notNull(), quote: text("quote"), createdBy: text("created_by").notNull(), createdAt: text("created_at").notNull(),
 }, (table) => [uniqueIndex("idx_content_citations_version_source").on(table.contentVersionId, table.citationType, table.citationId), index("idx_content_citations_tenant_item").on(table.organizationId, table.projectId, table.contentItemId)]);
 
 export const authorizedKnowledgeSources = sqliteTable("authorized_knowledge_sources", {
@@ -295,8 +370,8 @@ export const publicationMetricSnapshots = sqliteTable("publication_metric_snapsh
 }, (table) => [uniqueIndex("idx_publication_metrics_publication_observed").on(table.publicationId, table.observedAt), index("idx_publication_metrics_project_observed").on(table.organizationId, table.projectId, table.observedAt), index("idx_publication_metrics_content_observed").on(table.contentItemId, table.observedAt)]);
 
 export const platformWorks = sqliteTable("platform_works", {
-  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), platform: text("platform").notNull().default("douyin"), platformWorkId: text("platform_work_id"), title: text("title").notNull(), titleNormalized: text("title_normalized").notNull(), publishedAt: text("published_at").notNull(), genre: text("genre"), reviewStatusRaw: text("review_status_raw"), reviewStatus: text("review_status"), contentItemId: text("content_item_id").references(() => contentItems.id), publicationId: text("publication_id").references(() => publicationRecords.id), matchStatus: text("match_status").notNull().default("unmatched"), createdBy: text("created_by").notNull().references(() => users.id), updatedBy: text("updated_by").notNull().references(() => users.id), ...timestamps,
-}, (table) => [index("idx_platform_works_project_lookup").on(table.organizationId, table.projectId, table.titleNormalized, table.publishedAt, table.genre), uniqueIndex("idx_platform_works_project_platform_id").on(table.projectId, table.platform, table.platformWorkId).where(sql`${table.platformWorkId} IS NOT NULL`)]);
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), platform: text("platform").notNull().default("douyin"), platformWorkId: text("platform_work_id"), title: text("title").notNull(), titleNormalized: text("title_normalized").notNull(), publishedAt: text("published_at").notNull(), genre: text("genre"), reviewStatusRaw: text("review_status_raw"), reviewStatus: text("review_status"), contentItemId: text("content_item_id").references(() => contentItems.id), publicationId: text("publication_id").references(() => publicationRecords.id), videoId: text("video_id").references(() => videos.id), matchStatus: text("match_status").notNull().default("unmatched"), matchConfidence: integer("match_confidence"), matchMethod: text("match_method"), matchedBy: text("matched_by").references(() => users.id), matchedAt: text("matched_at"), createdBy: text("created_by").notNull().references(() => users.id), updatedBy: text("updated_by").notNull().references(() => users.id), ...timestamps,
+}, (table) => [index("idx_platform_works_project_lookup").on(table.organizationId, table.projectId, table.titleNormalized, table.publishedAt, table.genre), uniqueIndex("idx_platform_works_project_platform_id").on(table.projectId, table.platform, table.platformWorkId).where(sql`${table.platformWorkId} IS NOT NULL`), uniqueIndex("idx_platform_works_project_video").on(table.projectId, table.videoId).where(sql`${table.videoId} IS NOT NULL`)]);
 
 export const platformMetricImportBatches = sqliteTable("platform_metric_import_batches", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id), platform: text("platform").notNull().default("douyin"), asOfAt: text("as_of_at").notNull(), sourceHash: text("source_hash").notNull(), originalFilename: text("original_filename"), status: text("status").notNull().default("processing"), rowCount: integer("row_count").notNull(), acceptedCount: integer("accepted_count").notNull().default(0), rejectedCount: integer("rejected_count").notNull().default(0), errorsJson: text("errors_json"), importedBy: text("imported_by").notNull().references(() => users.id), ...timestamps, completedAt: text("completed_at"),
@@ -314,6 +389,28 @@ export const performanceReports = sqliteTable("performance_reports", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id),
   reportType: text("report_type", { enum: ["weekly", "monthly", "custom"] }).notNull(), periodStart: text("period_start").notNull(), periodEnd: text("period_end").notNull(), title: text("title").notNull(), status: text("status", { enum: ["draft", "final"] }).notNull().default("draft"), summary: text("summary").notNull(), metricsJson: text("metrics_json").notNull(), highlightsJson: text("highlights_json").notNull(), recommendationsJson: text("recommendations_json").notNull(), generatedBy: text("generated_by").notNull().references(() => users.id), generatedAt: text("generated_at").notNull(), finalizedBy: text("finalized_by").references(() => users.id), finalizedAt: text("finalized_at"), createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull(),
 }, (table) => [uniqueIndex("idx_performance_reports_project_period_type").on(table.projectId, table.periodStart, table.periodEnd, table.reportType), index("idx_performance_reports_project_status_generated").on(table.organizationId, table.projectId, table.status, table.generatedAt)]);
+
+export const employeeWorkReports = sqliteTable("employee_work_reports", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id),
+  employeeUserId: text("employee_user_id").notNull().references(() => users.id), reportType: text("report_type", { enum: ["weekly", "monthly", "custom"] }).notNull(),
+  periodStart: text("period_start").notNull(), periodEnd: text("period_end").notNull(), title: text("title").notNull(), snapshotJson: text("snapshot_json").notNull(),
+  generatedBy: text("generated_by").notNull().references(() => users.id), generatedAt: text("generated_at").notNull(), ...timestamps,
+}, (table) => [uniqueIndex("idx_employee_work_reports_scope_period").on(table.projectId, table.employeeUserId, table.periodStart, table.periodEnd, table.reportType), index("idx_employee_work_reports_scope_generated").on(table.organizationId, table.projectId, table.employeeUserId, table.generatedAt)]);
+
+export const workTasks = sqliteTable("work_tasks", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").references(() => projects.id),
+  assigneeUserId: text("assignee_user_id").notNull().references(() => users.id), taskType: text("task_type", { enum: ["video_analysis", "topic", "content", "review", "publish", "custom"] }).notNull(),
+  title: text("title").notNull(), description: text("description"), targetCount: integer("target_count").notNull().default(1), completedCount: integer("completed_count").notNull().default(0),
+  priority: text("priority", { enum: ["low", "normal", "high", "urgent"] }).notNull().default("normal"), status: text("status", { enum: ["pending", "in_progress", "completed", "cancelled"] }).notNull().default("pending"),
+  startsAt: text("starts_at").notNull(), dueAt: text("due_at").notNull(), createdBy: text("created_by").notNull().references(() => users.id), updatedBy: text("updated_by").notNull().references(() => users.id), ...timestamps,
+}, (table) => [index("idx_work_tasks_assignee_due").on(table.organizationId, table.assigneeUserId, table.status, table.dueAt), index("idx_work_tasks_admin_due").on(table.organizationId, table.status, table.dueAt), index("idx_work_tasks_project_type").on(table.organizationId, table.projectId, table.taskType, table.createdAt)]);
+
+export const personalMemos = sqliteTable("personal_memos", {
+  id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").references(() => projects.id),
+  ownerUserId: text("owner_user_id").notNull().references(() => users.id), content: text("content").notNull(),
+  sourceType: text("source_type", { enum: ["manual", "performance_report"] }).notNull().default("manual"), sourceId: text("source_id"), sourceLocator: text("source_locator"),
+  status: text("status", { enum: ["active", "completed", "archived"] }).notNull().default("active"), completedAt: text("completed_at"), ...timestamps,
+}, (table) => [index("idx_personal_memos_owner_status").on(table.organizationId, table.ownerUserId, table.status, table.updatedAt), uniqueIndex("idx_personal_memos_source_once").on(table.ownerUserId, table.sourceType, table.sourceId, table.sourceLocator)]);
 
 export const auditLogs = sqliteTable("audit_logs", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").references(() => projects.id),
