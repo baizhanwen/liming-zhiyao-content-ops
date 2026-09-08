@@ -1,7 +1,7 @@
 import { ensureUser, getD1, getOrganizationAccess } from "../../../db/runtime";
 import { apiError, errorResponse } from "../../../lib/api-response";
 import { readRequestIdentity } from "../../../lib/request-auth";
-import { checkOrganizationQuota } from "../../../lib/operations";
+import { checkOrganizationQuota, getOrganizationCapacity } from "../../../lib/operations";
 
 function organizationIdFrom(request: Request) { return new URL(request.url).searchParams.get("organizationId")?.trim() ?? ""; }
 
@@ -59,10 +59,14 @@ export async function POST(request: Request) {
     const db = getD1();
     const projectId = crypto.randomUUID();
     const now = new Date().toISOString();
-    await db.batch([
-      db.prepare("INSERT INTO projects (id, organization_id, name, client_name, status, service_starts_at, service_ends_at, content_target, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)").bind(projectId, organizationId, name, clientName, payload.serviceStartsAt || null, payload.serviceEndsAt || null, target, user.id, user.id, now, now),
-      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'project.created', 'project', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, projectId, JSON.stringify({ name }), now),
+    const results = await db.batch([
+      db.prepare(`INSERT INTO projects (id, organization_id, name, client_name, status, service_starts_at, service_ends_at, content_target, created_by, updated_by, created_at, updated_at)
+        SELECT ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?
+        WHERE (SELECT COUNT(*) FROM projects WHERE organization_id = ? AND deleted_at IS NULL AND status != 'archived') < ?`)
+        .bind(projectId, organizationId, name, clientName, payload.serviceStartsAt || null, payload.serviceEndsAt || null, target, user.id, user.id, now, now, organizationId, quota.limit),
+      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) SELECT ?, ?, ?, ?, 'project.created', 'project', ?, ?, ? WHERE changes() = 1").bind(crypto.randomUUID(), organizationId, projectId, user.id, projectId, JSON.stringify({ name }), now),
     ]);
+    if (!results[0].meta.changes) return apiError("PROJECT_QUOTA_EXCEEDED", `当前套餐最多保留 ${quota.limit} 个运行中项目。`, 429, { limit: quota.limit });
     return Response.json({ project: { id: projectId, name, client_name: clientName, status: "active", content_target: target, member_count: 0 } }, { status: 201 });
   } catch (error) { return errorResponse(error); }
 }
@@ -77,9 +81,21 @@ export async function PATCH(request: Request) {
     const access = await getOrganizationAccess(identity.authSubject, organizationId);
     if (!access || access.organizationRole !== "admin") return apiError("ADMIN_REQUIRED", "只有公司管理员可以修改项目状态。", 403);
     const user = await ensureUser(identity); const db = getD1(); const now = new Date().toISOString();
-    const result = await db.prepare("UPDATE projects SET status = ?, updated_by = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND deleted_at IS NULL").bind(payload.status, user.id, now, projectId, organizationId).run();
-    if (!result.meta.changes) return apiError("PROJECT_NOT_FOUND", "项目不存在。", 404);
-    await db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'project.status_updated', 'project', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, projectId, JSON.stringify({ status: payload.status }), now).run();
+    const capacity = await getOrganizationCapacity(organizationId, user.id);
+    const results = await db.batch([
+      db.prepare(`UPDATE projects SET status = ?, updated_by = ?, updated_at = ?
+        WHERE id = ? AND organization_id = ? AND deleted_at IS NULL
+          AND (status != 'archived' OR ? = 'archived' OR
+            (SELECT COUNT(*) FROM projects WHERE organization_id = ? AND deleted_at IS NULL AND status != 'archived') < ?)`)
+        .bind(payload.status, user.id, now, projectId, organizationId, payload.status, organizationId, capacity.project_quota),
+      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) SELECT ?, ?, ?, ?, 'project.status_updated', 'project', ?, ?, ? WHERE changes() = 1")
+        .bind(crypto.randomUUID(), organizationId, projectId, user.id, projectId, JSON.stringify({ status: payload.status }), now),
+    ]);
+    if (!results[0].meta.changes) {
+      const existing = await db.prepare("SELECT 1 AS found FROM projects WHERE id = ? AND organization_id = ? AND deleted_at IS NULL").bind(projectId, organizationId).first();
+      if (!existing) return apiError("PROJECT_NOT_FOUND", "项目不存在。", 404);
+      return apiError("PROJECT_QUOTA_EXCEEDED", `当前套餐最多保留 ${capacity.project_quota} 个运行中项目，请先归档其他项目。`, 429, { limit: capacity.project_quota });
+    }
     return Response.json({ project: { id: projectId, status: payload.status, updated_at: now } });
   } catch (error) { return errorResponse(error); }
 }

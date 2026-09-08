@@ -2,8 +2,13 @@
 setlocal
 cd /d "%~dp0"
 
-if not exist "node_modules" (
-  echo [Liming Zhiyao] Dependencies are missing. Run setup-local.bat first.
+if not exist "node_modules\wrangler\bin\wrangler.js" (
+  echo [ERROR] Web dependencies are missing or incomplete. Run setup-local.bat first.
+  pause
+  exit /b 1
+)
+if not exist "node_modules\vinext\package.json" (
+  echo [ERROR] Web dependencies are missing or incomplete. Run setup-local.bat first.
   pause
   exit /b 1
 )

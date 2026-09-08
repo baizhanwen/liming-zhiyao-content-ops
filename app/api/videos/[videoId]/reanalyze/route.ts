@@ -29,10 +29,14 @@ export async function POST(request: Request, context: { params: Promise<{ videoI
     if (!sourceRef) return apiError("SOURCE_UNAVAILABLE", "原始媒体来源不存在，无法重新分析。", 409);
     const transcript = await db.prepare("SELECT id FROM video_transcripts WHERE organization_id = ? AND project_id = ? AND video_id = ? AND source = 'manual' ORDER BY version DESC LIMIT 1").bind(organizationId, projectId, videoId).first<{ id: string }>();
     const analysisProfile = normalizeAnalysisProfile(payload.analysisProfile); const now = new Date().toISOString(); const jobId = crypto.randomUUID();
-    await db.batch([
-      db.prepare("INSERT INTO analysis_jobs (id, organization_id, project_id, video_id, input_transcript_id, source_type, source_ref, idempotency_key, status, analysis_profile, progress, current_stage, retry_count, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 0, '等待按新模式重新分析', 0, ?, ?, ?, ?)").bind(jobId, organizationId, projectId, videoId, transcript?.id ?? null, video.source_type, sourceRef, `reanalyze:${jobId}`, analysisProfile, user.id, user.id, now, now),
-      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'analysis_job.reanalysis_created', 'analysis_job', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, jobId, JSON.stringify({ videoId, analysisProfile, inputTranscriptId: transcript?.id ?? null }), now),
+    const results = await db.batch([
+      db.prepare(`INSERT INTO analysis_jobs (id, organization_id, project_id, video_id, input_transcript_id, source_type, source_ref, idempotency_key, status, analysis_profile, progress, current_stage, retry_count, created_by, updated_by, created_at, updated_at)
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 0, '等待按新模式重新分析', 0, ?, ?, ?, ?
+        WHERE NOT EXISTS (SELECT 1 FROM analysis_jobs WHERE organization_id = ? AND project_id = ? AND video_id = ? AND status IN (${activeStatuses.map(() => "?").join(",")}))
+      `).bind(jobId, organizationId, projectId, videoId, transcript?.id ?? null, video.source_type, sourceRef, `reanalyze:${jobId}`, analysisProfile, user.id, user.id, now, now, organizationId, projectId, videoId, ...activeStatuses),
+      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) SELECT ?, ?, ?, ?, 'analysis_job.reanalysis_created', 'analysis_job', ?, ?, ? WHERE EXISTS (SELECT 1 FROM analysis_jobs WHERE id = ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, jobId, JSON.stringify({ videoId, analysisProfile, inputTranscriptId: transcript?.id ?? null }), now, jobId),
     ]);
+    if (!results[0].meta.changes) return apiError("ANALYSIS_ALREADY_RUNNING", "其他成员已启动该视频的分析，请刷新查看进度。", 409);
     return Response.json({ job: { id: jobId, video_id: videoId, status: "pending", analysis_profile: analysisProfile, progress: 0, current_stage: "等待按新模式重新分析", retry_count: 0, created_at: now, updated_at: now } }, { status: 201 });
   } catch (error) { return errorResponse(error); }
 }

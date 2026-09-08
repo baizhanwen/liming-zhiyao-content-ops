@@ -36,6 +36,10 @@ if (Test-Path -LiteralPath $python) {
 
 Write-Host ""
 Write-Host "[2/7] Native runtime"
+$configuredFfmpeg = $env:ANALYZER_FFMPEG
+$configuredFfprobe = $env:ANALYZER_FFPROBE
+Remove-Item Env:ANALYZER_FFMPEG -ErrorAction SilentlyContinue
+Remove-Item Env:ANALYZER_FFPROBE -ErrorAction SilentlyContinue
 $vcInstalled = $false
 foreach ($key in @("HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64", "HKLM:\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\x64")) {
     try {
@@ -44,9 +48,15 @@ foreach ($key in @("HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64",
     } catch {}
 }
 Write-Host $(if ($vcInstalled) { "[OK] Microsoft Visual C++ x64 runtime" } else { "[ERROR] Microsoft Visual C++ x64 runtime is missing" })
-foreach ($command in @("ffmpeg", "ffprobe")) {
-    $found = Get-Command $command -ErrorAction SilentlyContinue
-    Write-Host $(if ($found) { "[OK] $command - $($found.Source)" } else { "[NOTICE] $command was not found on PATH" })
+try {
+    . (Join-Path $PSScriptRoot "analyzer-media-runtime.ps1")
+    $mediaRuntime = Import-AnalyzerMediaRuntime $projectRoot
+    Write-Host "[OK] ffmpeg - $($mediaRuntime.Ffmpeg)"
+    Write-Host "[OK] ffprobe - $($mediaRuntime.Ffprobe)"
+}
+catch { Write-Host "[ERROR] $($_.Exception.Message)" }
+if ($configuredFfmpeg -or $configuredFfprobe) {
+    Write-Host "[NOTICE] Host-level ANALYZER_FFMPEG/ANALYZER_FFPROBE values are ignored; application configuration is authoritative."
 }
 
 Write-Host ""

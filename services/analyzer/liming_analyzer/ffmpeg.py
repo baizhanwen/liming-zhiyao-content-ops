@@ -33,8 +33,15 @@ class FfmpegMediaProcessor:
                 timeout=self.timeout_seconds,
                 check=False,
             )
+        except FileNotFoundError as error:
+            executable = str(command[0]) if command else "media executable"
+            raise MediaProcessingError(
+                f"{executable} executable was not found; run tools\\setup-analyzer.bat "
+                "to repair FFmpeg and ffprobe"
+            ) from error
         except (OSError, subprocess.TimeoutExpired) as error:
-            raise MediaProcessingError(str(error)) from error
+            executable = str(command[0]) if command else "media executable"
+            raise MediaProcessingError(f"{executable} media processing failed: {error}") from error
         if result.returncode != 0:
             message = (result.stderr or result.stdout or "media command failed").strip()[-2000:]
             raise MediaProcessingError(message)

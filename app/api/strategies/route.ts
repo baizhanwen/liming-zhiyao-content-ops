@@ -1,13 +1,46 @@
-import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess } from "../../../db/runtime";
+import { canWriteProjectAccess, ensureUser, getD1, getOrganizationAccess, getProjectAccess } from "../../../db/runtime";
 import { apiError, errorResponse } from "../../../lib/api-response";
 import { canManageProjectKnowledge, cleanStringList, parseJsonValue } from "../../../lib/content-ops";
 import { readRequestIdentity } from "../../../lib/request-auth";
 
 export async function GET(request: Request) {
   const identity = await readRequestIdentity(request); if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再访问内容策略。", 401);
-  const url = new URL(request.url); const organizationId = url.searchParams.get("organizationId")?.trim() ?? ""; const projectId = url.searchParams.get("projectId")?.trim() ?? "";
-  if (!organizationId || !projectId) return apiError("PROJECT_SCOPE_REQUIRED", "缺少公司或项目范围。", 400);
+  const url = new URL(request.url); const organizationId = url.searchParams.get("organizationId")?.trim() ?? ""; const projectId = url.searchParams.get("projectId")?.trim() ?? ""; const scope = url.searchParams.get("scope")?.trim() ?? "project";
+  if (!organizationId) return apiError("ORGANIZATION_REQUIRED", "缺少公司范围。", 400);
   try {
+    if (scope === "organization") {
+      const organizationAccess = await getOrganizationAccess(identity.authSubject, organizationId);
+      if (!organizationAccess || organizationAccess.organizationRole !== "admin") return apiError("ADMIN_REQUIRED", "只有公司管理员可以查看全部企业空间的内容策略。", 403);
+      const rows = await getD1().prepare(`
+        SELECT p.id AS project_id, p.name AS project_name, p.status AS project_status,
+               s.id AS strategy_id, s.version AS strategy_version, s.name AS strategy_name, s.status AS strategy_status,
+               s.positioning, s.target_audience, s.pain_points_json, s.pillars_json, s.objectives_json,
+               s.cadence, s.conversion_path, s.effective_from, s.updated_at
+        FROM projects p
+        LEFT JOIN content_strategies s ON s.organization_id = p.organization_id AND s.project_id = p.id
+        WHERE p.organization_id = ? AND p.deleted_at IS NULL
+        ORDER BY CASE p.status WHEN 'active' THEN 0 WHEN 'draft' THEN 1 WHEN 'paused' THEN 2 ELSE 3 END,
+                 p.created_at DESC, s.version DESC
+        LIMIT 1000
+      `).bind(organizationId).all<Record<string, unknown>>();
+      const spaces = new Map<string, { id: string; name: string; status: string; strategies: Record<string, unknown>[] }>();
+      for (const row of rows.results) {
+        const id = String(row.project_id); let space = spaces.get(id);
+        if (!space) { space = { id, name: String(row.project_name), status: String(row.project_status), strategies: [] }; spaces.set(id, space); }
+        if (!row.strategy_id) continue;
+        space.strategies.push({
+          id: String(row.strategy_id), version: Number(row.strategy_version), name: String(row.strategy_name), status: String(row.strategy_status),
+          positioning: String(row.positioning || ""), target_audience: String(row.target_audience || ""),
+          pain_points: parseJsonValue(typeof row.pain_points_json === "string" ? row.pain_points_json : null) ?? [],
+          pillars: parseJsonValue(typeof row.pillars_json === "string" ? row.pillars_json : null) ?? [],
+          objectives: parseJsonValue(typeof row.objectives_json === "string" ? row.objectives_json : null) ?? [],
+          cadence: row.cadence ?? null, conversion_path: row.conversion_path ?? null,
+          effective_from: row.effective_from ?? null, updated_at: row.updated_at,
+        });
+      }
+      return Response.json({ scope: "organization", organizationRole: organizationAccess.organizationRole, spaces: Array.from(spaces.values()) });
+    }
+    if (!projectId) return apiError("PROJECT_SCOPE_REQUIRED", "缺少项目范围。", 400);
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId); if (!access) return apiError("ACCESS_DENIED", "无权访问该项目的内容策略。", 403);
     const rows = await getD1().prepare("SELECT id, version, name, status, positioning, persona, target_audience, pain_points_json, pillars_json, topic_mix_json, style_notes, cadence, conversion_path, objectives_json, effective_from, effective_to, created_at, updated_at FROM content_strategies WHERE organization_id = ? AND project_id = ? ORDER BY version DESC LIMIT 50").bind(organizationId, projectId).all();
     return Response.json({ strategies: rows.results.map((row) => ({ ...row, pain_points: parseJsonValue(String(row.pain_points_json)), pillars: parseJsonValue(String(row.pillars_json)), topic_mix: parseJsonValue(String(row.topic_mix_json)), objectives: parseJsonValue(String(row.objectives_json)), pain_points_json: undefined, pillars_json: undefined, topic_mix_json: undefined, objectives_json: undefined })), canWrite: canWriteProjectAccess(access), canManage: canManageProjectKnowledge(access) });

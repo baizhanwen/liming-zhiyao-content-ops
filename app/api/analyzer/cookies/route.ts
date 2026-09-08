@@ -11,7 +11,7 @@ export async function POST(request: Request) {
     const projectId = request.headers.get("x-project-id")?.trim() ?? "";
     if (!organizationId || !projectId) return apiError("PROJECT_SCOPE_REQUIRED", "缺少公司或项目范围。", 400);
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
-    if (!access || access.organizationRole !== "admin") return apiError("ADMIN_REQUIRED", "只有公司管理员可以更新抖音 Cookie。", 403);
+    if (!access) return apiError("ACCESS_DENIED", "只有公司管理员或已分配到当前企业空间的员工可以更新抖音 Cookie。", 403);
 
     const form = await request.formData(); const file = form.get("file");
     if (!(file instanceof File)) return apiError("COOKIE_FILE_REQUIRED", "请选择从抖音网站导出的 cookies.txt。", 400);
@@ -39,7 +39,7 @@ export async function DELETE(request: Request) {
     const projectId = request.headers.get("x-project-id")?.trim() ?? "";
     if (!organizationId || !projectId) return apiError("PROJECT_SCOPE_REQUIRED", "缺少公司或项目范围。", 400);
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
-    if (!access || access.organizationRole !== "admin") return apiError("ADMIN_REQUIRED", "只有公司管理员可以清除抖音 Cookie。", 403);
+    if (!access) return apiError("ACCESS_DENIED", "只有公司管理员或已分配到当前企业空间的员工可以清除抖音 Cookie。", 403);
 
     const user = await ensureUser(identity); const now = new Date().toISOString(); const key = douyinCookieObjectKey(organizationId);
     const existed = Boolean(await getMediaBucket().head(key));

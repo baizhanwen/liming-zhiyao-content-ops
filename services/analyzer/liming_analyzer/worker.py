@@ -7,6 +7,7 @@ import uuid
 from collections.abc import Callable
 
 from .api_client import AnalysisResult, AnalyzerApiClient, AnalyzerApiError, ClaimedJob, Processor
+from .source_errors import SourceDownloadError
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,8 @@ def _is_transient_api_error(error: AnalyzerApiError) -> bool:
 
 
 def classify_worker_error(error: Exception) -> tuple[str, str]:
+    if isinstance(error, SourceDownloadError):
+        return error.code, str(error)
     message = str(error).strip() or "分析失败"
     lowered = message.lower()
     if "cookie" in lowered:
@@ -50,6 +53,7 @@ def process_once(client: AnalyzerApiClient, processor: Processor) -> bool:
     if job is None:
         return False
     current = job
+    logger.info("Analysis task claimed: job=%s source=%s", job.id, job.source_type)
 
     def heartbeat(status: str, progress: int, stage: str) -> ClaimedJob:
         nonlocal current
@@ -61,15 +65,31 @@ def process_once(client: AnalyzerApiClient, processor: Processor) -> bool:
         result: AnalysisResult = processor(job, heartbeat)
     except Exception as error:  # noqa: BLE001 - worker boundary converts failures into job state
         error_code, error_message = classify_worker_error(error)
+        logger.warning("Analysis task failed: job=%s code=%s progress=%s", job.id, error_code, current.progress)
         try:
             client.fail(current, result_key, error_code, error_message[:1000], "分析失败", current.progress)
         except AnalyzerApiError as failure_error:
             if failure_error.status != 409:
                 raise
         return True
-    # Transport or lease errors during completion must remain retryable; they are not
-    # evidence that media analysis itself failed.
-    client.complete(current, result_key, result)
+    # Reuse the result key after a lost response: the server may already have
+    # committed the report. Do not pay for another model run to recover the ACK.
+    for attempt in range(3):
+        try:
+            client.complete(current, result_key, result)
+            logger.info("Analysis result accepted: job=%s", job.id)
+            break
+        except AnalyzerApiError as error:
+            if error.status == 409 or (error.status == 404 and error.code == "JOB_NOT_FOUND"):
+                logger.info("Job %s changed before completion; continuing the queue (%s).", job.id, error.code)
+                return True
+            if not _is_transient_api_error(error) or attempt == 2:
+                raise
+        except (urllib.error.URLError, OSError):
+            if attempt == 2:
+                raise
+        logger.warning("Retrying completion for job %s with the same result key.", job.id)
+        time.sleep(attempt + 1)
     return True
 
 
@@ -79,6 +99,11 @@ def run_forever(client: AnalyzerApiClient, processor: Processor, idle_seconds: f
         try:
             processed = process_once(client, processor)
         except AnalyzerApiError as error:
+            if error.status == 409 and error.code in {"JOB_SOURCE_UNAVAILABLE", "JOB_TRANSCRIPT_UNAVAILABLE", "JOB_TRANSCRIPT_INVALID"}:
+                # The server has marked this one job failed. Other users' work
+                # must not require a worker/model restart.
+                logger.warning("Skipping unavailable job (%s).", error.code)
+                continue
             if not _is_transient_api_error(error):
                 raise
             logger.warning("Analyzer API is temporarily unavailable (%s). Retrying.", error)

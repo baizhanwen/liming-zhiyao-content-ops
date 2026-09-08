@@ -1,5 +1,15 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import path from "node:path";
+
+const projectRoot = fileURLToPath(new URL("..", import.meta.url));
+// workerd's Windows SQLite backend still observes MAX_PATH even when Node
+// can create longer paths. Fail clearly before opening an unusable database.
+const sqlitePath = path.join(projectRoot, ".wrangler/state/v3/d1/miniflare-D1DatabaseObject", `${"0".repeat(64)}.sqlite-wal`);
+if (process.platform === "win32" && sqlitePath.length >= 260) {
+  console.error("[ERROR] Installation path is too long for the local database. Move the complete project to a shorter path, such as C:\\LimingZhiyao, then run setup-local.bat again. Existing data must remain with the project folder.");
+  process.exit(1);
+}
 
 const wranglerCli = fileURLToPath(
   new URL("../node_modules/wrangler/bin/wrangler.js", import.meta.url),

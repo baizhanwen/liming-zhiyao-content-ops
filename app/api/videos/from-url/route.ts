@@ -6,6 +6,7 @@ import { checkOrganizationQuota } from "../../../../lib/operations";
 import { extractDouyinUrl } from "../../../../lib/douyin-url";
 import { normalizeAnalysisProfile } from "../../../../lib/analysis-profile";
 import { upsertProjectVideoReference } from "../../../../lib/video-library";
+import { isAnalysisSubmissionConflict } from "../../../../lib/analysis-submission-errors";
 
 export async function POST(request: Request) {
   const identity = await readRequestIdentity(request);
@@ -54,5 +55,8 @@ export async function POST(request: Request) {
       db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'video.url_submitted', 'video', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, videoId, JSON.stringify({ sourceUrl, analysisProfile }), now),
     ]);
     return Response.json({ video: { id: videoId, platform: "douyin", source_type: "url", source_url: sourceUrl, title: payload.title?.trim() || null, status: "pending", created_at: now }, job: { id: jobId, video_id: videoId, status: "pending", analysis_profile: analysisProfile, progress: 0, current_stage: "等待进入分析队列", retry_count: 0, created_at: now, updated_at: now } }, { status: 202 });
-  } catch (error) { return errorResponse(error); }
+  } catch (error) {
+    if (isAnalysisSubmissionConflict(error)) return apiError("VIDEO_SUBMISSION_CONFLICT", "相同素材已被其他成员提交。本次没有新建分析任务，请刷新列表；若素材在其他项目，再次提交即可复用。", 409);
+    return errorResponse(error);
+  }
 }

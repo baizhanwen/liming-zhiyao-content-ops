@@ -28,6 +28,19 @@ _AUTHENTICATED_COOKIE_NAMES = frozenset({
 })
 
 
+class _BrowserProbeLogger:
+    """The periodic probe returns its state; it is not a failed video task."""
+
+    def debug(self, _message: str) -> None:
+        pass
+
+    def warning(self, _message: str) -> None:
+        pass
+
+    def error(self, _message: str) -> None:
+        pass
+
+
 def inspect_browser_authentication(
     browser: str,
     factory: Callable[[Mapping[str, Any]], Any] | None = None,
@@ -42,16 +55,16 @@ def inspect_browser_authentication(
         from yt_dlp import YoutubeDL
         factory = YoutubeDL
     try:
-        with factory({"cookiesfrombrowser": browser_spec, "quiet": True, "no_warnings": True}) as downloader:
+        with factory({"cookiesfrombrowser": browser_spec, "quiet": True, "no_warnings": True, "logger": _BrowserProbeLogger()}) as downloader:
             cookies = [cookie for cookie in downloader.cookiejar if is_douyin_cookie(cookie)]
     except Exception as error:
         message = str(error)
         if "Could not copy Chrome cookie database" in message or "Permission denied" in message:
-            message = "Edge 正在占用登录信息；关闭其他 Edge 窗口后会自动重试，或上传备用 Cookie。"
+            message = "分析主机 Edge 正在占用登录信息；可改为从视频分析页面上传 Cookie。"
         elif "DPAPI" in message or "app-bound" in message.lower():
-            message = "浏览器登录信息受系统保护，暂时无法读取；可上传备用 Cookie。"
+            message = "分析主机浏览器登录信息受系统保护；可改为从视频分析页面上传 Cookie。"
         else:
-            message = "暂时无法读取后台浏览器登录状态。"
+            message = "暂时无法读取分析主机浏览器登录状态。"
         return {"status": "unavailable", "browser": browser_name, "checkedAt": checked_at, "message": message}
     authenticated = any(
         cookie.name.lower() in _AUTHENTICATED_COOKIE_NAMES and bool(cookie.value)

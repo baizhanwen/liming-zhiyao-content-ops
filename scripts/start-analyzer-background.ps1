@@ -29,6 +29,10 @@ if (-not (Test-Path -LiteralPath (Join-Path $projectRoot ".dev.vars"))) {
     exit 2
 }
 
+# The application configuration is authoritative. Do not inherit stale or
+# concatenated ANALYZER_FFMPEG/ANALYZER_FFPROBE values from the host account.
+Remove-Item Env:ANALYZER_FFMPEG -ErrorAction SilentlyContinue
+Remove-Item Env:ANALYZER_FFPROBE -ErrorAction SilentlyContinue
 Get-Content -Encoding UTF8 -LiteralPath (Join-Path $projectRoot ".dev.vars") | ForEach-Object {
     if ($_ -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$') {
         $name = $matches[1]
@@ -41,6 +45,15 @@ Get-Content -Encoding UTF8 -LiteralPath (Join-Path $projectRoot ".dev.vars") | F
     }
 }
 if ($BaseUrl) { $env:ANALYZER_BASE_URL = $BaseUrl.TrimEnd('/') }
+
+try {
+    . (Join-Path $PSScriptRoot "analyzer-media-runtime.ps1")
+    $mediaRuntime = Import-AnalyzerMediaRuntime $projectRoot
+}
+catch {
+    Write-AnalyzerStartError $_.Exception.Message
+    exit 2
+}
 
 $required = @(
     "ANALYZER_SERVICE_TOKEN", "ANALYZER_BASE_URL", "ANALYZER_WORKER_ID",

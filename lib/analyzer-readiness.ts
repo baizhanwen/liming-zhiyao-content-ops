@@ -36,7 +36,7 @@ export async function readAnalyzerReadiness(organizationId: string) {
   const uploadedCookieConfigured = Boolean(cookieSnapshot);
   const configuredCookieFile = Boolean(runtime.ANALYZER_YTDLP_COOKIE_FILE?.trim());
   const cookieFileConfigured = uploadedCookieConfigured || configuredCookieFile;
-  const publicLinkAuthenticationMode = browserLoginDetected ? "browser" as const : cookieFileConfigured ? "cookie_file" as const : "none" as const;
+  const publicLinkAuthenticationMode = cookieFileConfigured ? "cookie_file" as const : browserLoginDetected ? "browser" as const : "none" as const;
 
   return {
     checkedAt: new Date(now).toISOString(),
@@ -59,6 +59,6 @@ export function analyzerReadinessError(readiness: Awaited<ReturnType<typeof read
   if (!readiness.credentialConfigured) return { code: "ANALYZER_CREDENTIAL_REQUIRED", message: "分析服务凭据尚未配置。" };
   if (!readiness.modelConfigured) return { code: "ANALYZER_MODEL_REQUIRED", message: "结构分析模型尚未配置。" };
   if (!readiness.analyzerOnline) return { code: "ANALYZER_OFFLINE", message: "后台分析服务尚未就绪，请稍候再试。" };
-  if (requireCookie && !readiness.publicLinkCookieConfigured) return { code: "DOUYIN_LOGIN_REQUIRED", message: "请先在后台浏览器登录抖音，或上传备用 Cookie。" };
+  if (requireCookie && !readiness.publicLinkCookieConfigured) return { code: "DOUYIN_LOGIN_REQUIRED", message: "请先从视频分析页面上传抖音 Cookie；本地模式也可使用分析主机浏览器登录态。" };
   return null;
 }

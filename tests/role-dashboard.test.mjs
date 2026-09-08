@@ -3,9 +3,10 @@ import test from "node:test";
 import { readFile } from "node:fs/promises";
 
 test("dashboard separates administrator operations from employee work", async () => {
-  const [dashboard, route] = await Promise.all([
+  const [dashboard, route, styles] = await Promise.all([
     readFile(new URL("../components/DashboardWorkspace.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/dashboard/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
   assert.match(dashboard, /运营总览/);
@@ -15,6 +16,8 @@ test("dashboard separates administrator operations from employee work", async ()
   assert.match(dashboard, /团队负载/);
   assert.match(dashboard, /我的内容任务/);
   assert.match(dashboard, /我的备忘/);
+  assert.match(styles, /\.dashboard-command-strip \{[^}]*grid-auto-columns: minmax\(0, 1fr\)/);
+  assert.doesNotMatch(styles, /\.dashboard-command-strip \{[^}]*repeat\(5/);
 
   assert.match(route, /mode: isAdmin \? "admin" : "employee"/);
   assert.match(route, /j\.created_by = \?/);

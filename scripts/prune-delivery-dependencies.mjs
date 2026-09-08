@@ -1,7 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-const [packageRoot, includeVideo, includeWechat, includeInsights] = process.argv.slice(2);
+const [packageRoot, , includeWechat, includeInsights] = process.argv.slice(2);
 if (!packageRoot) throw new Error("Package root is required.");
 
 const packagePath = path.join(packageRoot, "package.json");
@@ -11,7 +11,7 @@ const [packageJson, packageLock] = await Promise.all([
   readFile(lockPath, "utf8").then(JSON.parse),
 ]);
 
-for (const script of ["typecheck", "test", "lint", "db:generate"]) {
+for (const script of ["typecheck", "test", "test:lan", "lint", "db:generate"]) {
   delete packageJson.scripts?.[script];
 }
 
@@ -26,9 +26,7 @@ if (includeWechat !== "true") {
   delete packageLock.packages?.["node_modules/html-to-image"];
 }
 
-if (includeVideo !== "true") {
-  removeDependency("fflate");
-}
+// fflate also powers the core Excel knowledge importer in every plan.
 
 if (includeInsights !== "true") {
   removeDependency("echarts");

@@ -74,6 +74,16 @@ class FfmpegTests(unittest.TestCase):
             FfmpegMediaProcessor(runner=runner).probe(Path("missing.mp4"))
         self.assertLessEqual(len(str(raised.exception)), 2000)
 
+    def test_missing_binary_is_reported_as_an_actionable_media_error(self):
+        def runner(*_args, **_kwargs):
+            raise FileNotFoundError(2, "The system cannot find the file specified")
+
+        with self.assertRaisesRegex(
+            MediaProcessingError,
+            r"ffprobe executable was not found.*setup-analyzer\.bat",
+        ):
+            FfmpegMediaProcessor(runner=runner).probe(Path("source.mp4"))
+
 
 if __name__ == "__main__":
     unittest.main()

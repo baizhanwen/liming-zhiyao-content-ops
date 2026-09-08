@@ -32,7 +32,7 @@ test("commercial delivery disables localhost bypass and provides guarded first-r
   assert.match(firstRun, /FIRST_RUN_SETUP_CODE_HASH/);
   assert.match(firstRun, /hashesEqual/);
   assert.match(firstRun, /SELECT 1 AS configured FROM organizations LIMIT 1/);
-  assert.match(firstRun, /!organization \|\| setupCompleted\?\.value !== "1"/);
+  assert.match(firstRun, /!organization && setupCompleted\?\.value !== "1"/);
   assert.match(firstRun, /installation\.initialized/);
   assert.match(route, /isLoopbackUrl\(request\.url\)/);
   assert.match(route, /FIRST_RUN_LOCAL_ONLY/);

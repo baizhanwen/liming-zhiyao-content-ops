@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 import urllib.error
 import urllib.request
@@ -11,6 +12,8 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     from .adapters import SourceMetadata
+
+logger = logging.getLogger(__name__)
 
 
 class AnalyzerApiError(RuntimeError):
@@ -94,7 +97,11 @@ class AnalyzerApiClient:
         try:
             status = dict(self._browser_auth_probe())
         except Exception:
-            status = {"status": "unavailable", "message": "暂时无法检测后台浏览器登录状态。"}
+            status = {"status": "unavailable", "message": "暂时无法检测分析主机浏览器登录状态。"}
+        previous_status = self._last_browser_auth.get("status") if self._last_browser_auth else None
+        if status.get("status") != previous_status:
+            safe_status = status.get("status") if status.get("status") in {"logged_in", "not_logged_in", "unavailable", "disabled", "unknown"} else "unknown"
+            logger.info("Browser probe state changed: status=%s", safe_status)
         self._last_browser_auth = status
         self._last_browser_auth_at = now
         return status

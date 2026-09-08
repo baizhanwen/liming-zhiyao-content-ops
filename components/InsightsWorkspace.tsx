@@ -290,7 +290,7 @@ function ReportsView(props: ReportsViewProps) {
       <div><span>报告对象</span><h2>{mode === "enterprise" ? "企业运营报告" : "员工工作报告"}</h2><p>{mode === "enterprise" ? "判断企业空间的内容经营结果、问题与下期动作。" : "按真实操作与成果归属，复盘员工本期完成了什么、产出了什么、哪些内容获得结果。"}</p></div>
       <nav aria-label="报告类型"><button type="button" className={mode === "enterprise" ? "active" : ""} onClick={() => setMode("enterprise")}><Building2 aria-hidden="true" /><span><strong>企业运营报告</strong><small>经营结果与策略诊断</small></span></button><button type="button" className={mode === "employee" ? "active" : ""} onClick={() => setMode("employee")}><UserRound aria-hidden="true" /><span><strong>员工工作报告</strong><small>工作记录与成果归因</small></span></button></nav>
     </section>
-    {mode === "enterprise" ? <EnterpriseReportsView {...props} /> : <EmployeeReportsView organizationId={props.organizationId} projectId={props.projectId} />}
+    {mode === "enterprise" ? <EnterpriseReportsView key={`${props.organizationId}:${props.projectId}:${props.selected?.id ?? ""}`} {...props} /> : <EmployeeReportsView key={`${props.organizationId}:${props.projectId}`} organizationId={props.organizationId} projectId={props.projectId} />}
   </div>;
 }
 
@@ -298,22 +298,25 @@ function EnterpriseReportsView({ reports, selected, organizationId, projectId, c
   const [savedMemoLocators, setSavedMemoLocators] = useState<Set<string>>(new Set());
   const [memoBusy, setMemoBusy] = useState("");
   const [memoNotice, setMemoNotice] = useState("");
+  const selectedId = selected?.id;
   useEffect(() => {
     let active = true;
-    if (!selected || !organizationId) { setSavedMemoLocators(new Set()); return () => { active = false; }; }
-    void scopedFetch(`/api/personal-memos?organizationId=${encodeURIComponent(organizationId)}&sourceType=performance_report&sourceId=${encodeURIComponent(selected.id)}`).then(async (response) => {
+    if (!selectedId || !organizationId) return;
+    void scopedFetch(`/api/personal-memos?organizationId=${encodeURIComponent(organizationId)}&sourceType=performance_report&sourceId=${encodeURIComponent(selectedId)}`).then(async (response) => {
       if (!response.ok) return;
       const body = await response.json() as { memos: Array<{ source_locator: string | null }> };
       if (active) setSavedMemoLocators(new Set(body.memos.map((memo) => memo.source_locator).filter((value): value is string => Boolean(value))));
-    });
+    }).catch(() => { if (active) setMemoNotice("已保存备忘暂时无法读取，请稍后重试。"); });
     return () => { active = false; };
-  }, [organizationId, selected?.id]);
+  }, [organizationId, selectedId]);
   async function saveRecommendation(item: string, index: number) {
     if (!selected) return; const locator = `recommendation:${index}`; setMemoBusy(locator); setMemoNotice("");
-    const response = await scopedFetch("/api/personal-memos", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, content: item, sourceType: "performance_report", sourceId: selected.id, sourceLocator: locator }) });
-    if (!response.ok) setMemoNotice(await readError(response));
-    else { setSavedMemoLocators((current) => new Set([...current, locator])); setMemoNotice("已保存到你的工作台备忘。"); }
-    setMemoBusy("");
+    try {
+      const response = await scopedFetch("/api/personal-memos", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, content: item, sourceType: "performance_report", sourceId: selected.id, sourceLocator: locator }) });
+      if (!response.ok) setMemoNotice(await readError(response));
+      else { setSavedMemoLocators((current) => new Set([...current, locator])); setMemoNotice("已保存到你的工作台备忘。"); }
+    } catch { setMemoNotice("备忘保存失败，请检查网络后重试。"); }
+    finally { setMemoBusy(""); }
   }
   const highlights = selected ? JSON.parse(selected.highlights_json) as string[] : [];
   const recommendations = selected ? JSON.parse(selected.recommendations_json) as string[] : [];
@@ -342,13 +345,23 @@ function EnterpriseReportsView({ reports, selected, organizationId, projectId, c
 function EmployeeReportsView({ organizationId, projectId }: { organizationId: string; projectId: string }) {
   const [employees, setEmployees] = useState<EmployeeOption[]>([]); const [employeeUserId, setEmployeeUserId] = useState(""); const [reports, setReports] = useState<EmployeeReport[]>([]); const [selectedReportId, setSelectedReportId] = useState("");
   const [canGenerate, setCanGenerate] = useState(false); const [loading, setLoading] = useState(true); const [busy, setBusy] = useState(false); const [error, setError] = useState("");
-  const loadReports = useCallback(async (targetUserId = "") => {
+  const fetchReports = useCallback(async (targetUserId = "", signal?: AbortSignal) => {
     const query = new URLSearchParams({ organizationId, projectId }); if (targetUserId) query.set("employeeUserId", targetUserId);
-    const response = await scopedFetch(`/api/employee-reports?${query.toString()}`); if (!response.ok) throw new Error(await readError(response));
+    const response = await scopedFetch(`/api/employee-reports?${query.toString()}`, { signal }); if (!response.ok) throw new Error(await readError(response));
     const body = await response.json() as { reports: EmployeeReport[]; employees: EmployeeOption[]; selectedEmployeeId: string; canGenerate: boolean };
-    setEmployees(body.employees); setEmployeeUserId(body.selectedEmployeeId); setReports(body.reports); setCanGenerate(body.canGenerate); setSelectedReportId((current) => body.reports.some((report) => report.id === current) ? current : body.reports[0]?.id || "");
+    return body;
   }, [organizationId, projectId]);
-  useEffect(() => { let active = true; setLoading(true); setError(""); void loadReports().catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : "员工报告加载失败"); }).finally(() => { if (active) setLoading(false); }); return () => { active = false; }; }, [loadReports]);
+  const applyReports = useCallback((body: { reports: EmployeeReport[]; employees: EmployeeOption[]; selectedEmployeeId: string; canGenerate: boolean }) => {
+    setEmployees(body.employees); setEmployeeUserId(body.selectedEmployeeId); setReports(body.reports); setCanGenerate(body.canGenerate); setSelectedReportId((current) => body.reports.some((report) => report.id === current) ? current : body.reports[0]?.id || "");
+  }, []);
+  const loadReports = useCallback(async (targetUserId = "") => {
+    applyReports(await fetchReports(targetUserId));
+  }, [fetchReports, applyReports]);
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetchReports("", controller.signal).then((body) => { if (!controller.signal.aborted) applyReports(body); }).catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "员工报告加载失败"); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [fetchReports, applyReports]);
   async function selectEmployee(value: string) { setLoading(true); setError(""); try { await loadReports(value); } catch (reason) { setError(reason instanceof Error ? reason.message : "员工报告加载失败"); } finally { setLoading(false); } }
   async function generate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const form = new FormData(event.currentTarget); setBusy(true); setError("");

@@ -26,6 +26,22 @@ class FakeTransport:
 
 
 class ApiClientTests(unittest.TestCase):
+    def test_browser_probe_only_logs_state_changes_not_every_poll(self):
+        states = iter([
+            {"status": "unavailable", "message": "private diagnostic"},
+            {"status": "unavailable", "message": "private diagnostic"},
+            {"status": "logged_in", "message": "private diagnostic"},
+        ])
+        client = AnalyzerApiClient("https://example.test", "secret", "worker-01", browser_auth_probe=lambda: next(states))
+        with patch("liming_analyzer.api_client.time.monotonic", side_effect=[100, 200, 300]):
+            with self.assertLogs("liming_analyzer.api_client", level="INFO") as captured:
+                for _ in range(3):
+                    client._browser_auth()
+        self.assertEqual(len(captured.output), 2)
+        self.assertIn("status=unavailable", captured.output[0])
+        self.assertIn("status=logged_in", captured.output[1])
+        self.assertNotIn("private diagnostic", " ".join(captured.output))
+
     def test_empty_queue_returns_none_and_sends_service_token(self):
         transport = FakeTransport([(204, None)])
         client = AnalyzerApiClient("https://example.test", "secret", "worker-01", transport)

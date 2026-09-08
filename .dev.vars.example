@@ -1,68 +1,50 @@
-# Local browser identity. It is accepted only on localhost/127.0.0.1 and the
-# Vite server is bound to 127.0.0.1, so it is not a public login mechanism.
+# 本地登录。仅 localhost / 127.0.0.1 生效。
 LOCAL_DEV_AUTH=1
-DELIVERY_MODE=0
-FIRST_RUN_SETUP_CODE=
-FIRST_RUN_SETUP_CODE_HASH=
 LOCAL_DEV_USER_ID=local-owner
 LOCAL_DEV_USER_EMAIL=local-owner@localhost
 LOCAL_DEV_USER_NAME=本地管理员
-# Accept platform-provided identity headers only behind a trusted proxy that
-# strips client-supplied copies. Keep disabled for local and LAN operation.
+
+# 本地和局域网运行必须保持为 0；仅可信反向代理环境才可设为 1。
 TRUST_FORWARDED_IDENTITY=0
 
-# P0 safety switch. Unset/0 keeps generation available for ordinary members in
-# development and test. Set to 1 explicitly in production to freeze generation.
-GENERATION_P0_FREEZE=0
-BUILD_ID=codex-gate6-20260820
-DATABASE_MIGRATION_VERSION=0028_project_assistant_memory_chat
-ANALYSIS_CONTRACT_VERSION=analysis.v7
+# 客户交付首次开通配置。普通本地使用保持默认，不需要填写。
+DELIVERY_MODE=0
+FIRST_RUN_SETUP_CODE=
+FIRST_RUN_SETUP_CODE_HASH=
 
-# The Python analyzer must use the same token. Change this before enabling the
-# analyzer on a shared machine.
+# 网页与本地视频分析服务之间的通信配置。
 ANALYZER_SERVICE_TOKEN=local-change-me-before-using-analyzer
 ANALYZER_BASE_URL=http://127.0.0.1:3000
 ANALYZER_WORKER_ID=analyzer-01
-# Browser fallback. Chromium browsers on Windows may block direct decryption.
-# Optional profile syntax: edge:Default. Firefox is the reliable direct option.
-ANALYZER_YTDLP_COOKIES_FROM_BROWSER=edge
-# Preferred on Windows: import a Douyin-only Netscape file with the refresh script.
-ANALYZER_YTDLP_COOKIE_FILE=.local/douyin-cookies.txt
 
-# OpenAI-compatible analysis provider. Content generation reuses these values
-# unless the optional CONTENT_MODEL_* overrides below are filled in.
-CONTENT_MODEL_PROVIDER=deepseek
-CONTENT_MODEL_BASE_URL=https://api.deepseek.com/v1
-CONTENT_MODEL_NAME=
-# Optional allowlists. Leave empty to preserve the current configured provider/model.
-CONTENT_MODEL_ALLOWED_PROVIDERS=
-CONTENT_MODEL_ALLOWED_MODELS=
-CONTENT_MODEL_API_KEY=
+# 留空时自动使用安装程序记录的 FFmpeg/ffprobe，避免继承 Windows 中同名的错误环境变量。
+ANALYZER_FFMPEG=
+ANALYZER_FFPROBE=
+
+# 视频分析使用的 OpenAI 兼容模型。要使用视频分析时填写模型名和 API Key。
 ANALYZER_LLM_PROVIDER=deepseek
 ANALYZER_LLM_BASE_URL=https://api.deepseek.com/v1
 ANALYZER_LLM_MODEL=
 ANALYZER_LLM_API_KEY=
 
-# MiniMax Token Plan visual understanding through the official MCP understand_image tool.
-# The Key must come from Token Plan and begin with sk-cp; OCR stays separate.
+# 内容生成默认复用 ANALYZER_LLM_*。只有需要使用另一套模型时才填写。
+CONTENT_MODEL_PROVIDER=
+CONTENT_MODEL_BASE_URL=
+CONTENT_MODEL_NAME=
+CONTENT_MODEL_API_KEY=
+
+# MiniMax Token Plan 图片理解，可选。Key 需要以 sk-cp 开头。
 ANALYZER_VISION_PROVIDER=minimax-token-plan
 ANALYZER_VISION_BASE_URL=https://api.minimaxi.com
 ANALYZER_VISION_MODEL=understand_image
 ANALYZER_VISION_API_KEY=
-ANALYZER_VISION_CONCURRENCY=2
-# Independent project-assistant model for automatic project memory and
-# inspiration conversations. Configure all four values. There is deliberately
-# no fallback to CONTENT_MODEL_* or ANALYZER_LLM_*.
+
+# 独立项目助理，可选；启用时四项必须同时填写。
 PROJECT_ASSISTANT_MODEL_PROVIDER=
 PROJECT_ASSISTANT_MODEL_BASE_URL=
 PROJECT_ASSISTANT_MODEL_NAME=
 PROJECT_ASSISTANT_MODEL_API_KEY=
 
-# Local media models. First use downloads model files into the English-only
-# cache directory chosen automatically by the Python worker.
-ANALYZER_MODEL_CACHE=
-ANALYZER_ASR_MODEL=paraformer-zh
-ANALYZER_ASR_DEVICE=cpu
-ANALYZER_PADDLE_OCR_DETECTION_MODEL=PP-OCRv5_mobile_det
-ANALYZER_PADDLE_OCR_RECOGNITION_MODEL=PP-OCRv5_mobile_rec
-ANALYZER_PADDLE_MODEL_SOURCE=bos
+# 抖音链接解析，可选。推荐使用导出的 Cookie 文件；也可指定浏览器配置。
+ANALYZER_YTDLP_COOKIES_FROM_BROWSER=edge
+ANALYZER_YTDLP_COOKIE_FILE=.local/douyin-cookies.txt

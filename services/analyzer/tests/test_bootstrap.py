@@ -9,11 +9,25 @@ from liming_analyzer.bootstrap import (
     _configure_paddlex_model_source,
     _initialize_model_with_cache_repair,
     _remove_cache_entries,
+    _resolve_media_executable,
     _windows_model_cache,
 )
 
 
 class ModelCacheRecoveryTests(unittest.TestCase):
+    def test_media_executable_resolution_returns_an_absolute_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            executable = Path(temporary) / "ffprobe.exe"
+            executable.write_bytes(b"binary")
+
+            resolved = _resolve_media_executable(str(executable), "ffprobe")
+
+            self.assertEqual(resolved, str(executable.resolve()))
+
+    def test_missing_media_executable_has_repair_guidance(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, r"setup-analyzer\.bat"):
+            _resolve_media_executable("definitely-missing-ffmpeg-command", "ffmpeg")
+
     def test_windows_cache_avoids_non_ascii_user_profile(self) -> None:
         cache = _windows_model_cache(
             {

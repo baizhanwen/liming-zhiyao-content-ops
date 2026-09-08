@@ -72,6 +72,7 @@ $excludedFiles = @(
     "db\index.ts", "db\schema.ts",
     "public\file.svg", "public\globe.svg", "public\window.svg",
     "resources\authorized\dbskill\SOURCE.md", "resources\delivery\DELIVERY-GUIDE.txt",
+    "scripts\verify-delivery.mjs", "scripts\test-lan-runtime.mjs", "scripts\lan-browser-checks.mjs", "scripts\lan-worker-check.py",
     "scripts\start-analyzer.ps1", "services\analyzer\README.md", "services\analyzer\uv.lock", "tools\README.md"
 )
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -178,10 +179,10 @@ export function deliveryFeatureEnabled(feature: DeliveryFeature) {
     if (-not $selectedPlan.videoAnalysis) {
         @(
             "app\analysis", "app\api\analysis-jobs", "app\api\analyzer", "app\api\internal", "app\api\video-library", "app\api\videos",
-            "components\AnalysisDetail.tsx", "components\AnalysisWorkspace.tsx", "components\VideoLibraryWorkspace.tsx",
+            "components\AnalysisDetail.tsx", "components\AnalysisWorkspace.tsx", "components\VideoLibraryWorkspace.tsx", "components\useAnalysisProfile.ts",
             "lib\analysis-jobs.ts", "lib\analysis-profile.ts", "lib\analysis-worker.ts", "lib\analyzer-readiness.ts", "lib\douyin-cookie-snapshot.ts",
             "lib\douyin-url.ts", "lib\r2-response.ts", "lib\service-auth.ts", "lib\video-library.ts", "services\analyzer",
-            "scripts\install-python311.ps1", "scripts\install-vcredist.ps1", "scripts\install-ffmpeg.ps1", "scripts\refresh-douyin-cookies.ps1", "scripts\start-analyzer.ps1", "scripts\start-analyzer-background.ps1", "scripts\run-analyzer-supervisor.ps1", "scripts\check-analyzer.ps1", "scripts\repair-analyzer-models.ps1",
+            "scripts\install-python311.ps1", "scripts\install-vcredist.ps1", "scripts\install-ffmpeg.ps1", "scripts\refresh-douyin-cookies.ps1", "scripts\start-analyzer.ps1", "scripts\start-analyzer-background.ps1", "scripts\run-analyzer-supervisor.ps1", "scripts\analyzer-media-runtime.ps1", "scripts\check-analyzer.ps1", "scripts\repair-analyzer-models.ps1",
             "tools\refresh-douyin-cookies.bat", "tools\install-cookie-export-extension.bat", "tools\setup-analyzer.bat", "tools\start-analyzer.bat", "tools\check-analyzer.bat", "tools\repair-analyzer-models.bat", "tools\repair-analyzer-ocr.bat"
         ) | ForEach-Object { Remove-PackagePath $_ }
         Replace-PackageText "scripts\open-local.ps1" '(?m)^\s*& "\$PSScriptRoot\\start-analyzer-background\.ps1" -BaseUrl \$Url\r?\n' ''
@@ -353,16 +354,24 @@ export const TOPIC_CREATION_METHODOLOGY = "";
         [System.IO.File]::WriteAllText($_.FullName, $batchContent, $ascii)
     }
 
+    Write-Host "[VERIFY] Installing and testing the final customer package in an isolated directory..."
+    & node (Join-Path $projectRoot "scripts\verify-delivery.mjs") $packageRoot
+    if ($LASTEXITCODE -ne 0) { throw "Customer package verification failed. No delivery ZIP was created." }
+
     $archive = "$destination.zip"
     Compress-Archive -LiteralPath $packageRoot -DestinationPath $archive -CompressionLevel Optimal
-    Write-Host "[OK] Clean delivery package created:" -ForegroundColor Green
+    $archiveHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+    [System.IO.File]::WriteAllText("$archive.sha256", "$archiveHash  $([System.IO.Path]::GetFileName($archive))`r`n", $ascii)
+    Write-Host "[OK] Verified candidate delivery package created:" -ForegroundColor Green
     Write-Host $archive
     Write-Host "[LICENSE] $($selectedPlan.name) ($PlanCode); unlicensed modules were removed from the ZIP."
     Write-Host "[METHOD LIBRARY] $AuthorizedKnowledge; import and export remain available to administrators."
     Write-Host "[SECURITY] Send delivery-credential.txt separately from the package."
 } catch {
-    if (Test-Path -LiteralPath $destination) {
-        Remove-Item -LiteralPath $destination -Recurse -Force -ErrorAction SilentlyContinue
+    $resolvedDeliveryRoot = [System.IO.Path]::GetFullPath($deliveryRoot).TrimEnd('\') + '\'
+    $resolvedDestination = [System.IO.Path]::GetFullPath($destination)
+    if ($resolvedDestination.StartsWith($resolvedDeliveryRoot, [StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $resolvedDestination)) {
+        Remove-Item -LiteralPath $resolvedDestination -Recurse -Force -ErrorAction SilentlyContinue
     }
     throw
 }

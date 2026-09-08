@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import logging
+import shutil
+import time
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, Protocol
 from urllib.parse import urlparse
 
 from .adapters import AcquiredSource, SourceMetadata
 from .api_client import AnalyzerApiClient, ClaimedJob
+from .source_errors import SourceDownloadError, classify_source_message
+
+logger = logging.getLogger(__name__)
 
 SUPPORTED_COOKIE_BROWSERS = frozenset({
     "brave", "chrome", "chromium", "edge", "firefox", "opera", "safari", "vivaldi", "whale",
@@ -29,7 +36,7 @@ def parse_browser_cookie_spec(value: str) -> tuple[str, str | None, None, None] 
 
 
 class PublicVideoResolver(Protocol):
-    def download(self, url: str, destination: Path) -> AcquiredSource | Path: ...
+    def download(self, url: str, destination: Path, *, cookie_file: Path | None = None) -> AcquiredSource | Path: ...
 
 
 def is_allowed_douyin_url(value: str) -> bool:
@@ -52,9 +59,16 @@ class PlatformSourceProvider:
         source_url = job.source.get("source_url")
         if not isinstance(source_url, str) or not is_allowed_douyin_url(source_url):
             raise ValueError("claimed public source is not an allowed Douyin URL")
-        if self.cookie_file is not None:
-            self.client.download_cookie_snapshot(job, self.cookie_file)
-        resolved = self.public_video.download(source_url, destination)
+        # Remote organization snapshots are job-local. A 404 may delete this
+        # temporary file, but must never erase the host's manually imported file.
+        with TemporaryDirectory(prefix="liming-job-cookies-") as temporary:
+            snapshot = Path(temporary) / "cookies.txt"
+            uploaded = self.client.download_cookie_snapshot(job, snapshot)
+            try:
+                resolved = self.public_video.download(source_url, destination, cookie_file=snapshot if uploaded else self.cookie_file)
+            except SourceDownloadError as error:
+                logger.warning("Video source failed: job=%s code=%s", job.id, error.code)
+                raise
         return resolved if isinstance(resolved, AcquiredSource) else AcquiredSource(resolved)
 
 
@@ -72,6 +86,24 @@ def _published_at(value: Any) -> str | None:
     return datetime.fromtimestamp(value, UTC).isoformat().replace("+00:00", "Z")
 
 
+class _DownloadDiagnostics:
+    def __init__(self) -> None:
+        self.failure: SourceDownloadError | None = None
+
+    def debug(self, _message: str) -> None:
+        pass
+
+    def warning(self, message: str) -> None:
+        failure = classify_source_message(message)
+        # Preserve the specific warning swallowed by a non-fatal extractor
+        # request, rather than replacing it with the generic Fresh cookies hint.
+        if failure.code not in {"SOURCE_DOWNLOAD_FAILED", "DOUYIN_ACCESS_REJECTED"}:
+            self.failure = failure
+
+    def error(self, message: str) -> None:
+        self.warning(message)
+
+
 class YtDlpPublicVideoResolver:
     """Best-effort public resolver kept behind an adapter because platform support changes."""
 
@@ -81,6 +113,7 @@ class YtDlpPublicVideoResolver:
         *,
         cookies_from_browser: str = "",
         cookie_file: str = "",
+        ffmpeg_location: str = "",
     ) -> None:
         if factory is None:
             try:
@@ -91,8 +124,15 @@ class YtDlpPublicVideoResolver:
         self._factory = factory
         self._cookies_from_browser = parse_browser_cookie_spec(cookies_from_browser)
         self._cookie_file = Path(cookie_file).expanduser().resolve() if cookie_file else None
+        self._ffmpeg_location = ffmpeg_location.strip()
 
-    def download(self, url: str, destination: Path) -> AcquiredSource:
+    def download(self, url: str, destination: Path, *, cookie_file: Path | None = None) -> AcquiredSource:
+        # yt-dlp saves its cookie jar on close. Give it a writable private copy
+        # so it cannot overwrite an uploaded/master snapshot or another job.
+        with TemporaryDirectory(prefix="liming-download-cookies-") as temporary:
+            return self._download(url, destination, cookie_file or self._cookie_file, Path(temporary) / "cookies.txt")
+
+    def _download(self, url: str, destination: Path, cookie_file: Path | None, scratch_cookie: Path) -> AcquiredSource:
         if not is_allowed_douyin_url(url):
             raise ValueError("public resolver only accepts allowed Douyin URLs")
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -107,39 +147,46 @@ class YtDlpPublicVideoResolver:
             "socket_timeout": 30,
             "retries": 2,
         }
-        cookie_file_available = self._cookie_file is not None and self._cookie_file.is_file()
+        if self._ffmpeg_location:
+            options["ffmpeg_location"] = self._ffmpeg_location
+        cookie_file_available = cookie_file is not None and cookie_file.is_file()
         attempts: list[tuple[str, dict[str, Any]]] = []
+        if cookie_file_available:
+            attempts.append(("cookie_file", {"cookiefile": str(scratch_cookie)}))
         if self._cookies_from_browser is not None:
             attempts.append(("browser", {"cookiesfrombrowser": self._cookies_from_browser}))
-        if cookie_file_available:
-            attempts.append(("cookie_file", {"cookiefile": str(self._cookie_file)}))
         if not attempts:
             attempts.append(("none", {}))
         info: Any = None
+        primary_error: SourceDownloadError | None = None
         for attempt_index, (authentication_mode, authentication_options) in enumerate(attempts):
-            try:
-                with self._factory({**options, **authentication_options}) as downloader:
-                    info = downloader.extract_info(url, download=True)
-                break
-            except Exception as error:
-                if attempt_index < len(attempts) - 1:
-                    continue
-                message = str(error)
-                if "cookie" in message.lower():
+            for request_attempt in range(2):
+                diagnostics = _DownloadDiagnostics()
+                try:
                     if authentication_mode == "cookie_file":
-                        raise RuntimeError(
-                            "本地浏览器登录态和备用 Cookie 都无法使用。请重新登录抖音，"
-                            "或更新备用 cookies.txt。"
-                        ) from error
-                    if authentication_mode == "browser":
-                        raise RuntimeError(
-                            "无法读取本地浏览器登录态。请确认 Edge 已登录抖音；"
-                            "仍失败时再导入备用 cookies.txt。"
-                        ) from error
-                    raise RuntimeError(
-                        "抖音要求登录态。请先在本机 Edge 登录抖音，或导入备用 cookies.txt。"
-                    ) from error
-                raise
+                        assert cookie_file is not None
+                        shutil.copyfile(cookie_file, scratch_cookie)
+                    with self._factory({**options, **authentication_options, "logger": diagnostics}) as downloader:
+                        info = downloader.extract_info(url, download=True)
+                    break
+                except Exception as error:
+                    info = None
+                    failure = diagnostics.failure or classify_source_message(str(error))
+                    logger.warning("Douyin download attempt failed: mode=%s attempt=%s code=%s", authentication_mode, request_attempt + 1, failure.code)
+                    if failure.code == "SOURCE_NETWORK_FAILED" and request_attempt == 0:
+                        time.sleep(3)
+                        continue
+                    authentication_failure = failure.code in {"DOUYIN_ACCESS_REJECTED", "DOUYIN_BROWSER_UNAVAILABLE", "DOUYIN_COOKIE_INVALID"}
+                    if authentication_failure and attempt_index < len(attempts) - 1:
+                        primary_error = failure
+                        break
+                    if failure.code == "DOUYIN_BROWSER_UNAVAILABLE" and primary_error is not None:
+                        failure = primary_error
+                    if failure.code == "DOUYIN_ACCESS_REJECTED" and authentication_mode == "browser" and primary_error is None:
+                        failure = SourceDownloadError(failure.code, "抖音暂未接受分析主机浏览器登录态或请求。请稍后重试；持续失败时确认视频可访问并上传 Cookie。")
+                    raise failure from error
+            if info is not None:
+                break
         if not isinstance(info, dict):
             raise TypeError("public resolver returned invalid metadata")
         candidates: list[Path] = []

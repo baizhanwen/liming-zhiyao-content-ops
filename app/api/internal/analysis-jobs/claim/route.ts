@@ -24,9 +24,9 @@ export async function POST(request: Request) {
     `).bind(workerId, nowIso, nowIso, browserAuth?.status ?? "unknown", browserAuth?.browser ?? null, browserAuth?.checkedAt ?? null, browserAuth?.message ?? null, nowIso).run();
     const job = await db.prepare(`
       UPDATE analysis_jobs
-      SET status = CASE WHEN status = 'pending' THEN 'queued' ELSE status END,
-          progress = CASE WHEN status = 'pending' AND checkpoint_stage IN ('evidence_ready', 'segment_progress') THEN 82 WHEN status = 'pending' THEN 1 ELSE progress END,
-          current_stage = CASE WHEN checkpoint_stage IN ('evidence_ready', 'segment_progress') THEN '分析服务已领取恢复任务' WHEN status = 'pending' THEN '分析服务已领取任务' ELSE current_stage END,
+      SET status = 'queued',
+          progress = CASE WHEN checkpoint_stage IN ('evidence_ready', 'segment_progress') THEN 82 ELSE 1 END,
+          current_stage = CASE WHEN checkpoint_stage IN ('evidence_ready', 'segment_progress') THEN '分析服务已领取恢复任务' ELSE '分析服务已领取任务' END,
           lease_owner = ?, lease_expires_at = ?, last_heartbeat_at = ?, attempt_count = attempt_count + 1,
           resume_count = resume_count + CASE WHEN checkpoint_stage IN ('evidence_ready', 'segment_progress') THEN 1 ELSE 0 END,
           version = version + 1, updated_by = ?, updated_at = ?
@@ -37,7 +37,7 @@ export async function POST(request: Request) {
           j.status = 'pending' OR
           (j.status IN ('queued', 'downloading', 'processing', 'transcribing', 'extracting', 'analyzing') AND j.lease_expires_at IS NOT NULL AND j.lease_expires_at <= ?)
         )
-        ORDER BY CASE WHEN j.status = 'pending' THEN 0 ELSE 1 END, j.created_at ASC
+        ORDER BY CASE WHEN j.status = 'pending' THEN 0 ELSE 1 END, j.created_at ASC, j.id ASC
         LIMIT 1
       )
       RETURNING id, organization_id, project_id, video_id, input_transcript_id, source_type, source_ref, analysis_profile, status, progress, current_stage,
@@ -71,6 +71,7 @@ export async function POST(request: Request) {
         if (!Array.isArray(segments)) throw new Error("segments must be an array");
         manualTranscript = { id: source.transcript_id, version: source.transcript_version ?? 1, language: source.transcript_language, segments };
       } catch {
+        await db.prepare("UPDATE analysis_jobs SET status = 'failed', error_code = 'TRANSCRIPT_INVALID', error_message = '人工校正版内容损坏', lease_owner = NULL, lease_expires_at = NULL, version = version + 1, updated_at = ? WHERE id = ? AND lease_owner = ? AND version = ?").bind(nowIso, job.id, workerId, job.version).run();
         return apiError("JOB_TRANSCRIPT_INVALID", "人工校正版内容损坏，无法重新分析。", 409);
       }
     }

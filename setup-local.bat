@@ -28,6 +28,9 @@ if not exist ".dev.vars" (
 echo [Liming Zhiyao] Installing web dependencies...
 call "%NPM_CMD%" ci
 if errorlevel 1 goto :failed
+if not exist "node_modules\wrangler\bin\wrangler.js" goto :dependencies_incomplete
+if not exist "node_modules\vinext\package.json" goto :dependencies_incomplete
+echo [OK] Web dependencies passed completeness verification.
 
 echo [Liming Zhiyao] Initializing the local database...
 set "CI=1"
@@ -65,6 +68,13 @@ exit /b 1
 :failed
 echo.
 echo [ERROR] Setup did not complete. Review the error shown above.
+pause
+exit /b 1
+
+:dependencies_incomplete
+echo.
+echo [ERROR] npm finished, but required web dependency files are still missing.
+echo Check Windows Security quarantine and folder permissions, then run setup-local.bat again.
 pause
 exit /b 1
 

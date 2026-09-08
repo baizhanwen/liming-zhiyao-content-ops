@@ -52,7 +52,7 @@ export async function readFirstRunStatus(): Promise<FirstRunStatus> {
   const setupCompleted = await getD1().prepare("SELECT value FROM installation_settings WHERE key = 'setup_completed' LIMIT 1").first<{ value: string }>();
   return {
     deliveryMode,
-    setupRequired: !organization || setupCompleted?.value !== "1",
+    setupRequired: !organization && setupCompleted?.value !== "1",
     setupCodeConfigured: Boolean(configuredSetupCode().hash || configuredSetupCode().legacyPlaintext),
   };
 }
@@ -98,7 +98,12 @@ export async function initializeCommercialInstallation(input: {
   const authSubject = `local:${crypto.randomUUID()}`;
   const credential = await createLocalCredential(userId, input.password, now);
   const preset = deliveryPlan.quotas;
-  await db.batch([
+  try {
+    await db.batch([
+    // D1 batches are transactional. The unique installation key arbitrates
+    // concurrent requests before either one creates users or organizations.
+    db.prepare("DELETE FROM installation_settings WHERE key = 'setup_completed' AND value != '1'"),
+    db.prepare("INSERT INTO installation_settings (key, value, updated_at) VALUES ('setup_completed', '1', ?)").bind(now),
     db.prepare("INSERT INTO users (id, auth_subject, email, display_name, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'active', ?, ?)")
       .bind(userId, authSubject, email, administratorName, now, now),
     db.prepare("INSERT INTO local_credentials (user_id, password_salt, password_hash, iterations, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
@@ -109,9 +114,13 @@ export async function initializeCommercialInstallation(input: {
       .bind(crypto.randomUUID(), organizationId, userId, userId, userId, now, now),
     db.prepare("INSERT INTO organization_settings (id, organization_id, plan_code, project_quota, member_quota, monthly_analysis_quota, monthly_model_call_quota, storage_quota_bytes, retention_days, failed_job_alert_threshold, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .bind(crypto.randomUUID(), organizationId, deliveryPlan.code, preset.projectQuota, preset.memberQuota, preset.monthlyAnalysisQuota, preset.monthlyModelCallQuota, preset.storageQuotaBytes, preset.retentionDays, preset.failedJobAlertThreshold, userId, userId, now, now),
-    db.prepare("INSERT INTO installation_settings (key, value, updated_at) VALUES ('setup_completed', '1', ?) ON CONFLICT(key) DO UPDATE SET value = '1', updated_at = excluded.updated_at").bind(now),
     db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, NULL, ?, 'installation.initialized', 'organization', ?, ?, ?)")
       .bind(crypto.randomUUID(), organizationId, userId, organizationId, JSON.stringify({ companyName, email }), now),
-  ]);
+    ]);
+  } catch (error) {
+    const completed = await db.prepare("SELECT value FROM installation_settings WHERE key = 'setup_completed'").first<{ value: string }>();
+    if (completed?.value === "1") throw new Error("FIRST_RUN_ALREADY_COMPLETED");
+    throw error;
+  }
   return { organizationId, userId, email, administratorName, companyName };
 }

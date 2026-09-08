@@ -108,22 +108,32 @@ export async function readLocalLoginLock(email: string) {
 export async function recordLocalLoginFailure(email: string) {
   const normalizedEmail = email.toLowerCase();
   const now = new Date();
-  const current = await getD1().prepare("SELECT failed_count, locked_until FROM local_login_attempts WHERE email = ?")
-    .bind(normalizedEmail).first<{ failed_count: number; locked_until: string | null }>();
-  const currentLock = current?.locked_until ? new Date(current.locked_until).getTime() : 0;
-  const failedCount = currentLock > now.getTime()
-    ? current?.failed_count ?? 0
-    : current?.locked_until ? 1 : (current?.failed_count ?? 0) + 1;
-  const lockedUntil = failedCount >= loginFailureLimit ? new Date(now.getTime() + loginLockSeconds * 1000).toISOString() : null;
-  await getD1().prepare(`
+  const lockedUntil = new Date(now.getTime() + loginLockSeconds * 1000).toISOString();
+  // Count in SQLite rather than overwriting a value read before other requests.
+  // Attempts already in flight cannot extend an existing lock indefinitely.
+  const row = await getD1().prepare(`
     INSERT INTO local_login_attempts (email, failed_count, locked_until, updated_at) VALUES (?, ?, ?, ?)
-    ON CONFLICT(email) DO UPDATE SET failed_count = excluded.failed_count, locked_until = excluded.locked_until, updated_at = excluded.updated_at
-  `).bind(normalizedEmail, failedCount, lockedUntil, now.toISOString()).run();
-  return lockedUntil ? loginLockSeconds : null;
+    ON CONFLICT(email) DO UPDATE SET
+      failed_count = CASE
+        WHEN local_login_attempts.locked_until > excluded.updated_at THEN local_login_attempts.failed_count + 1
+        WHEN local_login_attempts.locked_until IS NOT NULL THEN 1
+        ELSE local_login_attempts.failed_count + 1 END,
+      locked_until = CASE
+        WHEN local_login_attempts.locked_until > excluded.updated_at THEN local_login_attempts.locked_until
+        WHEN local_login_attempts.locked_until IS NOT NULL THEN NULL
+        WHEN local_login_attempts.failed_count + 1 >= ? THEN ?
+        ELSE NULL END,
+      updated_at = excluded.updated_at
+    RETURNING locked_until
+  `).bind(normalizedEmail, 1, null, now.toISOString(), loginFailureLimit, lockedUntil).first<{ locked_until: string | null }>();
+  return row?.locked_until ? Math.max(1, Math.ceil((Date.parse(row.locked_until) - Date.now()) / 1000)) : null;
 }
 
-export async function clearLocalLoginFailures(email: string) {
-  await getD1().prepare("DELETE FROM local_login_attempts WHERE email = ?").bind(email.toLowerCase()).run();
+export async function clearLocalLoginFailures(email: string, attemptStartedAt = new Date().toISOString()) {
+  // A successful, older request must not erase failures recorded while it was
+  // verifying a password, or clear a lock established by those requests.
+  await getD1().prepare("DELETE FROM local_login_attempts WHERE email = ? AND updated_at < ? AND (locked_until IS NULL OR locked_until <= ?)")
+    .bind(email.toLowerCase(), attemptStartedAt, attemptStartedAt).run();
 }
 
 export async function revokeAllLocalSessions(userId: string) {

@@ -36,6 +36,53 @@ test("strategy activation retires the prior version and records effective time",
   assert.match(activate, /canManageProjectKnowledge/);
 });
 
+test("company administrators can review every enterprise-space strategy from one view", async () => {
+  const [strategies, projects, workspace, styles] = await Promise.all([
+    readFile(new URL("../app/api/strategies/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/projects/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../components/KnowledgeWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(strategies, /scope === "organization"/);
+  assert.match(strategies, /getOrganizationAccess/);
+  assert.match(strategies, /organizationRole !== "admin"/);
+  assert.match(strategies, /LEFT JOIN content_strategies/);
+  assert.match(strategies, /p\.organization_id = \?/);
+  assert.match(projects, /organizationRole: access\.organizationRole/);
+  assert.match(workspace, /strategyScope/);
+  assert.match(workspace, /全部企业空间/);
+  assert.match(workspace, /进入空间管理/);
+  assert.match(workspace, /organizationRole === "admin"/);
+  assert.match(styles, /strategy-overview/);
+  assert.match(styles, /strategy-space-group/);
+});
+
+test("brand knowledge supports a validated tenant-scoped XLSX bulk import into drafts", async () => {
+  const [route, validator, workspace, xlsxParser, template] = await Promise.all([
+    readFile(new URL("../app/api/knowledge/import/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/knowledge-import.ts", import.meta.url), "utf8"),
+    readFile(new URL("../components/KnowledgeWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../lib/xlsx-table.ts", import.meta.url), "utf8"),
+    readFile(new URL("../public/templates/%E5%93%81%E7%89%8C%E7%9F%A5%E8%AF%86%E5%BA%93%E5%AF%BC%E5%85%A5%E6%A8%A1%E6%9D%BF.xlsx", import.meta.url)),
+  ]);
+  assert.match(route, /getProjectAccess\(identity\.authSubject, organizationId, projectId\)/);
+  assert.match(route, /canWriteProjectAccess\(access\)/);
+  assert.match(route, /WHERE k\.organization_id = \? AND k\.project_id = \?/);
+  assert.match(route, /'knowledge\.imported'/);
+  assert.match(route, /'draft'/);
+  assert.doesNotMatch(route, /status, current_version[\s\S]{0,300}'confirmed'/);
+  assert.match(validator, /KNOWLEDGE_IMPORT_MAX_ROWS = 100/);
+  assert.match(validator, /标题需为 2 至 120 个字符/);
+  assert.match(validator, /非人工录入必须填写来源说明或链接/);
+  assert.match(validator, /与本文件前面的知识重复/);
+  assert.match(workspace, /readFirstWorksheet/);
+  assert.match(workspace, /\/api\/knowledge\/import/);
+  assert.match(workspace, /\/templates\/品牌知识库导入模板\.xlsx/);
+  assert.match(workspace, /负责人确认后才会参与内容生成/);
+  assert.match(xlsxParser, /unzipSync/);
+  assert.equal(template.subarray(0, 2).toString("utf8"), "PK");
+});
+
 test("topic citations only use tenant-owned analyses or confirmed knowledge", async () => {
   const topics = await readFile(new URL("../app/api/topics/route.ts", import.meta.url), "utf8");
   assert.match(topics, /getProjectAccess/);

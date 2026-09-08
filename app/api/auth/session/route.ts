@@ -18,6 +18,7 @@ export async function POST(request: Request) {
     const email = payload.email?.trim().toLowerCase() ?? "";
     const password = payload.password ?? "";
     if (!email || !password) return apiError("LOGIN_REQUIRED", "请输入邮箱和密码。", 400);
+    const attemptStartedAt = new Date().toISOString();
     const lockedSeconds = await readLocalLoginLock(email);
     if (lockedSeconds) return apiError("LOGIN_TEMPORARILY_LOCKED", `登录失败次数过多，请在 ${Math.ceil(lockedSeconds / 60)} 分钟后重试。`, 429, { retryAfterSeconds: lockedSeconds });
     const user = await verifyLocalLogin(email, password);
@@ -26,7 +27,9 @@ export async function POST(request: Request) {
       if (retryAfterSeconds) return apiError("LOGIN_TEMPORARILY_LOCKED", "登录失败次数过多，账号已临时锁定 15 分钟。", 429, { retryAfterSeconds });
       return apiError("LOGIN_FAILED", "邮箱或密码不正确。", 401);
     }
-    await clearLocalLoginFailures(email);
+    const concurrentLock = await readLocalLoginLock(email);
+    if (concurrentLock) return apiError("LOGIN_TEMPORARILY_LOCKED", "登录失败次数过多，请稍后重试。", 429, { retryAfterSeconds: concurrentLock });
+    await clearLocalLoginFailures(email, attemptStartedAt);
     const membership = await getD1().prepare("SELECT 1 AS allowed FROM organization_members WHERE user_id = ? AND status = 'active' LIMIT 1").bind(user.user_id).first();
     if (!membership) return apiError("ACCOUNT_UNAVAILABLE", "该账号尚未加入有效的公司空间。", 403);
     const cookie = await createLocalSession(user.user_id, request);

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 import threading
 
@@ -56,6 +57,9 @@ def build_lazy_processor(settings: AnalyzerSettings, client: AnalyzerApiClient) 
 
 
 def main() -> int:
+    logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    logging.getLogger("liming_analyzer").setLevel(logging.INFO)
+    logging.getLogger(__name__).info("Analyzer entrypoint: %s", __file__)
     parser = argparse.ArgumentParser(description="Liming Zhiyao video analyzer worker")
     parser.add_argument("--once", action="store_true", help="claim at most one job")
     parser.add_argument("--idle-seconds", type=float, default=5.0)

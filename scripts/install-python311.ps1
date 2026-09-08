@@ -80,6 +80,14 @@ if (-not (Test-Path -LiteralPath $pythonPath)) {
 
 & $pythonPath -c "import platform,sys; assert sys.version_info[:2] == (3, 11) and sys.maxsize > 2**32; print('[OK] Python ' + sys.version.split()[0] + ' / ' + platform.architecture()[0])"
 if ($LASTEXITCODE -ne 0) {
+    # A plain startup failure with a healthy interpreter usually means a leftover
+    # .pth file in site-packages that is not decodable with the ANSI code page
+    # (for example an editable install from another project storing a UTF-8 path).
+    & $pythonPath -S -c "import sys; assert sys.version_info[:2] == (3, 11) and sys.maxsize > 2**32"
+    if ($LASTEXITCODE -eq 0) {
+        $sitePackages = Join-Path (Split-Path $pythonPath -Parent) "Lib\site-packages"
+        throw "Python is installed, but a broken .pth file in $sitePackages is crashing Python startup. Remove or fix the offending .pth file (check the UnicodeDecodeError above), then run this file again."
+    }
     throw "The installed Python runtime failed the 64-bit Python 3.11 verification."
 }
 

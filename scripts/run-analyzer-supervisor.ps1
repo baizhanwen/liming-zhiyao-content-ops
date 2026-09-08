@@ -21,6 +21,8 @@ function Import-AnalyzerEnvironment {
     if (-not (Test-Path -LiteralPath $varsPath)) {
         throw "Local configuration is missing. Run setup-local.bat first."
     }
+    Remove-Item Env:ANALYZER_FFMPEG -ErrorAction SilentlyContinue
+    Remove-Item Env:ANALYZER_FFPROBE -ErrorAction SilentlyContinue
     Get-Content -Encoding UTF8 -LiteralPath $varsPath | ForEach-Object {
         if ($_ -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$') {
             $name = $matches[1]
@@ -34,14 +36,18 @@ function Import-AnalyzerEnvironment {
     }
     $env:ANALYZER_BASE_URL = $BaseUrl.TrimEnd('/')
     $env:PYTHONUNBUFFERED = "1"
+    . (Join-Path $PSScriptRoot "analyzer-media-runtime.ps1")
+    $null = Import-AnalyzerMediaRuntime $ProjectRoot
+    . (Join-Path $PSScriptRoot "analyzer-source-runtime.ps1")
+    return Set-AnalyzerSourceRuntime $ProjectRoot
 }
 
 $restartCount = 0
 while ($true) {
     try {
-        Import-AnalyzerEnvironment
+        $sourceDirectory = Import-AnalyzerEnvironment
         Remove-Item -LiteralPath $statusPath -Force -ErrorAction SilentlyContinue
-        Add-Content -LiteralPath $supervisorLogPath -Encoding UTF8 -Value "$(Get-Date -Format o) starting analyzer worker"
+        Add-Content -LiteralPath $supervisorLogPath -Encoding UTF8 -Value "$(Get-Date -Format o) starting analyzer worker from $sourceDirectory"
         & $PythonPath -m liming_analyzer --idle-seconds 4 1>> $stdoutPath 2>> $stderrPath
         $exitCode = $LASTEXITCODE
     }

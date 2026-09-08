@@ -991,6 +991,7 @@ class ProviderTests(unittest.TestCase):
             result = YtDlpPublicVideoResolver(
                 factory,
                 cookies_from_browser="edge:Default",
+                ffmpeg_location=r"C:\media\ffmpeg.exe",
             ).download(
                 "https://www.douyin.com/video/1",
                 Path(directory) / "source",
@@ -999,8 +1000,9 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(result.metadata.plays, 1000)
         self.assertEqual(result.metadata.duration_sec, 12)
         self.assertEqual(captured["cookiesfrombrowser"], ("edge", "Default", None, None))
+        self.assertEqual(captured["ffmpeg_location"], r"C:\media\ffmpeg.exe")
 
-    def test_public_resolver_prefers_logged_in_browser_over_cookie_snapshot(self):
+    def test_public_resolver_prefers_cookie_snapshot_over_host_browser(self):
         captured = {}
 
         def factory(options):
@@ -1018,13 +1020,14 @@ class ProviderTests(unittest.TestCase):
                 "https://www.douyin.com/video/1",
                 Path(directory) / "source",
             )
-        self.assertEqual(captured["cookiesfrombrowser"], ("edge", None, None, None))
-        self.assertNotIn("cookiefile", captured)
+        self.assertNotEqual(captured["cookiefile"], str(cookie_file.resolve()))
+        self.assertFalse(Path(captured["cookiefile"]).exists())
+        self.assertNotIn("cookiesfrombrowser", captured)
 
-    def test_public_resolver_falls_back_to_cookie_snapshot_when_browser_read_fails(self):
+    def test_public_resolver_falls_back_to_host_browser_when_cookie_snapshot_fails(self):
         captured = []
 
-        class BrowserFailure:
+        class CookieFailure:
             def __enter__(self):
                 return self
 
@@ -1032,11 +1035,11 @@ class ProviderTests(unittest.TestCase):
                 return False
 
             def extract_info(self, *_args, **_kwargs):
-                raise RuntimeError("browser cookie read failed")
+                raise RuntimeError("cookie file expired")
 
         def factory(options):
             captured.append(options)
-            return BrowserFailure() if "cookiesfrombrowser" in options else FakeDownloader(options)
+            return CookieFailure() if "cookiefile" in options else FakeDownloader(options)
 
         with tempfile.TemporaryDirectory() as directory:
             cookie_file = Path(directory) / "cookies.txt"
@@ -1050,8 +1053,9 @@ class ProviderTests(unittest.TestCase):
                 Path(directory) / "source",
             )
         self.assertEqual(result.metadata.platform_work_id, "work-1")
-        self.assertIn("cookiesfrombrowser", captured[0])
-        self.assertEqual(captured[1]["cookiefile"], str(cookie_file.resolve()))
+        self.assertNotEqual(captured[0]["cookiefile"], str(cookie_file.resolve()))
+        self.assertFalse(Path(captured[0]["cookiefile"]).exists())
+        self.assertIn("cookiesfrombrowser", captured[1])
     def test_artifact_store_persists_subtitles_and_keyframes(self):
         client = ArtifactClient()
         store = ApiArtifactStore(client)

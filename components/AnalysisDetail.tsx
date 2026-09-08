@@ -2,6 +2,7 @@
 
 import { scopedFetch, rememberCurrentScope } from "../lib/client-scope";
 import { type AnalysisProfile } from "../lib/analysis-profile";
+import { useAnalysisProfile } from "./useAnalysisProfile";
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -333,6 +334,8 @@ function RetryableMediaImage({ src, alt, className }: { src: string; alt: string
     </span>;
   }
 
+  // Authenticated private media must be fetched directly with the browser session.
+  // eslint-disable-next-line @next/next/no-img-element
   return <img
     key={attempt}
     className={className}
@@ -349,7 +352,7 @@ export function AnalysisDetail({ videoId, organizationId, projectId, libraryEntr
   const [editingTranscript, setEditingTranscript] = useState(false); const [savingTranscript, setSavingTranscript] = useState(false); const [draftSegments, setDraftSegments] = useState<Segment[]>([]); const [editMessage, setEditMessage] = useState("");
   const [copyMessage, setCopyMessage] = useState(""); const [transcriptQuery, setTranscriptQuery] = useState("");
   const [reanalyzing, setReanalyzing] = useState(false);
-  const [rerunProfile, setRerunProfile] = useState<AnalysisProfile>("standard");
+  const [rerunProfile, updateRerunProfile] = useAnalysisProfile(detail?.job?.analysis_profile === "max" ? "max" : "standard");
   const [selectedAnalysisId, setSelectedAnalysisId] = useState(""); const [compareAnalysisId, setCompareAnalysisId] = useState("");
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
   const requestUrl = useMemo(() => `/api/videos/${encodeURIComponent(videoId)}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}${libraryEntryId ? `&libraryEntryId=${encodeURIComponent(libraryEntryId)}` : ""}`, [organizationId, projectId, videoId, libraryEntryId]);
@@ -371,19 +374,7 @@ export function AnalysisDetail({ videoId, organizationId, projectId, libraryEntr
       return response.json() as Promise<DetailResponse>;
     }).then((body) => { if (active) { setDetail(body); setLoading(false); } }).catch((reason) => { if (active) { setError(reason instanceof Error ? reason.message : "分析结果暂时无法读取。"); setLoading(false); } });
     return () => { active = false; };
-  }, [requestUrl]);
-  useEffect(() => {
-    const saved = window.localStorage.getItem("liming.analysisProfile.v1");
-    if (saved === "standard" || saved === "max") {
-      setRerunProfile(saved);
-    } else if (detail?.job?.analysis_profile === "max" || detail?.job?.analysis_profile === "standard") {
-      setRerunProfile(detail.job.analysis_profile);
-    }
-  }, [detail?.job?.analysis_profile]);
-  function updateRerunProfile(profile: AnalysisProfile) {
-    setRerunProfile(profile);
-    window.localStorage.setItem("liming.analysisProfile.v1", profile);
-  }
+  }, [requestUrl, organizationId, projectId]);
   const analysisVersions = detail?.analyses?.length ? detail.analyses : detail?.analysis ? [detail.analysis] : [];
   const analysis = analysisVersions.find((item) => item.id === selectedAnalysisId) ?? analysisVersions[0] ?? null;
   const effectiveCompareAnalysisId = compareAnalysisId !== analysis?.id && analysisVersions.some((item) => item.id === compareAnalysisId) ? compareAnalysisId : "";

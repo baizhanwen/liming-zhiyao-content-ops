@@ -5,6 +5,7 @@ import { readRequestIdentity } from "../../../../lib/request-auth";
 import { checkOrganizationQuota } from "../../../../lib/operations";
 import { normalizeAnalysisProfile } from "../../../../lib/analysis-profile";
 import { upsertProjectVideoReference } from "../../../../lib/video-library";
+import { isAnalysisSubmissionConflict } from "../../../../lib/analysis-submission-errors";
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const allowedTypes = new Set(["video/mp4", "video/quicktime", "video/webm", "audio/mpeg", "audio/mp4", "audio/wav", "audio/x-wav"]);
@@ -71,6 +72,7 @@ export async function POST(request: Request) {
     return Response.json({ video: { id: videoId, platform: "upload", source_type: "upload", title: file.name, filename: file.name, size_bytes: file.size, status: "pending", created_at: now }, job: { id: jobId, video_id: videoId, status: "pending", analysis_profile: analysisProfile, progress: 0, current_stage: "媒体已入库，等待分析", retry_count: 0, created_at: now, updated_at: now } }, { status: 202 });
   } catch (error) {
     if (storedKey) { try { await getMediaBucket().delete(storedKey); } catch { /* best-effort rollback */ } }
+    if (isAnalysisSubmissionConflict(error)) return apiError("VIDEO_SUBMISSION_CONFLICT", "相同素材已被其他成员提交。本次没有新建分析任务，请刷新列表；若素材在其他项目，再次提交即可复用。", 409);
     return errorResponse(error);
   }
 }

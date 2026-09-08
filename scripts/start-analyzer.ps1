@@ -14,5 +14,12 @@ Get-Content -Encoding UTF8 -LiteralPath ".dev.vars" | ForEach-Object {
     }
 }
 
+. (Join-Path $PSScriptRoot "analyzer-media-runtime.ps1")
+$null = Import-AnalyzerMediaRuntime $projectRoot
+
+. (Join-Path $PSScriptRoot "analyzer-source-runtime.ps1")
+$sourceDirectory = Set-AnalyzerSourceRuntime $projectRoot
+Write-Host "[Liming Zhiyao] Loading analyzer source from $sourceDirectory"
+
 & "services\analyzer\.venv\Scripts\python.exe" -m liming_analyzer
 exit $LASTEXITCODE

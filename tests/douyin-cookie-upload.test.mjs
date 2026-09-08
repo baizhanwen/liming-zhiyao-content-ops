@@ -20,7 +20,8 @@ test("Douyin cookies can be refreshed from the analysis workspace without exposi
     readFile(new URL("../components/AnalysisWorkspace.tsx", import.meta.url), "utf8"),
     readFile(new URL("../services/analyzer/liming_analyzer/api_client.py", import.meta.url), "utf8"),
   ]);
-  assert.match(uploadRoute, /organizationRole !== "admin"/);
+  assert.doesNotMatch(uploadRoute, /organizationRole !== "admin"/);
+  assert.match(uploadRoute, /if \(!access\).*ACCESS_DENIED/);
   assert.match(uploadRoute, /getMediaBucket\(\)\.put/);
   assert.match(uploadRoute, /export async function DELETE/);
   assert.match(uploadRoute, /getMediaBucket\(\)\.delete/);
@@ -31,5 +32,9 @@ test("Douyin cookies can be refreshed from the analysis workspace without exposi
   assert.match(workspace, /更新 Cookie/);
   assert.match(workspace, /清除 Cookie/);
   assert.match(workspace, /accept="\.txt,text\/plain"/);
+  const videosRoute = await readFile(new URL("../app/api/videos/route.ts", import.meta.url), "utf8");
+  const readiness = await readFile(new URL("../lib/analyzer-readiness.ts", import.meta.url), "utf8");
+  assert.match(videosRoute, /canManageCookies: canWriteProjectAccess\(access\)/);
+  assert.match(readiness, /publicLinkAuthenticationMode = cookieFileConfigured \? "cookie_file".*browserLoginDetected/s);
   assert.match(workerClient, /download_cookie_snapshot/);
 });

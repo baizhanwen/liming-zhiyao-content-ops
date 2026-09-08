@@ -2,8 +2,15 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $projectRoot
 
-if (-not (Test-Path "node_modules")) {
-    Write-Host "[ERROR] Dependencies are missing. Run setup-local.bat first."
+$requiredWebDependencies = @(
+    "node_modules\wrangler\bin\wrangler.js",
+    "node_modules\vinext\package.json"
+)
+$missingWebDependencies = @($requiredWebDependencies | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) })
+if ($missingWebDependencies.Count -gt 0) {
+    Write-Host "[ERROR] Web dependencies are missing or incomplete."
+    Write-Host "        Run setup-local.bat once, wait for 'Web setup completed', then start again."
+    Write-Host "        Missing: $($missingWebDependencies -join ', ')"
     exit 1
 }
 if (-not (Test-Path ".dev.vars")) {
@@ -76,7 +83,7 @@ Write-Host "The browser and video analyzer will start automatically."
 Write-Host "Keep this window open. Press Ctrl+C or run stop-local.bat to stop everything."
 
 Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @(
-    "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "$PSScriptRoot\open-lan.ps1", "-Url", $env:LAN_ACCESS_ORIGIN, "-HealthUrl", $hostUrl
+    "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$PSScriptRoot\open-lan.ps1`"", "-Url", $env:LAN_ACCESS_ORIGIN, "-HealthUrl", $hostUrl
 )
 & npm.cmd run dev -- --hostname 0.0.0.0 --port $appPort
 exit $LASTEXITCODE

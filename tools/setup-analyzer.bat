@@ -66,7 +66,7 @@ echo [Liming Zhiyao] Preparing the bundled Python package installer...
 "services\analyzer\.venv\Scripts\python.exe" -m ensurepip --upgrade
 if errorlevel 1 exit /b 1
 echo [Liming Zhiyao] Python package source: %PYPI_PRIMARY_LABEL%
-call :pip_install --constraint "%PYTHON_CONSTRAINT%" --upgrade "pip==26.2.1" "setuptools==81.0.0" "wheel==0.48.0"
+call :pip_bootstrap --constraint "%PYTHON_CONSTRAINT%" --upgrade "pip==26.2.1" "setuptools==81.0.0" "wheel==0.48.0"
 if errorlevel 1 exit /b 1
 set "REPAIR_OPENCV_NAMESPACE="
 "services\analyzer\.venv\Scripts\python.exe" -c "import importlib.metadata as m,sys; names=('opencv-python','opencv-python-headless','opencv-contrib-python-headless','scenedetect'); sys.exit(0 if any(m.packages_distributions().get(name.replace('-','_')) for name in names) or any(any(dist.metadata.get('Name','').lower()==name for dist in m.distributions()) for name in names) else 1)" >nul 2>nul
@@ -115,6 +115,17 @@ if not defined PYPI_FALLBACK exit /b 1
 echo.
 echo [NOTICE] %PYPI_PRIMARY_LABEL% failed. Keeping the download cache and retrying with official PyPI...
 "services\analyzer\.venv\Scripts\python.exe" -m pip install --disable-pip-version-check --prefer-binary --retries 20 --timeout 120 --resume-retries 20 --index-url "%PYPI_FALLBACK%" %*
+exit /b %errorlevel%
+
+:pip_bootstrap
+rem The venv may still run the pip bundled with Python 3.11 (24.x), which does not
+rem understand --resume-retries; this path upgrades pip before :pip_install uses it.
+"services\analyzer\.venv\Scripts\python.exe" -m pip install --disable-pip-version-check --prefer-binary --retries 20 --timeout 120 --index-url "%PYPI_PRIMARY%" %*
+if not errorlevel 1 exit /b 0
+if not defined PYPI_FALLBACK exit /b 1
+echo.
+echo [NOTICE] %PYPI_PRIMARY_LABEL% failed. Retrying the installer bootstrap with official PyPI...
+"services\analyzer\.venv\Scripts\python.exe" -m pip install --disable-pip-version-check --prefer-binary --retries 20 --timeout 120 --index-url "%PYPI_FALLBACK%" %*
 exit /b %errorlevel%
 
 :parse_arguments

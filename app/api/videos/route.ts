@@ -15,7 +15,8 @@ export async function GET(request: Request) {
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
     if (!access) return apiError("ACCESS_DENIED", "无权访问该项目的视频。", 403);
     const db = getD1();
-    const [videos, jobs, readiness, queueStats] = await Promise.all([
+    const queueNow = new Date().toISOString();
+    const [videos, jobs, readiness, queueStats, sharedQueue] = await Promise.all([
       db.prepare(`
         SELECT * FROM (
           SELECT v.id, v.platform, v.source_type, v.source_url, v.title, v.author_name, v.status, v.error_message, v.created_at, a.filename, a.size_bytes,
@@ -45,18 +46,31 @@ export async function GET(request: Request) {
       readAnalyzerReadiness(organizationId),
       db.prepare(`
         SELECT COUNT(*) AS sample_count,
-          CAST(AVG((julianday(completed_at) - julianday(created_at)) * 86400) AS INTEGER) AS average_seconds
+          CAST(AVG((julianday(completed_at) - julianday(started_at)) * 86400) AS INTEGER) AS average_seconds
         FROM (
-          SELECT created_at, completed_at FROM analysis_jobs
-          WHERE organization_id = ? AND project_id = ? AND status = 'completed' AND completed_at IS NOT NULL
-          ORDER BY completed_at DESC LIMIT 20
+          SELECT j.completed_at, (SELECT MIN(e.created_at) FROM analysis_job_events e WHERE e.job_id = j.id AND e.event_type = 'claimed') AS started_at
+          FROM analysis_jobs j
+          WHERE j.organization_id = ? AND j.project_id = ? AND j.status = 'completed' AND j.completed_at IS NOT NULL
+            AND j.attempt_count = 1 AND j.retry_count = 0
+          ORDER BY j.completed_at DESC LIMIT 20
         )
+        WHERE started_at IS NOT NULL
       `).bind(organizationId, projectId).first<{ sample_count: number; average_seconds: number | null }>(),
+      // The worker consumes one host-wide queue. Return aggregate counts only;
+      // task details above still obey the caller's project access.
+      db.prepare(`
+        SELECT
+          COALESCE(SUM(CASE WHEN j.status = 'pending' OR j.lease_expires_at <= ? THEN 1 ELSE 0 END), 0) AS waiting_count,
+          COALESCE(SUM(CASE WHEN j.status != 'pending' AND j.lease_expires_at > ? THEN 1 ELSE 0 END), 0) AS running_count
+        FROM analysis_jobs j
+        INNER JOIN videos v ON v.id = j.video_id AND v.organization_id = j.organization_id AND v.project_id = j.project_id AND v.deleted_at IS NULL
+        WHERE j.status IN ('pending', 'queued', 'downloading', 'processing', 'transcribing', 'extracting', 'analyzing')
+      `).bind(queueNow, queueNow).first<{ waiting_count: number; running_count: number }>(),
     ]);
     const safeJobs = jobs.results.map((job) => ({ ...job, checkpoint_json: undefined, segment_progress: summarizeSegmentProgress(job.checkpoint_json) }));
     return Response.json({
       videos: videos.results, jobs: safeJobs, canWrite: canWriteProjectAccess(access),
-      queue: { sampleCount: queueStats?.sample_count ?? 0, averageSeconds: queueStats?.average_seconds ?? null },
+      queue: { sampleCount: queueStats?.sample_count ?? 0, averageSeconds: queueStats?.average_seconds ?? null, waitingCount: sharedQueue?.waiting_count ?? 0, runningCount: sharedQueue?.running_count ?? 0 },
       service: {
         credentialConfigured: readiness.credentialConfigured,
         modelConfigured: readiness.modelConfigured,
@@ -71,7 +85,7 @@ export async function GET(request: Request) {
         analyzerOnline: readiness.analyzerOnline,
         lastWorkerHeartbeat: readiness.lastWorkerHeartbeat,
         checkedAt: readiness.checkedAt,
-        canManageCookies: access.organizationRole === "admin",
+        canManageCookies: canWriteProjectAccess(access),
       },
     });
   } catch (error) { return errorResponse(error); }

@@ -93,6 +93,22 @@ def _normalize_model_cache(value: str) -> str:
     return fallback
 
 
+def _resolve_media_executable(value: str, label: str) -> str:
+    configured = value.strip()
+    if not configured:
+        raise RuntimeError(f"{label} executable is not configured")
+    candidate = Path(configured).expanduser()
+    if candidate.is_file():
+        return str(candidate.resolve())
+    resolved = shutil.which(configured)
+    if resolved:
+        return str(Path(resolved).resolve())
+    raise RuntimeError(
+        f"{label} executable was not found. Run tools\\setup-analyzer.bat "
+        "to repair FFmpeg and ffprobe."
+    )
+
+
 @dataclass(frozen=True)
 class AnalyzerSettings:
     base_url: str
@@ -301,7 +317,9 @@ def build_pipeline(settings: AnalyzerSettings, client: AnalyzerApiClient) -> Ana
     os.environ["PADDLE_PDX_CACHE_HOME"] = str(model_cache / "paddlex")
     os.environ["MODELSCOPE_CACHE"] = str(model_cache / "modelscope")
     os.environ["HF_HOME"] = str(model_cache / "huggingface")
-    media = FfmpegMediaProcessor(settings.ffmpeg, settings.ffprobe)
+    resolved_ffmpeg = _resolve_media_executable(settings.ffmpeg, "ffmpeg")
+    resolved_ffprobe = _resolve_media_executable(settings.ffprobe, "ffprobe")
+    media = FfmpegMediaProcessor(resolved_ffmpeg, resolved_ffprobe)
     primary_speech = _initialize_model_with_cache_repair(
         "FunASR speech recognition",
         lambda: FunAsrSpeechRecognizer(
@@ -383,6 +401,7 @@ def build_pipeline(settings: AnalyzerSettings, client: AnalyzerApiClient) -> Ana
             YtDlpPublicVideoResolver(
                 cookies_from_browser=settings.yt_dlp_cookies_from_browser,
                 cookie_file=settings.yt_dlp_cookie_file,
+                ffmpeg_location=resolved_ffmpeg,
             ),
             cookie_file=settings.yt_dlp_cookie_file,
         ),

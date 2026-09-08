@@ -26,9 +26,10 @@ test("normal startup stays on loopback while LAN mode is an explicit opt-in", as
 });
 
 test("team launch scripts install, migrate, start analysis automatically, stop safely, and expose a health check", async () => {
-  const [setup, start, stop, stopScript, analyzerStart, analyzerSupervisor, openLocal, portSelector, packageJson, migrations, health, config, deliveryScript, pythonInstaller, vcInstaller, nodeInstaller, ffmpegInstaller, deliveryGuide] = await Promise.all([
+  const [setup, start, lanStart, stop, stopScript, analyzerStart, analyzerSupervisor, openLocal, portSelector, packageJson, migrations, health, config, deliveryScript, pythonInstaller, vcInstaller, nodeInstaller, ffmpegInstaller, deliveryGuide] = await Promise.all([
     readFile(new URL("../setup-local.bat", import.meta.url), "utf8"),
     readFile(new URL("../start-local.bat", import.meta.url), "utf8"),
+    readFile(new URL("../scripts/start-lan.ps1", import.meta.url), "utf8"),
     readFile(new URL("../stop-local.bat", import.meta.url), "utf8"),
     readFile(new URL("../scripts/stop-local.ps1", import.meta.url), "utf8"),
     readFile(new URL("../scripts/start-analyzer-background.ps1", import.meta.url), "utf8"),
@@ -52,6 +53,12 @@ test("team launch scripts install, migrate, start analysis automatically, stop s
   assert.match(setup, /process\.arch === 'x64'/);
   assert.match(setup, /major === 22 && minor >= 13/);
   assert.match(setup, /call "%NPM_CMD%" ci/);
+  assert.match(setup, /node_modules\\wrangler\\bin\\wrangler\.js/);
+  assert.match(setup, /Web dependencies passed completeness verification/);
+  assert.match(setup, /Windows Security quarantine and folder permissions/);
+  assert.match(start, /node_modules\\wrangler\\bin\\wrangler\.js/);
+  assert.match(lanStart, /node_modules\\wrangler\\bin\\wrangler\.js/);
+  assert.match(lanStart, /Web dependencies are missing or incomplete/);
   assert.match(start, /db:local:migrate/);
   assert.match(start, /knowledge:local:sync/);
   assert.match(start, /LOCAL_APP_URL=http:\/\/127\.0\.0\.1:%LOCAL_APP_PORT%/);
@@ -75,10 +82,17 @@ test("team launch scripts install, migrate, start analysis automatically, stop s
   assert.match(analyzerStart, /analyzer\.base-url/);
   assert.match(analyzerStart, /taskkill\.exe \/PID \$savedId \/T \/F/);
   assert.match(analyzerStart, /Environment\]::GetEnvironmentVariable/);
+  assert.match(analyzerStart, /Remove-Item Env:ANALYZER_FFMPEG/);
+  assert.match(analyzerStart, /Remove-Item Env:ANALYZER_FFPROBE/);
+  assert.match(analyzerStart, /analyzer-media-runtime\.ps1/);
+  assert.match(analyzerStart, /Import-AnalyzerMediaRuntime/);
   assert.match(analyzerSupervisor, /while \(\$true\)/);
   assert.match(analyzerSupervisor, /will retry automatically/);
   assert.match(analyzerSupervisor, /ANALYZER_BASE_URL/);
   assert.match(analyzerSupervisor, /analyzer-supervisor\.log/);
+  assert.match(analyzerSupervisor, /Import-AnalyzerMediaRuntime/);
+  assert.match(analyzerSupervisor, /Remove-Item Env:ANALYZER_FFMPEG/);
+  assert.match(analyzerSupervisor, /Remove-Item Env:ANALYZER_FFPROBE/);
   assert.match(openLocal, /start-analyzer-background\.ps1/);
   assert.match(portSelector, /TcpListener/);
   assert.match(portSelector, /3000, 3100, 3200, 5173/);
@@ -91,6 +105,7 @@ test("team launch scripts install, migrate, start analysis automatically, stop s
   const analyzerSetup = await readFile(new URL("../tools/setup-analyzer.bat", import.meta.url), "utf8");
   const manualAnalyzerStart = await readFile(new URL("../tools/start-analyzer.bat", import.meta.url), "utf8");
   const analyzerDiagnostic = await readFile(new URL("../scripts/check-analyzer.ps1", import.meta.url), "utf8");
+  const analyzerMediaRuntime = await readFile(new URL("../scripts/analyzer-media-runtime.ps1", import.meta.url), "utf8");
   const analyzerConstraints = await readFile(new URL("../services/analyzer/constraints-windows.txt", import.meta.url), "utf8");
   assert.match(analyzerSetup, /:find_python/);
   assert.match(analyzerSetup, /--check-python/);
@@ -137,6 +152,13 @@ test("team launch scripts install, migrate, start analysis automatically, stop s
   assert.match(analyzerDiagnostic, /catch \[IO\.IOException\]/);
   assert.match(analyzerDiagnostic, /No analyzer startup error is recorded/);
   assert.match(analyzerDiagnostic, /Secret values are not printed/);
+  assert.match(analyzerDiagnostic, /Host-level ANALYZER_FFMPEG\/ANALYZER_FFPROBE values are ignored/);
+  assert.match(analyzerMediaRuntime, /\.local\\ffmpeg\.path/);
+  assert.match(analyzerMediaRuntime, /ANALYZER_FFMPEG/);
+  assert.match(analyzerMediaRuntime, /ANALYZER_FFPROBE/);
+  assert.match(analyzerMediaRuntime, /\$env:Path = \$pathEntries -join ";"/);
+  assert.match(analyzerMediaRuntime, /third-party media helpers/);
+  assert.match(analyzerMediaRuntime, /Text\.DecoderFallbackException/);
   assert.doesNotMatch(analyzerSetup, /winget|start "" "https:\/\//i);
   assert.match(pythonInstaller, /https:\/\/www\.python\.org\/ftp\/python\/\$Version\/\$fileName/);
   assert.match(pythonInstaller, /https:\/\/mirrors\.aliyun\.com\/python-release\/windows\/\$fileName/);

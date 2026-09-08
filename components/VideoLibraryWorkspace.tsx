@@ -166,6 +166,7 @@ export function VideoLibraryWorkspace({ mode }: { mode: "benchmark" | "assets" }
         return <article className={`library-card${checked ? " selected" : ""}`} key={entry.reference_id ?? entry.id}>
           <div className="library-cover">
             {coverUrl && !coverFailures[entry.id] ? (
+              // eslint-disable-next-line @next/next/no-img-element -- Private media requires browser session cookies.
               <img
                 key={coverRetries[entry.id] ?? 0}
                 src={coverUrl}

@@ -28,6 +28,8 @@ test("analysis jobs can be cancelled or recovered after an expired lease", async
   assert.match(retry, /lease_expires_at/);
   assert.match(workspace, /cancelJob/);
   assert.match(workspace, /jobActionId/);
+  assert.match(workspace, /\[WinError 2\]/);
+  assert.match(workspace, /tools\\\\setup-analyzer\.bat/);
 });
 
 test("analysis retries resume from a durable evidence checkpoint", async () => {
@@ -129,9 +131,11 @@ test("new analysis tasks support standard and max while legacy values remain rea
   assert.match(upload, /analysisProfile/);
   assert.match(claim, /analysis_profile/);
   assert.match(reanalyze, /reanalysis_created/);
-  assert.match(workspace, /useState<AnalysisProfile>\("standard"\)/);
+  assert.match(workspace, /useAnalysisProfile\(\)/);
   assert.match(workspace, /标准模式 · 推荐/);
-  assert.match(workspace, /liming\.analysisProfile\.v1/);
+  const preference = await readFile(new URL("../components/useAnalysisProfile.ts", import.meta.url), "utf8");
+  assert.match(preference, /fallback: AnalysisProfile = "standard"/);
+  assert.match(preference, /liming\.analysisProfile\.v1/);
   assert.match(provider, /64_000/);
   assert.match(provider, /12_000/);
   assert.match(provider, /profile_segment_limit = 12 if profile == "max" else 6/);
