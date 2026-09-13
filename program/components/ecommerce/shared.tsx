@@ -24,14 +24,18 @@ export const displayTime = (value: string | null) => value ? new Date(value).toL
 export function localTime(value: string | null) { if (!value) return ""; const d = new Date(value); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16); }
 export const isoTime = (value: string) => value ? new Date(value).toISOString() : null;
 
+export class EcommerceApiError extends Error {
+  constructor(message: string, readonly status: number, readonly code?: string) { super(message); }
+}
+
 export async function ecommerceApi<T>(scope: Scope, path: string, body?: unknown, method = "POST"): Promise<T> {
   const query = new URLSearchParams(scope);
   const response = await scopedFetch(`/api/ecommerce/${path}${path.includes("?") ? "&" : "?"}${query}`, body === undefined ? {} : {
     method, headers: { "content-type": "application/json" }, body: JSON.stringify({ ...scope, ...(body as Record<string, unknown>) }),
   }, scope);
-  const result = await response.json() as { error?: { message?: string }; run?: { error_message?: string } };
+  const result = await response.json() as { error?: { message?: string; code?: string }; run?: { error_message?: string } };
   if (!isCurrentClientScope(scope)) throw new ScopeChangedError();
-  if (!response.ok) throw new Error(result.error?.message ?? result.run?.error_message ?? "请求没有完成，请刷新运行记录后核对。");
+  if (!response.ok) throw new EcommerceApiError(result.error?.message ?? result.run?.error_message ?? "请求没有完成，请刷新运行记录后核对。", response.status, result.error?.code);
   return result as T;
 }
 
@@ -47,6 +51,21 @@ export function useEcommerceAction() {
     finally { pending.current = false; if (active.current) setBusy(false); }
   }, []);
   return { busy, error, message, act, setError };
+}
+
+// Several independent forms can be dirty at once. Saving one must not
+// silently clear the navigation protection for the others.
+export function useDirtySections(dirty: (value: boolean) => void) {
+  const sections = useRef(new Set<string>());
+  const mark = (section: string, value: boolean) => {
+    if (value) sections.current.add(section); else sections.current.delete(section);
+    dirty(sections.current.size > 0);
+  };
+  const discardSection = (section: string) => {
+    if (sections.current.has(section) && !window.confirm("放弃此表单尚未保存的修改吗？")) return false;
+    mark(section, false); return true;
+  };
+  return { mark, discardSection };
 }
 
 export function Notices({ error, message }: { error: string; message?: string }) {

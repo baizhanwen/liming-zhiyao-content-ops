@@ -25,6 +25,9 @@ export async function POST(request: Request) {
     const input = await readInput(request, caseSchema), access = await authorize(request, input, true);
     const source = await readCaseSource(access, input.referenceId, input.analysisId, input.transcriptId);
     if (!quoteLocated(input.sourceQuote, source.sourceText)) throw new EcommerceError("CASE_QUOTE_NOT_FOUND", "引用片段无法在所选分析或转写中定位。", 409);
+    const existing = await getD1().prepare("SELECT id FROM ecommerce_case_profiles WHERE organization_id=? AND project_id=? AND reference_id=? AND analysis_id=?")
+      .bind(access.organizationId, access.projectId, input.referenceId, input.analysisId).first();
+    if (existing) throw new EcommerceError("CASE_ALREADY_EXISTS", "这份分析已有案例，请在上方编辑原案例。", 409);
     const id = crypto.randomUUID(), now = new Date().toISOString(), scope = [access.organizationId, access.projectId];
     const { organizationId, projectId, ...body } = input; void organizationId; void projectId;
     const result = await getD1().batch([
@@ -34,6 +37,26 @@ export async function POST(request: Request) {
       auditStatement(access, "ecommerce.case.created", id),
     ]); requireChanged(result);
     return Response.json({ case: { id, revision: 1 } }, { status: 201 });
+  });
+}
+const editSchema = caseSchema.safeExtend({ id: z.string().min(1).max(100), revision: z.number().int().min(1), status: z.literal("draft") }).strict();
+export async function PUT(request: Request) {
+  return endpoint(async () => {
+    const input = await readInput(request, editSchema), access = await authorize(request, input, true), db = getD1(), scope = [access.organizationId, access.projectId];
+    const row = await db.prepare("SELECT reference_id,analysis_id FROM ecommerce_case_profiles WHERE id=? AND organization_id=? AND project_id=?").bind(input.id, ...scope).first<{ reference_id: string; analysis_id: string }>();
+    if (!row) throw new EcommerceError("CASE_UNAVAILABLE", "案例不可用。", 404);
+    if (row.reference_id !== input.referenceId || row.analysis_id !== input.analysisId) throw new EcommerceError("CASE_SOURCE_CHANGED", "编辑案例不能更换原视频或分析，请另建案例。", 409);
+    const source = await readCaseSource(access, input.referenceId, input.analysisId, input.transcriptId);
+    if (!quoteLocated(input.sourceQuote, source.sourceText)) throw new EcommerceError("CASE_QUOTE_NOT_FOUND", "引用片段无法在所选分析或转写中定位。", 409);
+    const { organizationId, projectId, id, revision, ...body } = input; void organizationId; void projectId;
+    const result = await db.batch([
+      db.prepare(`UPDATE ecommerce_case_profiles SET transcript_id=?,body_json=?,source_snapshot=?,content_hash=?,status='draft',revision=revision+1,confirmed_by=NULL,confirmed_at=NULL,updated_at=?
+        WHERE id=? AND organization_id=? AND project_id=? AND revision=? AND ${enabledGuard}
+        AND EXISTS(SELECT 1 FROM project_video_references WHERE id=? AND organization_id=? AND project_id=? AND status='active' AND purpose='benchmark')`)
+        .bind(input.transcriptId, JSON.stringify(body), input.sourceQuote, await hashJson(body), new Date().toISOString(), id, ...scope, revision, ...scope, input.referenceId, ...scope),
+      auditStatement(access, "ecommerce.case.edited", id, { previousRevision: revision }),
+    ]); requireChanged(result);
+    return Response.json({ case: { id, revision: revision + 1, status: "draft" } });
   });
 }
 const stateSchema = scopeSchema.extend({ id: z.string().min(1).max(100), revision: z.number().int().min(1), status: confirmationSchema }).strict();

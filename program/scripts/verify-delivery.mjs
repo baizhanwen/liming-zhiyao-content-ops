@@ -86,6 +86,12 @@ try {
     assert.ok(!/^[A-Z_]+API_KEY[ \t]*=[ \t]*\S/m.test(variables), "Delivery contains a configured API key");
     const features = manifest.license.features;
     for (const [enabled, folder] of [[features.videoAnalysis, "app/api/videos"], [features.wechatImages, "app/api/wechat-images"], [features.insights, "app/api/reports"]]) assert.equal(existsSync(path.join(packageRoot, folder)), enabled, folder);
+    for (const file of ["scripts/test-ecommerce-browser.mjs", "scripts/test-ecommerce-model.mjs", "scripts/ecommerce-test-model.mjs"]) assert.equal(existsSync(path.join(packageRoot, file)), false, `Test helper in delivery: ${file}`);
+    if (!manifest.authorizedKnowledge.included) {
+      const catalog = readFileSync(path.join(packageRoot, "lib/ecommerce/starter-catalog.ts"), "utf8");
+      assert.match(catalog, /ECOMMERCE_STARTER_VERSION = "excluded"/);
+      assert.doesNotMatch(catalog, /scene-question|barrier-first|authorized-methodology-router/);
+    }
   });
   cpSync(packageRoot, installRoot, { recursive: true });
   const syntheticVars = readFileSync(path.join(installRoot, ".dev.vars"), "utf8").replace(/^FIRST_RUN_SETUP_CODE_HASH=.*$/m, `FIRST_RUN_SETUP_CODE_HASH=${createHash("sha256").update(setupCode).digest("hex")}`).replace(/^ANALYZER_SERVICE_TOKEN=.*$/m, `ANALYZER_SERVICE_TOKEN=${randomBytes(32).toString("hex")}`);

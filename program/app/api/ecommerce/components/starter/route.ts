@@ -10,7 +10,7 @@ const schema = scopeSchema.extend({ keys: z.array(z.string().min(1).max(100)).mi
 export async function GET(request: Request) {
   return endpoint(async () => {
     const access = await authorize(request, queryScope(request));
-    return Response.json({ version: ECOMMERCE_STARTER_VERSION, cards: ECOMMERCE_STARTER_CARDS, canImport: access.organizationRole === "admin" && Boolean(access.settings.enabled) });
+    return Response.json({ version: ECOMMERCE_STARTER_VERSION, cards: ECOMMERCE_STARTER_CARDS, canImport: ECOMMERCE_STARTER_CARDS.length > 0 && access.organizationRole === "admin" && Boolean(access.settings.enabled) });
   });
 }
 export async function POST(request: Request) {

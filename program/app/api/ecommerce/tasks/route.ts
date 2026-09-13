@@ -12,7 +12,9 @@ export async function GET(request: Request) {
       const task = await readTask(access, taskId);
       const [versions, runs, publications, reviews] = await Promise.all([
         db.prepare("SELECT * FROM ecommerce_versions WHERE task_id=? AND organization_id=? AND project_id=? ORDER BY version DESC LIMIT 100").bind(taskId, ...scope).all(),
-        db.prepare("SELECT * FROM ecommerce_generation_runs WHERE task_id=? AND organization_id=? AND project_id=? ORDER BY created_at DESC LIMIT 30").bind(taskId, ...scope).all(),
+        db.prepare(`SELECT r.*, (SELECT COUNT(*) FROM model_calls m WHERE m.organization_id=r.organization_id AND m.project_id=r.project_id AND m.task_type LIKE 'ecommerce.%' AND json_extract(m.input_json,'$.runId')=r.id AND m.status='started') AS active_calls,
+          COALESCE((SELECT MAX(COALESCE(m.completed_at,m.created_at)) FROM model_calls m WHERE m.organization_id=r.organization_id AND m.project_id=r.project_id AND m.task_type LIKE 'ecommerce.%' AND json_extract(m.input_json,'$.runId')=r.id),r.created_at) AS last_activity_at
+          FROM ecommerce_generation_runs r WHERE r.task_id=? AND r.organization_id=? AND r.project_id=? ORDER BY r.created_at DESC LIMIT 30`).bind(taskId, ...scope).all(),
         db.prepare("SELECT * FROM ecommerce_publications WHERE task_id=? AND organization_id=? AND project_id=? ORDER BY published_at DESC LIMIT 100").bind(taskId, ...scope).all(),
         db.prepare("SELECT * FROM ecommerce_reviews WHERE task_id=? AND organization_id=? AND project_id=? ORDER BY created_at DESC LIMIT 100").bind(taskId, ...scope).all(),
       ]);

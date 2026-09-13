@@ -5,6 +5,15 @@ import { ecommerceGenerationFixture } from "./helpers/ecommerce-generation-fixtu
 
 const install = (f, keys) => f.route("components/starter").POST(f.request("POST", { keys, confirm: true }));
 
+test("delivery without authorized starter catalog exposes no importable methods", async t => {
+  const f = await ecommerceFixture(t); await f.enable();
+  f.mock("lib/ecommerce/starter-catalog.ts", { ECOMMERCE_STARTER_VERSION: "excluded", ECOMMERCE_STARTER_CARDS: [] });
+  const result = await (await f.route("components/starter").GET(f.request("GET"))).json();
+  assert.deepEqual(result.cards, []); assert.equal(result.canImport, false);
+  assert.equal((await install(f, ["scene-question"])).status, 400);
+  assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM ecommerce_components").get().n, 0);
+});
+
 test("starter catalog traces each adaptation to authorized methods and is never performance evidence", async t => {
   const f = await ecommerceFixture(t);
   const response = await f.route("components/starter").GET(f.request("GET"));

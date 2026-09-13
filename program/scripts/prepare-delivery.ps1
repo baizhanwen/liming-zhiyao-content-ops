@@ -72,6 +72,7 @@ $excludedFiles = @(
     "db\schema.ts",
     "resources\authorized\dbskill\SOURCE.md", "resources\delivery\DELIVERY-GUIDE.txt",
     "scripts\verify-delivery.mjs", "scripts\test-lan-runtime.mjs", "scripts\lan-browser-checks.mjs", "scripts\lan-worker-check.py",
+    "scripts\test-ecommerce-browser.mjs", "scripts\test-ecommerce-model.mjs", "scripts\ecommerce-test-model.mjs",
     "scripts\start-analyzer.ps1", "services\analyzer\README.md", "services\analyzer\uv.lock", "tools\README.md"
 )
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -226,6 +227,15 @@ export const CONTENT_CREATION_METHODOLOGY = "";
 export const TOPIC_CREATION_METHODOLOGY = "";
 "@
         [System.IO.File]::WriteAllText((Join-Path $packageRoot "lib\authorized-content-methodology.ts"), ($emptyMethodology.TrimEnd() -replace "`r?`n", "`r`n") + "`r`n", $utf8NoBom)
+        # The ecommerce starter pack is adapted from the authorized catalog.
+        # Excluding that catalog must also physically remove these adaptations.
+        $emptyEcommerceCatalog = @'
+import type { ComponentInput } from "./contracts";
+type Card = Omit<ComponentInput, "organizationId" | "projectId" | "id" | "revision">;
+export const ECOMMERCE_STARTER_VERSION = "excluded";
+export const ECOMMERCE_STARTER_CARDS: { key: string; card: Card; methods: { id: string; version: string; source: { document: string; revision: string } }[] }[] = [];
+'@
+        [System.IO.File]::WriteAllText((Join-Path $packageRoot "lib\ecommerce\starter-catalog.ts"), ($emptyEcommerceCatalog.TrimEnd() -replace "`r?`n", "`r`n") + "`r`n", $utf8NoBom)
         Replace-PackageText "services\analyzer\liming_analyzer\providers.py" '当前分析方法已获授权并参考利明智耀授权方法库。' '当前分析使用通用的短视频结构化分析规则。'
     } else {
         $legacyMethodPath = Join-Path $packageRoot "resources\authorized\dbskill"
