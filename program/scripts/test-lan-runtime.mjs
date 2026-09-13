@@ -1,3 +1,4 @@
+import { splitSql } from "./sql-statements.mjs";
 import assert from "node:assert/strict";
 import { randomBytes, pbkdf2Sync, createHash } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -22,24 +23,6 @@ const users = Array.from({ length: 11 }, (_, i) => ({
   id: `runtime-user-${i}`, email: `runtime-${i}@example.invalid`,
   org: i === 10 ? "org-other" : "org-team", project: i === 10 ? "project-other" : i % 2 ? "project-b" : "project-a",
 }));
-
-function splitSql(sql) {
-  const statements = [];
-  let statement = "", quote = null;
-  for (let i = 0; i < sql.length; i++) {
-    const c = sql[i], next = sql[i + 1];
-    if (!quote && c === "-" && next === "-") { while (i < sql.length && sql[i] !== "\n") i++; statement += " "; continue; }
-    if (!quote && c === "/" && next === "*") { i += 2; while (i < sql.length && !(sql[i] === "*" && sql[i + 1] === "/")) i++; i++; statement += " "; continue; }
-    if (quote) {
-      statement += c;
-      if (c === quote) { if (next === quote) statement += sql[++i]; else quote = null; }
-    } else if (["'", '"', "`"].includes(c)) { quote = c; statement += c; }
-    else if (c === ";") { if (statement.trim()) statements.push(statement.trim()); statement = ""; }
-    else statement += c;
-  }
-  if (statement.trim()) statements.push(statement.trim());
-  return statements;
-}
 
 async function start() {
   const server = path.join(root, "dist/server");
