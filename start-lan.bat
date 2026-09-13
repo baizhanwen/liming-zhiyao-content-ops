@@ -1,6 +1,10 @@
 @echo off
 setlocal
-cd /d "%~dp0"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\start-lan.ps1"
-if errorlevel 1 pause
-
+if not exist "%~dp0program\start-lan.bat" (
+  echo [ERROR] The program folder is missing. Keep it beside this launcher.
+  pause
+  exit /b 1
+)
+cd /d "%~dp0program"
+call "%~dp0program\start-lan.bat" %*
+exit /b %ERRORLEVEL%

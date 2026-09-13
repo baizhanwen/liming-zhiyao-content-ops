@@ -1,68 +1,24 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
-
-# dependencies
-/node_modules
-/.pnp
-.pnp.*
-.yarn/*
-!.yarn/patches
-!.yarn/plugins
-!.yarn/releases
-!.yarn/versions
-
-# testing
-/coverage
-
-# next.js
-/.next/
-/.vinext/
-/out/
+# Runtime data and credentials are never part of a source checkout.
+**/node_modules/
+**/.local/
+**/.wrangler/
+**/.next/
+**/.vinext/
+**/dist/
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/
+**/.ruff_cache/
+**/.env*
+!**/.env.example
+**/.dev.vars*
+!**/.dev.vars.example
 *.tsbuildinfo
-
-# misc
-.DS_Store
 *.pem
-
-# debug
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
-
-# env files (can opt-in for committing if needed)
-.env*
-!.env.example
-.dev.vars
-.dev.vars.*
-!.dev.vars.example
-
-# vercel
-.vercel
-
-/dist/
-/.wrangler/
-/outputs/
-/work/
+*.key
 /backups/
 /deliveries/
-/.local/
-/.tmp/
-
-# local reference material and nested repositories
-/03_Skill库/
-/data/
-/dbskill/
-
-# npm/package-lock.json is the canonical package manager for delivery
-/pnpm-lock.yaml
-/pnpm-workspace.yaml
-
-# python
-__pycache__/
-*.py[cod]
-*.egg-info/
-.pytest_cache/
-.ruff_cache/
-.venv/
-services/analyzer/model-cache/
-services/analyzer/build/
+/cleanup-backups/
+**/delivery-credential.txt
+**/cookies.txt
+**/douyin-cookies.txt

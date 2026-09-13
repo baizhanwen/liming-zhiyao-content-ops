@@ -1,14 +1,10 @@
 @echo off
 setlocal
-cd /d "%~dp0"
-
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\stop-local.ps1"
-set "STOP_EXIT=%ERRORLEVEL%"
-echo.
-if "%STOP_EXIT%"=="0" (
-  echo [Liming Zhiyao] Stop check completed.
-) else (
-  echo [ERROR] The local web app could not be stopped safely.
+if not exist "%~dp0program\stop-local.bat" (
+  echo [ERROR] The program folder is missing. Keep it beside this launcher.
+  pause
+  exit /b 1
 )
-pause
-exit /b %STOP_EXIT%
+cd /d "%~dp0program"
+call "%~dp0program\stop-local.bat" %*
+exit /b %ERRORLEVEL%

@@ -1,0 +1,2 @@
+/** Shared by generation and citation-only correction; no new output fields. */
+export const BENCHMARK_CONTENT_GUIDANCE = `所选 benchmark 的写法借鉴沿用现有方法说明与反例规避逻辑，不要求每条都正向采用一种写法。内容借鉴是可选的：只在与本题相关且有增量价值时，吸收来源中有依据的问题、观点、解释、操作方法或案例；不强制每条采用内容，不为体现参考作用擅自扩题或改变账号口吻。采用时在现有 qualityReview.benchmarkMethods 对应项的 application 中说明借鉴内容及本稿落点，并通过该 benchmark 的 citations.quote 保留相关来源原文；未采用时可在 application 简述原因，不新增输出字段。外部案例须明确人物或来源归属，观点须保留适用范围，不得把他人的经历、数据、成绩写成作者亲历或客户事实，不得把单个来源的观点升级为已验证的普遍结论；没有真实测试记录时，只能提出待验证步骤，不能编造测试结果。仅提供分析摘要时，不从标题或摘要补猜原视频未提供的细节。没有勾选 benchmark 时，不引入任何未选素材。`;
