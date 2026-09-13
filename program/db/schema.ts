@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import { index, integer, sqliteTable, text, uniqueIndex, type AnySQLiteColumn } from "drizzle-orm/sqlite-core";
+export * from "./ecommerce-schema";
 
 const id = () => text("id").primaryKey();
 const timestamps = { createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull() };
