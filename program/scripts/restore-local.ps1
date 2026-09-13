@@ -20,10 +20,17 @@ if ($confirmation -cne "RESTORE") { throw "Restore cancelled." }
 
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $staging = Join-Path ([System.IO.Path]::GetTempPath()) "liming-zhiyao-restore-$timestamp"
+$temporaryRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+$staging = [System.IO.Path]::GetFullPath($staging)
+if (-not $staging.StartsWith($temporaryRoot, [StringComparison]::OrdinalIgnoreCase)) { throw "Restore staging must stay inside the temporary directory." }
 Expand-Archive -LiteralPath $selected.FullName -DestinationPath $staging
 if (-not (Test-Path -LiteralPath (Join-Path $staging "state")) -or -not (Test-Path -LiteralPath (Join-Path $staging "manifest.json"))) { Remove-Item -LiteralPath $staging -Recurse -Force; throw "The backup structure is invalid." }
 $statePath = Join-Path $projectRoot ".wrangler\state"
 $rollbackPath = Join-Path $projectRoot ".wrangler\state-before-restore-$timestamp"
+$resolvedProject = [System.IO.Path]::GetFullPath($projectRoot).TrimEnd('\') + '\'
+$statePath = [System.IO.Path]::GetFullPath($statePath)
+$rollbackPath = [System.IO.Path]::GetFullPath($rollbackPath)
+if (-not $statePath.StartsWith($resolvedProject, [StringComparison]::OrdinalIgnoreCase) -or -not $rollbackPath.StartsWith($resolvedProject, [StringComparison]::OrdinalIgnoreCase)) { throw "Restore targets must stay inside this installation." }
 if (Test-Path -LiteralPath $statePath) { Move-Item -LiteralPath $statePath -Destination $rollbackPath }
 try { Move-Item -LiteralPath (Join-Path $staging "state") -Destination $statePath } catch { if (Test-Path -LiteralPath $rollbackPath) { Move-Item -LiteralPath $rollbackPath -Destination $statePath }; throw } finally { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }
 Write-Host "Restore completed. Previous state: $rollbackPath" -ForegroundColor Green

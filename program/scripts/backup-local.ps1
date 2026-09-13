@@ -14,6 +14,9 @@ New-Item -ItemType Directory -Force -Path $backupRoot | Out-Null
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $destination = Join-Path $backupRoot "liming-zhiyao-$timestamp.zip"
 $staging = Join-Path ([System.IO.Path]::GetTempPath()) "liming-zhiyao-backup-$timestamp"
+$temporaryRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+$staging = [System.IO.Path]::GetFullPath($staging)
+if (-not $staging.StartsWith($temporaryRoot, [StringComparison]::OrdinalIgnoreCase)) { throw "Backup staging must stay inside the temporary directory." }
 New-Item -ItemType Directory -Force -Path $staging | Out-Null
 try {
     Copy-Item -LiteralPath ".wrangler\state" -Destination (Join-Path $staging "state") -Recurse

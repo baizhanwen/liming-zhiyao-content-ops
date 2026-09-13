@@ -73,6 +73,7 @@ $excludedFiles = @(
     "resources\authorized\dbskill\SOURCE.md", "resources\delivery\DELIVERY-GUIDE.txt",
     "scripts\verify-delivery.mjs", "scripts\test-lan-runtime.mjs", "scripts\lan-browser-checks.mjs", "scripts\lan-worker-check.py",
     "scripts\test-ecommerce-browser.mjs", "scripts\test-ecommerce-model.mjs", "scripts\ecommerce-test-model.mjs",
+    "scripts\verify-ecommerce-upgrade.mjs",
     "scripts\start-analyzer.ps1", "services\analyzer\README.md", "services\analyzer\uv.lock", "tools\README.md"
 )
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -185,6 +186,9 @@ export function deliveryFeatureEnabled(feature: DeliveryFeature) {
             "scripts\install-python311.ps1", "scripts\install-vcredist.ps1", "scripts\install-ffmpeg.ps1", "scripts\refresh-douyin-cookies.ps1", "scripts\start-analyzer.ps1", "scripts\start-analyzer-background.ps1", "scripts\run-analyzer-supervisor.ps1", "scripts\analyzer-media-runtime.ps1", "scripts\check-analyzer.ps1", "scripts\repair-analyzer-models.ps1",
             "tools\refresh-douyin-cookies.bat", "tools\install-cookie-export-extension.bat", "tools\setup-analyzer.bat", "tools\start-analyzer.bat", "tools\check-analyzer.bat", "tools\repair-analyzer-models.bat", "tools\repair-analyzer-ocr.bat"
         ) | ForEach-Object { Remove-PackagePath $_ }
+        # The core dashboard survives when video analysis is excluded. Its
+        # active-job count must not import the removed analysis state machine.
+        Replace-PackageText "app\api\dashboard\route.ts" '(?m)^import \{ ACTIVE_ANALYSIS_STATUSES_SQL \} from "\.\./\.\./\.\./lib/analysis-jobs";\r?\n' "const ACTIVE_ANALYSIS_STATUSES_SQL = `"NULL`";`r`n"
         Replace-PackageText "scripts\open-local.ps1" '(?m)^\s*& "\$PSScriptRoot\\start-analyzer-background\.ps1" -BaseUrl \$Url\r?\n' ''
         Replace-PackageText "scripts\open-lan.ps1" '(?m)^\s*& "\$PSScriptRoot\\start-analyzer-background\.ps1" -BaseUrl \$HealthUrl\r?\n' ''
         Replace-PackageText "start-local.bat" 'The browser and video analyzer will start automatically when ready\.' 'The browser will open automatically when ready.'
