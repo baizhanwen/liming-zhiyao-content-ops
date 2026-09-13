@@ -10,6 +10,7 @@ import { generationActorGuard, generationSourceGuard } from "./source-guard";
 import { packSchema, runSchema, type EcommercePack } from "./contracts";
 import { ECOMMERCE_PROMPT_VERSION, ECOMMERCE_SYSTEM, mergeEcommercePatch, patchSchema, planIssues, planSchema, reviewIssues, reviewSchema, validateEcommercePack, type EcommercePlan } from "./generation-contract";
 import { hashJson } from "./products";
+import { activeRunPredicate } from "./runs";
 
 type RunInput = z.infer<typeof runSchema>;
 type RunRow = { id: string; input_hash: string; status: string; result_version_id: string | null; error_code: string | null; error_message: string | null };
@@ -45,8 +46,10 @@ async function invokeRecorded(request: Request, access: EcommerceAccess, runId: 
   try {
     const response = await invokeContentModel({ system: ECOMMERCE_SYSTEM, user, profile: "max", maxTokens: stage === "plan" ? 4000 : 12000, temperature: stage === "review" ? .1 : .45 });
     const parsed = parseModelObject(response.content);
-    await db.prepare("UPDATE model_calls SET status='completed',output_json=?,latency_ms=?,completed_at=? WHERE id=? AND organization_id=? AND project_id=? AND status='started'")
+    const recorded = await db.prepare("UPDATE model_calls SET status='completed',output_json=?,latency_ms=?,completed_at=? WHERE id=? AND organization_id=? AND project_id=? AND status='started'")
       .bind(JSON.stringify(parsed), response.latencyMs, new Date().toISOString(), callId, ...scope).run();
+    const running = await db.prepare("SELECT id FROM ecommerce_generation_runs WHERE id=? AND organization_id=? AND project_id=? AND status='running'").bind(runId, ...scope).first();
+    if (!recorded.meta.changes || !running) throw new EcommerceError("RUN_ENDED", "本次运行已取消或恢复，迟到的模型结果不会保存。", 409);
     return parsed;
   } catch (error) {
     const code = error instanceof EcommerceError ? error.code : "MODEL_CALL_FAILED";
@@ -79,8 +82,8 @@ export async function generateEcommerce(request: Request, access: EcommerceAcces
   const inserted = await db.batch([
     db.prepare(`INSERT INTO ecommerce_generation_runs (id,organization_id,project_id,task_id,idempotency_key,input_hash,base_version,task_revision,operation,status,created_by,created_at)
       SELECT ?,?,?,?,?,?,?,?,?,'running',?,? WHERE EXISTS(SELECT 1 FROM ecommerce_tasks WHERE id=? AND organization_id=? AND project_id=? AND revision=? AND current_version=? AND status!='archived')
-      AND EXISTS(SELECT 1 FROM ecommerce_project_settings s WHERE s.organization_id=? AND s.project_id=? AND s.enabled=1 AND (SELECT COUNT(*) FROM ecommerce_generation_runs r WHERE r.organization_id=s.organization_id AND r.project_id=s.project_id AND r.status='running')<s.max_concurrent)
-      AND NOT EXISTS(SELECT 1 FROM ecommerce_generation_runs WHERE task_id=? AND status='running') ON CONFLICT(organization_id,project_id,idempotency_key) DO NOTHING`)
+      AND EXISTS(SELECT 1 FROM ecommerce_project_settings s WHERE s.organization_id=? AND s.project_id=? AND s.enabled=1 AND (SELECT COUNT(*) FROM ecommerce_generation_runs r WHERE r.organization_id=s.organization_id AND r.project_id=s.project_id AND ${activeRunPredicate})<s.max_concurrent)
+      AND NOT EXISTS(SELECT 1 FROM ecommerce_generation_runs r WHERE r.task_id=? AND ${activeRunPredicate}) ON CONFLICT(organization_id,project_id,idempotency_key) DO NOTHING`)
       .bind(runId, ...scope, taskId, input.idempotencyKey, requestHash, input.baseVersion, input.revision, input.replace ?? "generate", access.userId, now, taskId, ...scope, input.revision, input.baseVersion, ...scope, taskId),
     auditStatement(access, "ecommerce.generation.started", taskId, { runId }),
   ]);
