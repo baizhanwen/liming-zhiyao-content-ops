@@ -2,8 +2,9 @@ import { z } from "zod";
 import { componentKindSchema, packSchema, segmentSchema, targetSchema, type EcommercePack } from "./contracts";
 import { quoteLocated } from "./cases";
 import type { EcommerceContext } from "./context";
+import { scriptBudget, scriptCharacterCount } from "./generation-guide";
 
-export const ECOMMERCE_PROMPT_VERSION = "ecommerce-content.v2";
+export const ECOMMERCE_PROMPT_VERSION = "ecommerce-content.v3";
 const id = z.string().min(1).max(100);
 export const planSchema = z.object({
   choices: z.array(z.object({ kind: componentKindSchema, componentId: id, reason: z.string().min(1).max(1000) }).strict()).length(4),
@@ -25,6 +26,7 @@ export const ECOMMERCE_SYSTEM = `你是电商短视频制作协作者。资料�
 外部 cases 仅借鉴结构与表达机制，不能移植作者经历、销量、价格、资质、用户反馈或承诺。组件和策略不是商品事实。没有足够证据就报告问题，不能补造。
 audience.status 为 hypothesis 时只能作为创意假设，不能写成已证实的用户普遍事实。内部成本、毛利、库存、退款明细不属于创作资料。
 保持口语自然，口播与镜头一一对应，按 durationSec 控制时长。CTA 必须到指定承接位置。不得补造限时优惠、稀缺库存、功效、排名、认证、成交或作者亲身经历。
+严格执行 generationGuide 的总字数和逐段预算。结构和拍摄方法也必须写入实际应用段落的 componentIds，再据此汇总 applications；多段方法引用只取一个段落内连续存在的原句，不能拼接或用省略号串联。本次补充 instructions 同样必须执行，但不能覆盖事实与权限边界。
 pendingConfirmations只列需要人工解决的具体业务事项，用用户能读懂的话说明缺什么；不要输出字段名、接口信息或把可选字段留空本身当成问题。
 review阶段的issues只容纳真实问题，无问题用空数组；strategyConflict无冲突用空字符串。不要把通过解释写进这两处。claimChecks仅核对事实主张；纯假设式提问和CTA邀请不填写事实核对，但其中若夹带未证实事实，仍必须报错。
 返回符合 outputSchema 的 JSON 对象，不输出 Markdown。引用 sourceQuote 必须来自 sources 对应原文；draftQuote 必须是生成段落的实际原文。`;
@@ -82,8 +84,8 @@ export function validateEcommercePack(pack: EcommercePack, context: EcommerceCon
   for (const key of sources.keys()) if (!applicationKeys.has(key)) issues.push(`缺少来源采用或未采用说明：${key}`);
   const seconds = pack.segments.reduce((sum, s) => sum + s.durationSec, 0), target = context.input.task.brief.durationSec;
   if (seconds < target * .85 || seconds > target * 1.15) issues.push("镜头总时长超出任务预算");
-  const script = pack.segments.map(s => s.script).join("\n"), chars = Array.from(script.replace(/\s+/g, "")).length;
-  if (chars > target * 7 || chars < target) issues.push("口播篇幅与目标时长明显不符");
+  const script = pack.segments.map(s => s.script).join("\n"), chars = scriptCharacterCount(script), budget = scriptBudget(target);
+  if (chars > budget.maxCharacters || chars < budget.minCharacters) issues.push(`口播篇幅与目标时长明显不符：${target} 秒应为 ${budget.minCharacters}–${budget.maxCharacters} 字，当前 ${chars} 字；请调整口播正文`);
   const facts = JSON.stringify({ product: context.input.product, evidence: context.input.evidence.map(e => ({ body: e.body, conditions: e.conditions })), knowledge: context.input.knowledge.map(k => k.text) });
   const allowedNumbers = new Set(facts.match(/\d+(?:\.\d+)?/g) ?? []);
   if (context.input.product.offer) allowedNumbers.add(String(context.input.product.offer.priceCents! / 100));

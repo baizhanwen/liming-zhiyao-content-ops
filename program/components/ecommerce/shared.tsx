@@ -2,6 +2,7 @@
 
 import { cloneElement, isValidElement, useCallback, useEffect, useId, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { scopedFetch } from "../../lib/client-scope";
+import { generationFeedback } from "../../lib/ecommerce/generation-feedback";
 import { isCurrentClientScope, isScopeCancellation, ScopeChangedError } from "../../lib/client-scope-request";
 import type { z } from "zod";
 import type { componentSchema, evidenceSchema, productSchema, scopeSchema } from "../../lib/ecommerce/contracts";
@@ -69,7 +70,8 @@ export function useDirtySections(dirty: (value: boolean) => void) {
 }
 
 export function Notices({ error, message }: { error: string; message?: string }) {
-  return <>{error && <p className="ec-notice ec-error" role="alert">{error}</p>}{message && <p className="ec-notice" role="status">{message}</p>}</>;
+  const feedback = error ? generationFeedback(error) : null;
+  return <>{error && (feedback ? <div className="ec-notice ec-error" role="alert"><strong>{feedback.summary}</strong><ul>{feedback.reasons.map(reason => <li key={reason}>{reason}</li>)}</ul><p>这是生成结果的问题，无需手工填写或修改素材编号。可以重新生成；原有稿件保留。</p><details><summary>查看检查详情</summary><ul>{feedback.details.map(detail => <li key={detail}>{detail}</li>)}</ul></details></div> : <p className="ec-notice ec-error" role="alert">{error}</p>)}{message && <p className="ec-notice" role="status">{message}</p>}</>;
 }
 export function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) {
   const id = useId();

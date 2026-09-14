@@ -11,6 +11,7 @@ import { packSchema, runSchema, type EcommercePack } from "./contracts";
 import { ECOMMERCE_PROMPT_VERSION, ECOMMERCE_SYSTEM, mergeEcommercePatch, patchSchema, planIssues, planSchema, reviewIssues, reviewSchema, validateEcommercePack, type EcommercePlan } from "./generation-contract";
 import { hashJson } from "./products";
 import { activeRunPredicate } from "./runs";
+import { ecommerceGenerationGuide } from "./generation-guide";
 
 type RunInput = z.infer<typeof runSchema>;
 type RunRow = { id: string; input_hash: string; status: string; result_version_id: string | null; error_code: string | null; error_message: string | null };
@@ -102,6 +103,7 @@ export async function generateEcommerce(request: Request, access: EcommerceAcces
       const basePack = packSchema.parse(JSON.parse(base.pack_json));
       const response = await invokeRecorded(request, access, runId, "patch", {
         context: context.input, operation: input.replace, instructions: input.instructions, base: basePack,
+        generationGuide: ecommerceGenerationGuide(context, undefined, basePack),
         requirements: "只返回指定 role 的段落，保持原 ID、role、数量。返回完整更新后的应用报告。其他段落由服务器原样保留；若新要求影响其他段落，报告依赖冲突，不擅自修改。",
       }, z.toJSONSchema(patchSchema));
       const patch = patchSchema.safeParse(response);
@@ -109,13 +111,13 @@ export async function generateEcommerce(request: Request, access: EcommerceAcces
       try { pack = mergeEcommercePatch(basePack, patch.data, input.replace); }
       catch { throw new EcommerceError("PATCH_SCOPE_CONFLICT", "局部修改超出指定段落，请调整任务或改为完整生成。", 409); }
     } else {
-      const response = await invokeRecorded(request, access, runId, "plan", { context: context.input, requirements: "从候选中每类选一个；只规划段落功能，不编造商品事实。若账号策略与本次任务明显冲突，在 strategyConflict 指明；已明确的 strategyException 可以记录为本次例外。" }, z.toJSONSchema(planSchema));
+      const response = await invokeRecorded(request, access, runId, "plan", { context: context.input, instructions: input.instructions, generationGuide: ecommerceGenerationGuide(context), requirements: "从候选中每类选一个；只规划段落功能，不编造商品事实。按口播字数预算安排内容，短视频只讲一个例子，不试图讲完整大纲。若账号策略与本次任务明显冲突，在 strategyConflict 指明；已明确的 strategyException 可以记录为本次例外。" }, z.toJSONSchema(planSchema));
       const parsed = planSchema.safeParse(response);
       if (!parsed.success) throw new EcommerceError("PLAN_INVALID", "模型结构计划格式无效。", 502);
       plan = parsed.data;
       const problems = planIssues(plan, context);
       if (problems.length) throw new EcommerceError("PLAN_REJECTED", problems.join("；"), 409);
-      const draft = await invokeRecorded(request, access, runId, "draft", { context: context.input, plan, requirements: "逐段执行计划；每个候选来源都给出实际采用或未采用理由。所有 used=true 的应用须定位来源原句、实际稿件片段和段落。主张与证据段绑定本商品主卖点及有效证据。四类选定组件都要说明实际应用。" }, z.toJSONSchema(packSchema));
+      const draft = await invokeRecorded(request, access, runId, "draft", { context: context.input, plan, instructions: input.instructions, generationGuide: ecommerceGenerationGuide(context, plan), requirements: "逐段执行计划和字数预算；依据 generationGuide.sourceRegister 完整记录每个来源采用与否。先写段落来源关联，再汇总应用说明；四类方法都必须有真实段落关联。引用只复制连续原句。主张与证据段绑定本商品主卖点及有效证据。" }, z.toJSONSchema(packSchema));
       const parsedPack = packSchema.safeParse(draft);
       if (!parsedPack.success) throw new EcommerceError("DRAFT_INVALID", "模型稿件结构不完整。", 502);
       pack = parsedPack.data;
@@ -123,7 +125,7 @@ export async function generateEcommerce(request: Request, access: EcommerceAcces
     let validation = validateEcommercePack(pack, context, plan);
     // One targeted repair keeps total plan/draft/repair/review calls within the five-call budget.
     if (!validation.ok && !input.replace) {
-      const fixed = await invokeRecorded(request, access, runId, "repair", { context: context.input, plan, previousDraft: pack, errors: validation.issues, requirements: "仅修复列出的事实、引用、结构或时长问题，不能放宽验收条件。" }, z.toJSONSchema(packSchema));
+      const fixed = await invokeRecorded(request, access, runId, "repair", { context: context.input, plan, instructions: input.instructions, generationGuide: ecommerceGenerationGuide(context, plan, pack), previousDraft: pack, errors: validation.issues, requirements: "按 observed 中的实际字数与关联差异逐项修复。超长时删减口播，不能只改时长数字；关联缺失时明确方法实际应用在哪些段落并同步两处ID；拼接引文改为一个关联段落内连续存在的原句。保留事实限制，不编造依据，不放宽验收条件。" }, z.toJSONSchema(packSchema));
       const parsed = packSchema.safeParse(fixed);
       if (!parsed.success) throw new EcommerceError("REPAIR_INVALID", "修订结果仍不完整，已保留原稿。", 502);
       pack = parsed.data; validation = validateEcommercePack(pack, context, plan);
