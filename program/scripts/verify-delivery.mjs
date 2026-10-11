@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, openSync, closeSync, writeSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync, openSync, closeSync, writeSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, randomBytes } from "node:crypto";
@@ -35,14 +35,14 @@ function stop(child) {
   child.kill("SIGTERM");
 }
 const environment = { ...process.env, CI: "1", WRANGLER_SEND_METRICS: "false", WRANGLER_WRITE_LOGS: "false", LAN_MODE: "1" };
-async function run(executable, args, input) {
-  await new Promise((resolve, reject) => {
+async function run(executable, args, input, expectedFailure = false) {
+  return await new Promise((resolve, reject) => {
     const child = spawn(executable, args, { cwd: installRoot, env: environment, windowsHide: true, stdio: ["pipe", log, log] });
     const timer = setTimeout(() => { void stop(child); reject(new Error(`Command timeout: ${path.basename(executable)}`)); }, 900_000);
     child.on("error", error => { clearTimeout(timer); reject(error); });
     child.on("close", code => {
       clearTimeout(timer);
-      if (code === 0) resolve();
+      if ((!expectedFailure && code === 0) || (expectedFailure && Number.isInteger(code) && code > 0)) resolve(code);
       else reject(new Error(`Command failed (${code}): ${path.basename(executable)} ${args[0]}; see ${runRoot}`));
     });
     child.stdin.on("error", () => {});
@@ -194,6 +194,68 @@ try {
     // startup session revocation has its own check above.
     const listed = await http(`/api/projects?organizationId=${administrator.organizationId}`, { authenticated: true });
     assert.equal(listed.status, 200); assert.ok(listed.data.projects.some(p => p.id === projectId && p.name === "Acceptance project"));
+  });
+  await stop(server); server = null;
+  await check("partial-migration-failure-and-matched-state-rollback", async () => {
+    const started = Date.now();
+    // Unlock only the synthetic account from the preceding lockout test. The
+    // rollback must allow a fresh password login, rather than reuse a session.
+    const unlockFile = path.join(runRoot, "unlock-synthetic-account.sql");
+    writeFileSync(unlockFile, "DELETE FROM local_login_attempts;");
+    await run(process.execPath, ["node_modules/wrangler/bin/wrangler.js", "d1", "execute", "DB", "--local", "--config", "wrangler.local.jsonc", "--file", unlockFile]);
+    const d1Root = path.join(installRoot, ".wrangler/state/v3/d1");
+    // Miniflare also creates metadata.sqlite for alarms. Select the actual
+    // application database by its schema and the project created over HTTP.
+    const databaseFile = files(d1Root).filter(f => f.endsWith(".sqlite")).filter(filename => {
+      const db = new DatabaseSync(filename, { readOnly: true });
+      try { return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='projects'").get() && db.prepare("SELECT 1 FROM projects WHERE id=?").get(projectId)); }
+      finally { db.close(); }
+    });
+    assert.equal(databaseFile.length, 1, "Expected one HTTP project database");
+    const database = action => {
+      const db = new DatabaseSync(databaseFile[0], { readOnly: true });
+      try { return action(db); } finally { db.close(); }
+    };
+    const snapshot = () => database(db => Object.fromEntries(db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(({ name }) => [name, db.prepare(`SELECT * FROM "${name.replaceAll('"', '""')}"`).all()])));
+    const before = snapshot();
+    const configurationHash = sha(path.join(installRoot, ".dev.vars"));
+    await run("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/backup-local.ps1"]);
+    const backups = readdirSync(path.join(installRoot, "backups")).filter(f => f.endsWith(".zip")).sort();
+    const backup = path.join(installRoot, "backups", backups.at(-1));
+    const retainedProgram = path.join(runRoot, "program-before-upgrade");
+    cpSync(packageRoot, retainedProgram, { recursive: true });
+    cpSync(path.join(installRoot, ".dev.vars"), path.join(runRoot, "private-config-before-upgrade"));
+    const first = "9998_acceptance_partial_upgrade.sql", second = "9999_acceptance_failed_upgrade.sql";
+    for (const name of [first, second]) assert.equal(existsSync(path.join(installRoot, "drizzle", name)), false);
+    writeFileSync(path.join(installRoot, "drizzle", first), "CREATE TABLE acceptance_upgrade_marker (id INTEGER PRIMARY KEY); INSERT INTO acceptance_upgrade_marker VALUES (1); UPDATE projects SET name = 'Partially upgraded';\n");
+    writeFileSync(path.join(installRoot, "drizzle", second), "INSERT INTO acceptance_missing_table VALUES (1);\n");
+    const failureCode = await run(process.execPath, ["scripts/run-local-migrations.mjs"], undefined, true);
+    database(db => {
+      assert.equal(db.prepare("SELECT COUNT(*) AS count FROM acceptance_upgrade_marker").get().count, 1);
+      assert.equal(db.prepare("SELECT name FROM projects WHERE id=?").get(projectId).name, "Partially upgraded");
+      const applied = db.prepare("SELECT name FROM d1_migrations").all().map(r => r.name);
+      assert.ok(applied.includes(first)); assert.ok(!applied.includes(second));
+    });
+    // Keep failed migration files and the pre-restore database for inspection.
+    // This is a synthetic upgrade of this candidate, not two released versions.
+    renameSync(path.join(installRoot, "drizzle"), path.join(runRoot, "failed-upgrade-migrations"));
+    cpSync(retainedProgram, installRoot, { recursive: true });
+    cpSync(path.join(runRoot, "private-config-before-upgrade"), path.join(installRoot, ".dev.vars"));
+    for (const [file, expected] of Object.entries(initialHashes)) if (file !== ".dev.vars") assert.equal(sha(path.join(installRoot, file)), expected, `Rollback program mismatch: ${file}`);
+    assert.equal(sha(path.join(installRoot, ".dev.vars")), configurationHash);
+    await run("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/restore-local.ps1", "-BackupPath", backup], "RESTORE\n");
+    assert.deepEqual(snapshot(), before, "Rollback must restore all D1 rows and migration metadata");
+    await run(process.execPath, ["scripts/run-local-migrations.mjs"]);
+    await run(process.execPath, ["scripts/prepare-login-startup.mjs"]);
+    await start();
+    assert.equal((await http("/api/auth/session", { authenticated: true })).status, 401);
+    const login = await http("/api/auth/session", { method: "POST", body: { email: administrator.email, password } });
+    assert.equal(login.status, 200); cookie = login.headers.get("set-cookie").split(";")[0];
+    const listed = await http(`/api/projects?organizationId=${administrator.organizationId}`, { authenticated: true });
+    assert.equal(listed.status, 200); assert.ok(listed.data.projects.some(p => p.id === projectId && p.name === "Acceptance project"));
+    const created = await http("/api/projects", { method: "POST", authenticated: true, body: { organizationId: administrator.organizationId, name: "After upgrade rollback" } });
+    assert.equal(created.status, 201);
+    writeFileSync(path.join(runRoot, "upgrade-rollback.json"), JSON.stringify({ passed: true, synthetic: true, failureCode, elapsedMs: Date.now() - started, restoredTableCount: Object.keys(before).length, restoredRowCount: Object.values(before).reduce((sum, rows) => sum + rows.length, 0), configurationHash, backup: path.relative(runRoot, backup), programFilesVerified: Object.keys(initialHashes).length - 1, freshPasswordLogin: true, staleSessionRejected: true, projectReadAndWrite: true, limitations: ["Same candidate with two injected migrations; not a real release pair", "Attachment and content lifecycle recovery have separate LAN fixtures", "No model calls, real business data, OS reboot or multi-machine test"] }, null, 2) + "\n");
   });
   await check("verified-package-files-unchanged", async () => {
     for (const [file, expected] of Object.entries(initialHashes)) assert.equal(sha(path.join(packageRoot, file)), expected, `Package changed during verification: ${file}`);

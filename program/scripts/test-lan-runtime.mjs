@@ -274,7 +274,7 @@ try {
     // Native Windows SQLite cannot use the long evidence-directory prefix.
     const installation = path.join(root, ".local/br", randomBytes(4).toString("hex"));
     const scripts = path.join(installation, "scripts"); mkdirSync(scripts, { recursive: true });
-    for (const filename of ["backup-local.ps1", "restore-local.ps1", "local-state-maintenance.ps1", "analyzer-instance-lock.ps1"]) {
+    for (const filename of ["backup-local.ps1", "restore-local.ps1", "local-state-maintenance.ps1", "analyzer-instance-lock.ps1", "verify-state-databases.mjs"]) {
       cpSync(path.join(root, "scripts", filename), path.join(scripts, filename));
     }
     const tables = ["users", "local_credentials", "projects", "videos", "media_assets", "analysis_jobs", "video_analyses", "content_items", "content_versions", "content_reviews", "publication_records", "published_copy_records"];
