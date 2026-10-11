@@ -113,7 +113,7 @@ class IsolatedProcessor:
             self.process.start()
             child.close()
             self.tree.attach(self.process.pid)
-            self.connection.send("attached")
+            self._send("attached")
             deadline = time.monotonic() + 15
             while not self.connection.poll(0.2):
                 self.client.check_control(job)
@@ -164,6 +164,12 @@ class IsolatedProcessor:
             self.workspace = None
         self.resources_released = True
 
+    def _send(self, value):
+        try:
+            self.connection.send(value)
+        except (EOFError, OSError) as error:
+            raise ProcessingFailure("ANALYZER_PROCESS_CRASHED", "分析处理进程通信中断，已释放资源，后续任务将继续。") from error
+
     def __call__(self, job, heartbeat):
         self.resources_released = False
         if self.process is None:
@@ -172,8 +178,8 @@ class IsolatedProcessor:
         phase = "initialization"
         duration = 0.0
         next_control = started
-        self.connection.send(("run", job))
         try:
+            self._send(("run", job))
             while True:
                 now = time.monotonic()
                 if now - started > self.limits.task + min(14400, duration * 2):
@@ -198,7 +204,7 @@ class IsolatedProcessor:
                         if new_phase != phase:
                             phase, phase_started = new_phase, time.monotonic()
                         current = heartbeat(status, progress, stage)
-                        self.connection.send(("ok", current))
+                        self._send(("ok", current))
                     elif kind == "duration":
                         duration = max(0, min(86400, float(value)))
                     elif kind == "result":

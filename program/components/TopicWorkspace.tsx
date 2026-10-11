@@ -77,7 +77,7 @@ export function TopicWorkspace({ initialOrganizationId = "", initialProjectId = 
       const created = await response.json() as { item: { id: string } };
       setTopics((current) => current.map((item) => item.id === topic.id ? { ...item, status: "drafting" } : item));
       // Both entry points generate an actual draft; failures remain visible in production.
-      await scopedFetch(`/api/content-items/${created.item.id}/generate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, writingIntent: "auto", creationMode: "standard", benchmarkEntryIds: [], recommendedBenchmarkIds: [] }) });
+      await scopedFetch(`/api/content-items/${created.item.id}/generate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, expectedVersion: 1, writingIntent: "auto", creationMode: "standard", benchmarkEntryIds: [], recommendedBenchmarkIds: [] }) });
       window.location.assign(destination);
     } catch (reason) { if (!isScopeCancellation(reason)) setError(reason instanceof Error ? reason.message : "选题进入内容生产失败，请稍后重试。"); setMovingTopicId(""); }
   }

@@ -246,6 +246,7 @@ export const createContentItemSchema = z.object({
 export const saveContentVersionSchema = z.object({
   organizationId: shortText(100),
   projectId: shortText(100),
+  expectedVersion: z.number().int().min(1).optional(),
   pack: productionPackSchema,
   changeSummary: z.string().trim().max(500).optional(),
 }).strict();
@@ -253,6 +254,7 @@ export const saveContentVersionSchema = z.object({
 export const generateContentSchema = z.object({
   organizationId: shortText(100),
   projectId: shortText(100),
+  expectedVersion: z.number().int().min(1).optional(),
   // Accepted only for backwards compatibility with older clients. The API
   // deliberately ignores it and always runs new generation at max capability.
   modelProfile: z.string().trim().max(40).optional(),

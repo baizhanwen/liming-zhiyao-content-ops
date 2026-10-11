@@ -56,7 +56,7 @@ export async function fixture(t, options = {}) {
   f.mock('lib/content-production.ts', production);
   f.mock('lib/published-copy.ts', publishedCopy);
   f.mock('lib/content-citation-recovery.ts', recovery);
-  f.mock('lib/operations.ts', { checkOrganizationQuota: async () => ({ allowed: true }) });
+  f.mock('lib/operations.ts', { checkOrganizationQuota: async () => ({ allowed: true, limit: options.quotaLimit ?? 1000 }) });
   f.mock('lib/generation-context-sources.ts', { retrieveGenerationMethodologySources: async () => [] });
   const calls = []; let generations = 0, reviews = 0;
   f.mock('lib/model-adapter.ts', {

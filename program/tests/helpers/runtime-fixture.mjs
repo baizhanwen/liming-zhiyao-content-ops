@@ -19,7 +19,11 @@ export function runtimeFixture(t) {
         bind(...values) { args = values; return statement; },
         async first() { return sqlite.prepare(query).get(...args) ?? null; },
         async all() { return { results: sqlite.prepare(query).all(...args) }; },
-        execute() { return { meta: { changes: Number(sqlite.prepare(query).run(...args).changes) } }; },
+        execute() {
+          const prepared = sqlite.prepare(query);
+          if (/^\s*SELECT\b/i.test(query)) return { results: prepared.all(...args), meta: { changes: 0 } };
+          return { results: [], meta: { changes: Number(prepared.run(...args).changes) } };
+        },
         async run() { return statement.execute(); },
       };
       return statement;

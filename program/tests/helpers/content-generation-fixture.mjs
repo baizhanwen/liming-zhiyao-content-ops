@@ -30,7 +30,7 @@ export async function contentGenerationFixture(t, selected = [], respond, option
   f.mock("lib/content-production.ts", production);
   f.mock("lib/published-copy.ts", publishedCopy);
   f.mock("lib/content-citation-recovery.ts", citationRecovery);
-  f.mock("lib/operations.ts", { checkOrganizationQuota: async () => ({ allowed: true }) });
+  f.mock("lib/operations.ts", { checkOrganizationQuota: async () => ({ allowed: true, limit: 1000 }) });
   f.mock("lib/generation-context-sources.ts", { retrieveGenerationMethodologySources: async () => [], retrieveDefaultProjectGenerationSources: () => { throw new Error("Must not load automatic project context"); } });
   const calls = [], queries = [], prepare = f.db.prepare;
   f.db.prepare = query => { queries.push(query); return prepare(query); };

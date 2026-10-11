@@ -7,6 +7,8 @@ import { buildPublishedCopyProfile, publishedCopyPromptSource, validateHistorica
 import { readRequestIdentity } from "../../../../lib/request-auth";
 import { benchmarkRewriteReportSchema, rewriteCharacterCount } from "../../../../lib/single-benchmark-rewrite";
 import { incompleteScriptReason } from "../../../../lib/content-writing-intent";
+import type { ContentStatus } from "../../../../lib/content-workflow";
+import { contentVersionSourceSql, contentVersionSourceBindings, contentVersionWrittenSql, contentVersionWrittenBindings, contentVersionFollowupStatements, statusAfterContentRevision } from "../../../../lib/content-version-write";
 
 export const dynamic = "force-dynamic";
 
@@ -16,14 +18,15 @@ export async function PATCH(request: Request, context: { params: Promise<{ conte
   try {
     const parsed = saveContentVersionSchema.safeParse(await request.json());
     if (!parsed.success) return apiError("INVALID_CONTENT_VERSION", "生产包结构不完整或字段过长。", 400);
-    const { organizationId, projectId, pack, changeSummary } = parsed.data;
+    const { organizationId, projectId, pack, changeSummary, expectedVersion } = parsed.data;
     const incomplete = incompleteScriptReason(pack);
     if (incomplete) return apiError("INCOMPLETE_CONTENT_SCRIPT", incomplete, 400);
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
     if (!access || !canWriteProjectAccess(access)) return apiError("WRITE_ACCESS_REQUIRED", "当前角色不能修改内容。", 403);
     const { contentId } = await context.params; const db = getD1();
-    const item = await db.prepare("SELECT id, topic_id, current_version FROM content_items WHERE id = ? AND organization_id = ? AND project_id = ? AND deleted_at IS NULL AND status NOT IN ('published', 'reviewed', 'archived')").bind(contentId, organizationId, projectId).first<{ id: string; topic_id: string; current_version: number }>();
+    const item = await db.prepare("SELECT id, topic_id, current_version, status FROM content_items WHERE id = ? AND organization_id = ? AND project_id = ? AND deleted_at IS NULL AND status NOT IN ('published', 'reviewed', 'archived')").bind(contentId, organizationId, projectId).first<{ id: string; topic_id: string; current_version: number; status: ContentStatus }>();
     if (!item) return apiError("CONTENT_NOT_EDITABLE", "内容不存在、已归档或当前状态不可编辑。", 409);
+    if (expectedVersion !== undefined && expectedVersion !== item.current_version) return apiError("CONTENT_VERSION_CONFLICT", "内容已被其他成员更新，请刷新后重试。", 409);
     const previousVersion = await db.prepare("SELECT pack_json FROM content_versions WHERE content_item_id = ? AND organization_id = ? AND project_id = ? AND version = ?")
       .bind(contentId, organizationId, projectId, item.current_version).first<{ pack_json: string }>();
     let previousRewrite: ReturnType<typeof benchmarkRewriteReportSchema.parse> | undefined;
@@ -32,15 +35,17 @@ export async function PATCH(request: Request, context: { params: Promise<{ conte
       if (parsedReport.success) previousRewrite = parsedReport.data;
     } catch { /* Legacy packs have no template snapshot. */ }
     const allowed = new Map<string, string>();
-    const sourceRows = await db.prepare(`
-      SELECT 'topic:' || id AS source_key, '本次创作选题标题：' || title || char(10) || COALESCE(angle, '') || char(10) || COALESCE(pillar, '') || char(10) || COALESCE(audience, '') || char(10) || COALESCE(objective, '') || char(10) || COALESCE(hook, '') || char(10) || COALESCE(rationale, '') AS source_text FROM topic_ideas WHERE id = ? AND organization_id = ? AND project_id = ? AND deleted_at IS NULL
-      UNION ALL SELECT 'knowledge:' || k.id, v.body FROM knowledge_items k INNER JOIN knowledge_item_versions v ON v.item_id = k.id AND v.version = k.current_version AND v.organization_id = k.organization_id AND v.project_id = k.project_id WHERE k.organization_id = ? AND k.project_id = ? AND k.status = 'confirmed' AND k.deleted_at IS NULL
-      UNION ALL SELECT 'video_analysis:' || a.id, a.report_json FROM video_analyses a INNER JOIN videos v ON v.id = a.video_id AND v.organization_id = a.organization_id AND v.project_id = a.project_id WHERE a.organization_id = ? AND a.project_id = ? AND v.deleted_at IS NULL
-      UNION ALL SELECT 'strategy:' || id, name || char(10) || positioning || char(10) || COALESCE(persona, '') || char(10) || target_audience || char(10) || pain_points_json || char(10) || pillars_json || char(10) || topic_mix_json || char(10) || COALESCE(style_notes, '') || char(10) || COALESCE(cadence, '') || char(10) || COALESCE(conversion_path, '') || char(10) || objectives_json FROM content_strategies WHERE organization_id = ? AND project_id = ?
-      UNION ALL SELECT 'memory:' || id, content FROM project_memory_items WHERE organization_id = ? AND project_id = ? AND status = 'confirmed' AND (expires_at IS NULL OR expires_at > datetime('now'))
-      UNION ALL SELECT 'video_atom:' || a.id, a.content FROM video_knowledge_atoms a INNER JOIN project_video_references refs ON refs.library_entry_id = a.library_entry_id AND refs.organization_id = a.organization_id AND refs.project_id = ? AND refs.status = 'active' WHERE a.organization_id = ? AND a.status = 'active' AND (refs.purpose = 'analysis' OR refs.purpose = 'benchmark')
-      UNION ALL SELECT 'inspiration:' || id, core_insight || char(10) || evidence_json FROM project_inspiration_cards WHERE organization_id = ? AND project_id = ? AND status = 'confirmed' AND (expires_at IS NULL OR expires_at > datetime('now'))    `).bind(item.topic_id, organizationId, projectId, organizationId, projectId, organizationId, projectId, organizationId, projectId, organizationId, projectId, projectId, organizationId, organizationId, projectId).all<{ source_key: string; source_text: string }>();
-    for (const row of sourceRows.results) allowed.set(row.source_key, row.source_text);
+    // D1 limits compound SELECT terms; read each source category separately.
+    const sourceResults = await db.batch<{ source_key: string; source_text: string }>([
+      db.prepare(`SELECT 'topic:' || id AS source_key, '本次创作选题标题：' || title || char(10) || COALESCE(angle, '') || char(10) || COALESCE(pillar, '') || char(10) || COALESCE(audience, '') || char(10) || COALESCE(objective, '') || char(10) || COALESCE(hook, '') || char(10) || COALESCE(rationale, '') AS source_text FROM topic_ideas WHERE id = ? AND organization_id = ? AND project_id = ? AND deleted_at IS NULL`).bind(item.topic_id, organizationId, projectId),
+      db.prepare(`SELECT 'knowledge:' || k.id AS source_key, v.body AS source_text FROM knowledge_items k INNER JOIN knowledge_item_versions v ON v.item_id = k.id AND v.version = k.current_version AND v.organization_id = k.organization_id AND v.project_id = k.project_id WHERE k.organization_id = ? AND k.project_id = ? AND k.status = 'confirmed' AND k.deleted_at IS NULL`).bind(organizationId, projectId),
+      db.prepare(`SELECT 'video_analysis:' || a.id AS source_key, a.report_json AS source_text FROM video_analyses a INNER JOIN videos v ON v.id = a.video_id AND v.organization_id = a.organization_id AND v.project_id = a.project_id WHERE a.organization_id = ? AND a.project_id = ? AND v.deleted_at IS NULL`).bind(organizationId, projectId),
+      db.prepare(`SELECT 'strategy:' || id AS source_key, name || char(10) || positioning || char(10) || COALESCE(persona, '') || char(10) || target_audience || char(10) || pain_points_json || char(10) || pillars_json || char(10) || topic_mix_json || char(10) || COALESCE(style_notes, '') || char(10) || COALESCE(cadence, '') || char(10) || COALESCE(conversion_path, '') || char(10) || objectives_json AS source_text FROM content_strategies WHERE organization_id = ? AND project_id = ?`).bind(organizationId, projectId),
+      db.prepare(`SELECT 'memory:' || id AS source_key, content AS source_text FROM project_memory_items WHERE organization_id = ? AND project_id = ? AND status = 'confirmed' AND (expires_at IS NULL OR expires_at > datetime('now'))`).bind(organizationId, projectId),
+      db.prepare(`SELECT 'video_atom:' || a.id AS source_key, a.content AS source_text FROM video_knowledge_atoms a INNER JOIN project_video_references refs ON refs.library_entry_id = a.library_entry_id AND refs.organization_id = a.organization_id AND refs.project_id = ? AND refs.status = 'active' WHERE a.organization_id = ? AND a.status = 'active' AND (refs.purpose = 'analysis' OR refs.purpose = 'benchmark')`).bind(projectId, organizationId),
+      db.prepare(`SELECT 'inspiration:' || id AS source_key, core_insight || char(10) || evidence_json AS source_text FROM project_inspiration_cards WHERE organization_id = ? AND project_id = ? AND status = 'confirmed' AND (expires_at IS NULL OR expires_at > datetime('now'))`).bind(organizationId, projectId),
+    ]);
+    for (const row of sourceResults.flatMap((result) => result.results)) allowed.set(row.source_key, row.source_text);
     const benchmarkRows = await db.prepare(`
       SELECT library.id AS library_entry_id, analysis.report_json
       FROM project_video_references refs
@@ -105,14 +110,15 @@ export async function PATCH(request: Request, context: { params: Promise<{ conte
       generatedCharacters: rewriteCharacterCount(pack.fullScript),
     } : undefined;
     const user = await ensureUser(identity); const now = new Date().toISOString(); const nextVersion = item.current_version + 1; const versionId = crypto.randomUUID(); const packJson = JSON.stringify(validatedPack);
+    const write = { contentId, organizationId, projectId, previousVersion: item.current_version, previousStatus: item.status, versionId, userId: user.id, now };
     const statements = [
-      db.prepare("UPDATE content_items SET current_version = ?, updated_by = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND current_version = ?").bind(nextVersion, user.id, now, contentId, organizationId, projectId, item.current_version),
-      db.prepare("INSERT INTO content_versions (id, organization_id, project_id, content_item_id, version, generation_mode, pack_json, full_script, short_script, change_summary, created_by, created_at) SELECT ?, organization_id, project_id, id, ?, 'manual', ?, ?, ?, ?, ?, ? FROM content_items WHERE id = ? AND organization_id = ? AND project_id = ? AND current_version = ?").bind(versionId, nextVersion, packJson, validatedPack.fullScript, validatedPack.shortScript, changeSummary || "手动编辑生产包", user.id, now, contentId, organizationId, projectId, nextVersion),
-      ...pack.citations.map((citation) => db.prepare("INSERT INTO content_citations (id, organization_id, project_id, content_item_id, content_version_id, citation_type, citation_id, quote, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, contentId, versionId, citation.sourceType, citation.sourceId, citation.quote, user.id, now)),
-      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'content.version.created', 'content_item', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, contentId, JSON.stringify({ version: nextVersion, mode: "manual" }), now),
+      db.prepare(`INSERT INTO content_versions (id, organization_id, project_id, content_item_id, version, generation_mode, pack_json, full_script, short_script, change_summary, created_by, created_at) SELECT ?, organization_id, project_id, id, ?, 'manual', ?, ?, ?, ?, ?, ? ${contentVersionSourceSql}`).bind(versionId, nextVersion, packJson, validatedPack.fullScript, validatedPack.shortScript, changeSummary || "手动编辑生产包", user.id, now, ...contentVersionSourceBindings(write)),
+      ...contentVersionFollowupStatements(db, write),
+      ...pack.citations.map((citation) => db.prepare(`INSERT INTO content_citations (id, organization_id, project_id, content_item_id, content_version_id, citation_type, citation_id, quote, created_by, created_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${contentVersionWrittenSql}`).bind(crypto.randomUUID(), organizationId, projectId, contentId, versionId, citation.sourceType, citation.sourceId, citation.quote, user.id, now, ...contentVersionWrittenBindings(write))),
+      db.prepare(`INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) SELECT ?, ?, ?, ?, 'content.version.created', 'content_item', ?, ?, ? WHERE ${contentVersionWrittenSql}`).bind(crypto.randomUUID(), organizationId, projectId, user.id, contentId, JSON.stringify({ version: nextVersion, mode: "manual", fromStatus: item.status, toStatus: statusAfterContentRevision(item.status) }), now, ...contentVersionWrittenBindings(write)),
     ];
     const results = await db.batch(statements);
     if (!results[0].meta.changes) return apiError("CONTENT_VERSION_CONFLICT", "内容已被其他成员更新，请刷新后重试。", 409);
-    return Response.json({ item: { id: contentId, current_version: nextVersion, version_id: versionId, generation_mode: "manual", pack_json: packJson, full_script: validatedPack.fullScript, short_script: validatedPack.shortScript, updated_at: now } });
+    return Response.json({ item: { id: contentId, status: statusAfterContentRevision(item.status), current_version: nextVersion, version_id: versionId, generation_mode: "manual", pack_json: packJson, full_script: validatedPack.fullScript, short_script: validatedPack.shortScript, updated_at: now } });
   } catch (error) { return errorResponse(error); }
 }

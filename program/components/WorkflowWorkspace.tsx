@@ -57,7 +57,7 @@ export function WorkflowWorkspace({ initialView, initialOrganizationId = "", ini
   async function reload() { await loadWorkspace(organizationId, projectId); }
   async function transition(toStatus: ContentStatus) {
     if (!selected) return; setBusy(`transition:${toStatus}`); setError(""); setNotice("");
-    const response = await scopedFetch(`/api/content-items/${selected.id}/transition`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, toStatus, note: decisionNote || undefined }) });
+    const response = await scopedFetch(`/api/content-items/${selected.id}/transition`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, expectedVersion: selected.current_version, toStatus, note: decisionNote || undefined }) });
     if (!response.ok) setError(await readError(response)); else { const body = await response.json() as { memoryCandidate?: { id: string; status: "candidate" } | null }; if (body.memoryCandidate) setNotice("退回原因已保存为项目记忆候选，确认后才会用于选题和内容生成。"); setDecisionNote(""); await reload(); } setBusy("");
   }
   async function addComment(event: FormEvent<HTMLFormElement>) {
@@ -76,7 +76,7 @@ export function WorkflowWorkspace({ initialView, initialOrganizationId = "", ini
   }
   async function savePublication(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (!selected) return; setBusy("publication"); setError(""); const formElement = event.currentTarget; const form = new FormData(formElement);
-    const response = await scopedFetch(`/api/content-items/${selected.id}/publications`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, platform: form.get("platform"), status: form.get("status"), externalUrl: form.get("externalUrl"), errorMessage: form.get("errorMessage") }) });
+    const response = await scopedFetch(`/api/content-items/${selected.id}/publications`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, expectedVersion: selected.current_version, platform: form.get("platform"), status: form.get("status"), externalUrl: form.get("externalUrl"), errorMessage: form.get("errorMessage") }) });
     if (!response.ok) setError(await readError(response)); else { formElement.reset(); await reload(); } setBusy("");
   }
 

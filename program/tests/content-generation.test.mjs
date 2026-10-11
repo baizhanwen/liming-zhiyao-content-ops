@@ -159,15 +159,17 @@ test("video analysis reference text carries bounded structured findings, scripts
 });
 
 test("content APIs enforce tenant access, immutable versions, and optimistic writes", async () => {
-  const [collection, version, generation] = await Promise.all([
+  const [collection, version, generation, versionWrite] = await Promise.all([
     readFile(new URL("../app/api/content-items/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/content-items/[contentId]/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/content-items/[contentId]/generate/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/content-version-write.ts", import.meta.url), "utf8"),
   ]);
   assert.match(collection, /getProjectAccess/);
   assert.match(collection, /createProductionScaffold/);
   assert.match(collection, /content_citations/);
-  assert.match(version, /current_version = \?/);
+  assert.match(versionWrite, /current_version = \?/);
+  assert.match(version, /contentVersionSourceBindings/);
   assert.match(version, /CONTENT_VERSION_CONFLICT/);
   assert.match(version, /INVALID_CONTENT_CITATION/);
   assert.match(generation, /productionPackSchema\.safeParse/);

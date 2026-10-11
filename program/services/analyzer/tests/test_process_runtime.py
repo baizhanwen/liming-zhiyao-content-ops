@@ -4,6 +4,7 @@ import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from liming_analyzer.api_client import AnalysisResult, AnalyzerApiError, ClaimedJob
 from liming_analyzer.process_runtime import IsolatedProcessor, ProcessingFailure, ProcessingLimits
@@ -83,6 +84,29 @@ class ProcessRuntimeTests(unittest.TestCase):
             self.run_job("crash")
         self.assertEqual(caught.exception.code, "ANALYZER_PROCESS_CRASHED")
         self.assertEqual(self.run_job("next").report["completed"], 1)
+
+    def test_broken_pipe_on_task_send_releases_resources_and_recovers(self):
+        self.run_job("ok")
+        with patch.object(self.processor.connection, "send", side_effect=OSError(109, "pipe ended")):
+            with self.assertRaises(ProcessingFailure) as caught:
+                self.run_job("next")
+        self.assertEqual(caught.exception.code, "ANALYZER_PROCESS_CRASHED")
+        self.assertTrue(self.processor.resources_released)
+        self.assertEqual(self.run_job("recovered").report["completed"], 1)
+
+    def test_broken_pipe_on_heartbeat_ack_is_classified_as_process_crash(self):
+        self.run_job("ok")
+        send = self.processor.connection.send
+        def injected_send(value):
+            if isinstance(value, tuple) and value[0] == "ok":
+                raise OSError(109, "pipe ended")
+            return send(value)
+        with patch.object(self.processor.connection, "send", side_effect=injected_send):
+            with self.assertRaises(ProcessingFailure) as caught:
+                self.run_job("next")
+        self.assertEqual(caught.exception.code, "ANALYZER_PROCESS_CRASHED")
+        self.assertTrue(self.processor.resources_released)
+        self.assertEqual(self.run_job("recovered").report["completed"], 1)
 
     def test_long_media_gets_finite_additional_budget(self):
         self.assertEqual(self.run_job("long").report["completed"], 1)

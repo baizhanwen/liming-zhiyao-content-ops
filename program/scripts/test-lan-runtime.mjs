@@ -132,6 +132,10 @@ try {
     const response = await submit(users[0]); expect(response, 503); assert.equal(response.data.error.code, "ANALYZER_OFFLINE");
     expect(await claim("runtime-initial"), 204);
   });
+  await scenario("内容改稿、重新审核与发布版本绑定：真实 D1 并发写入", async () => {
+    const { runContentLifecycleChecks } = await import("./content-lifecycle-checks.mjs");
+    await runContentLifecycleChecks({ db, http, expect, users });
+  });
   let batch;
   await scenario("10 个账号同时提交与跨项目/跨公司权限隔离", async () => {
     const responses = await Promise.all(users.slice(0, 10).map(user => submit(user)));

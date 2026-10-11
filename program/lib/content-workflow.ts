@@ -20,6 +20,7 @@ export const contentStatusLabels: Record<ContentStatus, string> = {
 
 export const workflowTransitionSchema = z.object({
   ...scope,
+  expectedVersion: z.number().int().min(1).optional(),
   toStatus: z.enum(contentStatuses),
   note: z.string().trim().max(2_000).optional(),
 }).strict().superRefine((value, context) => {
@@ -46,6 +47,7 @@ export const scheduleContentSchema = z.object({
 
 export const publicationRecordSchema = z.object({
   ...scope,
+  expectedVersion: z.number().int().min(1).optional(),
   publicationId: identifier.optional(),
   platform: z.enum(["douyin", "xiaohongshu", "wechat_channels", "bilibili", "other"]),
   status: z.enum(["scheduled", "publishing", "published", "failed", "cancelled"]),

@@ -22,7 +22,7 @@ let items = [{ id: "old", topic_id: "topic", title: "ai发展史", status: "draf
 let topics = [{ id: "topic", title: "ai发展史", angle: "解释关键转折", status: "drafting", priority: 80 }, { id: "next", title: "怎么使用ChatGPT", angle: "步骤教程", status: "idea", priority: 70 }];
 let failNext = false;
 let release;
-const calls = [], errors = [];
+const calls = [], saves = [], errors = [];
 let browser;
 try {
   await server.listen();
@@ -46,6 +46,7 @@ try {
     } else if (url.pathname.endsWith("/generate")) {
       const input = route.request().postDataJSON(), id = url.pathname.split("/")[3], previous = items.find(item => item.id === id);
       calls.push(input);
+      assert.equal(input.expectedVersion, previous.current_version);
       if (id === "new" && failNext) {
         await new Promise(resolve => { release = resolve; });
         failNext = false;
@@ -54,6 +55,12 @@ try {
       }
       const pack = { ...scaffold, fullScript: scienceScript, shortScript: "AI从人工规则走向从数据学习，再发展出适应多种任务的大模型。", writingIntent: { kind: input.writingIntent === "auto" ? "explain" : input.writingIntent, reason: "根据选题和用户选择组织内容" } };
       const item = { ...previous, current_version: previous.current_version + 1, generation_mode: "ai", pack_json: JSON.stringify(pack), full_script: pack.fullScript, short_script: pack.shortScript, latest_generation_status: "completed", latest_generation_error: null };
+      items = items.map(value => value.id === id ? item : value); body = { item };
+    } else if (url.pathname.startsWith("/api/content-items/") && method === "PATCH") {
+      const input = route.request().postDataJSON(), id = url.pathname.split("/")[3], previous = items.find(item => item.id === id);
+      saves.push(input);
+      assert.equal(input.expectedVersion, previous.current_version);
+      const item = { ...previous, status: "internal_revision", current_version: previous.current_version + 1, generation_mode: "manual", pack_json: JSON.stringify(input.pack), full_script: input.pack.fullScript, short_script: input.pack.shortScript };
       items = items.map(value => value.id === id ? item : value); body = { item };
     } else throw new Error(`Unexpected API: ${method} ${url.pathname}`);
     await route.fulfill({ json: body });
@@ -103,6 +110,26 @@ try {
   assert.equal(calls.length, 4);
   assert.equal(calls[3].writingIntent, "auto");
   assert.deepEqual(calls[3].benchmarkEntryIds, []);
+  const selectedId = items.find(item => item.topic_id === "entry").id;
+  for (const status of ["internal_review", "publish_ready"]) {
+    items = items.map(item => item.id === selectedId ? { ...item, status } : item);
+    await page.reload();
+    await page.getByText("修改后需要重新审核", { exact: true }).waitFor();
+    assert.equal(await full.isEditable(), true);
+    await full.fill(scienceScript + "本次人工修改应当重新审核。");
+    await page.getByRole("button", { name: "保存为新版本", exact: true }).click();
+    await page.getByRole("button", { name: "提交审核 →", exact: true }).waitFor();
+    assert.equal(await page.getByText("修改后需要重新审核", { exact: true }).count(), 0);
+  }
+  assert.equal(saves.length, 2);
+  for (const status of ["published", "reviewed", "archived"]) {
+    items = items.map(item => item.id === selectedId ? { ...item, status } : item);
+    await page.reload();
+    await page.getByText("当前稿件已锁定", { exact: true }).waitFor();
+    assert.equal(await full.isEditable(), false);
+    assert.equal(await page.getByRole("button", { name: "保存为新版本", exact: true }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "AI 生成新版本", exact: true }).count(), 0);
+  }
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ passed: true, calls: calls.length, checks: ["legacy scaffold hidden", "reference opt-in", "intent override", "automatic generation", "pending state", "persistent failure", "retry", "project isolation", "mobile overflow", "topic-center entry"], screenshots: fixtureRoot }));
+  console.log(JSON.stringify({ passed: true, calls: calls.length, saves: saves.length, checks: ["legacy scaffold hidden", "reference opt-in", "intent override", "automatic generation", "pending state", "persistent failure", "retry", "project isolation", "mobile overflow", "topic-center entry", "expected-version requests", "revision review notice", "terminal versions read-only"], screenshots: fixtureRoot }));
 } finally { await browser?.close(); await server.close(); }
