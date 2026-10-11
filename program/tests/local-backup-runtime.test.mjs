@@ -13,7 +13,7 @@ test("shipped Windows backup/restore validates integrity and preserves state on 
   const fixture = mkdtempSync(path.join(parent, "run-"));
   const installation = path.join(fixture, "客户 install");
   const scripts = path.join(installation, "scripts"); mkdirSync(scripts, { recursive: true });
-  for (const file of ["backup-local.ps1", "restore-local.ps1", "local-state-maintenance.ps1", "analyzer-instance-lock.ps1"]) cpSync(path.join(root, "scripts", file), path.join(scripts, file));
+  for (const file of ["backup-local.ps1", "restore-local.ps1", "local-state-maintenance.ps1", "analyzer-instance-lock.ps1", "verify-state-databases.mjs"]) cpSync(path.join(root, "scripts", file), path.join(scripts, file));
   const state = path.join(installation, ".wrangler/state");
   const database = path.join(state, "v3/d1/miniflare-D1DatabaseObject/fixture.sqlite"); mkdirSync(path.dirname(database), { recursive: true });
   const db = new DatabaseSync(database); db.exec("CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT); INSERT INTO projects VALUES ('fixture', 'before backup');"); db.close();

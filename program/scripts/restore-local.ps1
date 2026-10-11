@@ -37,6 +37,7 @@ try {
     }
     New-Item -ItemType Directory -Path $staging | Out-Null
     Expand-CheckedStateArchive $selected.FullName $staging -AllowLegacyBackup:$AllowLegacyBackup
+    Assert-ExtractedStateDatabases (Join-Path $staging 'state')
     Write-Host "Verified backup: $($selected.FullName)"
     $confirmation = Read-Host "Restore replaces the current local state. Type RESTORE to confirm"
     if ($confirmation -cne "RESTORE") { throw "Restore cancelled." }

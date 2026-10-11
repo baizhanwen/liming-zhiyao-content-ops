@@ -75,6 +75,27 @@ function Get-StateFileHash([string]$Path) {
     finally { $hash.Dispose(); $stream.Dispose() }
 }
 
+function Assert-ExtractedStateDatabases([string]$StatePath) {
+    $projectRoot = Split-Path -Parent $PSScriptRoot
+    $candidates = @()
+    $record = Join-Path $projectRoot '.local/node.path'
+    if (Test-Path -LiteralPath $record) { $candidates += Join-Path ((Get-Content -Raw -LiteralPath $record).Trim()) 'node.exe' }
+    if ($env:ProgramFiles) { $candidates += Join-Path $env:ProgramFiles 'nodejs/node.exe' }
+    if ($env:LOCALAPPDATA) { $candidates += Join-Path $env:LOCALAPPDATA 'Programs/nodejs/node.exe' }
+    $command = Get-Command node.exe -ErrorAction SilentlyContinue
+    if ($command) { $candidates += $command.Source }
+    $node = $candidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+    if (-not $node) { throw 'Database validation requires Node.js 22.13 or newer. Run setup-local.bat before restore; no state was changed.' }
+    $previousAction = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = @(& $node --no-warnings (Join-Path $PSScriptRoot 'verify-state-databases.mjs') $StatePath 2>&1)
+        $validationExit = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $previousAction }
+    if ($validationExit -ne 0) { throw "Database validation failed; no state was changed. $($output -join ' ')" }
+    $output | ForEach-Object { Write-Host $_ }
+}
+
 function Write-StateArchive([string]$StatePath, [string]$Destination) {
     $files = @(Get-StateFiles $StatePath)
     $prefix = [IO.Path]::GetFullPath($StatePath).TrimEnd('\') + '\'
