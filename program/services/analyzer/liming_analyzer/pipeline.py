@@ -242,6 +242,9 @@ class AnalysisPipeline:
             restored = _restore_evidence_checkpoint(job, workspace)
             if restored is not None:
                 media, transcript, visuals, source_metadata = restored
+                monitor = getattr(self, "runtime_monitor", None)
+                if callable(monitor):
+                    monitor("duration", media.info.duration_ms / 1000)
                 current = heartbeat("analyzing", max(84, job.progress), "已从证据检查点恢复，正在继续结构分析")
                 current, structure = self._run_structure(current, media, transcript, visuals, source_metadata, heartbeat, max(84, current.progress), "正在从证据检查点继续生成结构化结论")
                 return build_analysis_result(transcript, structure, source_metadata)
@@ -268,6 +271,9 @@ class AnalysisPipeline:
                 22,
                 "正在规范化媒体并保持分析服务在线",
             )
+            monitor = getattr(self, "runtime_monitor", None)
+            if callable(monitor):
+                monitor("duration", media.info.duration_ms / 1000)
             manual_transcript = _manual_transcript(current)
             configure_speech_context = getattr(self.speech, "set_context", None)
             if callable(configure_speech_context):

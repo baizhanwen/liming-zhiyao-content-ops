@@ -81,14 +81,14 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
       : canResume
         ? "等待从证据检查点继续结构分析"
         : "等待重新进入分析队列";
-    const result = await db.prepare(`UPDATE analysis_jobs SET status = 'pending', progress = CASE WHEN checkpoint_stage IN ('evidence_ready', 'segment_progress') THEN 82 ELSE 0 END, checkpoint_json = COALESCE(?, checkpoint_json), checkpoint_updated_at = COALESCE(?, checkpoint_updated_at), current_stage = ?, error_code = NULL, error_message = NULL, completed_at = NULL, retry_count = retry_count + 1, lease_owner = NULL, lease_expires_at = NULL, last_heartbeat_at = NULL, result_key = NULL, version = version + 1, updated_by = ?, updated_at = ?
+    const result = await db.prepare(`UPDATE analysis_jobs SET status = 'pending', progress = CASE WHEN checkpoint_stage IN ('evidence_ready', 'segment_progress') THEN 82 ELSE 0 END, checkpoint_json = COALESCE(?, checkpoint_json), checkpoint_updated_at = COALESCE(?, checkpoint_updated_at), current_stage = ?, error_code = NULL, error_message = NULL, completed_at = NULL, retry_count = retry_count + 1, recovery_attempt_count = 0, queue_user_id = ?, enqueued_at = ?, lease_owner = NULL, lease_expires_at = NULL, last_heartbeat_at = NULL, result_key = NULL, version = version + 1, updated_by = ?, updated_at = ?
       WHERE id = ? AND version = ? AND (status IN ('partial', 'failed', 'cancelled') OR (status NOT IN ('pending', 'completed', 'partial', 'failed', 'cancelled') AND lease_expires_at <= ?))
         AND NOT EXISTS (
           SELECT 1 FROM analysis_jobs other WHERE other.organization_id = analysis_jobs.organization_id
             AND other.project_id = analysis_jobs.project_id AND other.video_id = analysis_jobs.video_id AND other.id != analysis_jobs.id
             AND other.status IN (${ACTIVE_ANALYSIS_STATUSES_SQL})
         )`)
-      .bind(retryCheckpointJson, retryCheckpointJson ? now : null, stage, user.id, now, jobId, job.version, now).run();
+      .bind(retryCheckpointJson, retryCheckpointJson ? now : null, stage, user.id, now, user.id, now, jobId, job.version, now).run();
     if (!result.meta.changes) return apiError("JOB_STATE_CHANGED", "任务状态已经变化，或该视频已有其他分析任务，请刷新后重试。", 409);
     await db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'analysis_job.retried', 'analysis_job', ?, ?, ?)")
       .bind(crypto.randomUUID(), job.organization_id, job.project_id, user.id, jobId, JSON.stringify({ previousStatus: job.status, retryCount: job.retry_count + 1, staleLease, checkpointStage: job.checkpoint_stage, canResume, segmentKey: requestedSegmentKey || null, segmentRetryTarget: retryTarget, scriptVersion: scriptVersion || null }), now).run();

@@ -27,7 +27,7 @@ function Resolve-AnalyzerMediaExecutable(
         if (Test-Path -LiteralPath $ConfiguredValue -PathType Leaf) {
             return [IO.Path]::GetFullPath($ConfiguredValue)
         }
-        $configuredCommand = Get-Command $ConfiguredValue -CommandType Application -ErrorAction SilentlyContinue
+        $configuredCommand = Get-Command $ConfiguredValue -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($configuredCommand) { return $configuredCommand.Source }
         throw "$ExecutableName is configured as '$ConfiguredValue', but that executable does not exist."
     }
@@ -37,7 +37,9 @@ function Resolve-AnalyzerMediaExecutable(
             return [IO.Path]::GetFullPath($candidate)
         }
     }
-    $command = Get-Command "$ExecutableName.exe" -CommandType Application -ErrorAction SilentlyContinue
+    # Several FFmpeg installations can be on PATH. Environment variables must
+    # receive one executable, not an array coerced into space-separated paths.
+    $command = Get-Command "$ExecutableName.exe" -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($command) { return $command.Source }
     return $null
 }

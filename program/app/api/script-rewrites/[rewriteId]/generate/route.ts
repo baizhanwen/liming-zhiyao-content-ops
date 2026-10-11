@@ -4,18 +4,18 @@ import { parseModelJson } from "../../../../../lib/content-production";
 import { invokeContentModel, ModelConfigurationError, ModelRequestError, readContentModelConfig } from "../../../../../lib/model-adapter";
 import { checkOrganizationQuota } from "../../../../../lib/operations";
 import {
-  batchScriptUnits, buildRestructureLengthTargets, buildScriptUnits, compactRestructureOutline, estimateRewriteUsage, fallbackRestructureOutline, immutableRewriteFacts, mergeRewriteParagraphRows,
-  isReviewableLightRewrite, normalizeRewriteText, readRewriteModelUsage, repairRestructureOutline, rewriteParagraphTargets, rewriteValidationQualityScore,
+  applyRewriteCopyRepairs, batchScriptUnits, buildMicroRewritePlan, buildMissingRewriteFactSources, buildRestructureLengthTargets, buildRewriteCopyRepairWindows, buildRewriteFactRepairScope, buildScriptUnits, compactRestructureOutline, estimateRewriteUsage, fallbackRestructureOutline, immutableRewriteFacts, mergeImprovedRewriteParagraphRows, mergeMicroRewriteParts, mergeRewriteParagraphRows,
+  isReviewableLightRewrite, longestSharedRewriteMatch, normalizeRewriteText, readRewriteModelUsage, repairRestructureOutline, rewriteParagraphTargets, rewriteValidationQualityScore,
   rewriteVariantLabel, semanticRewriteFacts, SCRIPT_REWRITE_MAX_CHARACTERS,
-  SCRIPT_REWRITE_MICRO_BATCH_CHARACTERS, SCRIPT_REWRITE_MICRO_BATCH_UNITS, SCRIPT_REWRITE_PROMPT_VERSION, validateLightRewrite, validateRestructuredRewrite,
+  SCRIPT_REWRITE_MICRO_BATCH_CHARACTERS, SCRIPT_REWRITE_MICRO_BATCH_UNITS, SCRIPT_REWRITE_MICRO_REPAIR_ATTEMPTS, SCRIPT_REWRITE_PROMPT_VERSION, validateLightRewrite, validateRestructuredRewrite,
   validateRestructurePlan, validateRewriteFactCards, type RewriteFactCard, type RewriteOutlineSection, type RewriteParagraph, type RewriteValidation,
   type ScriptRewriteVariant, type ScriptUnit,
 } from "../../../../../lib/script-rewrite";
 import {
   EQUIVALENT_AUDITOR_PROMPT, EQUIVALENT_BODY_REPAIR_PROMPT, EQUIVALENT_FACT_EXTRACTOR_PROMPT,
-  EQUIVALENT_FACT_REPAIR_PROMPT, EQUIVALENT_PLANNER_PROMPT, EQUIVALENT_SEMANTIC_REPAIR_PROMPT,
+  EQUIVALENT_FACT_REPAIR_PROMPT, EQUIVALENT_MISSING_FACT_PROMPT, EQUIVALENT_FACT_VALUE_REPAIR_PROMPT, EQUIVALENT_PLANNER_PROMPT, EQUIVALENT_SEMANTIC_REPAIR_PROMPT,
   EQUIVALENT_WRITER_PROMPT, MICRO_HOMOMORPHIC_AUDITOR_PROMPT, MICRO_HOMOMORPHIC_REPAIR_PROMPT,
-  MICRO_HOMOMORPHIC_WRITER_PROMPT,
+  MICRO_HOMOMORPHIC_WRITER_PROMPT, MICRO_HOMOMORPHIC_COPY_REPAIR_PROMPT,
 } from "../../../../../lib/script-rewrite-prompts";
 import { readRequestIdentity } from "../../../../../lib/request-auth";
 
@@ -29,7 +29,8 @@ class RewriteContractError extends Error {
 }
 
 type Usage = { inputTokens: number; outputTokens: number; totalTokens: number };
-type TrackedCall = { id: string; provider: string; model: string; latencyMs: number; usage: Usage; json: unknown };
+type TrackedCall = { id: string; provider: string; model: string; latencyMs: number; usage: Usage; json: unknown; reused?: boolean };
+type GenerationScope = { organizationId: string; projectId: string; userId: string; runId: string; resumeRunIds?: string[] };
 type GenerationResult = { text: string; paragraphs: string[]; sourceMapping: string[]; outline: RewriteOutlineSection[]; validation: RewriteValidation; calls: TrackedCall[] };
 type GeneratedRewriteSection = { sectionId: string; factIds: string[]; paragraphs: string[] };
 type RewriteSourceProfile = {
@@ -49,12 +50,24 @@ function addUsage(total: Usage, next: Usage) {
 }
 
 async function invokeTrackedModel(input: {
-  organizationId: string; projectId: string; userId: string; runId: string; taskType: string; system: string; payload: unknown; maxTokens: number; temperature: number;
+  organizationId: string; projectId: string; userId: string; runId: string; resumeRunIds?: string[]; taskType: string; system: string; payload: unknown; maxTokens: number; temperature: number;
 }) {
+  const db = getD1(); const config = readContentModelConfig("max");
+  const userJson = JSON.stringify(input.payload); const inputJson = JSON.stringify({ runId: input.runId, payload: input.payload }); const inputHash = await sha256Hex(new TextEncoder().encode(`${input.system}\n${userJson}`));
+  // Only foundation steps can resume. Repairs and audits must use fresh feedback.
+  if (input.resumeRunIds?.length && ["script_rewrite_micro_homomorphic_body_batch", "script_rewrite_restructure_facts_batch"].includes(input.taskType)) {
+    const placeholders = input.resumeRunIds.map(() => "?").join(",");
+    const saved = await db.prepare(`SELECT id, provider, model_name, output_json FROM model_calls WHERE organization_id = ? AND project_id = ? AND created_by = ? AND task_type = ? AND provider = ? AND model_name = ? AND input_hash = ? AND status = 'completed' AND json_extract(input_json, '$.runId') IN (${placeholders}) ORDER BY created_at DESC LIMIT 1`).bind(input.organizationId, input.projectId, input.userId, input.taskType, config.provider, config.model, inputHash, ...input.resumeRunIds).first<{ id: string; provider: string; model_name: string; output_json: string }>();
+    if (saved) {
+      try {
+        const output = JSON.parse(saved.output_json) as { response?: unknown };
+        if (asRecord(output.response)) return { id: saved.id, provider: saved.provider, model: saved.model_name, latencyMs: 0, usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }, json: output.response, reused: true } satisfies TrackedCall;
+      } catch { /* A damaged checkpoint is regenerated normally. */ }
+    }
+  }
   const quota = await checkOrganizationQuota(input.organizationId, input.userId, "modelCalls", 1);
   if (!quota.allowed) throw new RewriteContractError("当前月度模型调用额度已用完，未继续产生新的调用。", "MODEL_QUOTA_EXCEEDED", { current: quota.current, limit: quota.limit });
-  const db = getD1(); const config = readContentModelConfig("max"); const id = crypto.randomUUID(); const now = new Date().toISOString();
-  const userJson = JSON.stringify(input.payload); const inputJson = JSON.stringify({ runId: input.runId, payload: input.payload }); const inputHash = await sha256Hex(new TextEncoder().encode(`${input.system}\n${userJson}`));
+  const id = crypto.randomUUID(); const now = new Date().toISOString();
   await db.prepare(`INSERT INTO model_calls (id, organization_id, project_id, topic_id, prompt_template_id, task_type, provider, model_name, model_profile, prompt_version, status, input_hash, input_json, created_by, created_at) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, 'max', ?, 'started', ?, ?, ?, ?)`).bind(id, input.organizationId, input.projectId, input.taskType, config.provider, config.model, SCRIPT_REWRITE_PROMPT_VERSION, inputHash, inputJson, input.userId, now).run();
   let accumulatedLatencyMs = 0;
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -389,7 +402,21 @@ function factLedgerQualityScore(validation: ReturnType<typeof validateRewriteFac
     - validation.leakingFactIds.length;
 }
 
-async function generateLightRewrite(scope: { organizationId: string; projectId: string; userId: string; runId: string }, units: ScriptUnit[]): Promise<GenerationResult> {
+async function generateLightRewrite(scope: GenerationScope, units: ScriptUnit[]): Promise<GenerationResult> {
+  const plan = buildMicroRewritePlan(units);
+  if (plan.workingUnits.length !== units.length) {
+    const generated = await generateLightRewriteBatches(scope, plan.workingUnits);
+    const rows = mergeMicroRewriteParts(plan, generated.paragraphs.map((text, index) => ({ paragraphId: generated.sourceMapping[index], text })));
+    const deterministic = validateLightRewrite(units, rows);
+    if (!deterministic.passed && !isReviewableDraft(deterministic, "light_rewrite")) throw new RewriteContractError("微调同构内部片段合并后未通过完整原段落校验。", "LIGHT_VALIDATION_FAILED", deterministic);
+    const paragraphs = rows.map((row) => row.text);
+    const validation = generated.validation.semanticAudit ? withLightSemanticAudit(deterministic, generated.validation.semanticAudit) : deterministic;
+    return { ...generated, text: paragraphs.join("\n\n"), paragraphs, sourceMapping: rows.map((row) => row.paragraphId), outline: units.map((unit, index) => ({ sectionId: `s-${index + 1}`, title: `对应原稿第 ${index + 1} 段`, role: "保持原段落的叙事功能、顺序与节奏", factIds: [], sourceParagraphIds: [unit.paragraphId] })), validation };
+  }
+  return generateLightRewriteBatches(scope, units);
+}
+
+async function generateLightRewriteBatches(scope: GenerationScope, units: ScriptUnit[]): Promise<GenerationResult> {
   const sourceParagraphs = units.map((item) => ({ paragraph_id: item.paragraphId, text: item.text }));
   const calls: TrackedCall[] = [];
   const outline = units.map((item, index) => ({
@@ -421,27 +448,37 @@ async function generateLightRewrite(scope: { organizationId: string; projectId: 
     calls.push(bodyCall);
     let batchRows = readParagraphRows(bodyCall.json);
     let batchValidation = validateLightRewrite(batch, batchRows);
-    for (let attempt = 1; attempt <= 2 && !batchValidation.passed; attempt += 1) {
+    for (let attempt = 1; attempt <= SCRIPT_REWRITE_MICRO_REPAIR_ATTEMPTS && !batchValidation.passed; attempt += 1) {
+      const failureKeys = batchValidation.checks.filter((item) => !item.passed).map((item) => item.key);
+      const copyRepairAllowed = failureKeys.every((key) => ["local_copy", "effective_change", "changed_paragraphs", "length", "paragraph_lengths"].includes(key));
+      const windows = attempt >= 2 && copyRepairAllowed ? buildRewriteCopyRepairWindows(batch, batchRows) : [];
+      let repairUnits = batch.filter((unit) => !validateLightRewrite([unit], batchRows.filter((row) => row.paragraphId === unit.paragraphId)).passed);
+      if (!repairUnits.length) repairUnits = batch;
+      if (windows.length) repairUnits = windows.map((window) => ({ paragraphId: window.targetId, text: window.text }));
+      const repairRows = batchRows.filter((row) => repairUnits.some((unit) => unit.paragraphId === row.paragraphId));
+      const repairText = repairUnits.map((unit) => unit.text).join("\n\n");
+      const repairValidation = windows.length ? batchValidation : validateLightRewrite(repairUnits, repairRows);
       const repairCall = await invokeTrackedModel({
         ...scope,
         taskType: attempt === 1 ? "script_rewrite_micro_homomorphic_batch_repair" : "script_rewrite_micro_homomorphic_batch_repair_retry",
         temperature: attempt === 1 ? 0.72 : 0.82,
-        maxTokens: Math.min(13_000, Math.max(1_800, Math.ceil(batchText.length * 1.15) + 1_200)),
-        system: MICRO_HOMOMORPHIC_REPAIR_PROMPT,
+        maxTokens: Math.min(13_000, Math.max(1_800, Math.ceil(repairText.length * 1.15) + 1_200)),
+        system: windows.length ? MICRO_HOMOMORPHIC_COPY_REPAIR_PROMPT : MICRO_HOMOMORPHIC_REPAIR_PROMPT,
         payload: {
-          task: "repair_micro_homomorphic_batch_without_regression",
+          task: windows.length ? "repair_only_copied_sentences" : "repair_micro_homomorphic_batch_without_regression",
           submitted_attempt: attempt,
           batch: { index: index + 1, count: batches.length },
-          ...deterministicFailurePayload(batchValidation, batch),
-          paragraph_targets: paragraphTargetPayload(batch),
-          immutable_facts: immutableRewriteFacts(batchText),
-          best_draft: batchRows.map((item) => ({ paragraph_id: item.paragraphId, text: item.text })),
-          rejected_draft: batchRows.map((item) => ({ paragraph_id: item.paragraphId, text: item.text })),
-          source_paragraphs: batchSourceParagraphs,
+          ...deterministicFailurePayload(repairValidation, windows.length ? batch : repairUnits),
+          paragraph_targets: paragraphTargetPayload(repairUnits),
+          immutable_facts: immutableRewriteFacts(repairText),
+          ...(windows.length ? {} : { rejected_draft: repairRows.map((item) => ({ paragraph_id: item.paragraphId, text: item.text })) }),
+          source_paragraphs: repairUnits.map((item) => ({ paragraph_id: item.paragraphId, text: item.text })),
         },
       });
       calls.push(repairCall);
-      const candidateRows = readParagraphRows(repairCall.json);
+      const replacements = readParagraphRows(repairCall.json);
+      const candidateRows = mergeImprovedRewriteParagraphRows(batch, batchRows,
+        windows.length ? applyRewriteCopyRepairs(batchRows, windows, replacements) : replacements);
       const candidateValidation = validateLightRewrite(batch, candidateRows);
       if (candidateValidation.passed || rewriteValidationQualityScore(candidateValidation) > rewriteValidationQualityScore(batchValidation)) {
         batchRows = candidateRows;
@@ -542,9 +579,121 @@ async function generateLightRewrite(scope: { organizationId: string; projectId: 
   return { text: paragraphs.join("\n\n"), paragraphs, sourceMapping, outline, validation, calls };
 }
 
-async function generateRestructuredRewrite(scope: { organizationId: string; projectId: string; userId: string; runId: string }, units: ScriptUnit[]): Promise<GenerationResult> {
+async function polishRestructuredParagraphs(scope: GenerationScope, units: ScriptUnit[], facts: RewriteFactCard[], paragraphs: string[], sourceMapping: string[], outline: RewriteOutlineSection[], calls: TrackedCall[]) {
+  let rows = paragraphs.map((text, index) => ({ paragraphId: `result-${index + 1}`, text }));
+  let validation = validateRestructuredRewrite(units, facts, paragraphs, sourceMapping, outline);
+  for (let attempt = 1; attempt <= 2 && validation.unexpectedImmutableFacts?.length; attempt += 1) {
+    const missing = validation.missingImmutableFacts;
+    const unexpected = validation.unexpectedImmutableFacts ?? [];
+    const repairRows = rows.filter((row) => semanticRewriteFacts(row.text).some((fact) => unexpected.includes(fact)));
+    if (!repairRows.length) break;
+    const repairIds = new Set(repairRows.map((row) => row.paragraphId));
+    const evidence = units.map((unit) => ({ unit, relevance: Math.max(...repairRows.map((row) => longestSharedRewriteMatch(normalizeRewriteText(unit.text), normalizeRewriteText(row.text)).length)) }))
+      .filter((item) => item.relevance >= 8).sort((left, right) => right.relevance - left.relevance).slice(0, 3).map((item) => item.unit);
+    let call: TrackedCall;
+    try {
+      call = await invokeTrackedModel({
+        ...scope, taskType: "script_rewrite_restructure_fact_value_repair", temperature: 0.1, maxTokens: 5_000,
+        system: `${EQUIVALENT_FACT_VALUE_REPAIR_PROMPT}\n本次输出禁止出现的新增标识：${JSON.stringify(unexpected)}。必须删除这些标识及其所在的来源外解释、比较、判断，不能原样返回待修订文本。`,
+        payload: { task: "repair_only_fact_value_paragraphs", submitted_attempt: attempt, revision_request: "请实际修订 candidate_paragraphs：删除列出的新增标识及依赖它们的来源外内容，只保留原稿证据支持的表达。", missing_immutable_facts: missing, unexpected_immutable_facts: unexpected, candidate_paragraphs: repairRows.map((row) => ({ paragraph_id: row.paragraphId, text: row.text })), source_evidence: (evidence.length ? evidence : units).map((unit) => ({ paragraph_id: unit.paragraphId, text: unit.text })) },
+      });
+    } catch { break; }
+    calls.push(call);
+    const patches = readParagraphRows(call.json);
+    if (new Set(patches.map((row) => row.paragraphId)).size !== patches.length || patches.some((row) => !repairIds.has(row.paragraphId))) continue;
+    const patchById = new Map(patches.map((row) => [row.paragraphId, row.text]));
+    const candidate = rows.map((row) => ({ ...row, text: patchById.get(row.paragraphId) || row.text }));
+    const candidateValidation = validateRestructuredRewrite(units, facts, candidate.map((row) => row.text), sourceMapping, outline);
+    if (candidateValidation.passed || rewriteValidationQualityScore(candidateValidation) > rewriteValidationQualityScore(validation)) {
+      rows = candidate;
+      validation = candidateValidation;
+    }
+  }
+  for (let attempt = 1; attempt <= 3 && !validationCheckPassed(validation, "local_copy"); attempt += 1) {
+    const windows = buildRewriteCopyRepairWindows(units, rows);
+    if (!windows.length) break;
+    const repairUnits = windows.map((window) => ({ paragraphId: window.targetId, text: window.text }));
+    const repairText = repairUnits.map((unit) => unit.text).join("\n\n");
+    let call: TrackedCall;
+    try {
+      call = await invokeTrackedModel({
+        ...scope, taskType: "script_rewrite_restructure_copy_repair", temperature: 0.7,
+        maxTokens: Math.min(8_000, Math.max(1_500, Math.ceil(repairText.length * 1.3) + 800)),
+        system: MICRO_HOMOMORPHIC_COPY_REPAIR_PROMPT,
+        payload: { task: "repair_only_copied_sentences", submitted_attempt: attempt, paragraph_targets: paragraphTargetPayload(repairUnits), immutable_facts: immutableRewriteFacts(repairText), forbidden_copied_spans: validation.copiedSpans ?? [], source_paragraphs: repairUnits.map((unit) => ({ paragraph_id: unit.paragraphId, text: unit.text })) },
+      });
+    } catch { break; }
+    calls.push(call);
+    const candidate = applyRewriteCopyRepairs(rows, windows, readParagraphRows(call.json));
+    const candidateValidation = validateRestructuredRewrite(units, facts, candidate.map((row) => row.text), sourceMapping, outline);
+    if (candidateValidation.passed || rewriteValidationQualityScore(candidateValidation) > rewriteValidationQualityScore(validation)) {
+      rows = candidate;
+      validation = candidateValidation;
+    }
+  }
+  return rows.map((row) => row.text);
+}
+
+/** A reviewable saved body can be polished without repeating extraction/planning. */
+async function recoverRestructuredDraft(scope: GenerationScope, units: ScriptUnit[]): Promise<GenerationResult | null> {
+  if (!scope.resumeRunIds?.length) return null;
+  const db = getD1(), config = readContentModelConfig("max");
+  const placeholders = scope.resumeRunIds.map(() => "?").join(",");
+  const saved = await db.prepare(`SELECT v.run_id, v.text, v.paragraphs_json, v.source_mapping_json, v.outline_json FROM script_rewrite_versions v JOIN script_rewrite_runs r ON r.id = v.run_id AND r.organization_id = v.organization_id AND r.project_id = v.project_id AND r.workspace_id = v.workspace_id WHERE v.organization_id = ? AND v.project_id = ? AND v.created_by = ? AND v.variant = 'restructured' AND r.status = 'completed' AND v.model_provider = ? AND v.model_name = ? AND v.run_id IN (${placeholders}) ORDER BY v.created_at DESC LIMIT 1`).bind(scope.organizationId, scope.projectId, scope.userId, config.provider, config.model, ...scope.resumeRunIds).first<{ run_id: string; text: string; paragraphs_json: string; source_mapping_json: string; outline_json: string }>();
+  if (!saved) return null;
+  const auditCall = await db.prepare("SELECT id, provider, model_name, input_json FROM model_calls WHERE organization_id = ? AND project_id = ? AND created_by = ? AND status = 'completed' AND task_type IN ('script_rewrite_restructure_audit', 'script_rewrite_restructure_audit_retry') AND json_extract(input_json, '$.runId') = ? AND json_extract(input_json, '$.payload.candidate_text') = ? ORDER BY created_at DESC LIMIT 1").bind(scope.organizationId, scope.projectId, scope.userId, saved.run_id, saved.text).first<{ id: string; provider: string; model_name: string; input_json: string }>();
+  if (!auditCall) return null;
+  const factRecords = await db.prepare(`SELECT output_json FROM model_calls WHERE organization_id = ? AND project_id = ? AND created_by = ? AND status = 'completed' AND task_type IN ('script_rewrite_restructure_facts_batch', 'script_rewrite_restructure_facts_abstraction_repair', 'script_rewrite_restructure_missing_facts') AND json_extract(input_json, '$.runId') IN (${placeholders}) ORDER BY created_at DESC`).bind(scope.organizationId, scope.projectId, scope.userId, ...scope.resumeRunIds).all<{ output_json: string }>();
+  const sourcesByStatement = new Map<string, Set<string>>();
+  for (const record of factRecords.results) {
+    try {
+      for (const fact of readFactCards(asRecord(JSON.parse(record.output_json))?.response)) {
+        const sources = sourcesByStatement.get(fact.statement) ?? new Set<string>();
+        fact.sourceParagraphIds.forEach((id) => sources.add(id));
+        sourcesByStatement.set(fact.statement, sources);
+      }
+    } catch { /* Ignore incomplete historical model records. */ }
+  }
+  let facts: RewriteFactCard[], outline: RewriteOutlineSection[], paragraphs: string[], sourceMapping: string[], sourceProfile: RewriteSourceProfile;
+  try {
+    const payload = asRecord(asRecord(JSON.parse(auditCall.input_json))?.payload);
+    const ledger = Array.isArray(payload?.fact_ledger) ? payload.fact_ledger : [];
+    facts = readFactCards({ facts: ledger.map((value) => {
+      const fact = asRecord(value);
+      return { ...fact, source_paragraph_ids: fact?.source_paragraph_ids ?? [...(sourcesByStatement.get(clean(fact?.statement, 1_500)) ?? [])] };
+    }) });
+    if (facts.length !== ledger.length) return null;
+    sourceProfile = readSourceProfile({ profile: payload?.source_profile });
+    outline = JSON.parse(saved.outline_json);
+    paragraphs = JSON.parse(saved.paragraphs_json);
+    sourceMapping = JSON.parse(saved.source_mapping_json);
+    if (!Array.isArray(outline) || !Array.isArray(paragraphs) || !paragraphs.every((text) => typeof text === "string")
+      || !Array.isArray(sourceMapping) || !sourceMapping.every((id) => typeof id === "string") || paragraphs.join("\n\n") !== saved.text) return null;
+    if (!validateRewriteFactCards(units, facts).passed || !validateRestructurePlan(units, facts, outline).passed
+      || !isReviewableDraft(validateRestructuredRewrite(units, facts, paragraphs, sourceMapping, outline), "restructured")) return null;
+  } catch { return null; }
+  const calls: TrackedCall[] = [{ id: auditCall.id, provider: auditCall.provider, model: auditCall.model_name, latencyMs: 0, usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }, json: {}, reused: true }];
+  paragraphs = await polishRestructuredParagraphs(scope, units, facts, paragraphs, sourceMapping, outline, calls);
+  const text = paragraphs.join("\n\n");
+  const deterministic = validateRestructuredRewrite(units, facts, paragraphs, sourceMapping, outline);
+  let validation: RewriteValidation;
+  try {
+    const audit = await invokeTrackedModel({
+      ...scope, taskType: "script_rewrite_restructure_audit", temperature: 0,
+      maxTokens: Math.min(2_500, Math.max(900, facts.length * 90 + 600)), system: EQUIVALENT_AUDITOR_PROMPT,
+      payload: { task: "audit_equivalent_restructure", source_text: units.map((unit) => unit.text).join("\n\n"), source_profile: sourceProfile, fact_ledger: facts.map((fact) => ({ fact_id: fact.factId, kind: fact.kind, statement: fact.statement, source_paragraph_ids: fact.sourceParagraphIds, immutable_facts: fact.immutableFacts })), planned_outline: outline.map((section) => ({ section_id: section.sectionId, role: section.role, fact_ids: section.factIds })), candidate_text: text },
+    });
+    calls.push(audit);
+    validation = withSemanticAudit(deterministic, readRestructureAudit(audit.json));
+  } catch (error) { validation = withUnavailableSemanticAudit(deterministic, error); }
+  return { text, paragraphs, sourceMapping, outline, validation, calls };
+}
+
+async function generateRestructuredRewrite(scope: GenerationScope, units: ScriptUnit[]): Promise<GenerationResult> {
+  const recovered = await recoverRestructuredDraft(scope, units);
+  if (recovered) return recovered;
   const sourceText = units.map((item) => item.text).join("\n\n");
-  const factCalls: TrackedCall[] = []; const profileParts: RewriteSourceProfile[] = []; let facts: RewriteFactCard[] = []; const factBatches = batchScriptUnits(units, 5_000, 12);
+  const factCalls: TrackedCall[] = []; const profileParts: RewriteSourceProfile[] = []; const facts: RewriteFactCard[] = []; const factBatches = batchScriptUnits(units, 5_000, 12);
   for (let index = 0; index < factBatches.length; index += 1) {
     const batch = factBatches[index]; const batchText = batch.map((item) => item.text).join("\n\n");
     const batchCharacters = normalizeRewriteText(batchText).length;
@@ -555,27 +704,73 @@ async function generateRestructuredRewrite(scope: { organizationId: string; proj
       payload: { task: "extract_equivalent_content_facts", batch: { index: index + 1, count: factBatches.length }, detail_target: { source_characters: batchCharacters, minimum_ledger_characters: Math.ceil(batchCharacters * (batchCharacters >= 1_000 ? 0.45 : 0.3)) }, immutable_facts: semanticRewriteFacts(batchText), source_paragraphs: batch.map((item) => ({ paragraph_id: item.paragraphId, text: item.text })) },
     });
     factCalls.push(factCall);
-    profileParts.push(readSourceProfile(factCall.json));
-    for (const fact of readFactCards(factCall.json)) facts.push({ ...fact, factId: "f-" + String(facts.length + 1).padStart(3, "0") });
-  }
-  let sourceProfile = mergeSourceProfiles(profileParts);
-  let factValidation = validateRewriteFactCards(units, facts);
-  if (!factValidation.passed) {
-    const repairCall = await invokeTrackedModel({
-      ...scope, taskType: "script_rewrite_restructure_facts_abstraction_repair", temperature: 0.25,
-      maxTokens: Math.min(13_000, Math.max(2_500, facts.length * 180 + 1_500)),
-      system: EQUIVALENT_FACT_REPAIR_PROMPT,
-      payload: { task: "repair_semantic_fact_ledger", failed_checks: factValidation.checks.filter((item) => !item.passed), missing_immutable_facts: factValidation.missingImmutableFacts, detail_target: { source_characters: normalizeRewriteText(sourceText).length, minimum_ledger_characters: Math.ceil(normalizeRewriteText(sourceText).length * (normalizeRewriteText(sourceText).length >= 1_000 ? 0.45 : 0.3)) }, source_profile: sourceProfile, rejected_facts: facts.map((item) => ({ fact_id: item.factId, kind: item.kind, statement: item.statement, source_paragraph_ids: item.sourceParagraphIds, immutable_facts: item.immutableFacts })), source_paragraphs: units.map((item) => ({ paragraph_id: item.paragraphId, text: item.text })) },
-    });
-    factCalls.push(repairCall);
-    const repairedFacts = readFactCards(repairCall.json);
-    const repairedFactValidation = validateRewriteFactCards(units, repairedFacts);
-    if (repairedFactValidation.passed || factLedgerQualityScore(repairedFactValidation) > factLedgerQualityScore(factValidation)) {
-      facts = repairedFacts;
-      factValidation = repairedFactValidation;
-      sourceProfile = mergeSourceProfiles([sourceProfile, readSourceProfile(repairCall.json)]);
+    let batchProfile = readSourceProfile(factCall.json);
+    let batchFacts = readFactCards(factCall.json);
+    let batchValidation = validateRewriteFactCards(batch, batchFacts);
+    if (!batchValidation.passed) {
+      const repairScope = buildRewriteFactRepairScope(batch, batchFacts);
+      const repairCharacters = normalizeRewriteText(repairScope.units.map((unit) => unit.text).join("\n\n")).length;
+      const repairCall = await invokeTrackedModel({
+        ...scope, taskType: "script_rewrite_restructure_facts_abstraction_repair", temperature: 0.25,
+        maxTokens: Math.min(8_000, Math.max(2_500, Math.ceil(repairCharacters * 1.5) + 2_000)),
+        system: EQUIVALENT_FACT_REPAIR_PROMPT,
+        payload: { task: "repair_semantic_fact_ledger", batch: { index: index + 1, count: factBatches.length }, failed_checks: batchValidation.checks.filter((item) => !item.passed), missing_immutable_facts: batchValidation.missingImmutableFacts, detail_target: { source_characters: repairCharacters, minimum_ledger_characters: Math.ceil(repairCharacters * (repairCharacters >= 1_000 ? 0.45 : 0.3)) }, source_profile: batchProfile, rejected_facts: repairScope.targetFacts.map((item) => ({ fact_id: item.factId, kind: item.kind, statement: item.statement, source_paragraph_ids: item.sourceParagraphIds, immutable_facts: item.immutableFacts })), source_paragraphs: repairScope.units.map((item) => ({ paragraph_id: item.paragraphId, text: item.text })) },
+      });
+      factCalls.push(repairCall);
+      const repairIds = new Set(repairScope.units.map((unit) => unit.paragraphId));
+      const replacements = readFactCards(repairCall.json);
+      if (replacements.every((fact) => fact.sourceParagraphIds.every((id) => repairIds.has(id)))) {
+        const repairedFacts = [...repairScope.retainedFacts, ...replacements].map((fact, factIndex) => ({ ...fact, factId: `f-${String(factIndex + 1).padStart(3, "0")}` }));
+        const repairedValidation = validateRewriteFactCards(batch, repairedFacts);
+        if (repairedValidation.passed || factLedgerQualityScore(repairedValidation) > factLedgerQualityScore(batchValidation)) {
+          batchFacts = repairedFacts;
+          batchValidation = repairedValidation;
+          batchProfile = mergeSourceProfiles([batchProfile, readSourceProfile(repairCall.json)]);
+        }
+      }
     }
+    // If only a few protected facts remain missing, append focused cards rather
+    // than asking the model to regenerate and potentially damage the ledger.
+    for (let attempt = 0; attempt < 2 && !batchValidation.passed; attempt += 1) {
+      if (batchValidation.checks.some((check) => !check.passed && check.key !== "fact_immutables")) break;
+      const missingSources = buildMissingRewriteFactSources(batch, batchValidation.missingImmutableFacts);
+      if (!missingSources.length) break;
+      const supplement = await invokeTrackedModel({
+        ...scope, taskType: "script_rewrite_restructure_missing_facts", temperature: 0.1, maxTokens: 3_000,
+        system: EQUIVALENT_MISSING_FACT_PROMPT,
+        payload: { task: "supplement_missing_semantic_facts", submitted_attempt: attempt + 1, batch: { index: index + 1, count: factBatches.length }, missing_immutable_facts: batchValidation.missingImmutableFacts, source_paragraphs: missingSources.map((unit) => ({ paragraph_id: unit.paragraphId, text: unit.text })) },
+      });
+      factCalls.push(supplement);
+      const knownSources = new Set(missingSources.map((unit) => unit.paragraphId));
+      const sourceFacts = new Set(semanticRewriteFacts(batchText));
+      const additions = readFactCards(supplement.json).map((fact) => {
+        const stated = new Set(semanticRewriteFacts(fact.statement));
+        // Metadata cannot claim a missing value was restored when its meaning
+        // still does not appear in the statement used by the body writer.
+        const immutableFacts = fact.immutableFacts.filter((value) => {
+          const extracted = semanticRewriteFacts(value);
+          const declared = extracted.length ? extracted : /^[A-Za-z][A-Za-z0-9_.:/+-]*$/u.test(value.trim()) ? [value.trim().toLocaleLowerCase("zh-CN")] : [];
+          return declared.every((item) => !batchValidation.missingImmutableFacts.includes(item) || stated.has(item));
+        });
+        return { ...fact, immutableFacts };
+      }).filter((fact) => fact.sourceParagraphIds.length
+        && fact.sourceParagraphIds.every((id) => knownSources.has(id))
+        && semanticRewriteFacts(fact.statement).every((value) => sourceFacts.has(value))
+        && semanticRewriteFacts(fact.statement).some((value) => batchValidation.missingImmutableFacts.includes(value))
+        && !batchFacts.some((existing) => normalizeRewriteText(existing.statement) === normalizeRewriteText(fact.statement)));
+      const supplementedFacts = [...batchFacts, ...additions].map((fact, factIndex) => ({ ...fact, factId: `f-${String(factIndex + 1).padStart(3, "0")}` }));
+      const supplementedValidation = validateRewriteFactCards(batch, supplementedFacts);
+      if (factLedgerQualityScore(supplementedValidation) > factLedgerQualityScore(batchValidation)) {
+        batchFacts = supplementedFacts;
+        batchValidation = supplementedValidation;
+      }
+    }
+    if (!batchValidation.passed) throw new RewriteContractError(`内容等价重构第 ${index + 1} 批命题仍有遗漏，已保留其他批次结果供重试复用。`, "RESTRUCTURE_FACTS_INVALID", batchValidation);
+    profileParts.push(batchProfile);
+    for (const fact of batchFacts) facts.push({ ...fact, factId: "f-" + String(facts.length + 1).padStart(3, "0") });
   }
+  const sourceProfile = mergeSourceProfiles(profileParts);
+  const factValidation = validateRewriteFactCards(units, facts);
   if (!factValidation.passed) throw new RewriteContractError("内容等价重构的命题清单不完整，未继续生成正文。", "RESTRUCTURE_FACTS_INVALID", factValidation);
   const planCalls: TrackedCall[] = [];
   let outline: RewriteOutlineSection[] = [];
@@ -689,6 +884,8 @@ async function generateRestructuredRewrite(scope: { organizationId: string; proj
             submitted_attempt: attempt,
             source_profile: sourceProfile,
             failed_checks: deterministicValidation.checks.filter((item) => !item.passed),
+            missing_immutable_facts: deterministicValidation.missingImmutableFacts,
+            unexpected_immutable_facts: deterministicValidation.unexpectedImmutableFacts ?? [],
             forbidden_copied_spans: forbiddenSpans,
             length_target: repairLengthTarget,
             section_targets: repairTargets,
@@ -730,10 +927,18 @@ async function generateRestructuredRewrite(scope: { organizationId: string; proj
     deterministicValidation = validateRestructuredRewrite(units, facts, body.paragraphs, body.factMapping, outline);
     if (repairUnavailable || !acceptedAny) break;
   }
+  const polished = await polishRestructuredParagraphs(scope, units, facts, body.paragraphs, body.factMapping, outline, generationCalls);
+  let paragraphOffset = 0;
+  body = flattenGeneratedSections(body.sections.map((section) => {
+    const paragraphs = polished.slice(paragraphOffset, paragraphOffset + section.paragraphs.length);
+    paragraphOffset += section.paragraphs.length;
+    return { ...section, paragraphs };
+  }));
+  deterministicValidation = validateRestructuredRewrite(units, facts, body.paragraphs, body.factMapping, outline);
   if (!deterministicValidation.passed && !isReviewableDraft(deterministicValidation, "restructured")) throw new RewriteContractError("内容等价重构未通过事实覆盖、结构重建或局部照搬硬校验。", "RESTRUCTURE_VALIDATION_FAILED", deterministicValidation);
   let candidateText = body.paragraphs.join("\n\n");
   const auditSystem = EQUIVALENT_AUDITOR_PROMPT;
-  const auditPayload = (text: string) => ({ task: "audit_equivalent_restructure", source_text: sourceText, source_profile: sourceProfile, fact_ledger: facts.map((item) => ({ fact_id: item.factId, kind: item.kind, statement: item.statement, immutable_facts: item.immutableFacts })), planned_outline: outline.map((item) => ({ section_id: item.sectionId, role: item.role, fact_ids: item.factIds })), candidate_text: text });
+  const auditPayload = (text: string) => ({ task: "audit_equivalent_restructure", source_text: sourceText, source_profile: sourceProfile, fact_ledger: facts.map((item) => ({ fact_id: item.factId, kind: item.kind, statement: item.statement, source_paragraph_ids: item.sourceParagraphIds, immutable_facts: item.immutableFacts })), planned_outline: outline.map((item) => ({ section_id: item.sectionId, role: item.role, fact_ids: item.factIds })), candidate_text: text });
   const auditCalls: TrackedCall[] = [];
   let validation = deterministicValidation;
   try {
@@ -803,15 +1008,23 @@ export async function POST(request: Request, context: { params: Promise<{ rewrit
     const sourceVersion = await db.prepare("SELECT id FROM script_rewrite_versions WHERE organization_id = ? AND project_id = ? AND workspace_id = ? AND variant = 'source' ORDER BY version ASC LIMIT 1").bind(organizationId, projectId, rewriteId).first<{ id: string }>();
     if (!sourceVersion) return apiError("REWRITE_SOURCE_VERSION_MISSING", "来源快照不存在，不能继续生成。", 409);
     const retryOfRunId = clean(payload.retryOfRunId, 100);
+    const resumeRunIds: string[] = [];
     if (retryOfRunId) {
       if (variants.length !== 1) return apiError("REWRITE_RETRY_SINGLE_VARIANT", "单版重试一次只能选择一个版本。", 400);
       const retryRun = await db.prepare("SELECT id FROM script_rewrite_runs WHERE id = ? AND organization_id = ? AND project_id = ? AND workspace_id = ? AND variant = ?").bind(retryOfRunId, organizationId, projectId, rewriteId, variants[0]).first();
       if (!retryRun) return apiError("REWRITE_RETRY_NOT_FOUND", "要重试的运行记录不存在。", 404);
+      let ancestorId: string | null = retryOfRunId;
+      while (ancestorId && resumeRunIds.length < 20 && !resumeRunIds.includes(ancestorId)) {
+        const ancestor: { retry_of_run_id: string | null } | null = await db.prepare("SELECT retry_of_run_id FROM script_rewrite_runs WHERE id = ? AND organization_id = ? AND project_id = ? AND workspace_id = ? AND variant = ? AND source_version_id = ? AND status <> 'started'").bind(ancestorId, organizationId, projectId, rewriteId, variants[0], sourceVersion.id).first<{ retry_of_run_id: string | null }>();
+        if (!ancestor) break;
+        resumeRunIds.push(ancestorId);
+        ancestorId = ancestor.retry_of_run_id;
+      }
     }
     readContentModelConfig("max");
     const estimate = estimateRewriteUsage(workspace.source_text, variants); const user = await ensureUser(identity);
     const quota = await checkOrganizationQuota(organizationId, user.id, "modelCalls", estimate.callCount);
-    if (!quota.allowed) return apiError("MODEL_QUOTA_EXCEEDED", `本次预计调用 ${estimate.callCount} 次模型，当前月度剩余额度不足。`, 429, { usage: quota.current, limit: quota.limit, requested: estimate.callCount });
+    if (!quota.allowed && !resumeRunIds.length) return apiError("MODEL_QUOTA_EXCEEDED", `本次预计调用 ${estimate.callCount} 次模型，当前月度剩余额度不足。`, 429, { usage: quota.current, limit: quota.limit, requested: estimate.callCount });
     const units = buildScriptUnits(workspace.source_text);
     const homomorphicUnits = buildScriptUnits(workspace.source_text, SCRIPT_REWRITE_MAX_CHARACTERS);
     const results: Array<Record<string, unknown>> = [];
@@ -820,8 +1033,8 @@ export async function POST(request: Request, context: { params: Promise<{ rewrit
       await db.prepare(`INSERT INTO script_rewrite_runs (id, organization_id, project_id, workspace_id, variant, status, source_version_id, result_version_id, retry_of_run_id, estimated_call_count, estimated_input_tokens, maximum_output_tokens, actual_input_tokens, actual_output_tokens, actual_total_tokens, model_call_id, prompt_version, validation_json, error_code, error_message, created_by, created_at, completed_at) VALUES (?, ?, ?, ?, ?, 'started', ?, NULL, ?, ?, ?, ?, 0, 0, 0, NULL, ?, '{}', NULL, NULL, ?, ?, NULL)`).bind(runId, organizationId, projectId, rewriteId, variant, sourceVersion.id, retryOfRunId || null, variantEstimate.callCount, variantEstimate.estimatedInputTokens, variantEstimate.maximumOutputTokens, SCRIPT_REWRITE_PROMPT_VERSION, user.id, startedAt).run();
       try {
         const generated = variant === "light_rewrite"
-          ? await generateLightRewrite({ organizationId, projectId, userId: user.id, runId }, homomorphicUnits)
-          : await generateRestructuredRewrite({ organizationId, projectId, userId: user.id, runId }, units);
+          ? await generateLightRewrite({ organizationId, projectId, userId: user.id, runId, resumeRunIds }, homomorphicUnits)
+          : await generateRestructuredRewrite({ organizationId, projectId, userId: user.id, runId, resumeRunIds }, units);
         const usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }; generated.calls.forEach((call) => addUsage(usage, call.usage));
         const latest = await db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM script_rewrite_versions WHERE organization_id = ? AND project_id = ? AND workspace_id = ?").bind(organizationId, projectId, rewriteId).first<{ version: number }>();
         const version = Number(latest?.version ?? 0) + 1; const versionId = crypto.randomUUID(); const completedAt = new Date().toISOString(); const firstCall = generated.calls[0];
@@ -831,7 +1044,7 @@ export async function POST(request: Request, context: { params: Promise<{ rewrit
           db.prepare("UPDATE script_rewrite_workspaces SET updated_by = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ?").bind(user.id, completedAt, rewriteId, organizationId, projectId),
           db.prepare(`INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'script_rewrite.generated', 'script_rewrite_version', ?, ?, ?)`).bind(crypto.randomUUID(), organizationId, projectId, user.id, versionId, JSON.stringify({ workspaceId: rewriteId, runId, variant, version, sourceHash: workspace.source_hash, modelCallIds: generated.calls.map((call) => call.id), usage, validation: generated.validation }), completedAt),
         ]);
-        results.push({ variant, status: "completed", runId, versionId, version, validation: generated.validation, usage });
+        results.push({ variant, status: "completed", runId, versionId, version, validation: generated.validation, usage, reusedCallCount: generated.calls.filter((call) => call.reused).length });
       } catch (error) {
         const completedAt = new Date().toISOString(); const contract = error instanceof RewriteContractError ? error : null; const code = contract?.code ?? (error instanceof ModelRequestError ? error.code : "REWRITE_GENERATION_FAILED"); const message = error instanceof Error ? error.message.slice(0, 1000) : "改写生成失败";
         const callUsage = await db.prepare("SELECT COALESCE(SUM(CAST(json_extract(output_json, '$.usage.inputTokens') AS INTEGER)), 0) AS input_tokens, COALESCE(SUM(CAST(json_extract(output_json, '$.usage.outputTokens') AS INTEGER)), 0) AS output_tokens, COALESCE(SUM(CAST(json_extract(output_json, '$.usage.totalTokens') AS INTEGER)), 0) AS total_tokens, MIN(id) AS model_call_id FROM model_calls WHERE organization_id = ? AND project_id = ? AND created_by = ? AND json_extract(input_json, '$.runId') = ? AND task_type LIKE 'script_rewrite_%'").bind(organizationId, projectId, user.id, runId).first<{ input_tokens: number; output_tokens: number; total_tokens: number; model_call_id: string | null }>();

@@ -12,7 +12,8 @@ import { methodologyPlanPromptSource, selectAuthorizedMethodologyPlan } from "..
 import { materialFeedbackPrompt } from "../../../../../lib/material-recommendation";
 import { assertProjectGenerationContext, buildProjectGenerationContext, finishGenerationSourceManifest, insertGenerationSourceManifest, redactedGenerationInput, untrustedReferencePrompt } from "../../../../../lib/project-generation-context";
 import { benchmarkDirectPerformancePrompt, inspectSelectedBenchmarkCoverage, type BenchmarkDirectPerformance } from "../../../../../lib/benchmark-generation-context";
-import { applyCitationRepair, buildCitationDraftAnchors, CITATION_REPAIR_SYSTEM, deduplicateTraceableCitations, isCitationRepairError } from "../../../../../lib/content-citation-recovery";
+import { applyCitationRepair, buildCitationDraftAnchors, buildCitationSourceAnchors, CITATION_REPAIR_SYSTEM, deduplicateTraceableCitations, isCitationRepairError } from "../../../../../lib/content-citation-recovery";
+import { incompleteScriptReason } from "../../../../../lib/content-writing-intent";
 
 import { topicKnowledgeSelection } from "../../../../../lib/topic-knowledge-selection";
 import { BENCHMARK_CONTENT_GUIDANCE } from "../../../../../lib/benchmark-content-policy";
@@ -57,7 +58,7 @@ export async function POST(request: Request, context: { params: Promise<{ conten
   try {
     const parsed = generateContentSchema.safeParse(await request.json());
     if (!parsed.success) return apiError("INVALID_GENERATION_INPUT", "内容生成参数无效。", 400);
-    const { organizationId, projectId, benchmarkEntryIds, recommendedBenchmarkIds, creationMode } = parsed.data;
+    const { organizationId, projectId, benchmarkEntryIds, recommendedBenchmarkIds, creationMode, writingIntent } = parsed.data;
     const singleBenchmark = creationMode === "single_benchmark";
     if (singleBenchmark && benchmarkEntryIds.length !== 1) return apiError("SINGLE_BENCHMARK_REQUIRED", "单条对标仿写需要且只能选择 1 条参考视频。", 400);
     if (new Set(benchmarkEntryIds).size !== benchmarkEntryIds.length) return apiError("DUPLICATE_BENCHMARK", "参考视频不能重复选择。", 400);
@@ -120,7 +121,7 @@ export async function POST(request: Request, context: { params: Promise<{ conten
     const benchmarkFeedback = new Map(benchmarkFeedbackRows.results.map((row) => [row.entry_id, materialFeedbackFromRow(row)]));
     if (!strategy?.id) return apiError("ACTIVE_STRATEGY_REQUIRED", "请先启用该项目的内容策略，再生成生产包。", 409);
     if (knowledgeRows.results.length !== selectedKnowledgeSourceIds.size) return apiError("SELECTED_KNOWLEDGE_UNAVAILABLE", "选题指定的品牌知识已失效或不属于当前空间，请先核对选题引用。", 409);
-    const topicText = [item.topic_title, item.angle, item.pillar, item.audience, item.objective, item.hook, item.rationale].filter(Boolean).join("\n");
+    const topicText = [`本次创作选题标题：${item.topic_title}`, item.angle, item.pillar, item.audience, item.objective, item.hook, item.rationale].filter(Boolean).join("\n");
     const historicalQuery = [topicText, strategy.positioning, strategy.targetAudience].filter(Boolean).join("\n");
     const historicalMatches = selectRelevantPublishedCopies(historicalRows.results, historicalQuery, 5);
     const methodologySources = await retrieveGenerationMethodologySources({ query: historicalQuery, task: "content" });
@@ -176,7 +177,9 @@ export async function POST(request: Request, context: { params: Promise<{ conten
     const generationInput = {
       taskBrief: {
         task: "short_video_production_pack",
-        instruction: singleBenchmark ? "按单条参考的逐段结构映射仿写新选题，篇幅、钩子、衔接与 CTA 对齐；通用方法仅作辅助检查。" : "依据项目事实完成原创短视频生产包；先执行确定性方法计划，再生成和自检。",
+        instruction: singleBenchmark ? "按单条参考的逐段结构映射仿写新选题，篇幅、钩子、衔接与 CTA 对齐；通用方法仅作辅助检查。" : "围绕选题完成可直接念出的原创口播稿；没有用户素材时可使用稳定通用知识。公司事实只使用已选资料，方法计划只指导写法。",
+        writingIntent,
+        companyKnowledgeSelected: selectedKnowledgeSourceIds.size > 0,
         topic: topicBrief,
       },
       // Legacy alias retained for old clients and stored snapshots.
@@ -210,7 +213,7 @@ export async function POST(request: Request, context: { params: Promise<{ conten
       outputSchema,
     };
     let promptInputJson = JSON.stringify(generationInput);
-    let inputJson = redactedGenerationInput({ topic: generationInput.topic, materialSelection: generationInput.materialSelection, methodologyPlan: methodologyPlan.snapshot, singleBenchmarkTemplate: generationInput.singleBenchmarkTemplate, outputSchema }, generationContext.sourceManifest);
+    let inputJson = redactedGenerationInput({ taskBrief: generationInput.taskBrief, topic: generationInput.topic, materialSelection: generationInput.materialSelection, methodologyPlan: methodologyPlan.snapshot, singleBenchmarkTemplate: generationInput.singleBenchmarkTemplate, outputSchema }, generationContext.sourceManifest);
     let inputHash = await sha256Hex(new TextEncoder().encode(promptInputJson)); const now = new Date().toISOString(); const promptTemplateId = crypto.randomUUID();
     await insertGenerationSourceManifest({ context: generationContext, userId: user.id, modelProvider: config.provider, modelName: config.model }); sourceManifestInserted = true;
     let prompt = await db.prepare("SELECT id FROM prompt_templates WHERE organization_id = ? AND project_id = ? AND task_type = 'content_draft' AND version = ?").bind(organizationId, projectId, promptVersion).first<{ id: string }>();
@@ -247,7 +250,7 @@ export async function POST(request: Request, context: { params: Promise<{ conten
       if (!generationInput.singleBenchmarkTemplate.plan) throw new ModelRequestError(`原稿结构未通过校验：${planError}`, "BENCHMARK_PLAN_INVALID");
       generationInput.singleBenchmarkTemplate.budget = benchmarkRewriteBudget(rewriteSource!.sourceScript, generationInput.singleBenchmarkTemplate.plan);
       promptInputJson = JSON.stringify(generationInput);
-      inputJson = redactedGenerationInput({ topic: topicBrief, materialSelection: generationInput.materialSelection, methodologyPlan: methodologyPlan.snapshot, singleBenchmarkTemplate: generationInput.singleBenchmarkTemplate, outputSchema }, generationContext.sourceManifest);
+      inputJson = redactedGenerationInput({ taskBrief: generationInput.taskBrief, topic: topicBrief, materialSelection: generationInput.materialSelection, methodologyPlan: methodologyPlan.snapshot, singleBenchmarkTemplate: generationInput.singleBenchmarkTemplate, outputSchema }, generationContext.sourceManifest);
       inputHash = await sha256Hex(new TextEncoder().encode(promptInputJson));
       await db.prepare("UPDATE model_calls SET input_json = ?, input_hash = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'started'").bind(inputJson, inputHash, modelCallId, organizationId, projectId).run();
     }
@@ -266,12 +269,13 @@ export async function POST(request: Request, context: { params: Promise<{ conten
           user: JSON.stringify({
             draft: citationDraft,
             draftAnchors: buildCitationDraftAnchors(citationDraft!),
+            sourceAnchors: buildCitationSourceAnchors(sourceList),
             methodologyPlan: methodologyPlan.snapshot,
             sources: sourceList,
             required: {
               strategy: strategy.id,
               method_knowledge: methodologyPlan.id,
-              knowledge: [...selectedKnowledgeSourceIds],
+              knowledge: citationDraft!.citations.filter((citation) => citation.sourceType === "knowledge").map((citation) => citation.sourceId),
               benchmark: benchmarkEntryIds,
               benchmarkMethods: benchmarkEntryIds,
               video_analysis: sourceList.some((source) => source.sourceType === "video_analysis"),
@@ -312,6 +316,10 @@ export async function POST(request: Request, context: { params: Promise<{ conten
         }
         const candidate = productionPackSchema.safeParse(modelOutput);
         if (!candidate.success) throw new ModelRequestError(`模型输出未通过生产包校验：${productionPackValidationIssue(candidate.error, modelOutput)}`, "INVALID_MODEL_OUTPUT");
+        const incomplete = incompleteScriptReason(candidate.data);
+        if (incomplete) throw new ModelRequestError(incomplete, "INCOMPLETE_CONTENT_SCRIPT");
+        if (!candidate.data.writingIntent) throw new ModelRequestError("请返回 writingIntent，说明本次实际采用的创作意图。", "WRITING_INTENT_REQUIRED");
+        if (writingIntent !== "auto" && candidate.data.writingIntent.kind !== writingIntent) throw new ModelRequestError("实际创作意图与用户选择不一致，请按用户选择完成稿件。", "WRITING_INTENT_MISMATCH");
         citationDraft = candidate.data;
         const invalidCitation = candidate.data.citations.find((citation) => {
           const source = sources.get(`${citation.sourceType}:${citation.sourceId}`);
@@ -326,7 +334,6 @@ export async function POST(request: Request, context: { params: Promise<{ conten
         const hasCitation = (sourceType: Source["sourceType"], sourceIds?: Set<string>) => candidate.data.citations.some((citation) => citation.sourceType === sourceType && (!sourceIds || sourceIds.has(citation.sourceId)));
         if (!hasCitation("strategy")) throw new ModelRequestError("模型没有形成当前内容策略的可追溯引用。", "STRATEGY_CITATION_REQUIRED");
         if (!hasCitation("method_knowledge", new Set([methodologyPlan.id]))) throw new ModelRequestError("模型没有引用本次确定性方法计划，无法确认成稿按所选方法执行。", "METHODOLOGY_PLAN_CITATION_REQUIRED");
-        if (selectedKnowledgeSourceIds.size && !hasCitation("knowledge", selectedKnowledgeSourceIds)) throw new ModelRequestError("模型没有实际引用选题指定的品牌知识。", "SELECTED_KNOWLEDGE_CITATION_REQUIRED");
         if (sourceList.some((source) => source.sourceType === "video_analysis") && !hasCitation("video_analysis")) throw new ModelRequestError("模型没有实际引用选题关联的视频分析。", "VIDEO_ANALYSIS_CITATION_REQUIRED");
         const benchmarkMethods = candidate.data.qualityReview?.benchmarkMethods ?? [];
         const benchmarkCoverage = inspectSelectedBenchmarkCoverage({

@@ -11,8 +11,9 @@ if not defined CUSTOMER_NAME (
 echo.
 echo Select the commercial package to deliver:
 echo   1. Basic Collaboration - no video analysis, WeChat image, or insights modules
-echo   2. Intelligent Production - video analysis and WeChat image modules
-echo   3. Full Operations - all modules
+echo   2. Intelligent Production - video analysis module
+echo   3. Full Operations - video analysis and insights modules
+echo   WeChat image is disabled in all packages.
 set "PLAN_CHOICE="
 set /p "PLAN_CHOICE=Plan [1/2/3, default 2]: "
 if not defined PLAN_CHOICE set "PLAN_CHOICE=2"

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { createHash, randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
+import { DatabaseSync } from "node:sqlite";
 
 // Validate the final, pruned customer files in a separate installation. Never
 // load the development .dev.vars or touch the customer's persistent storage.
@@ -13,7 +14,7 @@ const packageRoot = path.resolve(process.argv[2] || "");
 assert.ok(process.argv[2] && existsSync(path.join(packageRoot, "delivery-manifest.json")), "A generated delivery directory is required");
 const manifest = JSON.parse(readFileSync(path.join(packageRoot, "delivery-manifest.json"), "utf8"));
 const runRoot = path.join(sourceRoot, ".local/dv", `${manifest.license.code}-${randomBytes(4).toString("hex")}`);
-const installRoot = path.join(runRoot, "Customer install"); // Exercise paths containing spaces.
+const installRoot = path.join(runRoot, "客户 install"); // Exercise Chinese and spaces.
 mkdirSync(runRoot, { recursive: true });
 const files = dir => readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
   assert.ok(!entry.isSymbolicLink(), "Delivery must not contain filesystem links");
@@ -94,8 +95,41 @@ try {
     }
   });
   cpSync(packageRoot, installRoot, { recursive: true });
-  const syntheticVars = readFileSync(path.join(installRoot, ".dev.vars"), "utf8").replace(/^FIRST_RUN_SETUP_CODE_HASH=.*$/m, `FIRST_RUN_SETUP_CODE_HASH=${createHash("sha256").update(setupCode).digest("hex")}`).replace(/^ANALYZER_SERVICE_TOKEN=.*$/m, `ANALYZER_SERVICE_TOKEN=${randomBytes(32).toString("hex")}`);
+  let syntheticVars = readFileSync(path.join(installRoot, ".dev.vars"), "utf8").replace(/^FIRST_RUN_SETUP_CODE_HASH=.*$/m, `FIRST_RUN_SETUP_CODE_HASH=${createHash("sha256").update(setupCode).digest("hex")}`).replace(/^ANALYZER_SERVICE_TOKEN=.*$/m, `ANALYZER_SERVICE_TOKEN=${randomBytes(32).toString("hex")}`);
+  // Exercise an older configuration with none of the newly added timeout keys.
+  syntheticVars = syntheticVars.replace(/^ANALYZER_TIMEOUT_[A-Z_]+=.*\r?\n/gm, "") + "\nLEGACY_CUSTOM_SETTING=preserve-this\n";
+  if (manifest.license.features.videoAnalysis && process.env.DELIVERY_TEST_PYTHON_ENV) {
+    const mediaRoot = path.join(installRoot, ".local/test-media"); mkdirSync(mediaRoot, { recursive: true });
+    for (const executable of ["ffmpeg.exe", "ffprobe.exe"]) cpSync(path.join(process.env.SystemRoot || "C:/Windows", "System32/cmd.exe"), path.join(mediaRoot, executable));
+    const fixtureSettings = { ANALYZER_LLM_API_KEY: "synthetic-unused", ANALYZER_LLM_BASE_URL: "https://example.invalid/v1", ANALYZER_LLM_MODEL: "synthetic-unused", ANALYZER_LLM_PROVIDER: "openai", ANALYZER_WORKER_ID: "delivery-empty-queue", ANALYZER_YTDLP_COOKIES_FROM_BROWSER: "none", ANALYZER_FFMPEG: path.join(mediaRoot, "ffmpeg.exe"), ANALYZER_FFPROBE: path.join(mediaRoot, "ffprobe.exe") };
+    for (const [key, value] of Object.entries(fixtureSettings)) {
+      const expression = new RegExp(`^${key}=.*$`, "m");
+      syntheticVars = expression.test(syntheticVars) ? syntheticVars.replace(expression, () => `${key}=${value}`) : `${syntheticVars}\n${key}=${value}\n`;
+    }
+  }
   writeFileSync(path.join(installRoot, ".dev.vars"), syntheticVars);
+  await check("legacy-database-upgrade-preserves-existing-rows", async () => {
+    const legacy = new DatabaseSync(path.join(runRoot, "legacy-upgrade.sqlite"));
+    try {
+      const migrations = readdirSync(path.join(installRoot, "drizzle")).filter(name => name.endsWith(".sql")).sort();
+      for (const name of migrations.filter(name => name < "0049")) legacy.exec(readFileSync(path.join(installRoot, "drizzle", name), "utf8"));
+      const stamp = "2026-09-01T00:00:00.000Z";
+      legacy.prepare("INSERT INTO users (id, auth_subject, email, status, created_at, updated_at) VALUES ('legacy-user','legacy-user','legacy@example.invalid','active',?,?)").run(stamp, stamp);
+      legacy.prepare("INSERT INTO organizations (id,name,slug,created_by,created_at,updated_at) VALUES ('legacy-org','Legacy','legacy','legacy-user',?,?)").run(stamp, stamp);
+      legacy.prepare("INSERT INTO projects (id,organization_id,name,client_name,status,created_by,updated_by,created_at,updated_at) VALUES ('legacy-project','legacy-org','Legacy project','Legacy','active','legacy-user','legacy-user',?,?)").run(stamp, stamp);
+      legacy.prepare("INSERT INTO videos (id,organization_id,project_id,platform,source_type,source_url,source_hash,status,created_by,updated_by,created_at,updated_at) VALUES ('legacy-video','legacy-org','legacy-project','douyin','url','https://example.invalid/video','legacy-hash','pending','legacy-user','legacy-user',?,?)").run(stamp, stamp);
+      legacy.prepare("INSERT INTO analysis_jobs (id,organization_id,project_id,video_id,source_type,source_ref,idempotency_key,status,checkpoint_stage,checkpoint_json,attempt_count,created_by,updated_by,created_at,updated_at) VALUES ('legacy-job','legacy-org','legacy-project','legacy-video','url','https://example.invalid/video','legacy-hash','pending','evidence_ready','{\"checkpoint_version\":1}',2,'legacy-user','legacy-user',?,?)").run(stamp, stamp);
+      const before = legacy.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all().map(({ name }) => {
+        const columns = legacy.prepare(`PRAGMA table_info("${name}")`).all().map(column => `"${column.name}"`).join(",");
+        const query = `SELECT ${columns} FROM "${name}"`;
+        return { query, rows: JSON.stringify(legacy.prepare(query).all()) };
+      });
+      for (const name of migrations.filter(name => name >= "0049")) legacy.exec(readFileSync(path.join(installRoot, "drizzle", name), "utf8"));
+      for (const table of before) assert.equal(JSON.stringify(legacy.prepare(table.query).all()), table.rows, table.query);
+      assert.equal(legacy.prepare("SELECT COUNT(*) AS n FROM analysis_model_calls").get().n, 0);
+    } finally { legacy.close(); }
+    assert.equal(readFileSync(path.join(installRoot, ".dev.vars"), "utf8"), syntheticVars);
+  });
   const npmCli = process.env.npm_execpath || path.join(path.dirname(process.execPath), "node_modules/npm/bin/npm-cli.js");
   assert.ok(existsSync(npmCli), "npm CLI must be installed alongside Node.js");
   await check("clean-npm-ci-and-customer-build", async () => {
@@ -120,6 +154,10 @@ try {
     assert.equal((await http("/api/first-run")).data.setupRequired, false);
     assert.equal((await http("/api/auth/session", { authenticated: true })).status, 200);
     for (const page of ["/", "/settings", "/knowledge", ...(manifest.license.features.videoAnalysis ? ["/analysis"] : [])]) assert.equal((await http(page, { authenticated: true })).status, 200, page);
+  });
+  if (manifest.license.features.videoAnalysis && process.env.DELIVERY_TEST_PYTHON_ENV) await check("analyzer-empty-queue-concurrent-start-and-supervisor-recovery", async () => {
+    await run("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(sourceRoot, "scripts/verify-analyzer-delivery.ps1"), "-InstallRoot", installRoot, "-PythonEnvironment", process.env.DELIVERY_TEST_PYTHON_ENV, "-BaseUrl", origin]);
+    assert.equal(readFileSync(path.join(installRoot, ".dev.vars"), "utf8"), syntheticVars, "Existing configuration was modified by analyzer startup");
   });
   let projectId;
   await check("customer-project-write-and-restart-persistence", async () => {

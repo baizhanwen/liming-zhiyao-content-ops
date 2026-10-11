@@ -105,6 +105,7 @@ const nextUrl = () => `https://www.douyin.com/video/123456789012345${sequence++}
 const submit = (user, url = nextUrl()) => http("/api/videos/from-url", { user, method: "POST", body: { organizationId: user.org, projectId: user.project, url } });
 const cancel = (user, jobId) => http(`/api/analysis-jobs/${jobId}/cancel`, { user, method: "POST" });
 const retry = (user, jobId) => http(`/api/analysis-jobs/${jobId}/retry`, { user, method: "POST" });
+const release = job => http(`/api/internal/analysis-jobs/${job.id}/release`, { service: true, method: "POST", body: { workerId: job.lease_owner, attempt: job.attempt_count } });
 const heartbeat = (job, status = "analyzing", progress = 90) => http(`/api/internal/analysis-jobs/${job.id}/heartbeat`, { service: true, method: "POST", body: { workerId: job.lease_owner, version: job.version, status, progress, stage: "runtime fixture", leaseSeconds: 300, browserAuth: browserAuth() } });
 const completion = job => ({ workerId: job.lease_owner, version: job.version, resultKey: `runtime-${job.id}-${job.version}`, analysis: { schemaVersion: "analysis.v7", confidence: 90, report: { fixture: true, analysis_meta: { quality_audit: { status: "passed", acceptance_passed: true, completion_status: "complete" } } }, modelProvider: "fixture", modelName: "fixture" }, transcript: { language: "zh", fullText: "隔离环境测试文本", segments: [], confidence: 90 } });
 const complete = (job, body = completion(job)) => http(`/api/internal/analysis-jobs/${job.id}/complete`, { service: true, method: "POST", body });
@@ -147,12 +148,13 @@ try {
     expect(await retry(users[10], batch[0].job.id), 403);
   });
   let claims;
-  await scenario("20 个领取请求竞争 10 个任务不重复领取", async () => {
+  await scenario("20 个领取请求竞争 10 个任务，只授予 1 个主机执行名额", async () => {
     const responses = await Promise.all(Array.from({ length: 20 }, (_, i) => claim(`runtime-worker-${i}`)));
     responses.forEach(r => assert.ok([200, 204].includes(r.status), JSON.stringify(r.data)));
     claims = responses.filter(r => r.status === 200).map(r => r.data.job);
-    assert.equal(claims.length, 10);
-    assert.deepEqual(new Set(claims.map(j => j.id)), new Set(batch.map(x => x.job.id)));
+    assert.equal(claims.length, 1);
+    assert.equal(responses.filter(r => r.status === 204).length, 19);
+    assert.ok(batch.some(x => x.job.id === claims[0].id));
   });
   await scenario("结果并发提交与响应丢失后重发保持幂等", async () => {
     claims = await Promise.all(claims.map(analyzing));
@@ -160,8 +162,13 @@ try {
     const first = claims[0], payload = completion(first);
     expect(await complete(first, payload), 200);
     assert.equal(expect(await complete(first, payload), 200).idempotent, true);
-    const responses = await Promise.all(claims.slice(1).flatMap(job => [complete(job), complete(job)]));
-    responses.forEach(r => assert.ok([200, 409].includes(r.status), JSON.stringify(r.data)));
+    for (let index = 1; index < 10; index++) {
+      const job = await analyzing(expect(await claim(`runtime-drain-${index}`), 200).job);
+      claims.push(job);
+      const responses = await Promise.all([complete(job), complete(job)]);
+      responses.forEach(r => assert.ok([200, 409].includes(r.status), JSON.stringify(r.data)));
+    }
+    assert.deepEqual(new Set(claims.map(j => j.id)), new Set(batch.map(x => x.job.id)));
     assert.equal(await count("SELECT COUNT(*) AS n FROM video_analyses"), 10);
     assert.equal(await count("SELECT COUNT(*) AS n FROM video_transcripts"), 10);
     assert.equal(await count("SELECT COUNT(*) AS n FROM analysis_jobs WHERE status = 'completed'"), 10);
@@ -188,6 +195,8 @@ try {
     const objects = await (await mf.getR2Bucket("MEDIA")).list(); assert.equal(objects.objects.length, 1);
     uploadFixture = { key: objects.objects[0].key, hash: createHash("sha256").update(bytes).digest("hex") };
     expect(await cancel(users[0], job.id), 200);
+    expect(await claim("must-wait-for-release"), 204);
+    expect(await release(job), 200);
   });
   await scenario("取消与完成同时发生保持唯一终态", async () => {
     for (let i = 0; i < 10; i++) {
@@ -199,6 +208,7 @@ try {
       assert.equal(responses.filter(r => r.status === 409).length, 1);
       const state = await db.prepare("SELECT status FROM analysis_jobs WHERE id = ?").bind(job.id).first();
       assert.equal(await count("SELECT COUNT(*) AS n FROM video_analyses WHERE analysis_job_id = ?", job.id), state.status === "completed" ? 1 : 0);
+      expect(await release(job), 200);
     }
   });
   await scenario("暂时失败后 10 次并发重试只恢复一次", async () => {
@@ -232,10 +242,13 @@ try {
       const responses = await Promise.all(submissions);
       await Promise.all(reads);
       const created = responses.map((r, i) => ({ ...expect(r, 202), user: users[i] }));
-      const claimed = await Promise.all(Array.from({ length: 10 }, (_, i) => claim(`runtime-burst-${round}-${i}`)));
-      assert.deepEqual(new Set(claimed.map(r => expect(r, 200).job.id)), new Set(created.map(x => x.job.id)));
-      const completions = await Promise.all(claimed.map(async r => complete(await analyzing(r.data.job))));
-      completions.forEach(r => expect(r, 200));
+      const claimed = [];
+      for (let index = 0; index < 10; index++) {
+        const job = expect(await claim(`runtime-burst-${round}-${index}`), 200).job;
+        claimed.push(job.id);
+        expect(await complete(await analyzing(job)), 200);
+      }
+      assert.deepEqual(new Set(claimed), new Set(created.map(x => x.job.id)));
       console.log(`  burst ${round + 1}/${burstRounds} finished`);
     }
   });
@@ -250,9 +263,12 @@ try {
     const job = expect(await claim("runtime-after-restart"), 200).job; assert.equal(job.id, persistentJob);
     expect(await complete(await analyzing(job)), 200);
   });
-  if (process.env.LAN_TEST_PYTHON) await scenario("真实 Python Worker 在断连/单条下载失败/结果响应丢失后继续队列", async () => {
-    const jobs = [];
-    for (let i = 0; i < 3; i++) jobs.push(expect(await submit(users[0]), 202).job.id);
+  if (process.env.LAN_TEST_PYTHON) await scenario("5 人各 10 条：隔离处理进程经历卡死、崩溃、取消、断网和丢失响应后完成队列", async () => {
+    const submissions = await Promise.all(users.slice(0, 5).flatMap(user => Array.from({ length: 10 }, () => submit(user))));
+    const jobs = submissions.map(response => expect(response, 202).job.id);
+    assert.equal(new Set(jobs).size, 50);
+    assert.equal(expect(await submit(users[0]), 429).error.code, "ANALYSIS_USER_QUEUE_FULL");
+    assert.equal(expect(await submit(users[5]), 429).error.code, "ANALYSIS_HOST_QUEUE_FULL");
     pythonResult = await new Promise((resolve, reject) => {
       const child = spawn(process.env.LAN_TEST_PYTHON, [path.join(root, "scripts/lan-worker-check.py")], {
         cwd: root, windowsHide: true,
@@ -261,18 +277,19 @@ try {
       });
       let output = "", errors = "";
       child.stdout.on("data", data => { output += data; }); child.stderr.on("data", data => { errors += data; });
-      const timeout = setTimeout(() => { child.kill(); reject(new Error("Python runtime test exceeded 60 seconds")); }, 60000);
+      const timeout = setTimeout(() => { child.kill(); reject(new Error("Python runtime test exceeded 120 seconds")); }, 120000);
       child.on("error", error => { clearTimeout(timeout); reject(error); });
       child.on("close", code => { clearTimeout(timeout); if (code !== 0) reject(new Error(errors)); else { try { resolve(JSON.parse(output)); } catch { reject(new Error("Invalid Python fixture output")); } } });
-      child.stdin.end(JSON.stringify({ origin, token: serviceToken, failedJobId: jobs[1] }));
+      child.stdin.end(JSON.stringify({ origin, token: serviceToken, jobIds: jobs, cancelCookie: users[0].cookie, workspace: runDir }));
     });
     requests.push(...pythonResult.requests);
     assert.deepEqual(new Set(pythonResult.processed), new Set(jobs));
     for (const id of jobs) {
       const state = await db.prepare("SELECT status, error_code FROM analysis_jobs WHERE id = ?").bind(id).first();
-      assert.equal(state.status, id === jobs[1] ? "failed" : "completed");
-      if (id === jobs[1]) assert.equal(state.error_code, "SOURCE_NETWORK_FAILED");
-      assert.equal(await count("SELECT COUNT(*) AS n FROM video_analyses WHERE analysis_job_id = ?", id), id === jobs[1] ? 0 : 1);
+      const expectedFailure = pythonResult.failures[id];
+      assert.equal(state.status, id === jobs[4] ? "cancelled" : expectedFailure ? "failed" : "completed");
+      if (expectedFailure) assert.equal(state.error_code, expectedFailure);
+      assert.equal(await count("SELECT COUNT(*) AS n FROM video_analyses WHERE analysis_job_id = ?", id), expectedFailure || id === jobs[4] ? 0 : 1);
     }
     delete pythonResult.requests;
   });

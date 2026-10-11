@@ -30,6 +30,7 @@
   "exclude": [
     "node_modules",
     "deliveries",
+    "backups",
     "03_Skill库",
     "dbskill",
     "data",

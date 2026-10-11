@@ -14,7 +14,7 @@ test("authorized Liming Zhiyao methodology is versioned and used by topic and co
   assert.equal(methodology.AUTHORIZED_METHODOLOGY_SOURCE.revision.length, 40);
   assert.match(production.CONTENT_SYSTEM_PROMPT, /单一核心机制/);
   assert.match(production.CONTENT_SYSTEM_PROMPT, /选题、已启用策略/);
-  assert.match(production.CONTENT_PROMPT_VERSION, /v16-core-strategy$/);
+  assert.match(production.CONTENT_PROMPT_VERSION, /v17-writing-intent$/);
   assert.match(production.CONTENT_SYSTEM_PROMPT, /方法论、对标样本、历史文案和灵感均不能支撑客户事实/);
   assert.match(topics, /TOPIC_CREATION_METHODOLOGY/);
   assert.match(topics, /topic-fields\.v6-core-strategy/);

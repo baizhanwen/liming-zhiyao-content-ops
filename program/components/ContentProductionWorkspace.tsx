@@ -1,18 +1,19 @@
 "use client";
 import { runScopedAction } from "../lib/client-scope";
+import { isScopeCancellation } from "../lib/client-scope-request";
 import { useWorkspaceInitialization } from "./useWorkspaceInitialization";
 import { readApiError as readError } from "../lib/client-format";
 
 import { FormEvent, useCallback, useMemo, useRef, useState } from "react";
 import { rewriteCharacterCount } from "../lib/single-benchmark-rewrite";
 import { CoreStrategyPreview } from "./CoreStrategyPreview";
-import { EcommerceEntry } from "./ecommerce/EcommerceEntry";
 import type { CoreContentStrategy } from "../lib/content-strategy-policy";
 import Link from "next/link";
 import { topicKnowledgeSelection } from "../lib/topic-knowledge-selection";
 import type { ProductionPack } from "../lib/content-production";
 import { preferredProjectId, rememberCurrentScope, scopedFetch } from "../lib/client-scope";
 import { deliveryPlan } from "../lib/delivery-entitlements";
+import { writingIntentLabels, type WritingIntent } from "../lib/content-writing-intent";
 type Organization = {
     id: string;
     name: string;
@@ -44,6 +45,8 @@ type ContentItem = {
     topic_source_type?: string | null;
     topic_source_ref?: string | null;
     citation_count?: number;
+    latest_generation_status?: string | null;
+    latest_generation_error?: string | null;
     updated_at: string;
 };
 type BenchmarkEntry = {
@@ -201,7 +204,7 @@ export function ContentProductionWorkspace({ initialOrganizationId = "", initial
     const [benchmarks, setBenchmarks] = useState<BenchmarkEntry[]>([]);
     const [selectedBenchmarkIds, setSelectedBenchmarkIds] = useState<string[]>([]);
     const [creationMode, setCreationMode] = useState<"standard" | "single_benchmark">("standard");
-    const creationModeRef = useRef(creationMode);
+    const [writingIntent, setWritingIntent] = useState<WritingIntent>("auto");
     const recommendationRequest = useRef(0);
     const [recommendedBenchmarkIds, setRecommendedBenchmarkIds] = useState<string[]>([]);
     const [recommendationLoading, setRecommendationLoading] = useState(false);
@@ -230,7 +233,7 @@ export function ContentProductionWorkspace({ initialOrganizationId = "", initial
             if (requestId !== recommendationRequest.current) return;
             setBenchmarks(body.entries);
             setRecommendedBenchmarkIds(body.recommendedIds);
-            setSelectedBenchmarkIds(creationModeRef.current === "single_benchmark" ? [] : body.recommendedIds);
+            setSelectedBenchmarkIds([]);
         }
         catch (reason) {
             if (requestId !== recommendationRequest.current) return;
@@ -266,6 +269,7 @@ export function ContentProductionWorkspace({ initialOrganizationId = "", initial
         setCanWrite(contentBody.canWrite);
         const preferred = contentBody.items.find((item) => item.topic_id === initialTopicId)?.id || contentBody.items[0]?.id || "";
         setSelectedId(preferred);
+        setWritingIntent("auto");
         setPackPanel("diagnosis");
         if (contentBody.canWrite)
             await loadRecommendations(orgId, projId, preferred);
@@ -292,6 +296,7 @@ export function ContentProductionWorkspace({ initialOrganizationId = "", initial
     useWorkspaceInitialization({ initialOrganizationId, initialProjectId, setOrganizations, setOrganizationId, loadProjects, setError, setLoading, failureMessage: "加载失败" });
     const selected = items.find((item) => item.id === selectedId) ?? null;
     const pack = useMemo(() => selected ? readPack(selected.pack_json) : null, [selected]);
+    const isScaffold = selected?.generation_mode === "scaffold";
     const availableTopics = topics.filter((topic) => !items.some((item) => item.topic_id === topic.id));
     const benchmarkTitles = useMemo(() => new Map(benchmarks.map((entry) => [entry.id, entry.title || entry.author_name || "未命名对标样本"])), [benchmarks]);
     const usedBenchmarkCount = pack?.citations.filter((citation) => citation.sourceType === "benchmark").length ?? 0;
@@ -300,41 +305,57 @@ export function ContentProductionWorkspace({ initialOrganizationId = "", initial
     async function createItem(topicId: string) {
         setBusy(`create:${topicId}`);
         setError("");
-        const response = await scopedFetch("/api/content-items", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, topicId }) });
-        if (!response.ok) {
-            setError(await readError(response));
-            setBusy("");
-            return;
+        try {
+            const response = await scopedFetch("/api/content-items", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, topicId }) });
+            if (!response.ok) {
+                setError(await readError(response));
+                setBusy("");
+                return;
+            }
+            const body = await response.json() as {
+                item: ContentItem;
+            };
+            setItems((current) => [body.item, ...current]);
+            setTopics((current) => current.map((topic) => topic.id === topicId ? { ...topic, status: "drafting" } : topic));
+            setSelectedId(body.item.id);
+            setWritingIntent("auto");
+            setCreationMode("standard");
+            setSelectedBenchmarkIds([]);
+            setPackPanel("diagnosis");
+            await generateItem(body.item.id, { creationMode: "standard", writingIntent: "auto", benchmarkEntryIds: [], recommendedBenchmarkIds: [] });
+            await loadRecommendations(organizationId, projectId, body.item.id);
+        } catch (reason) {
+            if (isScopeCancellation(reason)) throw reason;
+            setError(reason instanceof Error ? reason.message : "创建内容失败，请重试。");
         }
-        const body = await response.json() as {
-            item: ContentItem;
-        };
-        setItems((current) => [body.item, ...current]);
-        setTopics((current) => current.map((topic) => topic.id === topicId ? { ...topic, status: "drafting" } : topic));
-        setSelectedId(body.item.id);
-        setPackPanel("diagnosis");
-        await loadRecommendations(organizationId, projectId, body.item.id);
-        setBusy("");
+        finally { setBusy(""); }
     }
-    async function generateItem(contentId: string) {
-        if (creationMode === "single_benchmark" && selectedBenchmarkIds.length !== 1) {
+    async function generateItem(contentId: string, options = { creationMode, writingIntent, benchmarkEntryIds: selectedBenchmarkIds, recommendedBenchmarkIds }) {
+        if (options.creationMode === "single_benchmark" && options.benchmarkEntryIds.length !== 1) {
             setError("请先选择 1 条视频作为整篇文案的模板。"); return;
         }
         setBusy(`generate:${contentId}`);
         setError("");
-        const response = await scopedFetch(`/api/content-items/${contentId}/generate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, modelProfile: "max", creationMode, benchmarkEntryIds: selectedBenchmarkIds, recommendedBenchmarkIds }) });
-        if (!response.ok) {
-            setError(await readError(response));
-            setBusy("");
-            return;
-        }
-        const body = await response.json() as {
-            item: Partial<ContentItem> & {
-                id: string;
+        try {
+            const response = await scopedFetch(`/api/content-items/${contentId}/generate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, modelProfile: "max", ...options }) });
+            if (!response.ok) {
+                const message = await readError(response);
+                setError(`口播稿生成未成功：${message}`);
+                setItems((current) => current.map((item) => item.id === contentId ? { ...item, latest_generation_status: "failed", latest_generation_error: message } : item));
+                return;
+            }
+            const body = await response.json() as {
+                item: Partial<ContentItem> & {
+                    id: string;
+                };
             };
-        };
-        setItems((current) => replaceItem(current, body.item));
-        setBusy("");
+            setItems((current) => replaceItem(current, { ...body.item, latest_generation_status: "completed", latest_generation_error: null }));
+        } catch (reason) {
+            if (isScopeCancellation(reason)) throw reason;
+            const message = reason instanceof Error ? reason.message : "网络连接中断，请重试。";
+            setError(`口播稿生成未成功：${message}`);
+            setItems((current) => current.map((item) => item.id === contentId ? { ...item, latest_generation_status: "failed", latest_generation_error: message } : item));
+        } finally { setBusy(""); }
     }
     function toggleBenchmark(entryId: string) {
         if (creationMode === "single_benchmark") {
@@ -358,7 +379,7 @@ export function ContentProductionWorkspace({ initialOrganizationId = "", initial
         setBusy(`save:${selected.id}`);
         setError("");
         const form = new FormData(event.currentTarget);
-        const nextPack = { ...pack, fullScript: String(form.get("fullScript") || ""), shortScript: String(form.get("shortScript") || "") };
+        const nextPack = { ...pack, ...(isScaffold ? { citations: [{ sourceType: "topic", sourceId: selected.topic_id, quote: `本次创作选题标题：${selected.title}`.slice(0, 80) }] } : {}), fullScript: String(form.get("fullScript") || ""), shortScript: String(form.get("shortScript") || "") };
         const response = await scopedFetch(`/api/content-items/${selected.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, pack: nextPack, changeSummary: form.get("changeSummary") }) });
         if (!response.ok) {
             setError(await readError(response));
@@ -390,18 +411,21 @@ export function ContentProductionWorkspace({ initialOrganizationId = "", initial
         return <div className="management-state error-state"><strong>暂时无法进入内容生产</strong><p>{error}</p></div>;
     if (!organizationId || !projectId)
         return <div className="empty-panel"><h2>请先创建企业空间</h2><p>每份生产包必须归属于明确的企业空间。</p></div>;
-    return <div className="production-workspace"><div className="management-toolbar production-toolbar"><label>公司<select value={organizationId} onChange={(event) => runScopedAction(async () => { const id = event.target.value; setOrganizationId(id); await loadProjects(id); }, setError)}>{organizations.map((organization) => <option key={organization.id} value={organization.id}>{organization.name}</option>)}</select></label><label>企业空间<select value={projectId} onChange={(event) => runScopedAction(async () => { const id = event.target.value; setProjectId(id); rememberCurrentScope(organizationId, id); await loadWorkspace(organizationId, id); }, setError)}>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><span>{items.length} 个内容任务</span></div><EcommerceEntry key={`${organizationId}:${projectId}`} organizationId={organizationId} projectId={projectId} />{error && <div className="inline-alert" role="alert">{error}</div>}
-    <div className="production-layout"><aside className="panel production-list"><div className="panel-heading"><div><p className="section-kicker">版本化创作</p><h2>生产任务</h2></div></div>{items.length ? <div className="production-items">{items.map((item) => <button type="button" className={selectedId === item.id ? "active" : ""} key={item.id} onClick={() => { setSelectedId(item.id); setPackPanel("diagnosis"); if (canWrite)
-                    void loadRecommendations(organizationId, projectId, item.id); }}><span className="status neutral">v{item.current_version}</span><strong>{item.title}</strong><small>{item.generation_mode === "ai" ? "AI 生产包" : item.generation_mode === "manual" ? "人工修订" : "结构草稿"}</small></button>)}</div> : <div className="list-empty">还没有进入生产的选题。</div>}{canWrite && availableTopics.length > 0 && <section className="topic-backlog"><h3>待生产选题</h3>{availableTopics.slice(0, 12).map((topic) => <div key={topic.id}><span><strong>{topic.title}</strong><small>P{topic.priority} · {topic.status === "selected" ? "已入选" : "选题池"}</small></span><button type="button" disabled={Boolean(busy)} onClick={() => createItem(topic.id)}>{busy === `create:${topic.id}` ? "创建中…" : "进入生产"}</button></div>)}</section>}</aside>
-      <main className="panel production-editor">{selected && pack ? <><div className="production-editor-head"><div><p className="section-kicker">{selected.generation_mode === "ai" ? `提示词 ${selected.prompt_version || "已记录"}` : "可编辑结构草稿"}</p><h2>{selected.title}</h2><span>当前版本 v{selected.current_version} · 每次保存都会创建不可变新版本</span></div><div className="generation-actions">{canWrite && <><button type="button" disabled={Boolean(busy) || recommendationLoading || (creationMode === "single_benchmark" && selectedBenchmarkIds.length !== 1)} onClick={() => void runScopedAction(() => generateItem(selected.id), setError).finally(() => setBusy(""))}>{busy === `generate:${selected.id}` ? (creationMode === "single_benchmark" ? "拆解、仿写与校对中…" : "生成中…") : creationMode === "single_benchmark" ? "按单条模板生成" : "AI 生成新版本"}</button></>}{canWrite && (selected.status === "draft" || selected.status === "internal_revision") ? <button className="submit-review" type="button" disabled={Boolean(busy)} onClick={() => void submitForReview(selected.id)}>{busy === `review:${selected.id}` ? "提交中…" : "提交审核 →"}</button> : <a href={`/workflow?view=review&organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}&contentId=${encodeURIComponent(selected.id)}`}>查看审核 →</a>}</div></div>
-        {canWrite && deliveryPlan.features.videoAnalysis && <section className="production-creation-mode" aria-label="创作模式"><div role="group" aria-label="选择创作模式"><button type="button" aria-pressed={creationMode === "standard"} disabled={Boolean(busy)} onClick={() => { creationModeRef.current = "standard"; setCreationMode("standard"); setSelectedBenchmarkIds([]); setError(""); }}>普通创作</button><button type="button" aria-pressed={creationMode === "single_benchmark"} disabled={Boolean(busy)} onClick={() => { creationModeRef.current = "single_benchmark"; setCreationMode("single_benchmark"); setSelectedBenchmarkIds((ids) => ids.length === 1 ? ids : []); setError(""); }}>单条对标仿写</button></div><p>{creationMode === "single_benchmark" ? "让新选题沿用一条参考稿的结构与节奏。先拆解，再逐段生成和校对；总字数接近原稿，个人经历按真实资料替换。" : "围绕选题创作，可综合多条参考素材。"}</p></section>}
+    return <div className="production-workspace"><div className="management-toolbar production-toolbar"><label>公司<select value={organizationId} onChange={(event) => runScopedAction(async () => { const id = event.target.value; setOrganizationId(id); await loadProjects(id); }, setError)}>{organizations.map((organization) => <option key={organization.id} value={organization.id}>{organization.name}</option>)}</select></label><label>企业空间<select value={projectId} onChange={(event) => runScopedAction(async () => { const id = event.target.value; setProjectId(id); rememberCurrentScope(organizationId, id); await loadWorkspace(organizationId, id); }, setError)}>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><span>{items.length} 个内容任务</span></div>{error && <div className="inline-alert" role="alert">{error}</div>}
+    <div className="production-layout"><aside className="panel production-list"><div className="panel-heading"><div><p className="section-kicker">版本化创作</p><h2>生产任务</h2></div></div>{items.length ? <div className="production-items">{items.map((item) => <button type="button" className={selectedId === item.id ? "active" : ""} key={item.id} onClick={() => { setSelectedId(item.id); setWritingIntent("auto"); setError(""); setPackPanel("diagnosis"); if (canWrite)
+                    void loadRecommendations(organizationId, projectId, item.id); }}><span className="status neutral">v{item.current_version}</span><strong>{item.title}</strong><small>{item.generation_mode === "ai" ? "AI 生产包" : item.generation_mode === "manual" ? "人工修订" : "待生成口播稿"}</small></button>)}</div> : <div className="list-empty">还没有进入生产的选题。</div>}{canWrite && availableTopics.length > 0 && <section className="topic-backlog"><h3>待生产选题</h3>{availableTopics.slice(0, 12).map((topic) => <div key={topic.id}><span><strong>{topic.title}</strong><small>P{topic.priority} · {topic.status === "selected" ? "已入选" : "选题池"}</small></span><button type="button" disabled={Boolean(busy)} onClick={() => void runScopedAction(() => createItem(topic.id), setError).finally(() => setBusy(""))}>{busy === `create:${topic.id}` ? "创建中…" : "进入生产"}</button></div>)}</section>}</aside>
+      <main className="panel production-editor">{selected && pack ? <><div className="production-editor-head"><div><p className="section-kicker">{selected.generation_mode === "ai" ? `提示词 ${selected.prompt_version || "已记录"}` : "待生成口播稿"}</p><h2>{selected.title}</h2><span>当前版本 v{selected.current_version} · 每次保存都会创建不可变新版本</span></div><div className="generation-actions">{canWrite && <><button type="button" disabled={Boolean(busy) || recommendationLoading || (creationMode === "single_benchmark" && selectedBenchmarkIds.length !== 1)} onClick={() => void runScopedAction(() => generateItem(selected.id), setError).finally(() => setBusy(""))}>{busy === `generate:${selected.id}` ? (creationMode === "single_benchmark" ? "拆解、仿写与校对中…" : "生成中…") : creationMode === "single_benchmark" ? "按单条模板生成" : isScaffold ? "生成口播稿" : "AI 生成新版本"}</button></>}{canWrite && (selected.status === "draft" || selected.status === "internal_revision") ? <button className="submit-review" type="button" disabled={Boolean(busy) || isScaffold} onClick={() => void submitForReview(selected.id)}>{busy === `review:${selected.id}` ? "提交中…" : "提交审核 →"}</button> : <a href={`/workflow?view=review&organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}&contentId=${encodeURIComponent(selected.id)}`}>查看审核 →</a>}</div></div>
+        {canWrite && deliveryPlan.features.videoAnalysis && <section className="production-creation-mode" aria-label="创作模式"><div role="group" aria-label="选择创作模式"><button type="button" aria-pressed={creationMode === "standard"} disabled={Boolean(busy)} onClick={() => { setCreationMode("standard"); setSelectedBenchmarkIds([]); setError(""); }}>普通创作</button><button type="button" aria-pressed={creationMode === "single_benchmark"} disabled={Boolean(busy)} onClick={() => { setCreationMode("single_benchmark"); setSelectedBenchmarkIds((ids) => ids.length === 1 ? ids : []); setError(""); }}>单条对标仿写</button></div><p>{creationMode === "single_benchmark" ? "让新选题沿用一条参考稿的结构与节奏。先拆解，再逐段生成和校对；总字数接近原稿，个人经历按真实资料替换。" : "围绕选题创作，可综合多条参考素材。"}</p></section>}
+        {canWrite && <section className="production-writing-intent"><label>创作意图<select aria-label="创作意图" value={writingIntent} disabled={Boolean(busy)} onChange={(event) => setWritingIntent(event.target.value as WritingIntent)}>{Object.entries(writingIntentLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><p>默认由 AI 根据选题判断写法。无素材也可生成科普或教程；公司案例只在你选用相关品牌资料时加入。</p>{!isScaffold && pack.writingIntent && <small>当前稿件：{writingIntentLabels[pack.writingIntent.kind]} · {pack.writingIntent.reason}</small>}</section>}
         <CoreStrategyPreview strategy={coreStrategy} />
         <div className="production-lineage"><strong>本次生成：选题 + 核心内容策略（自动读取） + 选题指定品牌知识 {topicKnowledgeSelection(selected.selected_knowledge_ids_json).length} 条 + 已选对标 {selectedBenchmarkIds.length} 条 + 内容方法规则</strong><small>品牌知识沿用选题阶段的勾选；未勾选时不读取品牌知识，也不自动加入项目记忆或历史视频片段。下方引用报告属于当前已保存版本，重新生成后才会更新。</small></div>
-        {canWrite && deliveryPlan.features.videoAnalysis && <section className="benchmark-generation-context"><header><div><strong>{creationMode === "single_benchmark" ? "选择一条仿写模板" : "智能推荐参考素材"}</strong><span>{creationMode === "single_benchmark" ? "选择一个已分析视频，以完整原口播为模板，对齐字数、段落功能、钩子、衔接和 CTA。选择另一条会替换当前模板。" : "系统检索当前企业空间已分析对标，默认推荐 3–5 条，可手动增删；保留每条素材的引用与应用说明。"}</span></div><div><em>已选 {selectedBenchmarkIds.length}/{creationMode === "single_benchmark" ? 1 : 5}</em><button type="button" disabled={Boolean(busy) || recommendationLoading} onClick={() => void loadRecommendations(organizationId, projectId, selected.id)}>{recommendationLoading ? "检索中…" : "重新推荐"}</button></div></header>{benchmarks.length ? <div className="benchmark-generation-options">{benchmarks.slice(0, 50).map((entry) => <label key={entry.id} className={entry.recommended ? "recommended" : ""}><input aria-label={`选择参考素材：${entry.title || "未命名素材"}`} type="checkbox" disabled={Boolean(busy)} checked={selectedBenchmarkIds.includes(entry.id)} onChange={() => toggleBenchmark(entry.id)}/><span><strong>{entry.title || "未命名素材"}</strong><small>{entry.author_name || entry.category || "已完成分析"} · 匹配度 {entry.score}</small><small>{entry.reasons.slice(0, 2).join("；") || "综合素材内容与当前选题排序"}</small>{entry.feedback && (entry.feedback.approvedCount > 0 || entry.feedback.changesRequestedCount > 0 || entry.feedback.publishedCount > 0) && <small>本空间历史反馈：通过 {entry.feedback.approvedCount} · 退回 {entry.feedback.changesRequestedCount} · 发布 {entry.feedback.publishedCount}</small>}</span>{entry.recommended && <b>推荐</b>}{entry.hasOutcomeData && <b className="outcome">有真实数据</b>}</label>)}</div> : <p>{recommendationLoading ? "正在检索当前企业空间的对标内容库…" : <>当前企业空间的对标内容库还没有可用的已分析视频。请先进入<Link href="/analysis?view=benchmark">对标内容库</Link>添加并完成视频分析。</>}</p>}</section>}
+        {canWrite && deliveryPlan.features.videoAnalysis && <section className="benchmark-generation-context"><header><div><strong>{creationMode === "single_benchmark" ? "选择一条仿写模板" : "智能推荐参考素材"}</strong><span>{creationMode === "single_benchmark" ? "选择一个已分析视频，以完整原口播为模板，对齐字数、段落功能、钩子、衔接和 CTA。选择另一条会替换当前模板。" : "系统检索当前企业空间已分析对标，默认仅推荐，由你勾选后使用；不选择也能直接生成。保留每条素材的引用与应用说明。"}</span></div><div><em>已选 {selectedBenchmarkIds.length}/{creationMode === "single_benchmark" ? 1 : 5}</em><button type="button" disabled={Boolean(busy) || recommendationLoading} onClick={() => void loadRecommendations(organizationId, projectId, selected.id)}>{recommendationLoading ? "检索中…" : "重新推荐"}</button></div></header>{benchmarks.length ? <div className="benchmark-generation-options">{benchmarks.slice(0, 50).map((entry) => <label key={entry.id} className={entry.recommended ? "recommended" : ""}><input aria-label={`选择参考素材：${entry.title || "未命名素材"}`} type="checkbox" disabled={Boolean(busy)} checked={selectedBenchmarkIds.includes(entry.id)} onChange={() => toggleBenchmark(entry.id)}/><span><strong>{entry.title || "未命名素材"}</strong><small>{entry.author_name || entry.category || "已完成分析"} · 匹配度 {entry.score}</small><small>{entry.reasons.slice(0, 2).join("；") || "综合素材内容与当前选题排序"}</small>{entry.feedback && (entry.feedback.approvedCount > 0 || entry.feedback.changesRequestedCount > 0 || entry.feedback.publishedCount > 0) && <small>本空间历史反馈：通过 {entry.feedback.approvedCount} · 退回 {entry.feedback.changesRequestedCount} · 发布 {entry.feedback.publishedCount}</small>}</span>{entry.recommended && <b>推荐</b>}{entry.hasOutcomeData && <b className="outcome">有真实数据</b>}</label>)}</div> : <p>{recommendationLoading ? "正在检索当前企业空间的对标内容库…" : <>当前企业空间的对标内容库还没有可用的已分析视频。请先进入<Link href="/analysis?view=benchmark">对标内容库</Link>添加并完成视频分析。</>}</p>}</section>}
         <div className="production-lineage"><span>来源：{sourceLabels[selected.topic_source_type || "manual"] || selected.topic_source_type || "人工策划"}</span><strong>选题 → 内容 v{selected.current_version} → {selected.status === "draft" ? "待提交审核" : "已进入协作流程"}</strong><small>本版实际引用：{selected.citation_count ?? pack.citations.length} 条来源证据随版本保留 · {usedBenchmarkCount ? `引用 ${usedBenchmarkCount} 条对标样本` : "未引用对标样本"} · {usedMethodKnowledgeCount ? `采用 ${usedMethodKnowledgeCount} 项内容方法` : "旧版本未记录方法调用"} · {usedHistoricalCopyCount ? `学习 ${usedHistoricalCopyCount} 篇品牌历史文案` : "暂无历史文案可学习"}</small></div>
         {pack.benchmarkRewrite && <BenchmarkRewriteComparison report={pack.benchmarkRewrite}/>}
-        <form key={`${selected.id}:${selected.current_version}`} className="production-form" onSubmit={saveVersion}><section><label>完整口播稿<textarea name="fullScript" rows={16} defaultValue={pack.fullScript} readOnly={!canWrite}/></label><label>精简版<textarea name="shortScript" rows={7} defaultValue={pack.shortScript} readOnly={!canWrite}/></label>{canWrite && <div className="save-version"><input name="changeSummary" maxLength={500} placeholder="本次修改说明（可选）"/><button disabled={Boolean(busy)}>{busy === `save:${selected.id}` ? "保存中…" : "保存为新版本"}</button></div>}</section>
-          <ProductionPackPanel pack={pack} panel={packPanel} onPanelChange={setPackPanel} benchmarkTitles={benchmarkTitles} /></form></> : <div className="production-empty"><span aria-hidden="true">✦</span><h2>从选题开始一份生产包</h2><p>先创建结构草稿，再用已确认知识和当前策略生成可审核口播稿。</p></div>}</main>
+        {isScaffold && <div className="production-generation-status" role="status"><strong>{busy === `generate:${selected.id}` ? "正在生成完整口播稿…" : "这份内容尚未生成口播稿"}</strong><p>{selected.latest_generation_status === "failed" ? `上次生成未成功：${selected.latest_generation_error || "请重新生成。"} 下方留空，生成成功后会显示完整稿件。` : "进入生产后会自动生成。你也可以调整创作意图后点击生成，或在下方手动写稿并保存。"}</p></div>}
+        {!isScaffold && selected.latest_generation_status === "failed" && <div className="inline-alert" role="alert">最近一次生成未成功：{selected.latest_generation_error} 当前显示的是已保存的 v{selected.current_version}，没有被失败结果覆盖。</div>}
+        <form key={`${selected.id}:${selected.current_version}`} className="production-form" onSubmit={saveVersion}><section><label>完整口播稿<textarea name="fullScript" rows={16} defaultValue={isScaffold ? "" : pack.fullScript} placeholder="生成成功后，完整口播稿会显示在这里；也可以手动写稿。" readOnly={!canWrite || Boolean(busy)}/></label><label>精简版<textarea name="shortScript" rows={7} defaultValue={isScaffold ? "" : pack.shortScript} placeholder="填写或生成精简版口播稿" readOnly={!canWrite || Boolean(busy)}/></label>{canWrite && <div className="save-version"><input name="changeSummary" maxLength={500} placeholder="本次修改说明（可选）"/><button disabled={Boolean(busy)}>{busy === `save:${selected.id}` ? "保存中…" : "保存为新版本"}</button></div>}</section>
+          {!isScaffold && <ProductionPackPanel pack={pack} panel={packPanel} onPanelChange={setPackPanel} benchmarkTitles={benchmarkTitles} />}</form></> : <div className="production-empty"><span aria-hidden="true">✦</span><h2>从选题开始一份生产包</h2><p>选择选题进入生产，AI 会自动生成完整口播稿。参考素材和品牌知识均可按需选择。</p></div>}</main>
     </div>
   </div>;
 }

@@ -23,7 +23,9 @@ test("analysis jobs can be cancelled or recovered after an expired lease", async
   ]);
 
   assert.match(cancel, /status = 'cancelled'/);
-  assert.match(cancel, /lease_owner = NULL,\s+lease_expires_at = NULL/);
+  // Cancellation keeps the lease until the stopped processing tree is
+  // acknowledged. Behaviour and fencing are exercised with SQLite separately.
+  assert.doesNotMatch(cancel, /lease_owner = NULL/);
   assert.match(retry, /staleLease/);
   assert.match(retry, /lease_expires_at/);
   assert.match(workspace, /cancelJob/);

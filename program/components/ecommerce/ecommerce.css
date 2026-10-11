@@ -1,8 +1,4 @@
 .ec-workspace { display: grid; gap: 18px; max-width: 1380px; margin: 0 auto; color: var(--ink); }
-.ec-entry { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; font-size: 13px; }
-.ec-entry > :is(span, a) { padding: 8px 14px; border-radius: 8px; }
-.ec-entry > span { color: var(--brand-deep); background: var(--brand-soft); font-weight: 650; }
-.ec-entry > a { color: var(--muted); border: 1px solid var(--line); background: white; }
 .ec-workspace button, .ec-workspace input, .ec-workspace textarea, .ec-workspace select { font: inherit; }
 .ec-workspace button { border: 1px solid var(--line); background: white; border-radius: 8px; padding: 9px 14px; cursor: pointer; }
 .ec-workspace button:hover:not(:disabled) { border-color: var(--brand); background: var(--brand-soft); }

@@ -1,0 +1,9 @@
+body { width: 330px; margin: 0; padding: 20px; box-sizing: border-box; font: 14px/1.6 "Microsoft YaHei", sans-serif; color: #242b37; background: #f7f8fb; }
+h1 { font-size: 19px; margin: 0 0 8px; }
+p { margin: 8px 0; overflow-wrap: anywhere; }
+section { margin: 14px 0; padding: 12px; border: 1px solid #dddfea; border-radius: 8px; background: white; }
+button { width: 100%; margin-top: 8px; padding: 10px; border: 0; border-radius: 6px; color: white; background: #454e9d; cursor: pointer; font: inherit; }
+button:disabled { opacity: .5; cursor: default; }
+button.secondary { color: #454e9d; background: #e9ebf5; }
+#message { color: #a14220; }
+.note { font-size: 12px; color: #677183; margin-top: 16px; }

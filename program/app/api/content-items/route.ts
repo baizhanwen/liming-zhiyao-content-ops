@@ -24,10 +24,15 @@ export async function GET(request: Request) {
         SELECT c.id, c.topic_id, c.title, c.status, c.current_version, c.assignee_user_id, c.due_at, c.updated_at,
           v.id AS version_id, v.generation_mode, v.pack_json, v.full_script, v.short_script, v.change_summary, v.prompt_version, v.model_call_id, v.created_at AS version_created_at,
           t.source_type AS topic_source_type, t.source_ref AS topic_source_ref, t.selected_knowledge_ids_json,
+          generation.status AS latest_generation_status, generation.error_message AS latest_generation_error,
           (SELECT COUNT(*) FROM content_citations cc WHERE cc.organization_id = c.organization_id AND cc.project_id = c.project_id AND cc.content_item_id = c.id AND cc.content_version_id = v.id) AS citation_count
         FROM content_items c
         INNER JOIN content_versions v ON v.content_item_id = c.id AND v.version = c.current_version AND v.organization_id = c.organization_id AND v.project_id = c.project_id
         INNER JOIN topic_ideas t ON t.id = c.topic_id AND t.organization_id = c.organization_id AND t.project_id = c.project_id
+        LEFT JOIN model_calls generation ON generation.id = (
+          SELECT m.id FROM model_calls m WHERE m.organization_id = c.organization_id AND m.project_id = c.project_id
+            AND m.topic_id = c.topic_id AND m.task_type = 'content_draft' ORDER BY m.created_at DESC, m.id DESC LIMIT 1
+        )
         WHERE c.organization_id = ? AND c.project_id = ? AND c.deleted_at IS NULL
         ORDER BY c.updated_at DESC LIMIT 200
       `).bind(organizationId, projectId).all(),
@@ -59,7 +64,7 @@ export async function POST(request: Request) {
     await db.batch([
       db.prepare("INSERT INTO content_items (id, organization_id, project_id, topic_id, title, status, current_version, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'draft', 1, ?, ?, ?, ?)").bind(contentId, organizationId, projectId, topicId, topic.title, user.id, user.id, now, now),
       db.prepare("INSERT INTO content_versions (id, organization_id, project_id, content_item_id, version, generation_mode, pack_json, full_script, short_script, change_summary, created_by, created_at) VALUES (?, ?, ?, ?, 1, 'scaffold', ?, ?, ?, '从选题创建结构草稿', ?, ?)").bind(versionId, organizationId, projectId, contentId, packJson, pack.fullScript, pack.shortScript, user.id, now),
-      db.prepare("INSERT INTO content_citations (id, organization_id, project_id, content_item_id, content_version_id, citation_type, citation_id, quote, created_by, created_at) VALUES (?, ?, ?, ?, ?, 'topic', ?, ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, contentId, versionId, topicId, topic.title, user.id, now),
+      db.prepare("INSERT INTO content_citations (id, organization_id, project_id, content_item_id, content_version_id, citation_type, citation_id, quote, created_by, created_at) VALUES (?, ?, ?, ?, ?, 'topic', ?, ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, contentId, versionId, topicId, pack.citations[0].quote, user.id, now),
       ...inheritedCitations.results.map((citation) => db.prepare("INSERT INTO content_citations (id, organization_id, project_id, content_item_id, content_version_id, citation_type, citation_id, quote, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, contentId, versionId, citation.citation_type, citation.citation_id, citation.quote, user.id, now)),
       db.prepare("UPDATE topic_ideas SET status = 'drafting', updated_by = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ?").bind(user.id, now, topicId, organizationId, projectId),
       db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'content.created', 'content_item', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, contentId, JSON.stringify({ topicId, version: 1 }), now),

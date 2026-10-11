@@ -36,7 +36,9 @@ export async function GET(request: Request) {
         ) ORDER BY created_at DESC LIMIT 100
       `).bind(organizationId, projectId, organizationId, projectId).all(),
       db.prepare(`
-        SELECT id, video_id, status, analysis_profile, progress, current_stage, error_code, error_message, retry_count, lease_expires_at, checkpoint_stage, checkpoint_json, checkpoint_updated_at, resume_count, created_at, updated_at
+        SELECT id, video_id, status, analysis_profile, progress, current_stage, error_code, error_message, retry_count, lease_expires_at, checkpoint_stage, checkpoint_json, checkpoint_updated_at, resume_count, created_at, updated_at, COALESCE(enqueued_at,created_at) AS enqueued_at,
+          (SELECT COUNT(*) FROM analysis_model_calls calls WHERE calls.job_id = analysis_jobs.id) AS model_call_count,
+          (SELECT COUNT(*) FROM analysis_model_calls calls WHERE calls.job_id = analysis_jobs.id AND calls.total_tokens IS NULL) AS model_unknown_usage_count
         FROM analysis_jobs
         WHERE organization_id = ? AND (project_id = ? OR video_id IN (
           SELECT library.source_video_id FROM project_video_references refs
@@ -61,17 +63,23 @@ export async function GET(request: Request) {
       // task details above still obey the caller's project access.
       db.prepare(`
         SELECT
-          COALESCE(SUM(CASE WHEN j.status = 'pending' OR j.lease_expires_at <= ? THEN 1 ELSE 0 END), 0) AS waiting_count,
-          COALESCE(SUM(CASE WHEN j.status != 'pending' AND j.lease_expires_at > ? THEN 1 ELSE 0 END), 0) AS running_count
+          COALESCE(SUM(CASE WHEN j.status != 'cancelled' AND (j.status = 'pending' OR j.lease_expires_at <= ?) THEN 1 ELSE 0 END), 0) AS waiting_count,
+          COALESCE(SUM(CASE WHEN j.status NOT IN ('pending','cancelled') AND j.lease_expires_at > ? THEN 1 ELSE 0 END), 0) AS running_count,
+          COALESCE(SUM(CASE WHEN j.status = 'cancelled' THEN 1 ELSE 0 END), 0) AS stopping_count,
+          COALESCE(SUM(CASE WHEN COALESCE(j.queue_user_id,j.created_by) = ? THEN 1 ELSE 0 END), 0) AS own_count,
+          COUNT(*) AS outstanding_count
         FROM analysis_jobs j
         INNER JOIN videos v ON v.id = j.video_id AND v.organization_id = j.organization_id AND v.project_id = j.project_id AND v.deleted_at IS NULL
-        WHERE j.status IN (${ACTIVE_ANALYSIS_STATUSES_SQL})
-      `).bind(queueNow, queueNow).first<{ waiting_count: number; running_count: number }>(),
+        WHERE j.status IN (${ACTIVE_ANALYSIS_STATUSES_SQL}) OR (j.status = 'cancelled' AND j.lease_expires_at > ?)
+      `).bind(queueNow, queueNow, access.userId, queueNow).first<{ waiting_count: number; running_count: number; stopping_count: number; own_count: number; outstanding_count: number }>(),
     ]);
-    const safeJobs = jobs.results.map((job) => ({ ...job, checkpoint_json: undefined, segment_progress: summarizeSegmentProgress(job.checkpoint_json) }));
+    const safeJobs = jobs.results.map((job) => ({ ...job,
+      current_stage: job.status === "cancelled" && (!job.lease_expires_at || String(job.lease_expires_at) <= queueNow) ? "任务已取消" : job.current_stage,
+      checkpoint_json: undefined, segment_progress: summarizeSegmentProgress(job.checkpoint_json) }));
     return Response.json({
       videos: videos.results, jobs: safeJobs, canWrite: canWriteProjectAccess(access),
-      queue: { sampleCount: queueStats?.sample_count ?? 0, averageSeconds: queueStats?.average_seconds ?? null, waitingCount: sharedQueue?.waiting_count ?? 0, runningCount: sharedQueue?.running_count ?? 0 },
+      queue: { sampleCount: queueStats?.sample_count ?? 0, averageSeconds: queueStats?.average_seconds ?? null, waitingCount: sharedQueue?.waiting_count ?? 0, runningCount: sharedQueue?.running_count ?? 0,
+        stoppingCount: sharedQueue?.stopping_count ?? 0, ownCount: sharedQueue?.own_count ?? 0, outstandingCount: sharedQueue?.outstanding_count ?? 0, userLimit: 10, hostLimit: 50, concurrency: 1 },
       service: {
         credentialConfigured: readiness.credentialConfigured,
         modelConfigured: readiness.modelConfigured,

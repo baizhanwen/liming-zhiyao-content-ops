@@ -17,13 +17,14 @@ export async function POST(request: Request, context: { params: Promise<{ conten
     if (!access) return apiError("ACCESS_DENIED", "无权访问该项目。", 403);
     const { contentId } = await context.params; const db = getD1();
     const item = await db.prepare(`
-      SELECT c.id, c.title, c.status, c.current_version, v.id AS version_id
+      SELECT c.id, c.title, c.status, c.current_version, v.id AS version_id, v.generation_mode
       FROM content_items c INNER JOIN content_versions v ON v.content_item_id = c.id AND v.version = c.current_version AND v.organization_id = c.organization_id AND v.project_id = c.project_id
       WHERE c.id = ? AND c.organization_id = ? AND c.project_id = ? AND c.deleted_at IS NULL
-    `).bind(contentId, organizationId, projectId).first<{ id: string; title: string; status: string; current_version: number; version_id: string }>();
+    `).bind(contentId, organizationId, projectId).first<{ id: string; title: string; status: string; current_version: number; version_id: string; generation_mode: string }>();
     if (!item || !contentStatuses.includes(item.status as ContentStatus)) return apiError("CONTENT_NOT_FOUND", "内容不存在或状态无效。", 404);
     const fromStatus = item.status as ContentStatus;
     if (!allowedWorkflowTransition(access, fromStatus, toStatus)) return apiError("WORKFLOW_TRANSITION_DENIED", "当前角色不能执行这次状态流转。", 403);
+    if (toStatus === "internal_review" && item.generation_mode === "scaffold") return apiError("CONTENT_SCRIPT_REQUIRED", "这份内容尚未生成口播稿，请完成生成或手动写稿并保存后再提交审核。", 409);
     const pendingStage = fromStatus === "internal_review" ? "internal" : fromStatus === "client_review" ? "client" : null;
     const pendingReview = pendingStage ? await db.prepare("SELECT id, review_stage, round FROM content_reviews WHERE organization_id = ? AND project_id = ? AND content_item_id = ? AND content_version_id = ? AND review_stage = ? AND decision = 'pending' ORDER BY round DESC LIMIT 1").bind(organizationId, projectId, contentId, item.version_id, pendingStage).first<{ id: string; review_stage: string; round: number }>() : null;
     if (pendingStage === "internal" && !pendingReview) return apiError("PENDING_REVIEW_REQUIRED", "当前版本没有待处理的内部审核记录，请刷新后重试。", 409);

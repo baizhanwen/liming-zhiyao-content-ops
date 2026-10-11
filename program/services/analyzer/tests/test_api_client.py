@@ -1,5 +1,7 @@
 import json
 import tempfile
+import threading
+import time
 import unittest
 import urllib.error
 from pathlib import Path
@@ -33,14 +35,47 @@ class ApiClientTests(unittest.TestCase):
             {"status": "logged_in", "message": "private diagnostic"},
         ])
         client = AnalyzerApiClient("https://example.test", "secret", "worker-01", browser_auth_probe=lambda: next(states))
-        with patch("liming_analyzer.api_client.time.monotonic", side_effect=[100, 200, 300]):
+        with patch("liming_analyzer.api_client.time.monotonic") as clock:
             with self.assertLogs("liming_analyzer.api_client", level="INFO") as captured:
-                for _ in range(3):
+                for index in range(3):
+                    clock.return_value = 100 * (index + 1)
                     client._browser_auth()
         self.assertEqual(len(captured.output), 2)
         self.assertIn("status=unavailable", captured.output[0])
         self.assertIn("status=logged_in", captured.output[1])
         self.assertNotIn("private diagnostic", " ".join(captured.output))
+
+    def test_blocked_browser_probe_does_not_block_claim_or_create_repeated_threads(self):
+        release = threading.Event()
+        calls = []
+        def probe():
+            calls.append(1)
+            release.wait(10)
+            return {"status": "unavailable"}
+        client = AnalyzerApiClient("https://example.test", "secret", "worker-01", FakeTransport([(204, None)] * 5), browser_auth_probe=probe, browser_auth_nonblocking=True)
+        try:
+            started = time.monotonic()
+            for _ in range(5):
+                self.assertIsNone(client.claim())
+            self.assertLess(time.monotonic() - started, 0.5)
+            self.assertEqual(len(calls), 1)
+        finally:
+            release.set()
+            client._browser_probe_thread.join(2)
+
+    def test_lost_heartbeat_response_reconciles_owned_attempt_without_duplicate_write(self):
+        requests = []
+        def transport(method, url, headers, body):
+            requests.append(method)
+            if method == "POST":
+                raise ConnectionResetError("lost acknowledgement after server commit")
+            self.assertEqual(headers["X-Worker-Attempt"], "2")
+            return 200, json.dumps({"version": 4, "status": "processing", "progress": 20}).encode()
+        client = AnalyzerApiClient("https://example.test", "secret", "worker-01", transport)
+        job = ClaimedJob("job-1", "org-1", "project-1", "video-1", "url", "queued", 1, 3, {}, attempt_count=2)
+        updated = client.heartbeat(job, "processing", 20, "处理媒体")
+        self.assertEqual(updated.version, 4)
+        self.assertEqual(requests, ["POST", "GET"])
 
     def test_empty_queue_returns_none_and_sends_service_token(self):
         transport = FakeTransport([(204, None)])

@@ -215,6 +215,7 @@ def build_client(settings: AnalyzerSettings) -> AnalyzerApiClient:
         settings.base_url,
         settings.service_token,
         settings.worker_id,
+        browser_auth_nonblocking=True,
         browser_auth_probe=lambda: inspect_browser_authentication(
             settings.yt_dlp_cookies_from_browser
         ),
@@ -393,6 +394,7 @@ def build_pipeline(settings: AnalyzerSettings, client: AnalyzerApiClient) -> Ana
         base_url=settings.llm_base_url,
         model=settings.llm_model,
         provider=settings.llm_provider,
+        call_recorder=client.record_model_call,
     )
     artifact_store = ApiArtifactStore(client)
     pipeline = AnalysisPipeline(

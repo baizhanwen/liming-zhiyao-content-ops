@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -42,6 +43,7 @@ class ClaimedJob:
     checkpoint_stage: str | None = None
     checkpoint: Mapping[str, Any] | None = None
     resume_count: int = 0
+    attempt_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -64,17 +66,17 @@ class AnalysisResult:
     source_metadata: SourceMetadata | None = None
 
 
-def _urllib_transport(method: str, url: str, headers: Mapping[str, str], body: bytes) -> tuple[int, bytes]:
-    request = urllib.request.Request(url, data=body, headers=dict(headers), method=method)
+def _urllib_transport(method: str, url: str, headers: Mapping[str, str], body: bytes, *, timeout_seconds: float = 30) -> tuple[int, bytes]:
+    request = urllib.request.Request(url, data=None if method == "GET" else body, headers=dict(headers), method=method)
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             return response.status, response.read()
     except urllib.error.HTTPError as error:
         return error.code, error.read()
 
 
 class AnalyzerApiClient:
-    def __init__(self, base_url: str, token: str, worker_id: str, transport: Transport | None = None, *, browser_auth_probe: Callable[[], Mapping[str, Any]] | None = None, browser_auth_interval_seconds: float = 60.0) -> None:
+    def __init__(self, base_url: str, token: str, worker_id: str, transport: Transport | None = None, *, browser_auth_probe: Callable[[], Mapping[str, Any]] | None = None, browser_auth_interval_seconds: float = 60.0, browser_auth_nonblocking: bool = False) -> None:
         if not base_url.startswith(("http://", "https://")):
             raise ValueError("base_url must be HTTP or HTTPS")
         if not token.strip() or not worker_id.strip():
@@ -87,6 +89,8 @@ class AnalyzerApiClient:
         self._browser_auth_interval_seconds = max(5.0, browser_auth_interval_seconds)
         self._last_browser_auth: Mapping[str, Any] | None = None
         self._last_browser_auth_at = 0.0
+        self._browser_auth_nonblocking = browser_auth_nonblocking
+        self._browser_probe_thread: threading.Thread | None = None
 
     def _browser_auth(self) -> Mapping[str, Any] | None:
         if self._browser_auth_probe is None:
@@ -94,6 +98,16 @@ class AnalyzerApiClient:
         now = time.monotonic()
         if self._last_browser_auth is not None and now - self._last_browser_auth_at < self._browser_auth_interval_seconds:
             return self._last_browser_auth
+        if self._browser_auth_nonblocking:
+            if self._browser_probe_thread is None or not self._browser_probe_thread.is_alive():
+                self._browser_probe_thread = threading.Thread(target=self._read_browser_auth, daemon=True, name="analyzer-browser-probe")
+                self._browser_probe_thread.start()
+            # A stuck browser probe never blocks claiming or task heartbeats, and
+            # stale logged-in results are not advertised indefinitely.
+            return {"status": "unknown", "message": "主机浏览器登录状态正在检测，可使用已上传的 Cookie。"}
+        return self._read_browser_auth()
+
+    def _read_browser_auth(self) -> Mapping[str, Any]:
         try:
             status = dict(self._browser_auth_probe())
         except Exception:
@@ -103,15 +117,20 @@ class AnalyzerApiClient:
             safe_status = status.get("status") if status.get("status") in {"logged_in", "not_logged_in", "unavailable", "disabled", "unknown"} else "unknown"
             logger.info("Browser probe state changed: status=%s", safe_status)
         self._last_browser_auth = status
-        self._last_browser_auth_at = now
+        self._last_browser_auth_at = time.monotonic()
         return status
     def _post(self, path: str, payload: Mapping[str, Any], *, allow_empty: bool = False) -> Mapping[str, Any] | None:
-        status, raw = self._transport(
+        arguments = (
             "POST",
             f"{self.base_url}{path}",
             {"Authorization": f"Bearer {self._token}", "Content-Type": "application/json", "Accept": "application/json"},
             json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
         )
+        # Heartbeats run in the owner process; a stalled local HTTP connection
+        # must not postpone subprocess timeout/cancellation for 30 seconds.
+        status, raw = (_urllib_transport(*arguments, timeout_seconds=3)
+                       if path.endswith("/heartbeat") and self._transport is _urllib_transport
+                       else self._transport(*arguments))
         if status == 204 and allow_empty:
             return None
         try:
@@ -144,7 +163,37 @@ class AnalyzerApiClient:
             checkpoint_stage=str(job["checkpoint_stage"]) if job.get("checkpoint_stage") else None,
             checkpoint=job["checkpoint"] if isinstance(job.get("checkpoint"), dict) else None,
             resume_count=int(job.get("resume_count") or 0),
+            attempt_count=int(job.get("attempt_count") or 0),
         )
+
+    def check_control(self, job: ClaimedJob) -> Mapping[str, Any]:
+        arguments = (
+            "GET", f"{self.base_url}/api/internal/analysis-jobs/{job.id}/control",
+            {"Authorization": f"Bearer {self._token}", "X-Worker-Id": self.worker_id, "X-Worker-Attempt": str(job.attempt_count), "Accept": "application/json"}, b"",
+        )
+        status, raw = (_urllib_transport(*arguments, timeout_seconds=2)
+                       if self._transport is _urllib_transport else self._transport(*arguments))
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as error:
+            raise AnalyzerApiError(status, "INVALID_RESPONSE", "control response is malformed") from error
+        if status != 200:
+            detail = data.get("error", {}) if isinstance(data, dict) else {}
+            raise AnalyzerApiError(status, str(detail.get("code", "CONTROL_UNAVAILABLE")), "Unable to verify analyzer execution ownership")
+        if not isinstance(data, dict) or not isinstance(data.get("version"), int):
+            raise AnalyzerApiError(status, "INVALID_RESPONSE", "control response is malformed")
+        return data
+
+    def release_cancelled(self, job: ClaimedJob) -> None:
+        self._post(f"/api/internal/analysis-jobs/{job.id}/release", {
+            "workerId": self.worker_id, "attempt": job.attempt_count,
+        })
+
+    def record_model_call(self, job: ClaimedJob, record: Mapping[str, Any]) -> Mapping[str, Any]:
+        response = self._post(f"/api/internal/analysis-jobs/{job.id}/model-calls", {
+            **record, "workerId": self.worker_id, "attempt": job.attempt_count,
+        })
+        return response["summary"]
 
     def heartbeat(self, job: ClaimedJob, status: str, progress: int, stage: str, lease_seconds: int = 300) -> ClaimedJob:
         payload: dict[str, Any] = {
@@ -154,7 +203,17 @@ class AnalyzerApiClient:
         browser_auth = self._browser_auth()
         if browser_auth is not None:
             payload["browserAuth"] = browser_auth
-        response = self._post(f"/api/internal/analysis-jobs/{job.id}/heartbeat", payload)
+        try:
+            response = self._post(f"/api/internal/analysis-jobs/{job.id}/heartbeat", payload)
+        except (OSError, AnalyzerApiError) as error:
+            if isinstance(error, AnalyzerApiError) and error.status < 500 and error.code != "INVALID_RESPONSE":
+                raise
+            # A lost heartbeat ACK may have advanced the server version. Read
+            # the owned attempt before deciding whether the worker must stop.
+            owned = self.check_control(job)
+            if owned["version"] == job.version + 1 and owned.get("status") == status and owned.get("progress") == progress:
+                return replace(job, status=status, progress=progress, version=owned["version"])
+            raise
         assert response is not None
         updated = response["job"]
         return replace(job, status=str(updated["status"]), progress=int(updated["progress"]), version=int(updated["version"]))

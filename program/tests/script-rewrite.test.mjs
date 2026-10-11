@@ -18,9 +18,9 @@ test("no selected rewrite means zero calls while each requested variant has an e
   const source = "这是一段需要改写的企业口播内容。".repeat(80);
   assert.equal(library.estimateRewriteUsage(source, []).callCount, 0);
   assert.equal(library.estimateRewriteUsage(source, ["light_rewrite"]).callCount, 2);
-  assert.equal(library.estimateRewriteUsage(source, ["light_rewrite"]).maximumCallCount, 6);
+  assert.equal(library.estimateRewriteUsage(source, ["light_rewrite"]).maximumCallCount, 8);
   assert.equal(library.estimateRewriteUsage(source, ["restructured"]).callCount, 4);
-  assert.equal(library.estimateRewriteUsage(source, ["restructured"]).maximumCallCount, 16);
+  assert.equal(library.estimateRewriteUsage(source, ["restructured"]).maximumCallCount, 23);
   assert.equal(
     library.estimateRewriteUsage(source, ["light_rewrite", "restructured"]).callCount,
     library.estimateRewriteUsage(source, ["light_rewrite"]).callCount + 4,
@@ -34,7 +34,7 @@ test("long micro rewrites estimate one body call per controlled batch", () => {
   const estimate = library.estimateRewriteUsage(source, ["light_rewrite"]);
   assert.ok(batches.length > 1);
   assert.equal(estimate.callCount, batches.length + 1);
-  assert.equal(estimate.maximumCallCount, batches.length * 3 + 3);
+  assert.equal(estimate.maximumCallCount, batches.length * (1 + library.SCRIPT_REWRITE_MICRO_REPAIR_ATTEMPTS) + 3);
 });
 
 test("Chinese and Arabic numeral spellings compare by value for equivalent reconstruction", () => {

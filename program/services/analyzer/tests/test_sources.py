@@ -65,6 +65,8 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(parse_browser_cookie_spec("edge"), ("edge", None, None, None))
         self.assertEqual(parse_browser_cookie_spec("Chrome:Default"), ("chrome", "Default", None, None))
         self.assertIsNone(parse_browser_cookie_spec(""))
+        self.assertIsNone(parse_browser_cookie_spec("none"))
+        self.assertIsNone(parse_browser_cookie_spec("DISABLED"))
         with self.assertRaisesRegex(ValueError, "unsupported cookie browser"):
             parse_browser_cookie_spec("unknown-browser")
 

@@ -19,12 +19,12 @@ $plans = @{
         storageQuotaBytes = 0; retentionDays = 90; failedJobAlertThreshold = 1
     }
     team = [ordered]@{
-        name = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("5pm66IO955Sf5Lqn54mI")); videoAnalysis = $true; wechatImages = $true; insights = $false
+        name = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("5pm66IO955Sf5Lqn54mI")); videoAnalysis = $true; wechatImages = $false; insights = $false
         projectQuota = 20; memberQuota = 50; monthlyAnalysisQuota = 500; monthlyModelCallQuota = 2000
         storageQuotaBytes = 20 * 1024 * 1024 * 1024; retentionDays = 365; failedJobAlertThreshold = 3
     }
     scale = [ordered]@{
-        name = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("5YWo5Yqf6IO957uP6JCl54mI")); videoAnalysis = $true; wechatImages = $true; insights = $true
+        name = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("5YWo5Yqf6IO957uP6JCl54mI")); videoAnalysis = $true; wechatImages = $false; insights = $true
         projectQuota = 100; memberQuota = 250; monthlyAnalysisQuota = 5000; monthlyModelCallQuota = 20000
         storageQuotaBytes = 200 * 1024 * 1024 * 1024; retentionDays = 730; failedJobAlertThreshold = 10
     }
@@ -73,7 +73,7 @@ $excludedFiles = @(
     "resources\authorized\dbskill\SOURCE.md", "resources\delivery\DELIVERY-GUIDE.txt",
     "scripts\verify-delivery.mjs", "scripts\test-lan-runtime.mjs", "scripts\lan-browser-checks.mjs", "scripts\lan-worker-check.py",
     "scripts\test-ecommerce-browser.mjs", "scripts\test-ecommerce-model.mjs", "scripts\ecommerce-test-model.mjs",
-    "scripts\verify-ecommerce-upgrade.mjs",
+    "scripts\verify-ecommerce-upgrade.mjs", "scripts\verify-analyzer-delivery.ps1",
     "scripts\start-analyzer.ps1", "services\analyzer\README.md", "services\analyzer\uv.lock", "tools\README.md"
 )
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -178,6 +178,7 @@ export function deliveryFeatureEnabled(feature: DeliveryFeature) {
     Replace-PackageText "vite.config.ts" '(?m)^\s+sites\(\),\r?\n' ''
 
     if (-not $selectedPlan.videoAnalysis) {
+        Remove-PackagePath "scripts\analyzer-instance-lock.ps1"
         @(
             "app\analysis", "app\api\analysis-jobs", "app\api\analyzer", "app\api\internal", "app\api\video-library", "app\api\videos",
             "components\AnalysisDetail.tsx", "components\AnalysisWorkspace.tsx", "components\VideoLibraryWorkspace.tsx", "components\useAnalysisProfile.ts",
@@ -367,6 +368,10 @@ export const ECOMMERCE_STARTER_CARDS: { key: string; card: Card; methods: { id: 
         [System.IO.File]::WriteAllText($_.FullName, $batchContent, $ascii)
     }
 
+    if ($selectedPlan.videoAnalysis) {
+        $acceptanceSource = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("ZG9jc1xvcGVyYXRpb25zXOWxgOWfn+e9keinhumikeWIhuaekOmqjOaUtua4heWNlS5tZA=="))
+        Copy-Item -LiteralPath (Join-Path $projectRoot $acceptanceSource) -Destination (Join-Path $packageRoot "LAN-ACCEPTANCE.md")
+    }
     Write-Host "[VERIFY] Installing and testing the final customer package in an isolated directory..."
     & node (Join-Path $projectRoot "scripts\verify-delivery.mjs") $packageRoot
     if ($LASTEXITCODE -ne 0) { throw "Customer package verification failed. No delivery ZIP was created." }

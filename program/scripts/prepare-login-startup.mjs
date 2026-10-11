@@ -5,8 +5,11 @@ import { fileURLToPath } from "node:url";
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 let configuration = "";
 try { configuration = readFileSync(new URL("../.dev.vars", import.meta.url), "utf8"); } catch { process.exit(0); }
-const deliveryMode = /^\s*DELIVERY_MODE\s*=\s*1\s*$/mu.test(configuration);
-if (!deliveryMode) process.exit(0);
+const flagEnabled = (name) => new RegExp(`^\\s*${name}\\s*=\\s*(?:1|"1"|'1')\\s*(?:#.*)?$`, "mu").test(configuration);
+const deliveryMode = flagEnabled("DELIVERY_MODE");
+// Password-based local installations need the same fresh login as deliveries.
+// Only an explicitly enabled development identity skips session revocation.
+if (!deliveryMode && flagEnabled("LOCAL_DEV_AUTH")) process.exit(0);
 
 const wranglerCli = fileURLToPath(new URL("../node_modules/wrangler/bin/wrangler.js", import.meta.url));
 const environment = {
@@ -22,4 +25,4 @@ const result = spawnSync(process.execPath, [
 ], { cwd: projectRoot, env: environment, stdio: "inherit" });
 if (result.error) throw result.error;
 if ((result.status ?? 1) !== 0) process.exit(result.status ?? 1);
-console.log("[Liming Zhiyao] Commercial delivery mode: previous login sessions were cleared.");
+console.log("[Liming Zhiyao] Previous login sessions were cleared. Please sign in again.");

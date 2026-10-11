@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "利明智耀 · 抖音登录同步",
+  "version": "1.0.0",
+  "description": "将当前浏览器的抖音登录信息同步到本机利明智耀，无需手动导出 cookies.txt。",
+  "permissions": ["cookies", "storage", "alarms", "scripting", "activeTab"],
+  "host_permissions": [
+    "https://*.douyin.com/*",
+    "https://*.iesdouyin.com/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "background": { "service_worker": "background.mjs", "type": "module" },
+  "action": { "default_title": "抖音登录同步", "default_popup": "popup.html" }
+}

@@ -20,6 +20,12 @@ set "LOCAL_APP_URL=http://127.0.0.1:%LOCAL_APP_PORT%"
 powershell.exe -NoProfile -Command "try { $r = Invoke-WebRequest -UseBasicParsing -Uri '%LOCAL_APP_URL%/api/health' -TimeoutSec 2; if ($r.StatusCode -eq 200) { exit 0 } } catch {}; exit 1" >nul 2>nul
 if not errorlevel 1 (
   echo [Liming Zhiyao] The app is already running at %LOCAL_APP_URL%
+  call npm run auth:startup
+  if errorlevel 1 (
+    echo [ERROR] Login session preparation failed. Review the error shown above.
+    pause
+    exit /b 1
+  )
   powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\start-analyzer-background.ps1" -BaseUrl "%LOCAL_APP_URL%"
   if errorlevel 1 echo [NOTICE] The web app is available, but the video analyzer needs attention. Run tools\setup-analyzer.bat if it is not installed.
   start "" "%LOCAL_APP_URL%"

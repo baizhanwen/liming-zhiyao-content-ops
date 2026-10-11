@@ -42,12 +42,17 @@ function Import-AnalyzerEnvironment {
     return Set-AnalyzerSourceRuntime $ProjectRoot
 }
 
+. (Join-Path $PSScriptRoot "analyzer-instance-lock.ps1")
+$supervisorLock = Enter-AnalyzerInstanceLock $ProjectRoot "supervisor"
+if ($null -eq $supervisorLock) { exit 0 }
+try {
 $restartCount = 0
 while ($true) {
     try {
         $sourceDirectory = Import-AnalyzerEnvironment
         Remove-Item -LiteralPath $statusPath -Force -ErrorAction SilentlyContinue
         Add-Content -LiteralPath $supervisorLogPath -Encoding UTF8 -Value "$(Get-Date -Format o) starting analyzer worker from $sourceDirectory"
+        $env:ANALYZER_SUPERVISOR_PID = [string]$PID
         & $PythonPath -m liming_analyzer --idle-seconds 4 1>> $stdoutPath 2>> $stderrPath
         $exitCode = $LASTEXITCODE
     }
@@ -73,3 +78,5 @@ while ($true) {
     $delay = if ($exitCode -in 20, 21) { 15 } else { [Math]::Min(30, 2 + ($restartCount * 2)) }
     Start-Sleep -Seconds $delay
 }
+}
+finally { Exit-AnalyzerInstanceLock $supervisorLock }

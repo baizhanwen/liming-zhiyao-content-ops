@@ -25,6 +25,10 @@ export async function runBrowserChecks({ origin, users, password, runDir, nextUr
       return { page, user, index, title };
     }));
     // Real browser connection reuse: rejection followed by another POST.
+    const uploadInput = pages[0].page.locator('input[name="file"]');
+    await uploadInput.setInputFiles(Array.from({ length: 11 }, (_, index) => ({ name: `limit-${index}.mp4`, mimeType: "video/mp4", buffer: Buffer.from(`synthetic-${index}`) })));
+    await pages[0].page.getByText("每批最多选择 10 个文件，请分批提交。主机会逐条处理。", { exact: true }).waitFor();
+    assert.equal(await uploadInput.evaluate(input => input.files.length), 0, "Oversized batch is cleared before any upload");
     await Promise.all(pages.map(async ({ page }) => {
       const rejected = await page.evaluate(async () => (await fetch("/api/internal/analysis-jobs/claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ workerId: "unauthorized-browser" }) })).status);
       assert.equal(rejected, 401);

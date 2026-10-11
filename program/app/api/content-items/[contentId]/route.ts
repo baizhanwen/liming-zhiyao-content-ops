@@ -6,6 +6,7 @@ import { authorizedMethodologyApplicationPromptSource } from "../../../../lib/au
 import { buildPublishedCopyProfile, publishedCopyPromptSource, validateHistoricalStyleApplication, type PublishedCopyRecord } from "../../../../lib/published-copy";
 import { readRequestIdentity } from "../../../../lib/request-auth";
 import { benchmarkRewriteReportSchema, rewriteCharacterCount } from "../../../../lib/single-benchmark-rewrite";
+import { incompleteScriptReason } from "../../../../lib/content-writing-intent";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +17,8 @@ export async function PATCH(request: Request, context: { params: Promise<{ conte
     const parsed = saveContentVersionSchema.safeParse(await request.json());
     if (!parsed.success) return apiError("INVALID_CONTENT_VERSION", "生产包结构不完整或字段过长。", 400);
     const { organizationId, projectId, pack, changeSummary } = parsed.data;
+    const incomplete = incompleteScriptReason(pack);
+    if (incomplete) return apiError("INCOMPLETE_CONTENT_SCRIPT", incomplete, 400);
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
     if (!access || !canWriteProjectAccess(access)) return apiError("WRITE_ACCESS_REQUIRED", "当前角色不能修改内容。", 403);
     const { contentId } = await context.params; const db = getD1();
@@ -30,7 +33,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ conte
     } catch { /* Legacy packs have no template snapshot. */ }
     const allowed = new Map<string, string>();
     const sourceRows = await db.prepare(`
-      SELECT 'topic:' || id AS source_key, title || char(10) || COALESCE(angle, '') || char(10) || COALESCE(pillar, '') || char(10) || COALESCE(audience, '') || char(10) || COALESCE(objective, '') || char(10) || COALESCE(hook, '') || char(10) || COALESCE(rationale, '') AS source_text FROM topic_ideas WHERE id = ? AND organization_id = ? AND project_id = ? AND deleted_at IS NULL
+      SELECT 'topic:' || id AS source_key, '本次创作选题标题：' || title || char(10) || COALESCE(angle, '') || char(10) || COALESCE(pillar, '') || char(10) || COALESCE(audience, '') || char(10) || COALESCE(objective, '') || char(10) || COALESCE(hook, '') || char(10) || COALESCE(rationale, '') AS source_text FROM topic_ideas WHERE id = ? AND organization_id = ? AND project_id = ? AND deleted_at IS NULL
       UNION ALL SELECT 'knowledge:' || k.id, v.body FROM knowledge_items k INNER JOIN knowledge_item_versions v ON v.item_id = k.id AND v.version = k.current_version AND v.organization_id = k.organization_id AND v.project_id = k.project_id WHERE k.organization_id = ? AND k.project_id = ? AND k.status = 'confirmed' AND k.deleted_at IS NULL
       UNION ALL SELECT 'video_analysis:' || a.id, a.report_json FROM video_analyses a INNER JOIN videos v ON v.id = a.video_id AND v.organization_id = a.organization_id AND v.project_id = a.project_id WHERE a.organization_id = ? AND a.project_id = ? AND v.deleted_at IS NULL
       UNION ALL SELECT 'strategy:' || id, name || char(10) || positioning || char(10) || COALESCE(persona, '') || char(10) || target_audience || char(10) || pain_points_json || char(10) || pillars_json || char(10) || topic_mix_json || char(10) || COALESCE(style_notes, '') || char(10) || COALESCE(cadence, '') || char(10) || COALESCE(conversion_path, '') || char(10) || objectives_json FROM content_strategies WHERE organization_id = ? AND project_id = ?

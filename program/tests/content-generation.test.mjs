@@ -177,7 +177,7 @@ test("content APIs enforce tenant access, immutable versions, and optimistic wri
   assert.match(generation, /UNTRACEABLE_MODEL_CITATION/);
   assert.match(generation, /ACTIVE_STRATEGY_REQUIRED/);
   assert.match(generation, /SELECTED_KNOWLEDGE_UNAVAILABLE/);
-  assert.match(generation, /SELECTED_KNOWLEDGE_CITATION_REQUIRED/);
+  assert.match(generation, /companyKnowledgeSelected/);
   assert.match(generation, /buildSourceUsageReport/);
   assert.match(generation, /selectAuthorizedMethodologyPlan/);
   assert.match(generation, /methodologyPlan: methodologyPlan\.snapshot/);

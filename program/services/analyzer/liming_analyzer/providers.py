@@ -21,6 +21,7 @@ from .adapters import (
     VisualOutput,
 )
 from .api_client import ClaimedJob
+from .model_calls import ModelCalls
 from .asr_timeline import aligned_asr_segments
 from .evidence import deduplicate_timed_rows, is_near_duplicate, normalize_evidence_text
 from .ffmpeg import FfmpegFrameExtractor, FfmpegMediaProcessor
@@ -1406,6 +1407,21 @@ def _payload_evidence_rows(payload: Any) -> list[dict[str, Any]]:
     return rows
 
 
+def _recover_complete_script_json(error, response_model):
+    """Only recover a complete schema-valid object; never truncate a script."""
+    raw = _completion_json_text(getattr(error, "last_completion", None))
+    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", raw, re.DOTALL)
+    if fenced:
+        raw = fenced.group(1)
+    validate = getattr(response_model, "model_validate_json", None)
+    if not raw or not callable(validate):
+        return None
+    try:
+        return validate(raw).model_dump(mode="json")
+    except (ValueError, TypeError):
+        return None
+
+
 def _recover_partial_json_report(
     error: Exception,
     payload: Mapping[str, Any],
@@ -2398,6 +2414,7 @@ class InstructorStructureAnalyzer:
         client: Any | None = None,
         report_model: Any | None = None,
         generate_script_variants: bool | None = None,
+        call_recorder: Callable | None = None,
     ) -> None:
         client_was_injected = client is not None
         if not api_key and client is None:
@@ -2564,7 +2581,7 @@ class InstructorStructureAnalyzer:
             self.restructure_section_model = RestructureSection
             self.insight_evidence_repair_model = InsightEvidenceRepair
             mode = instructor.Mode.JSON if provider.strip().lower() == "deepseek" else instructor.Mode.TOOLS
-            client = instructor.from_openai(OpenAI(api_key=api_key, base_url=base_url), mode=mode)
+            client = instructor.from_openai(OpenAI(api_key=api_key, base_url=base_url, max_retries=0, timeout=120), mode=mode)
         else:
             self.segment_report_model = report_model
             self.deep_core_report_model = report_model
@@ -2574,6 +2591,7 @@ class InstructorStructureAnalyzer:
             self.restructure_section_model = report_model
             self.insight_evidence_repair_model = report_model
         self.client = client
+        self.call_recorder = call_recorder
         self.report_model = report_model
         self.model = model
         self.provider = provider
@@ -2672,6 +2690,14 @@ class InstructorStructureAnalyzer:
             provider_options["extra_body"] = {"thinking": {"type": "disabled"}}
         completions = self.client.chat.completions
         create_with_completion = getattr(completions, "create_with_completion", None)
+        model_calls = ModelCalls(job, self.call_recorder)
+
+        def invoke_model(task, kwargs):
+            def operation():
+                if callable(create_with_completion):
+                    return create_with_completion(**kwargs)
+                return completions.create(**kwargs), None
+            return model_calls.invoke(task, kwargs["max_tokens"], operation)
         actual_input_tokens = 0
         actual_output_tokens = 0
         actual_total_tokens = 0
@@ -2786,10 +2812,7 @@ class InstructorStructureAnalyzer:
             }
             raw_response = None
             try:
-                if callable(create_with_completion):
-                    response, raw_response = create_with_completion(**request_kwargs)
-                else:
-                    response = completions.create(**request_kwargs)
+                response, raw_response = invoke_model("report", request_kwargs)
                 value = response.model_dump(mode="json") if hasattr(response, "model_dump") else dict(response)
             except Exception as error:
                 recovered = _recover_partial_json_report(
@@ -2823,12 +2846,7 @@ class InstructorStructureAnalyzer:
                     ],
                 }
                 try:
-                    if callable(create_with_completion):
-                        response, raw_response = create_with_completion(
-                            **continuation_kwargs
-                        )
-                    else:
-                        response = completions.create(**continuation_kwargs)
+                    response, raw_response = invoke_model("report_continuation", continuation_kwargs)
                     value = (
                         response.model_dump(mode="json")
                         if hasattr(response, "model_dump")
@@ -2904,10 +2922,15 @@ class InstructorStructureAnalyzer:
                 **provider_options,
             }
             raw_response = None
-            if callable(create_with_completion):
-                response, raw_response = create_with_completion(**request_kwargs)
-            else:
-                response = completions.create(**request_kwargs)
+            try:
+                response, raw_response = invoke_model(task, request_kwargs)
+            except Exception as error:
+                recovered = _recover_complete_script_json(error, response_model)
+                if recovered is None:
+                    raise
+                # No paid retry and no guessed missing paragraphs. The normal
+                # paragraph/fact checks below still apply to this full object.
+                return recovered
             value = (
                 response.model_dump(mode="json")
                 if hasattr(response, "model_dump")
@@ -2971,10 +2994,7 @@ class InstructorStructureAnalyzer:
                 **provider_options,
             }
             raw_response = None
-            if callable(create_with_completion):
-                response, raw_response = create_with_completion(**request_kwargs)
-            else:
-                response = completions.create(**request_kwargs)
+            response, raw_response = invoke_model("insight_evidence", request_kwargs)
             value = (
                 response.model_dump(mode="json")
                 if hasattr(response, "model_dump")
@@ -3616,6 +3636,8 @@ class InstructorStructureAnalyzer:
                 "actual_output_tokens": actual_output_tokens,
                 "actual_total_tokens": actual_total_tokens,
             })
+        if model_calls.summary is not None:
+            report["analysis_meta"]["model_call_history"] = dict(model_calls.summary)
         final_confidence = _confidence(confidence)
         if quality_audit["requires_review"]:
             final_confidence = min(final_confidence if final_confidence is not None else 100, int(quality_audit["score"]))

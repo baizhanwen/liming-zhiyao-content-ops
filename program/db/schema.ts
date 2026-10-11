@@ -144,6 +144,7 @@ export const videoAnalyses = sqliteTable("video_analyses", {
 }, (table) => [index("idx_video_analyses_video_created").on(table.organizationId, table.projectId, table.videoId, table.createdAt), index("idx_video_analyses_analysis_job").on(table.analysisJobId)]);
 
 export const analysisJobs = sqliteTable("analysis_jobs", {
+  queueUserId: text("queue_user_id").references(() => users.id), enqueuedAt: text("enqueued_at"), recoveryAttemptCount: integer("recovery_attempt_count").notNull().default(0),
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id),
   videoId: text("video_id").references(() => videos.id),
   inputTranscriptId: text("input_transcript_id").references(() => videoTranscripts.id),
@@ -167,6 +168,13 @@ export const analyzerWorkers = sqliteTable("analyzer_workers", {
   browserAuthBrowser: text("browser_auth_browser"), browserAuthCheckedAt: text("browser_auth_checked_at"), browserAuthMessage: text("browser_auth_message"),
   updatedAt: text("updated_at").notNull(),
 }, (table) => [index("idx_analyzer_workers_last_seen").on(table.lastSeenAt)]);
+
+export const analysisModelCalls = sqliteTable("analysis_model_calls", {
+  id: id(), jobId: text("job_id").notNull().references(() => analysisJobs.id), attempt: integer("attempt").notNull(),
+  task: text("task").notNull(), status: text("status", { enum: ["started", "completed", "failed"] }).notNull(), outputBudget: integer("output_budget").notNull(),
+  inputTokens: integer("input_tokens"), outputTokens: integer("output_tokens"), totalTokens: integer("total_tokens"),
+  createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull(),
+}, (table) => [index("analysis_model_calls_job_idx").on(table.jobId, table.createdAt)]);
 
 export const analysisJobEvents = sqliteTable("analysis_job_events", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id),

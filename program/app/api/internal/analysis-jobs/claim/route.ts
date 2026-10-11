@@ -23,27 +23,37 @@ export async function POST(request: Request) {
         browser_auth_status = excluded.browser_auth_status, browser_auth_browser = excluded.browser_auth_browser,
         browser_auth_checked_at = excluded.browser_auth_checked_at, browser_auth_message = excluded.browser_auth_message, updated_at = excluded.updated_at
     `).bind(workerId, nowIso, nowIso, browserAuth?.status ?? "unknown", browserAuth?.browser ?? null, browserAuth?.checkedAt ?? null, browserAuth?.message ?? null, nowIso).run();
+    // A repeatedly crashed task must reach a terminal state instead of cycling
+    // forever. Manual retry preserves cumulative attempt_count for fencing.
+    await db.prepare(`UPDATE analysis_jobs SET status = 'failed', error_code = 'ANALYZER_RECOVERY_EXHAUSTED',
+      error_message = '连续三次执行中断，已停止自动恢复。请检查主机后手动重试。', current_stage = '自动恢复次数已用尽',
+      lease_owner = NULL, lease_expires_at = NULL, version = version + 1, updated_at = ?
+      WHERE status IN (${LEASED_ANALYSIS_STATUSES_SQL}) AND lease_expires_at <= ? AND recovery_attempt_count >= 3`)
+      .bind(nowIso, nowIso).run();
     const job = await db.prepare(`
       UPDATE analysis_jobs
       SET status = 'queued',
           progress = CASE WHEN checkpoint_stage IN ('evidence_ready', 'segment_progress') THEN 82 ELSE 1 END,
           current_stage = CASE WHEN checkpoint_stage IN ('evidence_ready', 'segment_progress') THEN '分析服务已领取恢复任务' ELSE '分析服务已领取任务' END,
           lease_owner = ?, lease_expires_at = ?, last_heartbeat_at = ?, attempt_count = attempt_count + 1,
+          recovery_attempt_count = recovery_attempt_count + 1,
           resume_count = resume_count + CASE WHEN checkpoint_stage IN ('evidence_ready', 'segment_progress') THEN 1 ELSE 0 END,
           version = version + 1, updated_by = ?, updated_at = ?
       WHERE id = (
         SELECT j.id FROM analysis_jobs j
         INNER JOIN videos v ON v.id = j.video_id AND v.organization_id = j.organization_id AND v.project_id = j.project_id AND v.deleted_at IS NULL
-        WHERE j.video_id IS NOT NULL AND (
+        WHERE j.video_id IS NOT NULL AND NOT EXISTS (
+          SELECT 1 FROM analysis_jobs running WHERE running.lease_owner IS NOT NULL AND running.lease_expires_at > ?
+        ) AND (
           j.status = 'pending' OR
           (j.status IN (${LEASED_ANALYSIS_STATUSES_SQL}) AND j.lease_expires_at IS NOT NULL AND j.lease_expires_at <= ?)
         )
-        ORDER BY CASE WHEN j.status = 'pending' THEN 0 ELSE 1 END, j.created_at ASC, j.id ASC
+        ORDER BY CASE WHEN j.status = 'pending' THEN 0 ELSE 1 END, COALESCE(j.enqueued_at,j.created_at) ASC, j.id ASC
         LIMIT 1
       )
       RETURNING id, organization_id, project_id, video_id, input_transcript_id, source_type, source_ref, analysis_profile, status, progress, current_stage,
         lease_owner, lease_expires_at, attempt_count, version, result_key, checkpoint_stage, checkpoint_json, checkpoint_updated_at, resume_count
-    `).bind(workerId, leaseExpiresAt, nowIso, actor, nowIso, nowIso).first<ClaimedJob>();
+    `).bind(workerId, leaseExpiresAt, nowIso, actor, nowIso, nowIso, nowIso).first<ClaimedJob>();
     if (!job) return new Response(null, { status: 204 });
 
     const source = await db.prepare(`

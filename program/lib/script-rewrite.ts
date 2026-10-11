@@ -1,7 +1,8 @@
-export const SCRIPT_REWRITE_PROMPT_VERSION = "script-rewrite.v12-colloquial-counts-2026-08-31";
+export const SCRIPT_REWRITE_PROMPT_VERSION = "script-rewrite.v16-spoken-facts-2026-10-10";
 export const SCRIPT_REWRITE_MAX_CHARACTERS = 12_000;
 export const SCRIPT_REWRITE_MICRO_BATCH_CHARACTERS = 1_800;
 export const SCRIPT_REWRITE_MICRO_BATCH_UNITS = 4;
+export const SCRIPT_REWRITE_MICRO_REPAIR_ATTEMPTS = 4;
 
 export type ScriptRewriteVariant = "light_rewrite" | "restructured";
 export type ScriptUnit = { paragraphId: string; text: string };
@@ -78,7 +79,7 @@ export function immutableRewriteFacts(value: string) {
     .replace(RANGE_PRODUCTION_TIME, " ")
     .replace(LABELED_PRODUCTION_TIME, " ");
   for (const match of semanticValue.matchAll(IMMUTABLE_FACT)) {
-    const item = match[0].replace(/\s+/gu, "").toLocaleLowerCase("zh-CN");
+    const item = match[0].replace(/\s+/gu, "").replace(/\.+$/u, "").toLocaleLowerCase("zh-CN");
     if (!item) continue;
     if (/^\d/u.test(item) || /\d|[_.:/+-]/u.test(item) || /[A-Z]/u.test(match[0])) facts.add(item);
   }
@@ -92,6 +93,7 @@ const PROTECTED_FACT_EQUIVALENTS: Record<string, string[]> = {
   crm: ["客户关系管理"],
   ocr: ["光学字符识别", "文字识别"],
   sop: ["标准操作流程", "标准作业流程"],
+  stylus: ["触控笔", "手写笔"],
 };
 
 function protectedFactAppearsOrHasEquivalent(fact: string, value: string) {
@@ -108,6 +110,15 @@ const CHINESE_SMALL_UNITS: Record<string, number> = { 十: 10, 百: 100, 千: 1_
 function parseChineseNumber(raw: string): number | null {
   const value = raw.trim();
   if (!value) return null;
+  // Large units apply to the entire coefficient, including decimal quantities
+  // such as 二点一万 and nested scales such as 一万亿.
+  for (const [unit, scale] of [["亿", 100_000_000], ["万", 10_000]] as const) {
+    const index = value.indexOf(unit);
+    if (index < 0) continue;
+    const coefficient = index ? parseChineseNumber(value.slice(0, index)) : 1;
+    const remainder = index + 1 < value.length ? parseChineseNumber(value.slice(index + 1)) : 0;
+    return coefficient === null || remainder === null ? null : coefficient * scale + remainder;
+  }
   if (value.includes("点")) {
     const [integerRaw, decimalRaw = ""] = value.split("点", 2);
     const integer: number = parseChineseNumber(integerRaw) ?? 0;
@@ -149,12 +160,62 @@ function canonicalNumber(value: number) {
 }
 
 export function semanticRewriteFacts(value: string) {
-  const facts = new Set(immutableRewriteFacts(value));
+  // Spoken technical identifiers may mix Latin letters and Chinese digits.
+  // Canonicalize the identifier as a whole: IP六八 and IP68 are the same rating,
+  // while IP67 must still fail. Surface-preserving micro rewrites stay unchanged.
+  const spokenValue = value
+    // Only discourse markers at a sentence boundary are disposable. A product
+    // named OK or a result such as “状态为OK” remains an immutable identifier.
+    .replace(/(^|[。！？!?]\s*|(?:好|好的|是的|够了|行)[，,]\s*)ok(?=[，,！!])/giu, "$1")
+    // Require an explicit correction followed by the same corrected quantity
+    // again. Do not discard an earlier number merely because another follows.
+    .replace(/([零〇一二两三四五六七八九十百千万亿]+)(人|名)[。！？]\s*对(?:的)?[，,]\s*([零〇一二两三四五六七八九十百千万亿]+)\2(?:哦|啊)[，,]\s*\3\2/gu, "$3$2")
+    // “三四两个池塘” is a pair of labels plus a count, never the number 342.
+    .replace(/([一二三四五六七八九])(?:[、，]|和)?([一二三四五六七八九])两(?=个)/gu, (_match, first: string, second: string) => `${CHINESE_DIGITS[first]}、${CHINESE_DIGITS[second]}，两`)
+    .replace(/([一二三四五六七八九])(?:[、，]|和)?([一二三四五六七八九])(?=食堂|池塘)/gu, (_match, first: string, second: string) => `${CHINESE_DIGITS[first]}、${CHINESE_DIGITS[second]}`)
+    .replace(/一半|半数/gu, "50%")
+    .replace(/([零〇一二两三四五六七八九十]+)点([零〇一二两三四五六七八九十]+)(?=开门|关门|收摊)/gu, (match, hourRaw: string, minuteRaw: string) => {
+      const hour = parseChineseNumber(hourRaw), minute = parseChineseNumber(minuteRaw);
+      return hour !== null && hour <= 24 && minute !== null && minute < 60 ? `${hour}点${minute}分` : match;
+    })
+    .replace(/(?<![零〇一二两三四五六七八九十百千])([十百千])\1(?=块|元|名|人)/gu, "$1")
+    .replace(/([零〇一二两三四五六七八九十百千万亿]+)分之([零〇一二两三四五六七八九十百千万亿]+)/gu, (match, denominatorRaw: string, numeratorRaw: string) => {
+      if (denominatorRaw === "百") return match; // The percent-range scanner also reads its upper bound.
+      const denominator = parseChineseNumber(denominatorRaw), numerator = parseChineseNumber(numeratorRaw);
+      return denominator && numerator !== null ? `${canonicalNumber(numerator / denominator * 100)}%` : match;
+    })
+    // Preserve both ends of approximate scaled quantities, including stutters
+    // such as “五五六百”. Treat 450 (四百五十) as an exact number instead.
+    .replace(/([一二三四五六七八九])\1?([一二三四五六七八九])(百|千)(?=(?:多|名|人|个|块|元|左右))/gu, (_match, lower: string, upper: string, scale: string) => `${CHINESE_DIGITS[lower] * CHINESE_SMALL_UNITS[scale]}到${CHINESE_DIGITS[upper] * CHINESE_SMALL_UNITS[scale]}`)
+    .replace(/千万(?=(?:不要|别|不能|不可|务必|记得|小心|要))/gu, "")
+    .replace(/([零〇一二两三四五六七八九十百千点]+)(?:多|几)(万|亿)/gu, "$1$2")
+    .replace(/([零〇一二两三四五六七八九十百千][零〇一二两三四五六七八九十百千万亿点]*[万亿][零〇一二两三四五六七八九十百千万亿点]*)/gu, (match) => {
+      const parsed = parseChineseNumber(match);
+      return parsed === null ? match : canonicalNumber(parsed);
+    })
+    .replace(/(\d+(?:[.,]\d+)?)(?:多|几)?(万|亿)/gu, (_match, raw: string, scale: string) => canonicalNumber(Number(raw.replace(",", ".")) * (scale === "万" ? 10_000 : 100_000_000)));
+  const identifierValue = spokenValue.replace(/\b(?:team\s+team|tim\s+tim)(?=\s*[,，])/giu, " ").replace(/(\d+(?:[.,]\d+)?|[零〇一二两三四五六七八九十百千万亿点]+)\s*(万|亿)\s*像素/gu, (match, raw: string, scale: string) => {
+    const number = /^\d/u.test(raw) ? Number(raw.replace(",", ".")) : parseChineseNumber(raw);
+    return number === null ? match : `${canonicalNumber(number * (scale === "万" ? 10_000 : 100_000_000))}像素`;
+  }).replace(/\b(IP)\s*([零〇一二两三四五六七八九]{2})(?![零〇一二两三四五六七八九])/giu, (match, prefix: string, raw: string) => {
+    const number = parseChineseNumber(raw);
+    return number === null ? match : `${prefix}${canonicalNumber(number)}`;
+  });
+  const facts = new Set(immutableRewriteFacts(identifierValue));
+  // An interjection in quoted speech is not a product/person identifier.
+  facts.delete("yeah");
   // “千万” is commonly an adverb in spoken Chinese (for example “千万不要”),
   // not the quantity ten million. Remove only those modal uses before scanning
   // Chinese quantities so they cannot invent a protected numeric fact.
-  const numericValue = value.replace(/千万(?=(?:不要|别|不能|不可|务必|记得|小心|要))/gu, "");
+  const numericValue = identifierValue.replace(/千万(?=(?:不要|别|不能|不可|务必|记得|小心|要))/gu, "");
   const numeral = "零〇一二两三四五六七八九十百千万亿点";
+  // A quoted price/answer can have no classifier: “十六哦，那也很好”.
+  // Require a compound numeral, so sentence-final “第一” is not a hard count.
+  const bareNumberPattern = new RegExp(`([零〇一二两三四五六七八九]*[十百千][${numeral}]*)(?=(?:哦|啊|呀)?[，。！？!?])`, "gu");
+  for (const match of numericValue.matchAll(bareNumberPattern)) {
+    const parsed = parseChineseNumber(match[1]);
+    if (parsed !== null) facts.add(canonicalNumber(parsed));
+  }
   const addPercent = (percentage: number) => {
     const canonical = canonicalNumber(percentage);
     if (!canonical) return;
@@ -165,16 +226,27 @@ export function semanticRewriteFacts(value: string) {
   };
   const arabicPercentPattern = /(\d+(?:[.,]\d+)?)\s*%/gu;
   for (const match of numericValue.matchAll(arabicPercentPattern)) addPercent(Number(match[1].replace(",", ".")));
-  const percentPattern = new RegExp(`百分之([${numeral}]+)`, "gu");
+  const percentPattern = new RegExp(`百分之([${numeral}]+)(?:(?:到|至|[-—~～])([${numeral}]+))?`, "gu");
   for (const match of numericValue.matchAll(percentPattern)) {
     const parsed = parseChineseNumber(match[1]);
     if (parsed !== null) addPercent(parsed);
+    if (match[2]) {
+      const upper = parseChineseNumber(match[2]);
+      if (upper !== null) addPercent(upper);
+    }
   }
   // Common spoken equivalents must remain valid in a spoken-script rewrite.
   if (/(?:百发百中|百分百(?:命中|成功|做到|达成)?|全部命中|每次(?:都)?命中)/u.test(numericValue)) {
     addPercent(100);
   }
   const numberToken = `(?:\\d+(?:[.,]\\d+)?|[${numeral}]+)`;
+  const percentRange = new RegExp(`(${numberToken})\\s*%?\\s*(?:到|至|[-—~～])\\s*(${numberToken})\\s*%`, "gu");
+  for (const match of numericValue.matchAll(percentRange)) {
+    for (const raw of [match[1], match[2]]) {
+      const parsed = /^\d/u.test(raw) ? Number(raw.replace(",", ".")) : parseChineseNumber(raw);
+      if (parsed !== null) addPercent(parsed);
+    }
+  }
   const perBaseRatioPattern = new RegExp(
     `每\\s*(${numberToken})\\s*(?:个|人|次|颗)?[^。！？!?；;\\n]{0,100}?(?:只(?:有|剩(?:下)?)|剩(?:下)?|存活(?:的)?(?:只)?有|(?:还)?(?:能)?活着(?:的)?(?:只)?有|成功(?:的)?(?:只)?有|命中(?:的)?(?:只)?有)\\s*(${numberToken})`,
     "gu",
@@ -187,7 +259,7 @@ export function semanticRewriteFacts(value: string) {
       addPercent(numerator / denominator * 100);
     }
   }
-  const rangePattern = new RegExp(`([${numeral}]+)\\s*(?:到|至|[-—~～])\\s*([${numeral}]+)`, "gu");
+  const rangePattern = new RegExp(`([${numeral}]+)\\s*(?:充)?(?:到|至|[-—~～])\\s*([${numeral}]+)`, "gu");
   for (const match of numericValue.matchAll(rangePattern)) {
     for (const raw of [match[1], match[2]]) {
       const parsed = parseChineseNumber(raw);
@@ -197,16 +269,22 @@ export function semanticRewriteFacts(value: string) {
   // Consume the quantity suffix instead of only looking ahead to it. Otherwise
   // a phrase such as “十几万块” is matched twice: first as “十几(万)” and
   // again as the standalone “万(块)”, inventing an extra protected value 10000.
-  const quantifiedPattern = new RegExp(`([${numeral}]+)(?:多|几)?(年|岁|个|颗|人|次|块|元|月|天|方向|部分|家|秒|分钟|小时|成|万|亿)`, "gu");
+  const quantifiedPattern = new RegExp(`([${numeral}]+)\\s*(?:多|几)?\\s*(美元|港元|日元|欧元|英镑|美金|尼特|赫兹|PPI|GHz|MHz|Hz|fps|GB|TB|MB|英寸|毫米|厘米|公里|公斤|千克|毫安|像素|分钟|小时|帧|克|米|倍|瓦|年|岁|个|颗|人|名|次|块|元|月|天|号|分|方向|部分|家|秒|成|万|亿)(?!之)`, "giu");
   for (const match of numericValue.matchAll(quantifiedPattern)) {
     const raw = match[1];
     const classifier = match[2];
+    if (classifier === "万" || classifier === "亿") {
+      const parsed = parseChineseNumber(raw);
+      if (parsed !== null) facts.add(canonicalNumber(parsed * (classifier === "万" ? 10_000 : 100_000_000)));
+      continue;
+    }
     // In spoken copy, “一个” is often an article and “两个角度/说法” is commonly
     // paraphrased as “不同角度/多种说法”. Treat these small 个-counts as semantic
     // details instead of immutable business data. Larger counts such as 二十个,
     // and concrete people/times/money/duration classifiers, remain protected.
     if (classifier === "个" && /^(?:一|二|两)$/u.test(raw)) continue;
-    const adjacentApproximation = [...raw].length === 2 && [...raw].every((character) => character in CHINESE_DIGITS);
+    const technicalDigitSequence = /^(?:PPI|GB|TB|MB|GHz|MHz|Hz|fps)$/iu.test(classifier) && !raw.includes("两");
+    const adjacentApproximation = !technicalDigitSequence && [...raw].length === 2 && [...raw].every((character) => character in CHINESE_DIGITS);
     if (adjacentApproximation) {
       // “两三个方向”“三四个人”表达的是近似范围，不是 23 或 34。
       for (const character of raw) facts.add(String(CHINESE_DIGITS[character]));
@@ -262,6 +340,51 @@ export function batchScriptUnits(units: ScriptUnit[], maximumCharacters = 3_200,
   }
   if (current.length) batches.push(current);
   return batches;
+}
+
+/** Split oversized paragraphs internally while keeping their public IDs. */
+export function buildMicroRewritePlan(units: ScriptUnit[]) {
+  const workingUnits: ScriptUnit[] = [];
+  const paragraphParts = units.map((unit) => {
+    if (unit.text.length <= SCRIPT_REWRITE_MICRO_BATCH_CHARACTERS) {
+      workingUnits.push(unit);
+      return { paragraphId: unit.paragraphId, partIds: [unit.paragraphId] };
+    }
+    const partIds: string[] = [];
+    let start = 0;
+    while (start < unit.text.length) {
+      let end = Math.min(unit.text.length, start + 800);
+      if (end < unit.text.length) {
+        // Prefer a clause boundary and never bisect a Latin identifier/number.
+        const window = unit.text.slice(start + 400, end);
+        const boundaries = [...window.matchAll(/[。！？!?；;，,、\n]/gu)];
+        if (boundaries.length) end = start + 400 + boundaries.at(-1)!.index! + 1;
+        else while (end < unit.text.length && /[A-Za-z0-9零〇一二两三四五六七八九十百千万亿点_.:/%+-]/u.test(unit.text[end - 1])
+          && /[A-Za-z0-9零〇一二两三四五六七八九十百千万亿点_.:/%+-]/u.test(unit.text[end])) end += 1;
+      }
+      const paragraphId = `${unit.paragraphId}-part-${partIds.length + 1}`;
+      partIds.push(paragraphId);
+      workingUnits.push({ paragraphId, text: unit.text.slice(start, end) });
+      start = end;
+    }
+    return { paragraphId: unit.paragraphId, partIds };
+  });
+  return { workingUnits, paragraphParts };
+}
+
+export function mergeMicroRewriteParts(plan: ReturnType<typeof buildMicroRewritePlan>, rows: RewriteParagraph[]) {
+  const byId = new Map(rows.map((row) => [row.paragraphId, row.text]));
+  const expected = plan.workingUnits.map((unit) => unit.paragraphId);
+  if (rows.length !== expected.length || rows.some((row, index) => row.paragraphId !== expected[index])) return [];
+  return plan.paragraphParts.map((paragraph) => ({ paragraphId: paragraph.paragraphId, text: paragraph.partIds.map((id) => byId.get(id)!).join(" ").trim() }));
+}
+
+export function partitionScriptRewriteFailures<T extends { variant: string; status: string; sourceVersionId: string; createdAt: string; validation?: { passed?: boolean } }>(runs: T[]) {
+  const failed = runs.filter((run) => run.status === "failed");
+  const succeeded = runs.filter((run) => run.status === "completed" && run.validation?.passed === true);
+  const historical = failed.filter((run) => succeeded.some((success) => success.variant === run.variant
+    && success.sourceVersionId === run.sourceVersionId && success.createdAt > run.createdAt));
+  return { unresolved: failed.filter((run) => !historical.includes(run)), historical };
 }
 
 export function rewriteParagraphTargets(units: ScriptUnit[], minimumRatio = 0.9, maximumRatio = 1.1) {
@@ -532,6 +655,89 @@ export function isReviewableLightRewrite(validation: RewriteValidation) {
     && (validation.sequenceSimilarity ?? 1) < 0.82;
 }
 
+/** Select replacements independently so a repair cannot undo a good paragraph. */
+export function mergeImprovedRewriteParagraphRows(units: ScriptUnit[], rows: RewriteParagraph[], replacements: RewriteParagraph[]) {
+  const knownIds = new Set(units.map((unit) => unit.paragraphId));
+  if (new Set(replacements.map((row) => row.paragraphId)).size !== replacements.length
+    || replacements.some((row) => !knownIds.has(row.paragraphId))) return rows;
+  const accepted = replacements.filter((replacement) => {
+    const unit = units.find((item) => item.paragraphId === replacement.paragraphId)!;
+    const previous = rows.find((item) => item.paragraphId === replacement.paragraphId);
+    const nextValidation = validateLightRewrite([unit], [replacement]);
+    const previousValidation = validateLightRewrite([unit], previous ? [previous] : []);
+    return nextValidation.passed || rewriteValidationQualityScore(nextValidation) > rewriteValidationQualityScore(previousValidation);
+  });
+  return mergeRewriteParagraphRows(units, rows, accepted);
+}
+
+export type RewriteCopyRepairWindow = { paragraphId: string; targetId: string; start: number; end: number; text: string };
+
+/** Keep offsets in the actual draft; normalized copied spans omit protected terms. */
+export function buildRewriteCopyRepairWindows(units: ScriptUnit[], rows: RewriteParagraph[]): RewriteCopyRepairWindow[] {
+  const windows: RewriteCopyRepairWindow[] = [];
+  for (const row of rows) {
+    if (inspectLocalRewriteCopy(units, [row.text]).passed) continue;
+    const fragments = [...row.text.matchAll(/[^。！？!?；;\n]+[。！？!?；;\n]*/gu)].map((match) => ({ text: match[0], start: match.index }));
+    let rejected = fragments.filter((fragment) => !inspectLocalRewriteCopy(units, [fragment.text]).passed);
+    if (!rejected.length) rejected = [{ text: row.text, start: 0 }];
+    rejected.forEach((fragment, index) => windows.push({
+      paragraphId: row.paragraphId, targetId: `${row.paragraphId}-copy-${index + 1}`,
+      start: fragment.start, end: fragment.start + fragment.text.length, text: fragment.text,
+    }));
+  }
+  return windows;
+}
+
+export function applyRewriteCopyRepairs(rows: RewriteParagraph[], windows: RewriteCopyRepairWindow[], replacements: RewriteParagraph[]) {
+  const allowed = new Set(windows.map((window) => window.targetId));
+  if (new Set(replacements.map((row) => row.paragraphId)).size !== replacements.length
+    || replacements.some((row) => !allowed.has(row.paragraphId))) return rows;
+  const byId = new Map(replacements.map((row) => [row.paragraphId, row.text]));
+  return rows.map((row) => {
+    let text = row.text;
+    for (const window of windows.filter((item) => item.paragraphId === row.paragraphId).sort((a, b) => b.start - a.start)) {
+      const replacement = byId.get(window.targetId);
+      if (replacement?.trim() && text.slice(window.start, window.end) === window.text) {
+        text = text.slice(0, window.start) + replacement.trim() + text.slice(window.end);
+      }
+    }
+    return { ...row, text };
+  });
+}
+
+/** Include connected source paragraphs before replacing a multi-source fact. */
+export function buildRewriteFactRepairScope(units: ScriptUnit[], facts: RewriteFactCard[]) {
+  const validation = validateRewriteFactCards(units, facts);
+  const failed = validation.checks.filter((item) => !item.passed).map((item) => item.key);
+  const covered = new Set(facts.flatMap((fact) => fact.sourceParagraphIds));
+  const known = new Set(units.map((unit) => unit.paragraphId));
+  const fullRepair = failed.some((key) => !["fact_immutables", "source_coverage"].includes(key))
+    || facts.some((fact) => fact.sourceParagraphIds.some((id) => !known.has(id)));
+  const targetIds = new Set(units.filter((unit) => fullRepair || !covered.has(unit.paragraphId)
+    || semanticRewriteFacts(unit.text).some((fact) => validation.missingImmutableFacts.includes(fact))).map((unit) => unit.paragraphId));
+  let previousSize = -1;
+  while (previousSize !== targetIds.size) {
+    previousSize = targetIds.size;
+    for (const fact of facts) {
+      if (fact.sourceParagraphIds.some((id) => targetIds.has(id))) {
+        fact.sourceParagraphIds.filter((id) => known.has(id)).forEach((id) => targetIds.add(id));
+      }
+    }
+  }
+  const targetFacts = facts.filter((fact) => fullRepair || fact.sourceParagraphIds.some((id) => targetIds.has(id)));
+  const retainedFacts = facts.filter((fact) => !targetFacts.includes(fact));
+  return { units: units.filter((unit) => targetIds.has(unit.paragraphId)), targetFacts, retainedFacts };
+}
+
+/** Locate original sentences for a small additive repair; never synthesize facts. */
+export function buildMissingRewriteFactSources(units: ScriptUnit[], missing: string[]) {
+  const required = new Set(missing);
+  return units.flatMap((unit) => {
+    const sentences = unit.text.split(SCRIPT_BOUNDARY).filter((sentence) => semanticRewriteFacts(sentence).some((fact) => required.has(fact)));
+    return sentences.length ? [{ paragraphId: unit.paragraphId, text: sentences.join("") }] : [];
+  });
+}
+
 export function validateRewriteFactCards(units: ScriptUnit[], facts: RewriteFactCard[]) {
   const expectedParagraphIds = new Set(units.map((item) => item.paragraphId));
   const factIds = facts.map((item) => item.factId);
@@ -543,7 +749,14 @@ export function validateRewriteFactCards(units: ScriptUnit[], facts: RewriteFact
   const unique = factIds.length === uniqueFactIds.size;
   const sourceText = units.map((item) => item.text).join("\n\n");
   const ledgerText = facts.flatMap((item) => [item.statement, ...item.immutableFacts]).join("\n");
-  const ledgerImmutableFacts = new Set(semanticRewriteFacts(ledgerText));
+  // Explicit immutable metadata is already classified by the extractor. It may
+  // use lowercase spellings ("team", "iphone") which the prose scanner rightly
+  // ignores as ordinary English. Do not lose these declared identifiers here.
+  const declaredImmutableFacts = facts.flatMap((fact) => fact.immutableFacts.flatMap((value) => {
+    const extracted = semanticRewriteFacts(value);
+    return extracted.length ? extracted : /^[A-Za-z][A-Za-z0-9_.:/+-]*$/u.test(value.trim()) ? [value.trim().toLocaleLowerCase("zh-CN")] : [];
+  }));
+  const ledgerImmutableFacts = new Set([...semanticRewriteFacts(ledgerText), ...declaredImmutableFacts]);
   const missingImmutableFacts = semanticRewriteFacts(sourceText).filter((item) => !ledgerImmutableFacts.has(item));
   const sourceDetailCharacters = normalizeRewriteText(sourceText).length;
   const ledgerDetailCharacters = normalizeRewriteText(facts.map((item) => item.statement).join("\n")).length;
@@ -802,16 +1015,16 @@ export function rewriteValidationQualityScore(validation: RewriteValidation) {
 
 export function estimateRewriteUsage(sourceText: string, variants: ScriptRewriteVariant[]) {
   const units = buildScriptUnits(sourceText);
-  const homomorphicUnits = buildScriptUnits(sourceText, SCRIPT_REWRITE_MAX_CHARACTERS);
+  const homomorphicUnits = buildMicroRewritePlan(buildScriptUnits(sourceText, SCRIPT_REWRITE_MAX_CHARACTERS)).workingUnits;
   const microBatches = variants.includes("light_rewrite")
     ? batchScriptUnits(homomorphicUnits, SCRIPT_REWRITE_MICRO_BATCH_CHARACTERS, SCRIPT_REWRITE_MICRO_BATCH_UNITS)
     : [];
   const sourceTokens = Math.max(1, Math.ceil(sourceText.length * 0.72));
   const lightCalls = microBatches.length ? microBatches.length + 1 : 0;
-  const lightMaximumCalls = microBatches.length ? microBatches.length * 3 + 3 : 0;
+  const lightMaximumCalls = microBatches.length ? microBatches.length * (1 + SCRIPT_REWRITE_MICRO_REPAIR_ATTEMPTS) + 3 : 0;
   const restructureFactCalls = variants.includes("restructured") ? Math.max(1, batchScriptUnits(units, 5_000, 12).length) : 0;
   const restructureCalls = restructureFactCalls ? restructureFactCalls + 3 : 0;
-  const restructureMaximumCalls = restructureFactCalls ? restructureFactCalls + 15 : 0;
+  const restructureMaximumCalls = restructureFactCalls ? restructureFactCalls * 4 + 19 : 0;
   const callCount = lightCalls + restructureCalls;
   const maximumCallCount = lightMaximumCalls + restructureMaximumCalls;
   const estimatedInputTokens = (lightCalls ? sourceTokens * 2 + microBatches.length * 700 + 400 : 0) + (restructureCalls ? sourceTokens * 4 + 3_500 : 0);
@@ -826,19 +1039,22 @@ export function estimateRewriteUsage(sourceText: string, variants: ScriptRewrite
   }, 0);
   const lightMaximumOutput = lightMaximumCalls
     ? lightBatchOutput
-      + lightBatchRepairOutput * 2
+      + lightBatchRepairOutput * SCRIPT_REWRITE_MICRO_REPAIR_ATTEMPTS
       + Math.min(3_000, Math.max(1_000, homomorphicUnits.length * 160 + 700)) * 2
       + Math.min(13_000, Math.max(1_800, Math.ceil(sourceText.length * 1.15) + 1_200))
     : 0;
   const restructureMaximumOutput = restructureCalls
     ? restructureFactCalls * Math.min(8_000, Math.max(4_000, Math.ceil(averageFactBatchCharacters * 1.5) + 2_000))
+      + restructureFactCalls * Math.min(8_000, Math.max(2_500, Math.ceil(averageFactBatchCharacters * 1.5) + 2_000))
+      + restructureFactCalls * 2 * 3_000
+      + 2 * 5_000
       + Math.min(7_000, Math.max(1_500, units.length * 300 + 1_200))
       + Math.min(7_000, Math.max(1_800, units.length * 340 + 1_400))
       + Math.min(13_000, Math.max(1_800, Math.ceil(sourceText.length * 1.25) + 1_200))
-      + Math.min(13_000, Math.max(2_500, Math.ceil(sourceText.length * 0.9) + 1_500))
       + Math.min(6_000, Math.max(1_600, Math.ceil(sourceText.length * 0.65) + 900)) * 8
       + Math.min(13_000, Math.max(2_000, Math.ceil(sourceText.length * 1.25) + 1_400))
       + Math.min(2_500, Math.max(900, units.length * 180 + 600))
+      + Math.min(8_000, Math.max(1_500, Math.ceil(sourceText.length * 1.3) + 800)) * 3
       + Math.min(2_500, Math.max(900, units.length * 180 + 600))
     : 0;
   const maximumOutputTokens = lightMaximumOutput + restructureMaximumOutput;

@@ -11,12 +11,20 @@ from .source_errors import SourceDownloadError
 
 logger = logging.getLogger(__name__)
 
+class ProcessingFailure(RuntimeError):
+    """Safe classified failure transported from an isolated processing child."""
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
 
 def _is_transient_api_error(error: AnalyzerApiError) -> bool:
     return error.status in {408, 425, 429} or error.status >= 500 or error.code == "INVALID_RESPONSE"
 
 
 def classify_worker_error(error: Exception) -> tuple[str, str]:
+    if isinstance(error, ProcessingFailure):
+        return error.code, str(error)
     if isinstance(error, SourceDownloadError):
         return error.code, str(error)
     message = str(error).strip() or "分析失败"
@@ -35,7 +43,7 @@ def classify_worker_error(error: Exception) -> tuple[str, str]:
         return "MODEL_CONTEXT_LIMIT", message
     if "max_tokens" in lowered or "output is incomplete" in lowered or "length limit" in lowered:
         return "MODEL_OUTPUT_LIMIT", "模型报告超过当前模式的输出长度，已启用压缩输出；请从证据检查点继续。"
-    if "invalid json" in lowered or "json_invalid" in lowered or "validation error for report" in lowered:
+    if "invalid json" in lowered or "json_invalid" in lowered or ("validation error" in lowered and any(name in lowered for name in ("report", "scriptrewritebatch", "restructure"))):
         return "MODEL_OUTPUT_INVALID", "模型报告格式不完整，已启用 JSON 恢复；请从证据检查点继续。"
     if any(value in lowered for value in ("429", "rate limit", "too many requests")):
         return "MODEL_RATE_LIMITED", message
@@ -52,6 +60,19 @@ def process_once(client: AnalyzerApiClient, processor: Processor) -> bool:
     job = client.claim()
     if job is None:
         return False
+    try:
+        return _process_claimed(client, processor, job)
+    finally:
+        if job.attempt_count and getattr(processor, "resources_released", True):
+            try:
+                client.release_cancelled(job)
+            except (AnalyzerApiError, OSError):
+                # A lost cancellation acknowledgement keeps the execution slot
+                # reserved only until lease expiry, never forever.
+                logger.warning("Could not acknowledge released resources: job=%s", job.id)
+
+
+def _process_claimed(client: AnalyzerApiClient, processor: Processor, job: ClaimedJob) -> bool:
     current = job
     logger.info("Analysis task claimed: job=%s source=%s", job.id, job.source_type)
 

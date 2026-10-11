@@ -281,8 +281,21 @@ try {
   await page.getByLabel("企业空间", { exact: true }).selectOption("ec-project");
   await page.getByText("电商素材已启用", { exact: true }).waitFor();
   await page.getByRole("link", { name: "返回普通内容", exact: true }).click();
-  await page.getByRole("navigation", { name: "内容任务类型", exact: true }).getByRole("link", { name: "电商素材", exact: true }).waitFor();
-  assert.equal(new URL(page.url()).pathname, "/content"); checks.push("返回普通内容保留空间入口");
+  const sidebar = page.getByRole("complementary", { name: "主导航", exact: true });
+  const ecommerceLink = sidebar.getByRole("link", { name: "电商中心", exact: true });
+  await ecommerceLink.waitFor();
+  assert.equal(new URL(page.url()).pathname, "/content");
+  assert.equal(await page.getByRole("navigation", { name: "内容任务类型", exact: true }).count(), 0);
+  assert.equal(await sidebar.getByRole("link", { name: "内容生产", exact: true }).getAttribute("aria-current"), "page");
+  assert.equal(await ecommerceLink.evaluate(el => el.previousElementSibling?.textContent), "内容生产");
+  // This isolated Worker has no client RSC router; actual Link clicks are covered by test-navigation-browser.mjs.
+  await page.goto(new URL(await ecommerceLink.getAttribute("href"), page.url()).href);
+  await page.getByText("电商素材已启用", { exact: true }).waitFor();
+  assert.equal(new URL(page.url()).pathname, "/content/ecommerce");
+  assert.equal(new URL(page.url()).searchParams.get("projectId"), "ec-project");
+  assert.equal(await ecommerceLink.getAttribute("aria-current"), "page");
+  assert.equal(await sidebar.getByRole("link", { name: "内容生产", exact: true }).getAttribute("aria-current"), null);
+  checks.push("电商中心位于内容生产下方，跳转保留空间且独立高亮，页内重复入口已移除");
   assert.deepEqual(errors, [], "浏览器未处理异常"); assert.deepEqual(failedRequests, [], "浏览器请求失败");
   const result = { syntheticOnly: true, checks, errors, failedRequests, apiFailures, modelStages: model.calls.map(c => c.stage), screenshots: ["products-desktop.png", "methods-desktop.png", "methods-mobile.png", "assembly-desktop.png", "assembly-mobile.png"] };
   writeFileSync(path.join(runDir, "result.json"), JSON.stringify(result, null, 2));

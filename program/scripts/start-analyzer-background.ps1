@@ -70,10 +70,11 @@ $requestedBaseUrl = $env:ANALYZER_BASE_URL.TrimEnd('/')
 $statusUrl = "$requestedBaseUrl/api/internal/analyzer/status?workerId=$([Uri]::EscapeDataString($env:ANALYZER_WORKER_ID))"
 $statusHeaders = @{ Authorization = "Bearer $($env:ANALYZER_SERVICE_TOKEN)" }
 
-function Test-AnalyzerHeartbeat {
+function Test-AnalyzerHeartbeat([datetime]$NotBefore = [datetime]::MinValue) {
     try {
         $status = Invoke-RestMethod -Method Get -Uri $statusUrl -Headers $statusHeaders -TimeoutSec 2
-        return [bool]$status.online
+        return [bool]$status.online -and $status.lastSeenAt -and
+            [DateTimeOffset]::Parse([string]$status.lastSeenAt).UtcDateTime -ge $NotBefore
     }
     catch { return $false }
 }
@@ -89,6 +90,13 @@ function Read-AnalyzerStartDetail {
     return "No analyzer heartbeat was received."
 }
 
+. (Join-Path $PSScriptRoot "analyzer-instance-lock.ps1")
+$startupLock = Enter-AnalyzerInstanceLock $projectRoot "startup" 30000
+if ($null -eq $startupLock) {
+    Write-AnalyzerStartError "Another analyzer startup is still in progress. Please wait and try again."
+    exit 1
+}
+try {
 if (Test-Path -LiteralPath $pidPath) {
     $savedId = 0
     [void][int]::TryParse((Get-Content -Raw -LiteralPath $pidPath).Trim(), [ref]$savedId)
@@ -128,6 +136,7 @@ if (Test-Path -LiteralPath $pidPath) {
 }
 
 Remove-Item -LiteralPath $errorPath -Force -ErrorAction SilentlyContinue
+$launchStartedAt = (Get-Date).ToUniversalTime()
 $process = Start-Process -FilePath "powershell.exe" -ArgumentList @(
     "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass",
     "-File", "`"$supervisor`"",
@@ -141,7 +150,7 @@ for ($attempt = 0; $attempt -lt 15; $attempt += 1) {
     Start-Sleep -Seconds 1
     $process.Refresh()
     if ($process.HasExited) { break }
-    if (Test-AnalyzerHeartbeat) { exit 0 }
+    if (Test-AnalyzerHeartbeat $launchStartedAt) { exit 0 }
 }
 if ($process.HasExited) {
     Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
@@ -155,3 +164,5 @@ Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $baseUrlPath -Force -ErrorAction SilentlyContinue
 Write-AnalyzerStartError "The video analyzer process started but did not report a live heartbeat within 15 seconds. $(Read-AnalyzerStartDetail)"
 exit 1
+}
+finally { Exit-AnalyzerInstanceLock $startupLock }

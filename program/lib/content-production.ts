@@ -2,6 +2,7 @@ import { z } from "zod";
 import { benchmarkRewriteReportSchema, benchmarkRewriteSegmentsSchema } from "./single-benchmark-rewrite.ts";
 import { BENCHMARK_CONTENT_GUIDANCE } from "./benchmark-content-policy.ts";
 import { CORE_STRATEGY_GUIDANCE } from "./content-strategy-policy.ts";
+import { CONTENT_WRITING_GUIDANCE, resolvedWritingIntentSchema, writingIntentSchema } from "./content-writing-intent.ts";
 
 const shortText = (maximum: number) => z.string().trim().min(1).max(maximum);
 
@@ -86,6 +87,7 @@ export const historicalStyleApplicationSchema = z.object({
 }).strict();
 
 export const productionPackSchema = z.object({
+  writingIntent: resolvedWritingIntentSchema.optional(),
   hooks: z.array(shortText(200)).min(2).max(5),
   fullScript: shortText(12_000).refine((value) => value.length >= 20),
   shortScript: shortText(6_000).refine((value) => value.length >= 10),
@@ -188,7 +190,7 @@ export function buildSourceUsageReport(availableSources: UsageSource[], citation
   const definitions: { key: z.infer<typeof sourceUsageKeySchema>; sourceType: UsageSource["sourceType"]; label: string; required: boolean; include: (source: UsageSource) => boolean }[] = [
     { key: "topic", sourceType: "topic", label: "选题信息", required: false, include: (source) => source.sourceType === "topic" },
     { key: "project_memory", sourceType: "memory", label: "已确认项目记忆", required: false, include: (source) => source.sourceType === "memory" },
-    { key: "selected_knowledge", sourceType: "knowledge", label: "选题指定品牌知识", required: selectedKnowledge.size > 0, include: (source) => source.sourceType === "knowledge" && selectedKnowledge.has(source.sourceId) },
+    { key: "selected_knowledge", sourceType: "knowledge", label: "选题指定品牌知识", required: false, include: (source) => source.sourceType === "knowledge" && selectedKnowledge.has(source.sourceId) },
     { key: "project_knowledge", sourceType: "knowledge", label: "项目品牌知识", required: false, include: (source) => source.sourceType === "knowledge" && !selectedKnowledge.has(source.sourceId) },
     { key: "video_atom", sourceType: "video_atom", label: "视频知识原子", required: false, include: (source) => source.sourceType === "video_atom" },
     { key: "inspiration", sourceType: "inspiration", label: "已确认灵感候选", required: false, include: (source) => source.sourceType === "inspiration" },
@@ -255,6 +257,7 @@ export const generateContentSchema = z.object({
   // deliberately ignores it and always runs new generation at max capability.
   modelProfile: z.string().trim().max(40).optional(),
   creationMode: z.enum(["standard", "single_benchmark"]).default("standard"),
+  writingIntent: writingIntentSchema.default("auto"),
   benchmarkEntryIds: z.array(shortText(100)).max(5).default([]),
   recommendedBenchmarkIds: z.array(shortText(100)).max(5).default([]),
 }).strict();
@@ -284,10 +287,10 @@ export function partitionContentPromptSources<T extends ContentPromptSource>(sou
   };
 }
 
-export const CONTENT_PROMPT_VERSION = "content-draft.v16-core-strategy";
+export const CONTENT_PROMPT_VERSION = "content-draft.v17-writing-intent";
 export const CONTENT_PROMPT_NAME = "分层事实、确定性方法计划与可恢复生产包";
 export const CONTENT_JSON_EXAMPLE = `JSON 顶层结构示例（实际输出必须填写完整内容并保留全部字段）：
-{"hooks":["开头一","开头二"],"fullScript":"完整口播稿","shortScript":"短版口播稿","storyboard":[{"shot":"镜头一","visual":"画面","script":"台词","performance":"表演提示","durationSec":5}],"performanceNotes":[],"brollSuggestions":[],"subtitleHighlights":[],"coverCopy":["封面文案"],"publishTitles":["发布标题"],"hashtags":[],"commentPrompt":"评论引导","adaptations":[],"citations":[{"sourceType":"topic","sourceId":"输入中的真实来源 ID","quote":"从该来源逐字引用的原文"}],"riskNotes":[],"qualityReview":{"coreMechanism":"唯一核心机制","hookDiagnosis":{"topic":"话题","hook":"抓手","credibility":"可信度","suspense":"悬念","verdict":"strong"},"resonance":{"silentRelease":"沉默解除","motivation":"满足动机","stance":"有效立场","firstSharer":"首批传播者","beliefShift":"信念与行动"},"flowRisks":[],"benchmarkMethods":[],"publishReadiness":"ready","blockers":[]}}`;
+{"writingIntent":{"kind":"explain","reason":"选题需要通俗解释其发展脉络"},"hooks":["开头一","开头二"],"fullScript":"完整口播稿","shortScript":"短版口播稿","storyboard":[{"shot":"镜头一","visual":"画面","script":"台词","performance":"表演提示","durationSec":5}],"performanceNotes":[],"brollSuggestions":[],"subtitleHighlights":[],"coverCopy":["封面文案"],"publishTitles":["发布标题"],"hashtags":[],"commentPrompt":"评论引导","adaptations":[],"citations":[{"sourceType":"topic","sourceId":"输入中的真实来源 ID","quote":"从该来源逐字引用的原文"}],"riskNotes":[],"qualityReview":{"coreMechanism":"唯一核心机制","hookDiagnosis":{"topic":"话题","hook":"抓手","credibility":"可信度","suspense":"悬念","verdict":"strong"},"resonance":{"silentRelease":"沉默解除","motivation":"满足动机","stance":"有效立场","firstSharer":"首批传播者","beliefShift":"信念与行动"},"flowRisks":[],"benchmarkMethods":[],"publishReadiness":"ready","blockers":[]}}`;
 export const CONTENT_SYSTEM_PROMPT = `你是新媒体服务公司的资深内容策划。系统会把选题、已启用策略、选题主动指定的品牌知识及明确关联的参考资料，按“本次任务、项目事实、方法计划、参考案例”分层提供。你要依据项目事实写内容，依据方法计划决定写法，参考案例用于结构启发，其中已选 benchmark 还可选择性借鉴有依据的内容，生成可直接进入审核的原创短视频生产包。
 
 输入分层与边界：
@@ -297,6 +300,8 @@ export const CONTENT_SYSTEM_PROMPT = `你是新媒体服务公司的资深内容
 - methodologyPlan：系统在调用模型前确定的方法步骤，只指导选题组织、钩子、结构、节奏、表达与检查，绝不能充当客户事实、案例、数据、资质或结果证明；
 - referenceExamples：对标样本、历史文案和灵感用于学习抽象结构与表达策略；其中已选 benchmark 可选择性吸收与本题相关的问题、观点、解释、方法或有明确归属的外部案例。绝不能把其人物、数字、案例、结论或成绩写成客户事实；历史文案和灵感仍沿用原有结构参考边界；
 - sourceIndex：仅用于核对来源 ID、标题和类型，不扩大任何来源的授权范围。
+
+${CONTENT_WRITING_GUIDANCE}
 
 执行要求：
 ${CORE_STRATEGY_GUIDANCE}
@@ -310,7 +315,7 @@ ${BENCHMARK_CONTENT_GUIDANCE}
 7. 输入含 historical_copy 时，必须至少引用一条实际采用的历史文案；只学习其字数区间、段落节奏、开场结构、行动引导和变现方式，不得拼接、洗稿或连续复用历史正文超过 12 个字（citations.quote 中用于追溯的原文不受此限制）；
 8. 输入含 historicalStyleProfile 时，优先遵循 suggestedMinCharacters–suggestedMaxCharacters、suggestedMinParagraphs–suggestedMaxParagraphs、bestHookType、bestCtaType、toneTags 和 bestMonetizationType；confidence 为 low 时仅作弱参考，不能为迎合画像而虚构事实或强行加入转化动作；
 9. 系统会在生成后客观检测完整口播稿的字数、段落、开场、行动引导、语气、变现方式和与历史原文的连续重复片段；检测不通过时会把具体差异返回给你重写；
-10. 当前内容策略必须形成至少一条 strategy 引用；选题指定了品牌知识时，必须引用至少一条指定 knowledge；未指定时不得引用品牌知识，也不得编造 knowledge 来源；可以依据当前内容策略组织方向与表达，但不能把方向建议写成已经发生的个人经历；选题来自视频分析时，必须引用对应 video_analysis；
+10. 当前内容策略必须形成至少一条 strategy 引用；实际使用品牌知识时必须引用对应的指定 knowledge，未采用时不强制引用或植入；未指定时不得引用品牌知识，也不得编造 knowledge 来源；可以依据当前内容策略组织方向与表达，但不能把方向建议写成已经发生的个人经历；选题来自视频分析时，必须引用对应 video_analysis；
 11. 输入中的 benchmarkFeedback 是系统根据历史审核、人工修订和发布指标汇总的反馈信号。优先采用主题匹配且历史通过率、真实表现更好的方法；退回和人工修订较多的样本只用于规避问题。不得把相关性信号说成因果结论，也不得在成稿中披露内部评分；
 12. 严格执行 methodologyPlan 中选定的方法，不自行把未选方法升级为强制规则；如果方法与项目事实冲突，以项目事实和合规边界为准；
 13. citations.quote 必须是 8–80 字连续原文；hashtags 中每一项和 adaptations.platform 均不得超过 80 字，平台名只写简短名称；
@@ -321,8 +326,9 @@ ${CONTENT_JSON_EXAMPLE}`;
 export const CONTENT_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["hooks", "fullScript", "shortScript", "storyboard", "performanceNotes", "brollSuggestions", "subtitleHighlights", "coverCopy", "publishTitles", "hashtags", "commentPrompt", "adaptations", "citations", "riskNotes", "qualityReview"],
+  required: ["writingIntent", "hooks", "fullScript", "shortScript", "storyboard", "performanceNotes", "brollSuggestions", "subtitleHighlights", "coverCopy", "publishTitles", "hashtags", "commentPrompt", "adaptations", "citations", "riskNotes", "qualityReview"],
   properties: {
+    writingIntent: { type: "object", additionalProperties: false, required: ["kind", "reason"], properties: { kind: { enum: ["explain", "tutorial", "opinion", "brand"] }, reason: { type: "string", minLength: 1, maxLength: 200 } } },
     hooks: { type: "array", minItems: 2, maxItems: 5, items: { type: "string", minLength: 1, maxLength: 200 } },
     fullScript: { type: "string", minLength: 20, maxLength: 12_000 }, shortScript: { type: "string", minLength: 10, maxLength: 6_000 },
     storyboard: { type: "array", minItems: 1, maxItems: 30, items: { type: "object", additionalProperties: false, required: ["shot", "visual", "script", "performance", "durationSec"], properties: { shot: { type: "string", minLength: 1, maxLength: 120 }, visual: { type: "string", minLength: 1, maxLength: 500 }, script: { type: "string", minLength: 1, maxLength: 2_000 }, performance: { type: "string", minLength: 1, maxLength: 500 }, durationSec: { type: "integer", minimum: 1, maximum: 300 } } } },
@@ -353,15 +359,15 @@ export function createProductionScaffold(topic: { id: string; title: string; ang
   const objective = topic.objective?.trim() || "帮助目标用户建立清晰认知并愿意继续交流";
   return productionPackSchema.parse({
     hooks: [hook, `别急着下结论，先看清“${topic.title}”背后的关键问题。`],
-    fullScript: `${hook}\n\n${angle}\n\n先把常见误区讲清楚，再结合已确认的品牌事实补充方法、案例或证据。最后给出一个具体、可执行的下一步，并以“${objective}”为内容目标完成收束。`,
-    shortScript: `${hook}\n${angle}\n用一个明确方法给出下一步行动。`,
+    fullScript: "这份内容尚未生成口播稿。请点击生成，完成后将在这里显示完整台词。",
+    shortScript: "精简版尚未生成，请先完成口播稿生成。",
     storyboard: [{ shot: "开场近景", visual: "人物正面出镜，字幕突出核心问题", script: hook, performance: "直接、克制，首句后停顿半秒", durationSec: 5 }],
     performanceNotes: ["事实和案例补齐前不要使用绝对化表达", "重要结论前短暂停顿，突出关键词"],
     brollSuggestions: ["与选题相关的工作场景或产品细节", "方法步骤对应的简洁图卡"],
     subtitleHighlights: [topic.title], coverCopy: [topic.title], publishTitles: [topic.title], hashtags: [],
     commentPrompt: "你在这个问题上最想解决的具体困难是什么？",
-    adaptations: [], citations: [{ sourceType: "topic", sourceId: topic.id, quote: angle.slice(0, 80) }],
-    riskNotes: ["当前为结构草稿，发布前需补齐并核对品牌事实与合规要求"],
+    adaptations: [], citations: [{ sourceType: "topic", sourceId: topic.id, quote: `本次创作选题标题：${topic.title}`.slice(0, 80) }],
+    riskNotes: ["当前尚未生成稿件，请完成生成或手动写稿后再审核。"],
     qualityReview: {
       coreMechanism: angle,
       hookDiagnosis: { topic: topic.title, hook, credibility: "待从品牌知识或真实案例中补充", suspense: "以问题保留认知缺口", verdict: "revise" },

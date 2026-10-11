@@ -8,9 +8,10 @@ import threading
 from .api_client import AnalyzerApiClient, AnalyzerApiError, ClaimedJob, Processor
 from .bootstrap import AnalyzerSettings, build_client, build_pipeline
 from .worker import process_once, run_forever
+from .windows_runtime import InstanceAlreadyRunning
 
 
-def build_lazy_processor(settings: AnalyzerSettings, client: AnalyzerApiClient) -> Processor:
+def build_lazy_processor(settings: AnalyzerSettings, client: AnalyzerApiClient, monitor=None) -> Processor:
     pipeline = None
 
     def process(job: ClaimedJob, heartbeat):
@@ -44,6 +45,8 @@ def build_lazy_processor(settings: AnalyzerSettings, client: AnalyzerApiClient) 
             thread.start()
             try:
                 pipeline = build_pipeline(settings, client)
+                if monitor is not None:
+                    pipeline.runtime_monitor = monitor
             except Exception as error:
                 raise RuntimeError(f"Analyzer model initialization failed: {error}") from error
             finally:
@@ -66,11 +69,18 @@ def main() -> int:
     args = parser.parse_args()
     try:
         settings = AnalyzerSettings.from_environment()
-        client = build_client(settings)
-        processor = build_lazy_processor(settings, client)
-        if args.once:
-            return 0 if process_once(client, processor) else 2
-        run_forever(client, processor, idle_seconds=max(0.5, args.idle_seconds))
+        from .process_runtime import IsolatedProcessor
+        from .windows_runtime import InstanceLock, installation_root, watch_supervisor
+        watch_supervisor()
+        with InstanceLock(installation_root()):
+            client = build_client(settings)
+            with IsolatedProcessor(settings, client) as processor:
+                if args.once:
+                    return 0 if process_once(client, processor) else 2
+                run_forever(client, processor, idle_seconds=max(0.5, args.idle_seconds))
+        return 0
+    except InstanceAlreadyRunning:
+        print("This installation already has an active analyzer; no second worker was started.")
         return 0
     except AnalyzerApiError as error:
         if error.status in {401, 403}:

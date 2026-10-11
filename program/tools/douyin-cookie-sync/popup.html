@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>抖音登录同步</title><link rel="stylesheet" href="popup.css"></head>
+<body>
+  <h1>抖音登录同步</h1>
+  <p>在同一个浏览器登录抖音，并保持本机视频分析页面打开。</p>
+  <section><strong id="status">正在读取状态…</strong><p id="bound"></p><p id="updated"></p></section>
+  <p id="preview"></p>
+  <button id="bind" disabled>绑定当前公司并开启自动同步</button>
+  <button id="sync" disabled>立即同步</button>
+  <button id="unbind" class="secondary" disabled>暂停并解除绑定</button>
+  <p id="message" role="status" aria-live="polite"></p>
+  <p class="note">Cookie 更新后约 1 分钟同步，每 5 分钟补查。保存到绑定公司的分析服务，同公司成员可共用。解除绑定后，已保存的 Cookie 可在视频分析页面清除。</p>
+  <script type="module" src="popup.mjs"></script>
+</body>
+</html>

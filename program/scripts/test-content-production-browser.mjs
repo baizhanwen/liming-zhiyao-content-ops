@@ -1,0 +1,108 @@
+import assert from "node:assert/strict";
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { createServer } from "vite";
+import react from "@vitejs/plugin-react";
+import { createProductionScaffold } from "../lib/content-production.ts";
+
+// Isolated browser fixture. No business database, login or paid model calls.
+const root = fileURLToPath(new URL("..", import.meta.url));
+const fixtureRoot = path.join(root, ".local/content-production-browser");
+await mkdir(fixtureRoot, { recursive: true });
+await writeFile(path.join(fixtureRoot, "index.html"), '<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><div id="root"></div><script type="module" src="/entry.tsx"></script></html>');
+await writeFile(path.join(fixtureRoot, "entry.tsx"), 'import React from "react"; import {createRoot} from "react-dom/client"; import {ContentProductionWorkspace} from "../../components/ContentProductionWorkspace"; import {TopicWorkspace} from "../../components/TopicWorkspace"; import "../../app/globals.css"; const Component = new URLSearchParams(location.search).get("view") === "topics" ? TopicWorkspace : ContentProductionWorkspace; createRoot(document.getElementById("root")!).render(<main style={{padding:20}}><Component initialOrganizationId="org" initialProjectId="project" /></main>);');
+await writeFile(path.join(fixtureRoot, "link.tsx"), 'import React from "react"; export default function Link(props) {return <a {...props}/>;}');
+const { chromium } = await import(pathToFileURL(process.env.LAN_TEST_PLAYWRIGHT_MODULE || path.join(root, ".local/ecommerce-browser/node_modules/playwright/index.mjs")).href);
+const server = await createServer({ configFile: false, root: fixtureRoot, plugins: [react()], resolve: { alias: { "next/link": path.join(fixtureRoot, "link.tsx") } }, server: { host: "127.0.0.1", port: 0, fs: { allow: [root] } } });
+const scienceScript = "AI的发展可以理解为解决问题的方法不断变化。早期，人们尝试把知识写成明确规则，让计算机一步步推理。但现实中的情况太多，规则很难全部写完。机器学习转而让计算机从数据中寻找规律，深度学习进一步使用多层神经网络处理复杂信息。今天的大模型先通过大量数据学习，再适应不同任务。这背后是算法、数据和计算能力长期积累的结果。";
+const scaffold = createProductionScaffold({ id: "topic", title: "ai发展史" });
+scaffold.fullScript = "先把常见误区讲清楚，再结合已确认的品牌事实补充方法、案例或证据。";
+let items = [{ id: "old", topic_id: "topic", title: "ai发展史", status: "draft", current_version: 1, generation_mode: "scaffold", pack_json: JSON.stringify(scaffold), full_script: scaffold.fullScript, short_script: scaffold.shortScript, latest_generation_status: "failed", latest_generation_error: "引用核对未成功，请重试。" }];
+let topics = [{ id: "topic", title: "ai发展史", angle: "解释关键转折", status: "drafting", priority: 80 }, { id: "next", title: "怎么使用ChatGPT", angle: "步骤教程", status: "idea", priority: 70 }];
+let failNext = false;
+let release;
+const calls = [], errors = [];
+let browser;
+try {
+  await server.listen();
+  browser = await chromium.launch({ headless: true, executablePath: process.env.LAN_TEST_BROWSER || "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe" });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1080 } });
+  page.on("pageerror", error => errors.push(error.message));
+  await page.route("**/api/**", async route => {
+    const url = new URL(route.request().url()), method = route.request().method();
+    let body;
+    if (url.pathname === "/api/organizations") body = { organizations: [{ id: "org", name: "测试公司" }] };
+    else if (url.pathname === "/api/projects") body = { projects: [{ id: "project", name: "科普空间" }, { id: "second", name: "另一个空间" }] };
+    else if (url.pathname === "/api/topics") body = { topics: url.searchParams.get("projectId") === "second" ? [] : topics, citations: [], canWrite: true, canDelete: false, accountBackground: null };
+    else if (url.pathname === "/api/knowledge") body = { items: [] };
+    else if (url.pathname === "/api/content-items" && method === "GET") body = { items: url.searchParams.get("projectId") === "second" ? [] : items, canWrite: true, coreStrategy: { id: "strategy", name: "科普账号", positioning: "解释技术原理", targetAudience: "初学者", styleNotes: "通俗清楚", defaultObjectives: [] } };
+    else if (url.pathname === "/api/video-library/recommendations") body = { entries: [{ id: "benchmark", title: "不相关的骑马故事", score: 90, reasons: ["仅为推荐"], recommended: true, hasOutcomeData: false }], recommendedIds: ["benchmark"] };
+    else if (url.pathname === "/api/content-items" && method === "POST") {
+      const input = route.request().postDataJSON(), topic = topics.find(t => t.id === input.topicId);
+      const pack = createProductionScaffold(topic);
+      const item = { id: topic.id === "next" ? "new" : "topic-entry", topic_id: topic.id, title: topic.title, status: "draft", current_version: 1, generation_mode: "scaffold", pack_json: JSON.stringify(pack), full_script: pack.fullScript, short_script: pack.shortScript };
+      items = [item, ...items]; topics = topics.map(t => t.id === topic.id ? { ...t, status: "drafting" } : t); body = { item };
+    } else if (url.pathname.endsWith("/generate")) {
+      const input = route.request().postDataJSON(), id = url.pathname.split("/")[3], previous = items.find(item => item.id === id);
+      calls.push(input);
+      if (id === "new" && failNext) {
+        await new Promise(resolve => { release = resolve; });
+        failNext = false;
+        items = items.map(item => item.id === id ? { ...item, latest_generation_status: "failed", latest_generation_error: "测试引用核对失败" } : item);
+        await route.fulfill({ status: 502, json: { error: { code: "CITATION_REPAIR_FAILED", message: "测试引用核对失败" } } }); return;
+      }
+      const pack = { ...scaffold, fullScript: scienceScript, shortScript: "AI从人工规则走向从数据学习，再发展出适应多种任务的大模型。", writingIntent: { kind: input.writingIntent === "auto" ? "explain" : input.writingIntent, reason: "根据选题和用户选择组织内容" } };
+      const item = { ...previous, current_version: previous.current_version + 1, generation_mode: "ai", pack_json: JSON.stringify(pack), full_script: pack.fullScript, short_script: pack.shortScript, latest_generation_status: "completed", latest_generation_error: null };
+      items = items.map(value => value.id === id ? item : value); body = { item };
+    } else throw new Error(`Unexpected API: ${method} ${url.pathname}`);
+    await route.fulfill({ json: body });
+  });
+  await page.goto(`http://127.0.0.1:${server.httpServer.address().port}`);
+  const full = page.locator('textarea[name="fullScript"]');
+  await page.getByText("这份内容尚未生成口播稿", { exact: true }).waitFor();
+  assert.equal(await full.inputValue(), "");
+  assert.equal(await page.getByRole("button", { name: "提交审核 →", exact: true }).isDisabled(), true);
+  assert.equal(await page.getByRole("checkbox", { name: "选择参考素材：不相关的骑马故事" }).isChecked(), false);
+  assert.equal(await page.locator(".production-pack").count(), 0);
+  await page.getByLabel("创作意图", { exact: true }).selectOption("opinion");
+  await page.getByRole("button", { name: /^(?:AI 生成新版本|生成口播稿)$/ }).click();
+  await page.getByText("当前稿件：观点表达", { exact: false }).waitFor();
+  assert.equal(await full.inputValue(), scienceScript);
+  assert.equal(calls[0].writingIntent, "opinion");
+  assert.deepEqual(calls[0].benchmarkEntryIds, []);
+  failNext = true;
+  await page.getByRole("button", { name: "进入生产", exact: true }).click();
+  await page.getByText("正在生成完整口播稿…", { exact: true }).waitFor();
+  assert.equal(await full.inputValue(), "");
+  assert.equal(await full.isEditable(), false);
+  assert.equal(calls[1].writingIntent, "auto");
+  assert.deepEqual(calls[1].benchmarkEntryIds, []);
+  release();
+  await page.getByText("这份内容尚未生成口播稿", { exact: true }).waitFor();
+  await page.reload();
+  await page.getByText("上次生成未成功：测试引用核对失败", { exact: false }).waitFor();
+  assert.equal(await full.inputValue(), "");
+  await page.screenshot({ path: path.join(fixtureRoot, "failure-desktop.png"), fullPage: true });
+  await page.getByLabel("创作意图", { exact: true }).selectOption("tutorial");
+  await page.getByRole("button", { name: /^(?:AI 生成新版本|生成口播稿)$/ }).click();
+  await page.getByText("当前稿件：操作教程", { exact: false }).waitFor();
+  assert.equal(await full.inputValue(), scienceScript);
+  await page.screenshot({ path: path.join(fixtureRoot, "success-desktop.png"), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await page.screenshot({ path: path.join(fixtureRoot, "success-mobile.png"), fullPage: true });
+  const projectSelect = page.locator(".production-toolbar select").nth(1);
+  await projectSelect.selectOption("second");
+  await page.getByText("从选题开始一份生产包", { exact: true }).waitFor();
+  topics.push({ id: "entry", title: "AI基础概念", status: "idea", source_type: "manual", priority: 75 });
+  await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/?view=topics`);
+  await page.locator(".topic-list article").filter({ has: page.getByRole("heading", { name: "AI基础概念", exact: true }) }).getByRole("button", { name: "进入生产 →", exact: true }).click();
+  await page.waitForURL("**/content?**");
+  await page.getByText("当前稿件：科普讲解", { exact: false }).waitFor();
+  assert.equal(calls.length, 4);
+  assert.equal(calls[3].writingIntent, "auto");
+  assert.deepEqual(calls[3].benchmarkEntryIds, []);
+  assert.deepEqual(errors, []);
+  console.log(JSON.stringify({ passed: true, calls: calls.length, checks: ["legacy scaffold hidden", "reference opt-in", "intent override", "automatic generation", "pending state", "persistent failure", "retry", "project isolation", "mobile overflow", "topic-center entry"], screenshots: fixtureRoot }));
+} finally { await browser?.close(); await server.close(); }

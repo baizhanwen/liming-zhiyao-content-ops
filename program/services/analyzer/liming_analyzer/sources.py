@@ -23,7 +23,7 @@ SUPPORTED_COOKIE_BROWSERS = frozenset({
 
 def parse_browser_cookie_spec(value: str) -> tuple[str, str | None, None, None] | None:
     clean = value.strip()
-    if not clean:
+    if not clean or clean.lower() in {"none", "disabled"}:
         return None
     if len(clean) > 500 or "\r" in clean or "\n" in clean:
         raise ValueError("browser cookie configuration is invalid")
@@ -117,10 +117,10 @@ class YtDlpPublicVideoResolver:
     ) -> None:
         if factory is None:
             try:
-                from yt_dlp import YoutubeDL
+                from .douyin_share import create_public_video_downloader
             except ImportError as error:
                 raise RuntimeError("yt-dlp is required for public video links") from error
-            factory = YoutubeDL
+            factory = create_public_video_downloader
         self._factory = factory
         self._cookies_from_browser = parse_browser_cookie_spec(cookies_from_browser)
         self._cookie_file = Path(cookie_file).expanduser().resolve() if cookie_file else None

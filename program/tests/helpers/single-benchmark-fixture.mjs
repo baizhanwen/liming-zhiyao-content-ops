@@ -42,7 +42,7 @@ export async function fixture(t, options = {}) {
   seed('content_strategies', { id: 'strategy', version: 1, name: '内容策略', status: 'active', positioning: '内容策略继续指导创作方向与表达方式', target_audience: '大学生与初学者', style_notes: '口语化，避免夸大效果', pain_points_json: '[]', pillars_json: '[]', topic_mix_json: '{}', objectives_json: '["教育"]' });
   const topicId = seed('topic_ideas', { title: '怎么使用 ChatGPT', source_type: 'manual' });
   const contentId = seed('content_items', { topic_id: topicId, title: '怎么使用 ChatGPT' });
-  const base = production.createProductionScaffold({ id: topicId, title: '怎么使用 ChatGPT' });
+  const base = { ...production.createProductionScaffold({ id: topicId, title: '怎么使用 ChatGPT' }), writingIntent: { kind: 'tutorial', reason: '逐步讲解 ChatGPT 使用方法' }, shortScript: '先说清任务背景和目标，再给出需要的格式，最后检查结果是否符合要求。' };
   seed('content_versions', { content_item_id: contentId, version: 1, generation_mode: 'scaffold', pack_json: JSON.stringify(base), full_script: base.fullScript, short_script: base.shortScript });
   seed('videos', { id: 'video', platform: 'douyin', source_type: 'url', title: source.sourceTitle });
   seed('video_library_entries', { id: 'benchmark', source_video_id: 'video' });
