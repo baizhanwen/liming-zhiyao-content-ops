@@ -34,7 +34,7 @@ export async function POST(request: Request) {
     const user = await ensureUser(identity);
     const assertWriteAccess = createProjectWriteAssertion(getD1(), { organizationId, projectId, userId: user.id }, async () => (await readRequestIdentity(request))?.authSubject === identity.authSubject);
     await assertWriteAccess();
-    const atomBackfill = await backfillProjectBenchmarkKnowledgeAtoms({ organizationId, projectId });
+    const atomBackfill = await backfillProjectBenchmarkKnowledgeAtoms({ organizationId, projectId, userId: user.id, assertWriteAccess });
     const db = getD1() as unknown as ProjectAssistantDatabase;
     const results = await syncProjectMemoryEventsWithDb(db, {
       organizationId,

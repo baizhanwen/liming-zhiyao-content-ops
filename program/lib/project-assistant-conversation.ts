@@ -8,10 +8,8 @@ import type { ProjectAssistantDatabase } from "./project-memory-events.ts";
 import { CORE_STRATEGY_GUIDANCE, readCoreContentStrategy } from "./content-strategy-policy.ts";
 import { readInspirationMemories } from "./inspiration-memory.ts";
 import { assertProjectWriteAccess, projectWriteAccessBindings, projectWriteAccessCondition, ProjectWriteAccessChangedError } from "./project-write-access.ts";
-
-export class ProjectAssistantChatInterruptedError extends Error {
-  readonly code = "PROJECT_ASSISTANT_CHAT_INTERRUPTED";
-}
+import { assertAssistantReplyActive, ProjectAssistantChatInterruptedError, type AssistantReplyScope } from "./project-assistant-write.ts";
+export { ProjectAssistantChatInterruptedError } from "./project-assistant-write.ts";
 
 type InvocationFunction = (input: {
   system: string;
@@ -19,7 +17,7 @@ type InvocationFunction = (input: {
   temperature?: number;
   maxTokens?: number;
   timeoutMs?: number;
-}) => Promise<ProjectAssistantInvocation>;
+}, replyScope?: AssistantReplyScope) => Promise<ProjectAssistantInvocation>;
 
 function parseArray(value: unknown) {
   if (typeof value !== "string") return [];
@@ -188,6 +186,7 @@ export async function runProjectAssistantConversationWithDb(
     .bind(now, input.conversationId, input.organizationId, input.projectId, userMessageId),
   ]);
   if (!initial[0].meta.changes) { await input.assertWriteAccess?.(); await assertProjectWriteAccess(db, input); throw new ProjectAssistantChatInterruptedError("会话状态已改变，本次没有开始回复，请刷新后再操作。"); }
+  const replyScope = { organizationId: input.organizationId, projectId: input.projectId, conversationId: input.conversationId, messageId: assistantMessageId };
 
   try {
   const [benchmarks, history, coreStrategy, memoryLibrary] = await Promise.all([
@@ -217,17 +216,20 @@ export async function runProjectAssistantConversationWithDb(
     requiresRecommendations,
   };
   let invocation: ProjectAssistantInvocation;
+    await assertAssistantReplyActive(db, replyScope);
     invocation = await input.invoke({
       system: chatSystemPrompt(),
       user: JSON.stringify(modelContext),
       temperature: 0.55,
       maxTokens: 10_000,
       timeoutMs: 90_000,
-    });
+    }, replyScope);
 
+  await assertAssistantReplyActive(db, replyScope);
   let parsed = parseProjectAssistantChatResponse(invocation.content);
   if (requiresRecommendations && parsed.recommendations.length === 0) {
     try {
+      await assertAssistantReplyActive(db, replyScope);
       const repairedInvocation = await input.invoke({
         system: chatSystemPrompt() + "\n这是一次受控输出修复：上一版没有 recommendations。保留有用内容，但必须补出 1 到 6 张结构完整、可保存的灵感建议。",
         user: JSON.stringify({
@@ -241,14 +243,15 @@ export async function runProjectAssistantConversationWithDb(
         temperature: 0.35,
         maxTokens: 10_000,
         timeoutMs: 90_000,
-      });
+      }, replyScope);
+      await assertAssistantReplyActive(db, replyScope);
       const repaired = parseProjectAssistantChatResponse(repairedInvocation.content);
       if (repaired.recommendations.length > 0) {
         invocation = repairedInvocation;
         parsed = repaired;
       }
     } catch (error) {
-      if (error instanceof ProjectWriteAccessChangedError || (error && typeof error === "object" && "code" in error && ["MODEL_REQUEST_INTERRUPTED", "PROJECT_ASSISTANT_RECORD_CHANGED"].includes(String(error.code)))) throw error;
+      if (error instanceof ProjectWriteAccessChangedError || error instanceof ProjectAssistantChatInterruptedError || (error && typeof error === "object" && "code" in error && ["MODEL_REQUEST_INTERRUPTED", "PROJECT_ASSISTANT_RECORD_CHANGED"].includes(String(error.code)))) throw error;
       // The first reply remains usable and can still be saved as one fallback card.
     }
   }
@@ -319,7 +322,7 @@ export async function runProjectAssistantConversationWithDb(
     await db.batch([
       db.prepare("UPDATE project_assistant_messages SET status='failed', content=?, error_code=? WHERE id=? AND organization_id=? AND project_id=? AND conversation_id=? AND status='processing'")
         .bind(message.slice(0, 2000), errorCode.slice(0, 100), assistantMessageId, input.organizationId, input.projectId, input.conversationId),
-      db.prepare("UPDATE project_assistant_conversations SET updated_at=? WHERE id=? AND organization_id=? AND project_id=?")
+      db.prepare("UPDATE project_assistant_conversations SET updated_at=? WHERE id=? AND organization_id=? AND project_id=? AND status='active'")
         .bind(new Date().toISOString(), input.conversationId, input.organizationId, input.projectId),
     ]);
     throw error;

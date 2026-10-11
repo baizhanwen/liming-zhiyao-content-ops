@@ -4,6 +4,7 @@ import { invokeRecordedContentRequest, type ContentModelRequestRecord } from "./
 import { invokeProjectAssistantModel, readProjectAssistantModelConfig, ProjectAssistantRequestError } from "./project-assistant-model";
 import { assertProjectWriteAccess, projectWriteAccessBindings, projectWriteAccessCondition, ProjectWriteAccessChangedError } from "./project-write-access";
 import { assertMemoryAttempt, memoryAttemptBindings, memoryAttemptCondition, ProjectMemoryAttemptChangedError } from "./project-memory-write";
+import { assertAssistantReplyActive, assistantReplyBindings, assistantReplyCondition, ProjectAssistantChatInterruptedError, type AssistantReplyScope } from "./project-assistant-write";
 
 type Scope = {
   organizationId: string; projectId: string; userId: string;
@@ -16,7 +17,7 @@ type Scope = {
 
 /** Record each independent assistant request, including optional repairs and probes. */
 export function createRecordedProjectAssistantInvoker(scope: Scope) {
-  return async (input: Parameters<typeof invokeProjectAssistantModel>[0]) => {
+  return async (input: Parameters<typeof invokeProjectAssistantModel>[0], assistantReply?: AssistantReplyScope) => {
     const config = readProjectAssistantModelConfig();
     const quota = await checkOrganizationQuota(scope.organizationId, scope.userId, "modelCalls");
     if (!quota.allowed) throw new ProjectAssistantRequestError("公司本月模型调用额度已用尽，独立项目助理未发起新的请求。", "MODEL_QUOTA_EXCEEDED");
@@ -29,18 +30,18 @@ export function createRecordedProjectAssistantInvoker(scope: Scope) {
         topicId: null, promptTemplateId: null, taskType: scope.taskType, modelProfile: "project_assistant",
         promptVersion: scope.promptVersion, provider: config.provider, model: config.model,
         inputHash, inputJson: JSON.stringify({ sourceId: scope.sourceId ?? null }), step: scope.taskType,
-        monthlyLimit: quota.limit, ledger, enforceProjectWriteAccess: true, assertWriteAccess: scope.assertWriteAccess, memoryEventId: scope.memoryEventId, memoryAttemptCount: scope.memoryAttemptCount,
+        monthlyLimit: quota.limit, ledger, enforceProjectWriteAccess: true, assertWriteAccess: scope.assertWriteAccess, memoryEventId: scope.memoryEventId, memoryAttemptCount: scope.memoryAttemptCount, assistantReply,
       }, async () => ({ ...await invokeProjectAssistantModel(input), profile: "max" as const }));
-      const recorded = await db.prepare(`UPDATE model_calls SET status = 'completed', completed_at = ? WHERE id = ? AND status = 'started' AND ${projectWriteAccessCondition} ${memoryScope ? `AND ${memoryAttemptCondition}` : ""}`)
-        .bind(new Date().toISOString(), id, ...projectWriteAccessBindings(scope), ...(memoryScope ? memoryAttemptBindings(memoryScope) : [])).run();
-      if (!recorded.meta.changes) { await assertProjectWriteAccess(db, scope); if (memoryScope) await assertMemoryAttempt(db, memoryScope); throw new ProjectAssistantRequestError("独立项目助理的请求记录已改变，结果没有继续写入。", "PROJECT_ASSISTANT_RECORD_CHANGED"); }
+      const recorded = await db.prepare(`UPDATE model_calls SET status = 'completed', completed_at = ? WHERE id = ? AND status = 'started' AND ${projectWriteAccessCondition} ${memoryScope ? `AND ${memoryAttemptCondition}` : ""} ${assistantReply ? `AND ${assistantReplyCondition}` : ""}`)
+        .bind(new Date().toISOString(), id, ...projectWriteAccessBindings(scope), ...(memoryScope ? memoryAttemptBindings(memoryScope) : []), ...(assistantReply ? assistantReplyBindings(assistantReply) : [])).run();
+      if (!recorded.meta.changes) { await assertProjectWriteAccess(db, scope); if (memoryScope) await assertMemoryAttempt(db, memoryScope); if (assistantReply) await assertAssistantReplyActive(db, assistantReply); throw new ProjectAssistantRequestError("独立项目助理的请求记录已改变，结果没有继续写入。", "PROJECT_ASSISTANT_RECORD_CHANGED"); }
       return response;
     } catch (error) {
       const code = error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : "PROJECT_ASSISTANT_REQUEST_FAILED";
       const message = error instanceof Error ? error.message : "独立项目助理请求失败。";
       if (ledger.length) await db.prepare("UPDATE model_calls SET status = 'failed', error_code = ?, error_message = ?, output_json = ?, completed_at = ? WHERE id = ? AND status = 'started'")
         .bind(code, message.slice(0, 1000), JSON.stringify({ modelRequests: ledger }), new Date().toISOString(), id).run();
-      if (error instanceof ProjectWriteAccessChangedError || error instanceof ProjectMemoryAttemptChangedError) throw error;
+      if (error instanceof ProjectWriteAccessChangedError || error instanceof ProjectMemoryAttemptChangedError || error instanceof ProjectAssistantChatInterruptedError) throw error;
       throw new ProjectAssistantRequestError(message, code);
     }
   };

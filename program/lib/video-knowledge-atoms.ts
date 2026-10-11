@@ -1,17 +1,18 @@
 import { getD1, sha256Hex } from "../db/runtime";
 import { extractVideoKnowledgeAtomsFromReport } from "./video-knowledge-atom-state";
+import { ProjectWriteAccessChangedError, type ProjectWriteScope } from "./project-write-access";
 
 function parse(value: string) { try { return JSON.parse(value) as Record<string, unknown>; } catch { return null; } }
-export async function extractVideoKnowledgeAtoms(input: { organizationId: string; videoId: string; analysisId: string; reportJson: string; reportHash?: string; extractorVersion?: string; now?: string }) {
+export async function extractVideoKnowledgeAtoms(input: { organizationId: string; videoId: string; analysisId: string; reportJson: string; reportHash?: string; extractorVersion?: string; now?: string; writeScope?: ProjectWriteScope; assertWriteAccess?: () => Promise<void> }) {
   const report = parse(input.reportJson);
   if (!report) return { status: "unsupported", count: 0 };
   const db = getD1();
   const library = await db.prepare("SELECT id FROM video_library_entries WHERE organization_id = ? AND source_video_id = ? LIMIT 1").bind(input.organizationId, input.videoId).first<{ id: string }>();
   if (!library) return { status: "unsupported", count: 0 };
   const reportHash = input.reportHash ?? await sha256Hex(new TextEncoder().encode(input.reportJson));
-  return extractVideoKnowledgeAtomsFromReport(db, { organizationId: input.organizationId, libraryEntryId: library.id, analysisId: input.analysisId, report, reportHash, extractorVersion: input.extractorVersion ?? "atoms.v1", now: input.now ?? new Date().toISOString() });
+  return extractVideoKnowledgeAtomsFromReport(db, { organizationId: input.organizationId, libraryEntryId: library.id, analysisId: input.analysisId, report, reportHash, extractorVersion: input.extractorVersion ?? "atoms.v1", now: input.now ?? new Date().toISOString(), requireCurrentAnalysis: true, reportJson: input.reportJson, writeScope: input.writeScope, assertWriteAccess: input.assertWriteAccess });
 }
-export async function backfillProjectBenchmarkKnowledgeAtoms(input: { organizationId: string; projectId: string; limit?: number }) {
+export async function backfillProjectBenchmarkKnowledgeAtoms(input: { organizationId: string; projectId: string; limit?: number; userId?: string; assertWriteAccess?: () => Promise<void> }) {
   const db = getD1();
   const limit = Math.max(1, Math.min(100, input.limit ?? 100));
   const rows = await db.prepare(`
@@ -22,7 +23,7 @@ export async function backfillProjectBenchmarkKnowledgeAtoms(input: { organizati
     INNER JOIN video_analyses analysis ON analysis.id = (
       SELECT latest.id FROM video_analyses latest
       WHERE latest.organization_id = library.organization_id AND latest.video_id = library.source_video_id
-      ORDER BY latest.created_at DESC LIMIT 1
+      ORDER BY latest.created_at DESC, latest.rowid DESC LIMIT 1
     )
     WHERE refs.organization_id = ? AND refs.project_id = ?
       AND refs.purpose = 'benchmark' AND refs.status = 'active'
@@ -39,6 +40,7 @@ export async function backfillProjectBenchmarkKnowledgeAtoms(input: { organizati
   let atomCount = 0;
   let failed = 0;
   for (const row of rows.results) {
+    await input.assertWriteAccess?.();
     try {
       const result = await extractVideoKnowledgeAtoms({
         organizationId: input.organizationId,
@@ -46,6 +48,8 @@ export async function backfillProjectBenchmarkKnowledgeAtoms(input: { organizati
         analysisId: row.analysis_id,
         reportJson: row.report_json,
         extractorVersion: "atoms.v2",
+        writeScope: input.userId ? { organizationId: input.organizationId, projectId: input.projectId, userId: input.userId } : undefined,
+        assertWriteAccess: input.assertWriteAccess,
       });
       if (result.status === "completed") {
         extracted += 1;
@@ -53,7 +57,8 @@ export async function backfillProjectBenchmarkKnowledgeAtoms(input: { organizati
       } else {
         failed += 1;
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof ProjectWriteAccessChangedError) throw error;
       failed += 1;
     }
   }

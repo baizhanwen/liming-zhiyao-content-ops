@@ -90,6 +90,7 @@ type MemorySyncResponse = {
   results: MemorySyncResult[];
   events: EventSummary;
   configuration: AssistantConfiguration;
+  atomBackfill?: { failed: number; atomCount: number };
 };
 
 const statusLabels: Record<string, string> = {
@@ -271,11 +272,6 @@ export function ProjectMemoryWorkspace({ initialOrganizationId = "", initialProj
       setError("候选提取助手尚未配置，暂时不能处理新来源。待处理信息会保留，不会丢失。");
       return;
     }
-    const queuedCount = Number(events.counts.pending || 0) + Number(events.counts.failed || 0) + Number(events.counts.blocked || 0);
-    if (queuedCount === 0) {
-      setSyncNotice("当前没有待提取的新信息。审核退回意见会直接生成待采纳候选，不需要再次点击提取。");
-      return;
-    }
     setSyncing(true);
     try {
       const response = await scopedFetch("/api/project-memory/sync", {
@@ -296,7 +292,11 @@ export function ProjectMemoryWorkspace({ initialOrganizationId = "", initialProj
       } else if (body.results.length > 0) {
         setSyncNotice(`已处理 ${body.results.length} 条新来源，没有发现符合长期项目记忆标准的新候选。`);
       } else {
-        setSyncNotice("当前没有待提取的新信息。");
+        setSyncNotice(body.atomBackfill?.atomCount ? `已补齐 ${body.atomBackfill.atomCount} 条对标知识。知识补齐本身不调用模型。` : "当前没有待提取的新信息。审核退回意见会直接生成待采纳候选，无需再次提取。");
+      }
+      if (body.atomBackfill?.failed) {
+        const atomFailedCount = body.atomBackfill.failed;
+        setSyncNotice((notice) => `${notice} ${atomFailedCount} 条对标知识尚未补齐，已有知识已保留。请刷新对标分析状态后重试；知识补齐本身不调用模型。`);
       }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "候选提取没有完成，请稍后重试。");

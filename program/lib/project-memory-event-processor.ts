@@ -16,7 +16,7 @@ import {
 } from "./project-memory-events.ts";
 import { analysisReportSourceText } from "./content-production.ts";
 import { createRecordedProjectAssistantInvoker } from "./recorded-project-assistant-model.ts";
-import { ProjectWriteAccessChangedError } from "./project-write-access.ts";
+import { projectWriteAccessBindings, projectWriteAccessCondition, ProjectWriteAccessChangedError } from "./project-write-access.ts";
 import { assertMemoryAttempt, ProjectMemoryAttemptChangedError } from "./project-memory-write.ts";
 
 export const PROJECT_MEMORY_EXTRACTION_PROMPT_VERSION = "project-memory.v2-content-and-methods";
@@ -285,7 +285,7 @@ export async function syncProjectMemoryEventsWithDb(
         AND COALESCE(legacy.prompt_version, '') <> ?
       ORDER BY legacy.created_at DESC
       LIMIT ?
-    )
+    ) ${input.userId ? `AND ${projectWriteAccessCondition}` : ""}
   `).bind(
     PROJECT_MEMORY_EXTRACTION_PROMPT_VERSION,
     now,
@@ -293,7 +293,9 @@ export async function syncProjectMemoryEventsWithDb(
     input.projectId,
     PROJECT_MEMORY_EXTRACTION_PROMPT_VERSION,
     limit,
+    ...(input.userId ? projectWriteAccessBindings({ ...input, userId: input.userId }) : []),
   ).run();
+  await input.assertWriteAccess?.();
   const rows = await db.prepare(
     "SELECT id FROM project_memory_events WHERE organization_id = ? AND project_id = ? AND status IN ('pending', 'blocked', 'failed') ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'failed' THEN 1 ELSE 2 END, created_at ASC LIMIT ?",
   ).bind(input.organizationId, input.projectId, limit).all<{ id: string }>();

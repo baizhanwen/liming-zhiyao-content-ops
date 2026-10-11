@@ -258,11 +258,44 @@ try {
     const event = await db.prepare("SELECT status,attempt_count,error_code FROM project_memory_events WHERE id='memory-late'").first(); assert.equal(event.status, "processing"); assert.equal(event.attempt_count, 2); assert.equal(event.error_code, null);
     assert.equal(await count(), providerCalls.length);
   });
+  await check("archiving through HTTP while a provider responds cancels reply and prevents paid repair", async () => {
+    await allowance(10); const before = providerCalls.length;
+    responseHook = async () => {
+      responseHook = undefined;
+      expect(await http(`/api/project-assistant/conversations/${conversationId}?organizationId=${scope.organizationId}&projectId=${scope.projectId}`, undefined, true, "DELETE"), 200);
+      assert.equal((await db.prepare("SELECT COUNT(*) n FROM project_assistant_messages WHERE conversation_id=? AND role='assistant' AND status='processing'").bind(conversationId).first()).n, 0);
+    };
+    const result = expect(await http(`/api/project-assistant/conversations/${conversationId}/messages`, { ...scope, question: "请推荐三个系列选题" }), 409);
+    assert.equal(result.error.code, "PROJECT_ASSISTANT_CHAT_INTERRUPTED"); assert.equal(providerCalls.length - before, 1);
+    assert.equal((await db.prepare("SELECT status FROM project_assistant_conversations WHERE id=?").bind(conversationId).first()).status, "archived");
+    assert.equal(await count(), providerCalls.length);
+  });
+  const atomScope = { ...scope, projectId: "atom-project" };
+  await db.prepare("INSERT INTO projects(id,organization_id,name,client_name,created_by,updated_by,created_at,updated_at) VALUES(?,?,'Atoms','Synthetic',?,?,?,?)").bind(atomScope.projectId, scope.organizationId, userId, userId, now, now).run();
+  await db.prepare("INSERT INTO videos(id,organization_id,project_id,platform,source_type,status,created_by,updated_by,created_at,updated_at) VALUES('atom-video',?,?,'upload','upload','ready',?,?,?,?)").bind(scope.organizationId, atomScope.projectId, userId, userId, now, now).run();
+  await db.prepare("INSERT INTO video_library_entries(id,organization_id,source_video_id,created_by,updated_by,created_at,updated_at) VALUES('atom-entry',?,'atom-video',?,?,?,?)").bind(scope.organizationId, userId, userId, now, now).run();
+  await db.prepare("INSERT INTO project_video_references(id,organization_id,project_id,library_entry_id,purpose,status,created_by,created_at) VALUES('atom-ref',?,?,'atom-entry','benchmark','active',?,?)").bind(scope.organizationId, atomScope.projectId, userId, now).run();
+  await db.prepare("INSERT INTO video_analyses(id,organization_id,project_id,video_id,schema_version,report_json,created_by,created_at,updated_at) VALUES('atom-analysis',?,?,'atom-video','synthetic',?,?,?,?)").bind(scope.organizationId, atomScope.projectId, JSON.stringify({ summary: "核对任务输入", hook: "先检查资料" }), userId, now, now).run();
+  await check("D1 atom failure rolls back all writes and exposes incomplete backfill without paid calls", async () => {
+    const before = providerCalls.length;
+    await db.prepare("CREATE TRIGGER fail_runtime_atom BEFORE INSERT ON video_knowledge_atoms WHEN NEW.atom_key='hook:0' BEGIN SELECT RAISE(ABORT,'Synthetic atom failure'); END").run();
+    const result = expect(await http("/api/project-memory/sync", atomScope), 200);
+    assert.equal(result.atomBackfill.failed, 1); assert.equal(result.results.length, 0);
+    assert.equal((await db.prepare("SELECT COUNT(*) n FROM video_knowledge_atoms WHERE library_entry_id='atom-entry'").first()).n, 0);
+    assert.equal(providerCalls.length, before); await db.prepare("DROP TRIGGER fail_runtime_atom").run();
+  });
+  await check("concurrent HTTP backfill on one report reuses D1 atoms and makes no paid calls", async () => {
+    const before = providerCalls.length;
+    const results = await Promise.all([http("/api/project-memory/sync", atomScope), http("/api/project-memory/sync", atomScope), http("/api/project-memory/sync", atomScope)]);
+    for (const response of results) { const result = expect(response, 200); assert.equal(result.atomBackfill.failed, 0); assert.equal(result.results.length, 0); }
+    assert.equal((await db.prepare("SELECT COUNT(*) n FROM video_knowledge_atoms WHERE library_entry_id='atom-entry' AND status='active'").first()).n, 2);
+    assert.equal(providerCalls.length, before); assert.equal(await count(), providerCalls.length);
+  });
 } catch (error) { console.error(error.stack); if (error.cause) console.error(error.cause); process.exitCode = 1; }
 finally {
   if (mf) await mf.dispose();
   const timings = requests.map(request => request.ms).sort((a, b) => a - b);
-  const report = { passed: !process.exitCode && scenarios.length === 25 && scenarios.every(scenario => scenario.passed), startedAt, finishedAt: new Date().toISOString(),
+  const report = { passed: !process.exitCode && scenarios.length === 28 && scenarios.every(scenario => scenario.passed), startedAt, finishedAt: new Date().toISOString(),
     boundary: "Built Worker, real HTTP/password/D1; locally mocked providers, synthetic accounts/materials/token usage; no real model spend or multi-device business acceptance.",
     buildSha256: createHash("sha256").update(readFileSync(path.join(root, "dist/server/index.js"))).digest("hex"), scenarios, providerCalls, requests,
     metrics: { requests: requests.length, providerRequests: providerCalls.length, p50Ms: timings[Math.floor(timings.length * .5)] ?? 0, p95Ms: timings[Math.floor(timings.length * .95)] ?? 0, maxMs: timings.at(-1) ?? 0,

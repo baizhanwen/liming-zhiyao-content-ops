@@ -1,6 +1,7 @@
 import { getD1 } from "../db/runtime";
 import { assertProjectWriteAccess, projectWriteAccessBindings, projectWriteAccessCondition } from "./project-write-access";
 import { assertMemoryAttempt, memoryAttemptBindings, memoryAttemptCondition } from "./project-memory-write";
+import { assertAssistantReplyActive, assistantReplyBindings, assistantReplyCondition, type AssistantReplyScope } from "./project-assistant-write";
 import { canContinueRewriteWrite, rewriteWriteAccessBindings, rewriteWriteAccessCondition } from "./script-rewrite-write";
 import { invokeContentModel, ModelRequestError, type ModelInvocation } from "./model-adapter";
 
@@ -19,6 +20,7 @@ type RequestContext = {
   assertWriteAccess?: () => Promise<void>;
   memoryEventId?: string;
   memoryAttemptCount?: number;
+  assistantReply?: AssistantReplyScope;
   provider: string; model: string; userId: string; step: string;
   inputHash: string; inputJson: string; monthlyLimit: number;
   ledger: ContentModelRequestRecord[];
@@ -45,16 +47,18 @@ export async function invokeRecordedContentRequest(input: Parameters<typeof invo
       MIN(?, COALESCE((SELECT monthly_model_call_quota FROM organization_settings WHERE organization_id = ?), ?))
       ${rewriteScope ? `AND ${rewriteWriteAccessCondition}` : ""}
       ${context.enforceProjectWriteAccess ? `AND ${projectWriteAccessCondition}` : ""}
-      ${memoryScope ? `AND ${memoryAttemptCondition}` : ""}`)
+      ${memoryScope ? `AND ${memoryAttemptCondition}` : ""}
+      ${context.assistantReply ? `AND ${assistantReplyCondition}` : ""}`)
     .bind(context.id, context.organizationId, context.projectId, context.topicId, context.promptTemplateId,
       isRoot ? (context.taskType ?? "content_draft") : (context.taskType ?? "content_draft") + ".request", context.provider, context.model, context.modelProfile ?? input.profile, context.promptVersion,
       context.inputHash, isRoot ? context.inputJson : JSON.stringify({ ...JSON.parse(context.inputJson), parentModelCallId: context.rootCallId, step: context.step }),
       context.userId, now, context.organizationId, month, context.monthlyLimit, context.organizationId, context.monthlyLimit,
       ...(rewriteScope ? rewriteWriteAccessBindings(rewriteScope) : []),
-      ...(context.enforceProjectWriteAccess ? projectWriteAccessBindings(context) : []), ...(memoryScope ? memoryAttemptBindings(memoryScope) : [])).run();
+      ...(context.enforceProjectWriteAccess ? projectWriteAccessBindings(context) : []), ...(memoryScope ? memoryAttemptBindings(memoryScope) : []), ...(context.assistantReply ? assistantReplyBindings(context.assistantReply) : [])).run();
   if (!reserved.meta.changes) {
     if (context.enforceProjectWriteAccess) await assertProjectWriteAccess(db, context);
     if (memoryScope) await assertMemoryAttempt(db, memoryScope);
+    if (context.assistantReply) await assertAssistantReplyActive(db, context.assistantReply);
     if (rewriteScope && !await canContinueRewriteWrite(db, rewriteScope)) throw new ModelRequestError("项目权限或改写工作区状态已改变，本次未发起新的模型请求。", "REWRITE_ACCESS_CHANGED");
     throw new ModelRequestError("公司本月模型调用额度已用尽，本次未发起新的模型请求。", "MODEL_QUOTA_EXCEEDED");
   }
@@ -78,6 +82,7 @@ export async function invokeRecordedContentRequest(input: Parameters<typeof invo
   if (!saved.meta.changes) throw new ModelRequestError("该模型请求已因中断或恢复而结束，晚到结果没有继续保存。请刷新运行记录后再操作。", "MODEL_REQUEST_INTERRUPTED");
   if (context.enforceProjectWriteAccess) await assertProjectWriteAccess(db, context);
   if (memoryScope) await assertMemoryAttempt(db, memoryScope);
+  if (context.assistantReply) await assertAssistantReplyActive(db, context.assistantReply);
   await context.assertWriteAccess?.();
   return response;
 }
