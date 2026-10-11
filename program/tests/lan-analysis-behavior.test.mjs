@@ -35,6 +35,11 @@ function fixture(t) {
   for (const id of ["project-1", "project-2"]) {
     sqlite.prepare("INSERT INTO projects (id, organization_id, name, client_name, status, created_by, updated_by, created_at, updated_at) VALUES (?, 'org-1', ?, 'Test', 'active', 'user-1', 'user-1', ?, ?)").run(id, id, now, now);
   }
+  for (let index = 1; index <= 6; index++) {
+    const user = `user-${index}`;
+    sqlite.prepare("INSERT INTO organization_members(id,organization_id,user_id,role,status,created_by,updated_by,created_at,updated_at) VALUES(?,'org-1',?,'employee','active','user-1','user-1',?,?)").run(`member-${index}`, user, now, now);
+    for (const project of ['project-1', 'project-2']) sqlite.prepare("INSERT INTO project_members(id,organization_id,project_id,user_id,role,status,created_by,updated_by,created_at,updated_at) VALUES(?,'org-1',?,?,'member','active','user-1','user-1',?,?)").run(`${user}-${project}`, project, user, now, now);
+  }
   const db = {
     prepare(sql) {
       let values = [];
@@ -58,7 +63,7 @@ function fixture(t) {
   };
   const objects = new Map();
   const bucket = {
-    async put(key, bytes) { objects.set(key, bytes); },
+    async put(key, bytes) { objects.set(key, bytes); return { key }; },
     async delete(key) { objects.delete(key); },
   };
   const readiness = { analyzerOnline: true, credentialConfigured: true, modelConfigured: true, publicLinkCookieConfigured: true };

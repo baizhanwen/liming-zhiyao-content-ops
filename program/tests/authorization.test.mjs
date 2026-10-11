@@ -68,7 +68,8 @@ test("video ingestion checks project access before media buffering and uses priv
   assert.ok(upload.indexOf("getProjectAccess") < upload.indexOf("request.formData"));
   assert.match(upload, /organizations\/\$\{organizationId\}\/projects\/\$\{projectId\}/);
   assert.match(upload, /sha256Hex\(bytes\)/);
-  assert.match(upload, /best-effort rollback/);
+  assert.match(upload, /MEDIA_UPLOAD_STATUS_UNKNOWN/);
+  assert.match(upload, /MEDIA_UPLOAD_CLEANUP_PENDING/);
   assert.match(fromUrl, /extractDouyinUrl/);
   assert.match(douyinUrl, /host\.endsWith\(`\.\$\{domain\}`\)/);
   assert.match(fromUrl, /resolveVideoSubmission/);

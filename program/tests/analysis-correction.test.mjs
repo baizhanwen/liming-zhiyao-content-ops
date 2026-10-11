@@ -43,7 +43,9 @@ test("analysis workspace reports readiness and uploads multiple files sequential
   ]);
   assert.match(workspace, /multiple required/);
   assert.match(workspace, /for \(const \[index, file\] of files\.entries\(\)\)/);
-  assert.match(workspace, /批量上传完成/);
+  assert.match(workspace, /批量上传结束/);
+  assert.match(workspace, /待核对/);
+  assert.match(workspace, /未尝试/);
   assert.match(workspace, /分析服务就绪状态/);
   assert.match(videos, /credentialConfigured/);
   assert.match(videos, /modelConfigured/);

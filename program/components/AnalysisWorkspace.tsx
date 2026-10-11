@@ -218,17 +218,27 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
     event.preventDefault(); setSubmitting(true); setError(""); setUploadProgress(""); const formElement = event.currentTarget; const fileInput = formElement.elements.namedItem("file") as HTMLInputElement | null; const files = Array.from(fileInput?.files ?? []);
     if (!files.length) { setError("请选择至少一个视频或音频文件。"); setSubmitting(false); return; }
     if (files.length > 10) { setError("每批最多提交 10 个文件，请重新选择。"); setSubmitting(false); return; }
-    let completed = 0; const failures: string[] = [];
+    let completed = 0, uncertain = 0, notAttempted = 0, rejected = 0; const failures: string[] = [];
     for (const [index, file] of files.entries()) {
       setUploadProgress(`正在上传 ${index + 1} / ${files.length}：${file.name}`);
       try {
         const form = new FormData(); form.set("file", file); form.set("analysisProfile", analysisProfile);
         const response = await scopedFetch("/api/videos/upload", { method: "POST", headers: { "x-organization-id": organizationId, "x-project-id": projectId }, body: form });
-        if (!response.ok) failures.push(`${file.name}：${await readError(response)}`); else { appendCreated(await response.json()); completed += 1; }
-      } catch (reason) { failures.push(`${file.name}：${reason instanceof Error ? reason.message : "网络请求失败"}`); }
+        if (!response.ok) {
+          const payload = await response.clone().json().catch(() => null) as { error?: { code?: unknown } } | null;
+          const code = payload?.error?.code;
+          failures.push(`${file.name}：${await readError(response)}`);
+          if (code === "MEDIA_UPLOAD_STATUS_UNKNOWN") uncertain += 1; else rejected += 1;
+          if ([401, 403, 429].includes(response.status) || code === "MEDIA_UPLOAD_STATUS_UNKNOWN" || code === "MEDIA_UPLOAD_CLEANUP_PENDING") { notAttempted = files.length - index - 1; break; }
+        } else { appendCreated(await response.json()); completed += 1; }
+      } catch (reason) {
+        uncertain += 1; notAttempted = files.length - index - 1;
+        failures.push(`${file.name}：提交结果待核对。请刷新列表确认后再重试，避免重复提交。${reason instanceof Error ? reason.message : "网络请求失败"}`);
+        break;
+      }
     }
-    if (completed) { formElement.reset(); setUploadEstimates([]); }
-    setUploadProgress(`批量上传完成：成功 ${completed} 个，失败 ${failures.length} 个。`);
+    if (completed === files.length) { formElement.reset(); setUploadEstimates([]); }
+    setUploadProgress(`批量上传结束：已提交 ${completed} 个，未提交 ${rejected} 个，待核对 ${uncertain} 个，未尝试 ${notAttempted} 个。`);
     if (failures.length) setError(failures.join("；")); setSubmitting(false);
   }
 

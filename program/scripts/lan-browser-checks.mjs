@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import { writeFileSync } from "node:fs";
 
 export async function runBrowserChecks({ origin, users, password, runDir, nextUrl, requests }) {
+  let injectUploadDisconnect = false;
   const { chromium } = await import(pathToFileURL(process.env.LAN_TEST_PLAYWRIGHT_MODULE).href);
   const browser = await chromium.launch({ headless: true, executablePath: process.env.LAN_TEST_BROWSER || undefined });
   const contexts = [], errors = [], failedRequests = [];
@@ -12,7 +13,7 @@ export async function runBrowserChecks({ origin, users, password, runDir, nextUr
       const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } }); contexts.push(context);
       const page = await context.newPage();
       page.on("pageerror", error => errors.push({ index, message: error.message }));
-      page.on("requestfailed", request => failedRequests.push({ index, url: new URL(request.url()).pathname, message: request.failure()?.errorText }));
+      page.on("requestfailed", request => failedRequests.push({ index, url: new URL(request.url()).pathname, message: request.failure()?.errorText, injectedUploadDisconnect: injectUploadDisconnect && index === 0 && new URL(request.url()).pathname === '/api/videos/upload' }));
       page.on("response", response => { if (response.url().startsWith(origin) && new URL(response.url()).pathname.startsWith("/api/")) requests.push({ scenario: "10 个独立浏览器会话", method: response.request().method(), route: new URL(response.url()).pathname, status: response.status(), ms: Math.max(0, Math.round(response.request().timing().responseStart)) }); });
       await page.goto(new URL("/login?returnTo=/analysis", origin).href);
       await page.locator('input[name="email"]').fill(user.email);
@@ -29,6 +30,37 @@ export async function runBrowserChecks({ origin, users, password, runDir, nextUr
     await uploadInput.setInputFiles(Array.from({ length: 11 }, (_, index) => ({ name: `limit-${index}.mp4`, mimeType: "video/mp4", buffer: Buffer.from(`synthetic-${index}`) })));
     await pages[0].page.getByText("每批最多选择 10 个文件，请分批提交。主机会逐条处理。", { exact: true }).waitFor();
     assert.equal(await uploadInput.evaluate(input => input.files.length), 0, "Oversized batch is cleared before any upload");
+    // The actual upload UI must stop its batch and preserve file selection when
+    // the result is unknown or an authorization/capacity/storage guard rejects it.
+    const uploadPage = pages[0].page, uploadChecks = [];
+    for (const failure of [
+      { code: 'MEDIA_UPLOAD_STATUS_UNKNOWN', status: 503, uncertain: 1 },
+      { code: 'PROJECT_WRITE_ACCESS_CHANGED', status: 403, uncertain: 0 },
+      { code: 'ANALYSIS_HOST_QUEUE_FULL', status: 429, uncertain: 0 },
+      { code: 'MEDIA_UPLOAD_CLEANUP_PENDING', status: 503, uncertain: 0 },
+      { code: 'SYNTHETIC_NETWORK_DISCONNECT', uncertain: 1 },
+    ]) {
+      let attempts = 0;
+      injectUploadDisconnect = !failure.status;
+      await uploadPage.route('**/api/videos/upload', route => {
+        attempts++;
+        return failure.status ? route.fulfill({ status: failure.status, contentType: 'application/json', body: JSON.stringify({ error: { code: failure.code, message: `Synthetic upload guard: ${failure.code}` } }) }) : route.abort('connectionreset');
+      });
+      await uploadInput.setInputFiles(['first', 'remaining'].map(name => ({ name: `${name}.mp4`, mimeType: 'video/mp4', buffer: Buffer.from('synthetic media; not decoded') })));
+      const button = uploadPage.locator('form:has(input[name="file"]) button');
+      await button.click();
+      const expected = `批量上传结束：已提交 0 个，未提交 ${failure.uncertain ? 0 : 1} 个，待核对 ${failure.uncertain} 个，未尝试 1 个。`;
+      await uploadPage.getByText(expected, { exact: true }).waitFor();
+      assert.equal(attempts, 1, failure.code);
+      assert.equal(await uploadInput.evaluate(input => input.files.length), 2, 'Incomplete selection stays available');
+      assert.equal(await button.isEnabled(), true);
+      uploadChecks.push(failure.code);
+      injectUploadDisconnect = false;
+      await uploadPage.unroute('**/api/videos/upload');
+    }
+    assert.equal(failedRequests.filter(r => r.injectedUploadDisconnect).length, 1);
+    await uploadInput.setInputFiles([]);
+    await uploadPage.screenshot({ path: path.join(runDir, 'browser-upload-recovery.png') });
     await Promise.all(pages.map(async ({ page }) => {
       const rejected = await page.evaluate(async () => (await fetch("/api/internal/analysis-jobs/claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ workerId: "unauthorized-browser" }) })).status);
       assert.equal(rejected, 401);
@@ -69,7 +101,7 @@ export async function runBrowserChecks({ origin, users, password, runDir, nextUr
       }
     }
     assert.deepEqual(errors, [], "浏览器未处理异常");
-    assert.deepEqual(failedRequests.filter(r => !r.message?.includes("ERR_ABORTED")), [], "浏览器网络请求失败");
+    assert.deepEqual(failedRequests.filter(r => !r.message?.includes("ERR_ABORTED") && !r.injectedUploadDisconnect), [], "浏览器网络请求失败");
 
     // A recoverable login network error must restore the form, not leave it busy.
     const context = await browser.newContext(); contexts.push(context);
@@ -87,7 +119,7 @@ export async function runBrowserChecks({ origin, users, password, runDir, nextUr
     await page.unroute("**/api/auth/session");
     await page.getByRole("button", { name: "登录", exact: true }).click();
     await page.waitForURL(origin, { timeout: 20000 });
-    return { contexts: 11, workspaceInitializationChecks: workspaceChecks.length, projectSwitchChecks: workspaceChecks.length * 2, unhandledErrors: errors.length + loginErrors.length, artifacts: ["browser-analysis.png", "browser-login-recovery.png"] };
+    return { contexts: 11, uploadRecoveryChecks: uploadChecks, workspaceInitializationChecks: workspaceChecks.length, projectSwitchChecks: workspaceChecks.length * 2, unhandledErrors: errors.length + loginErrors.length, artifacts: ["browser-analysis.png", "browser-login-recovery.png", "browser-upload-recovery.png"] };
   } catch (error) {
     writeFileSync(path.join(runDir, "browser-errors.json"), JSON.stringify({ errors, failedRequests, failure: error.message }, null, 2));
     const page = contexts.at(-1)?.pages()[0];
