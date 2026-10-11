@@ -12,12 +12,31 @@ import { ECOMMERCE_PROMPT_VERSION, ECOMMERCE_SYSTEM, mergeEcommercePatch, patchS
 import { hashJson } from "./products";
 import { activeRunPredicate } from "./runs";
 import { ecommerceGenerationGuide } from "./generation-guide";
+import { readModelUsage } from "../model-usage";
+import { assertProjectWriteAccess, projectWriteAccessBindings, projectWriteAccessCondition, ProjectWriteAccessChangedError } from "../project-write-access";
+import type { ContentModelRequestRecord } from "../recorded-content-model";
 
 type RunInput = z.infer<typeof runSchema>;
 type RunRow = { id: string; input_hash: string; status: string; result_version_id: string | null; error_code: string | null; error_message: string | null };
 type VersionRow = { id: string; pack_json: string; input_snapshot_json: string; product_version_id: string };
 const frozen = () => isGenerationFrozen((env as typeof env & { GENERATION_P0_FREEZE?: string }).GENERATION_P0_FREEZE);
 function requireUnfrozen() { if (frozen()) throw new EcommerceError("GENERATION_FROZEN", "当前生成已暂停。", 409); }
+
+async function assertLiveAccess(request: Request, access: EcommerceAccess) {
+  const current = await authorize(request, access, true);
+  if (current.userId !== access.userId) throw new EcommerceError("PROJECT_WRITE_ACCESS_CHANGED", "登录用户已改变，请刷新后再操作。", 403);
+  try { await assertProjectWriteAccess(getD1(), access); }
+  catch (error) { if (error instanceof ProjectWriteAccessChangedError) throw new EcommerceError(error.code, error.message, 403); throw error; }
+}
+const runCondition = `EXISTS (SELECT 1 FROM ecommerce_generation_runs r
+  INNER JOIN ecommerce_tasks t ON t.id=r.task_id AND t.organization_id=r.organization_id AND t.project_id=r.project_id
+  WHERE r.id=? AND r.organization_id=? AND r.project_id=? AND r.status='running'
+    AND t.status!='archived' AND t.revision=r.task_revision AND t.current_version=r.base_version)`;
+async function assertRunActive(access: EcommerceAccess, runId: string) {
+  if (!await getD1().prepare(`SELECT 1 WHERE ${runCondition}`).bind(runId, access.organizationId, access.projectId).first()) {
+    throw new EcommerceError("RUN_ENDED", "本次运行已结束或任务已修改，已停止后续请求，未覆盖原稿；已发出的模型请求仍计入用量。请刷新运行记录后再操作。", 409);
+  }
+}
 
 function parseModelObject(text: string): unknown {
   const stripped = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
@@ -26,36 +45,58 @@ function parseModelObject(text: string): unknown {
 
 async function invokeRecorded(request: Request, access: EcommerceAccess, runId: string, stage: string, payload: unknown, outputSchema: unknown) {
   requireUnfrozen();
-  await authorize(request, access, true);
+  await assertLiveAccess(request, access);
   const db = getD1(), now = new Date().toISOString(), month = now.slice(0, 7) + "-01T00:00:00.000Z", callId = crypto.randomUUID(), scope = [access.organizationId, access.projectId];
   const quota = await checkOrganizationQuota(access.organizationId, access.userId, "modelCalls");
   if (!quota.allowed) throw new EcommerceError("MODEL_QUOTA_EXCEEDED", "公司本月模型调用额度已用尽。", 429);
   const config = readContentModelConfig("max");
   const user = JSON.stringify({ stage, payload, outputSchema });
   const callHash = await hashJson({ system: ECOMMERCE_SYSTEM, user });
+  await assertLiveAccess(request, access); requireUnfrozen();
   const registered = await db.batch([
     db.prepare(`UPDATE ecommerce_generation_runs SET call_count=call_count+1 WHERE id=? AND organization_id=? AND project_id=? AND status='running' AND call_count<5
+      AND ${runCondition} AND ${projectWriteAccessCondition}
       AND EXISTS(SELECT 1 FROM ecommerce_project_settings s WHERE s.organization_id=? AND s.project_id=? AND s.enabled=1
         AND (SELECT COUNT(*) FROM model_calls m WHERE m.organization_id=s.organization_id AND m.project_id=s.project_id AND m.task_type LIKE 'ecommerce.%' AND m.created_at>=?) < s.monthly_call_limit)
-      AND (SELECT COUNT(*) FROM model_calls WHERE organization_id=? AND created_at>=?) < ?`)
-      .bind(runId, ...scope, ...scope, month, access.organizationId, month, quota.limit),
+      AND (SELECT COUNT(*) FROM model_calls WHERE organization_id=? AND created_at>=?) < MIN(?,COALESCE((SELECT monthly_model_call_quota FROM organization_settings WHERE organization_id=?),?))`)
+      .bind(runId, ...scope, runId, ...scope, ...projectWriteAccessBindings(access), ...scope, month, access.organizationId, month, quota.limit, access.organizationId, quota.limit),
     db.prepare(`INSERT INTO model_calls (id,organization_id,project_id,task_type,provider,model_name,model_profile,prompt_version,status,input_hash,input_json,created_by,created_at)
       SELECT ?,?,?,?,?,?,?,?,'started',?,?,?,? WHERE changes()=1`)
       .bind(callId, ...scope, `ecommerce.${stage}`, config.provider, config.model, config.profile, ECOMMERCE_PROMPT_VERSION, callHash, JSON.stringify({ runId, system: ECOMMERCE_SYSTEM, user }), access.userId, now),
   ]);
-  if (!registered[0].meta.changes) throw new EcommerceError("ECOMMERCE_CALL_LIMIT", "电商调用预算已用尽、运行已结束或功能已暂停。", 409);
+  if (!registered[0].meta.changes) {
+    await assertLiveAccess(request, access); await assertRunActive(access, runId);
+    const budget = await db.prepare("SELECT (SELECT COUNT(*) FROM model_calls WHERE organization_id=? AND created_at>=?) AS used, MIN(?,COALESCE((SELECT monthly_model_call_quota FROM organization_settings WHERE organization_id=?),?)) AS allowed").bind(access.organizationId, month, quota.limit, access.organizationId, quota.limit).first<{ used: number; allowed: number }>();
+    if (budget && budget.used >= budget.allowed) throw new EcommerceError("MODEL_QUOTA_EXCEEDED", "公司本月模型调用额度已用尽，本次未发出新的请求。", 429);
+    throw new EcommerceError("ECOMMERCE_CALL_LIMIT", "电商调用预算已用尽、运行已结束或功能已暂停。", 409);
+  }
+  const started = Date.now();
+  let record: ContentModelRequestRecord = { id: callId, step: stage, status: "failed", latencyMs: 0, ...readModelUsage(null) };
+  let content: string | undefined;
+  const receipt = () => JSON.stringify({ ...(content !== undefined ? { content } : {}), usage: { inputTokens: record.inputTokens, outputTokens: record.outputTokens, totalTokens: record.totalTokens }, modelRequests: [record] });
   try {
     const response = await invokeContentModel({ system: ECOMMERCE_SYSTEM, user, profile: "max", maxTokens: stage === "plan" ? 4000 : 12000, temperature: stage === "review" ? .1 : .45 });
+    record = { id: callId, step: stage, status: "completed", latencyMs: response.latencyMs, ...readModelUsage(response.raw) };
+    content = response.content.slice(0, 200_000);
+    const saved = await db.prepare("UPDATE model_calls SET output_json=?,latency_ms=? WHERE id=? AND organization_id=? AND project_id=? AND status='started'").bind(receipt(), response.latencyMs, callId, ...scope).run();
+    if (!saved.meta.changes) {
+      // Late receipts clarify cost without reviving a recovered request or
+      // replacing its terminal reason and other recovery metadata.
+      await db.prepare(`UPDATE model_calls SET output_json=json_set(CASE WHEN output_json IS NULL THEN '{}' WHEN json_valid(output_json) THEN CASE WHEN json_type(output_json)='object' THEN output_json ELSE json_object('legacyOutput',output_json) END ELSE json_object('legacyOutput',output_json) END,'$.usage',json(?),'$.modelRequests',json(?)),latency_ms=? WHERE id=? AND organization_id=? AND project_id=? AND status='failed' AND error_code IN ('ECOMMERCE_CALL_RECOVERED','WEB_PROCESS_INTERRUPTED')`)
+        .bind(JSON.stringify({ inputTokens: record.inputTokens, outputTokens: record.outputTokens, totalTokens: record.totalTokens }), JSON.stringify([record]), record.latencyMs, callId, ...scope).run();
+      throw new EcommerceError("RUN_ENDED", "本次请求已恢复或结束，迟到结果仅补记实际用量，不会保存为稿件。", 409);
+    }
+    await assertLiveAccess(request, access); await assertRunActive(access, runId); requireUnfrozen();
     const parsed = parseModelObject(response.content);
-    const recorded = await db.prepare("UPDATE model_calls SET status='completed',output_json=?,latency_ms=?,completed_at=? WHERE id=? AND organization_id=? AND project_id=? AND status='started'")
-      .bind(JSON.stringify(parsed), response.latencyMs, new Date().toISOString(), callId, ...scope).run();
-    const running = await db.prepare("SELECT id FROM ecommerce_generation_runs WHERE id=? AND organization_id=? AND project_id=? AND status='running'").bind(runId, ...scope).first();
-    if (!recorded.meta.changes || !running) throw new EcommerceError("RUN_ENDED", "本次运行已取消或恢复，迟到的模型结果不会保存。", 409);
+    const recorded = await db.prepare(`UPDATE model_calls SET status='completed',completed_at=? WHERE id=? AND organization_id=? AND project_id=? AND status='started' AND ${projectWriteAccessCondition} AND ${enabledGuard} AND ${runCondition}`)
+      .bind(new Date().toISOString(), callId, ...scope, ...projectWriteAccessBindings(access), ...scope, runId, ...scope).run();
+    if (!recorded.meta.changes) { await assertLiveAccess(request, access); throw new EcommerceError("RUN_ENDED", "本次运行已结束或任务已修改，迟到结果不会保存。", 409); }
     return parsed;
   } catch (error) {
     const code = error instanceof EcommerceError ? error.code : "MODEL_CALL_FAILED";
-    await db.prepare("UPDATE model_calls SET status='failed',error_code=?,error_message=?,completed_at=? WHERE id=? AND organization_id=? AND project_id=? AND status='started'")
-      .bind(code, "模型调用或结构解析失败，未保存稿件。", new Date().toISOString(), callId, ...scope).run();
+    if (content === undefined) record.latencyMs = Date.now() - started;
+    await db.prepare("UPDATE model_calls SET status='failed',error_code=?,error_message=?,output_json=?,latency_ms=?,completed_at=? WHERE id=? AND organization_id=? AND project_id=? AND status='started'")
+      .bind(code, error instanceof EcommerceError ? error.message.slice(0, 1000) : "模型调用或回执保存失败，未保存稿件。已发出的请求仍计入用量，缺失回执需与供应商核对。", receipt(), record.latencyMs, new Date().toISOString(), callId, ...scope).run();
     throw error instanceof EcommerceError ? error : new EcommerceError(code, "模型调用失败，未覆盖原稿。请检查模型服务后使用新的运行重试。", 502);
   }
 }
@@ -70,6 +111,7 @@ async function replay(access: EcommerceAccess, key: string, requestHash: string)
 }
 
 export async function generateEcommerce(request: Request, access: EcommerceAccess, taskId: string, input: RunInput) {
+  await assertLiveAccess(request, access);
   const requestHash = await hashJson({ taskId, input }), previous = await replay(access, input.idempotencyKey, requestHash);
   if (previous) return previous;
   requireUnfrozen();
@@ -80,15 +122,17 @@ export async function generateEcommerce(request: Request, access: EcommerceAcces
   const base = input.baseVersion ? await db.prepare("SELECT id,pack_json,input_snapshot_json,product_version_id FROM ecommerce_versions WHERE task_id=? AND version=? AND organization_id=? AND project_id=?").bind(taskId, input.baseVersion, ...scope).first<VersionRow>() : null;
   if (input.replace && (!base || base.product_version_id !== task.product_version_id)) throw new EcommerceError("PATCH_BASE_UNAVAILABLE", "局部替换需要同一商品版本的已有稿件。", 409);
   const runId = crypto.randomUUID(), now = new Date().toISOString();
+  await assertLiveAccess(request, access);
   const inserted = await db.batch([
     db.prepare(`INSERT INTO ecommerce_generation_runs (id,organization_id,project_id,task_id,idempotency_key,input_hash,base_version,task_revision,operation,status,created_by,created_at)
       SELECT ?,?,?,?,?,?,?,?,?,'running',?,? WHERE EXISTS(SELECT 1 FROM ecommerce_tasks WHERE id=? AND organization_id=? AND project_id=? AND revision=? AND current_version=? AND status!='archived')
       AND EXISTS(SELECT 1 FROM ecommerce_project_settings s WHERE s.organization_id=? AND s.project_id=? AND s.enabled=1 AND (SELECT COUNT(*) FROM ecommerce_generation_runs r WHERE r.organization_id=s.organization_id AND r.project_id=s.project_id AND ${activeRunPredicate})<s.max_concurrent)
-      AND NOT EXISTS(SELECT 1 FROM ecommerce_generation_runs r WHERE r.task_id=? AND ${activeRunPredicate}) ON CONFLICT(organization_id,project_id,idempotency_key) DO NOTHING`)
-      .bind(runId, ...scope, taskId, input.idempotencyKey, requestHash, input.baseVersion, input.revision, input.replace ?? "generate", access.userId, now, taskId, ...scope, input.revision, input.baseVersion, ...scope, taskId),
+      AND NOT EXISTS(SELECT 1 FROM ecommerce_generation_runs r WHERE r.task_id=? AND ${activeRunPredicate}) AND ${projectWriteAccessCondition} ON CONFLICT(organization_id,project_id,idempotency_key) DO NOTHING`)
+      .bind(runId, ...scope, taskId, input.idempotencyKey, requestHash, input.baseVersion, input.revision, input.replace ?? "generate", access.userId, now, taskId, ...scope, input.revision, input.baseVersion, ...scope, taskId, ...projectWriteAccessBindings(access)),
     auditStatement(access, "ecommerce.generation.started", taskId, { runId }),
   ]);
   if (!inserted[0].meta.changes) {
+    await assertLiveAccess(request, access);
     const existing = await replay(access, input.idempotencyKey, requestHash);
     if (existing) return existing;
     throw new EcommerceError("GENERATION_BUSY", "任务正在生成、并发已满或状态已改变。", 409);
@@ -96,8 +140,10 @@ export async function generateEcommerce(request: Request, access: EcommerceAcces
   let manifestId: string | null = null;
   try {
     manifestId = crypto.randomUUID();
-    await db.prepare("INSERT INTO generation_source_manifests (id,trace_id,user_id,organization_id,project_id,capability,source_manifest_json,prompt_hash,status,created_at) VALUES (?,?,?,?,?,'ecommerce',?,?,'started',?)")
-      .bind(manifestId, runId, access.userId, ...scope, JSON.stringify(context.manifest), context.inputHash, now).run();
+    await assertLiveAccess(request, access);
+    const manifest = await db.prepare(`INSERT INTO generation_source_manifests (id,trace_id,user_id,organization_id,project_id,capability,source_manifest_json,prompt_hash,status,created_at) SELECT ?,?,?,?,?,'ecommerce',?,?,'started',? WHERE ${runCondition} AND ${projectWriteAccessCondition}`)
+      .bind(manifestId, runId, access.userId, ...scope, JSON.stringify(context.manifest), context.inputHash, now, runId, ...scope, ...projectWriteAccessBindings(access)).run();
+    if (!manifest.meta.changes) { await assertLiveAccess(request, access); await assertRunActive(access, runId); throw new EcommerceError("STATE_CHANGED", "来源记录未能保存，请刷新后重试。", 409); }
     let plan: EcommercePlan | undefined, pack: EcommercePack;
     if (input.replace && base) {
       const basePack = packSchema.parse(JSON.parse(base.pack_json));
@@ -137,7 +183,7 @@ export async function generateEcommerce(request: Request, access: EcommerceAcces
     if (!review.success) throw new EcommerceError("REVIEW_INVALID", "独立校对未返回完整结果。", 502);
     const reviewProblems = reviewIssues(review.data, pack, context);
     if (reviewProblems.length) throw new EcommerceError("REVIEW_REJECTED", reviewProblems.join("；"), 409);
-    requireUnfrozen(); await authorize(request, access, true);
+    requireUnfrozen(); await assertLiveAccess(request, access);
     const latest = await buildEcommerceContext(access, taskId);
     if (latest.inputHash !== context.inputHash) throw new EcommerceError("SOURCE_CHANGED", "生成期间商品、任务、策略或来源发生变化，请核对后重试。", 409);
     const versionId = crypto.randomUUID(), completedAt = new Date().toISOString();
@@ -153,7 +199,7 @@ export async function generateEcommerce(request: Request, access: EcommerceAcces
       db.prepare("UPDATE ecommerce_generation_runs SET status='completed',result_version_id=?,completed_at=? WHERE id=? AND organization_id=? AND project_id=? AND status='running' AND EXISTS(SELECT 1 FROM ecommerce_versions WHERE id=? AND run_id=?)")
         .bind(versionId, completedAt, runId, ...scope, versionId, runId),
       db.prepare("UPDATE generation_source_manifests SET status='completed',completed_at=? WHERE id=? AND EXISTS(SELECT 1 FROM ecommerce_versions WHERE id=? AND run_id=?)").bind(completedAt, manifestId, versionId, runId),
-    ]); requireChanged(saved);
+    ]); if (!saved[0].meta.changes) await assertLiveAccess(request, access); requireChanged(saved);
     return { status: 201, run: { id: runId, status: "completed", result_version_id: versionId }, version: { id: versionId, version: input.baseVersion + 1, pack } };
   } catch (error) {
     const failure = error instanceof EcommerceError ? error : new EcommerceError("GENERATION_FAILED", "生成未完成，已有版本保持不变。", 500);

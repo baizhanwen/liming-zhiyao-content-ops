@@ -4,6 +4,7 @@ import { assertMemoryAttempt, memoryAttemptBindings, memoryAttemptCondition } fr
 import { assertAssistantReplyActive, assistantReplyBindings, assistantReplyCondition, type AssistantReplyScope } from "./project-assistant-write";
 import { canContinueRewriteWrite, rewriteWriteAccessBindings, rewriteWriteAccessCondition } from "./script-rewrite-write";
 import { invokeContentModel, ModelRequestError, type ModelInvocation } from "./model-adapter";
+import { readModelUsage } from "./model-usage";
 
 export type ContentModelRequestRecord = {
   id: string; step: string; status: "completed" | "failed";
@@ -25,13 +26,6 @@ type RequestContext = {
   inputHash: string; inputJson: string; monthlyLimit: number;
   ledger: ContentModelRequestRecord[];
 };
-
-function readUsage(raw: unknown) {
-  const usage = raw && typeof raw === "object" ? (raw as { usage?: Record<string, unknown> }).usage : undefined;
-  const number = (name: string) => typeof usage?.[name] === "number" && Number.isSafeInteger(usage[name]) && usage[name] >= 0 ? usage[name] as number : null;
-  const inputTokens = number("prompt_tokens") ?? number("input_tokens"), outputTokens = number("completion_tokens") ?? number("output_tokens"), totalTokens = number("total_tokens");
-  return { inputTokens, outputTokens, totalTokens, usageKnown: totalTokens !== null || (inputTokens !== null && outputTokens !== null) };
-}
 
 /** Reserve each provider request atomically, including failed attempts/retries. */
 export async function invokeRecordedContentRequest(input: Parameters<typeof invokeContentModel>[0], context: RequestContext, invokeModel: typeof invokeContentModel = invokeContentModel): Promise<ModelInvocation> {
@@ -67,13 +61,13 @@ export async function invokeRecordedContentRequest(input: Parameters<typeof invo
   try {
     response = await invokeModel(input);
   } catch (error) {
-    const record: ContentModelRequestRecord = { id: context.id, step: context.step, status: "failed", latencyMs: Date.now() - started, ...readUsage(null) };
+    const record: ContentModelRequestRecord = { id: context.id, step: context.step, status: "failed", latencyMs: Date.now() - started, ...readModelUsage(null) };
     context.ledger.push(record);
     await db.prepare("UPDATE model_calls SET status = ?, error_code = ?, error_message = ?, output_json = ?, latency_ms = ?, completed_at = ? WHERE id = ? AND status = 'started'")
       .bind(isRoot ? "started" : "failed", error instanceof ModelRequestError ? error.code : "MODEL_REQUEST_FAILED", error instanceof Error ? error.message.slice(0, 1000) : "模型请求失败", JSON.stringify({ usage: { inputTokens: record.inputTokens, outputTokens: record.outputTokens, totalTokens: record.totalTokens }, modelRequests: [record] }), record.latencyMs, isRoot ? null : new Date().toISOString(), context.id).run();
     throw error;
   }
-  const record: ContentModelRequestRecord = { id: context.id, step: context.step, status: "completed", latencyMs: response.latencyMs, ...readUsage(response.raw) };
+  const record: ContentModelRequestRecord = { id: context.id, step: context.step, status: "completed", latencyMs: response.latencyMs, ...readModelUsage(response.raw) };
   context.ledger.push(record);
   // The root's status represents the whole generation. Additional rows each
   // represent one request; the first request uses the existing root row.

@@ -8,6 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Miniflare } from "miniflare";
 import { splitSql } from "./sql-statements.mjs";
+import { createEcommerceTestModel } from "./ecommerce-test-model.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url)), self = fileURLToPath(import.meta.url);
 const scope = { organizationId: "restart-org", projectId: "restart-project" }, userId = "restart-user";
@@ -19,6 +20,7 @@ const deadline = (promise, ms = 20000) => {
 };
 
 async function child(runDir, hold) {
+  const ecommerceModel = createEcommerceTestModel();
   const server = path.join(root, "dist/server"), config = JSON.parse(readFileSync(path.join(server, "wrangler.json"), "utf8"));
   const mf = new Miniflare({ host: "127.0.0.1", port: 0,
     modules: ["index.js", ...readdirSync(server, { recursive: true }).filter(file => file !== "index.js" && /\.m?js$/.test(file))].map(file => ({ type: "ESModule", path: path.join(server, file) })), modulesRoot: server,
@@ -31,9 +33,11 @@ async function child(runDir, hold) {
       PROJECT_ASSISTANT_MODEL_PROVIDER: "fixture", PROJECT_ASSISTANT_MODEL_NAME: "restart-assistant", PROJECT_ASSISTANT_MODEL_BASE_URL: "https://assistant.example.invalid", PROJECT_ASSISTANT_MODEL_API_KEY: "synthetic-only" },
     outboundService: async request => {
       const url = new URL(request.url); if (!["model.example.invalid", "assistant.example.invalid"].includes(url.hostname)) return new Response("External access blocked", { status: 502 });
+      const ecommerceRequest = request.clone();
       const input = await request.json(), payload = JSON.parse(input.messages.at(-1).content);
-      process.send({ event: "provider", task: payload.task ?? (payload.event ? "memory" : "chat"), held: hold });
+      process.send({ event: "provider", task: payload.task ?? (payload.stage ? `ecommerce.${payload.stage}` : payload.event ? "memory" : "chat"), held: hold });
       if (hold) await new Promise(() => {});
+      if (payload.stage) return ecommerceModel.respond(ecommerceRequest);
       const response = url.hostname === "assistant.example.invalid" ? { reply: "先记录真实输入，再核对输出与责任人。", recommendations: [], citations: [], memoryOperations: [{ operation: "noop", confidence: 100, reason: "没有新的长期事实" }] }
         : payload.task === "audit_micro_homomorphic_script" ? audit : { paragraphs: payload.source_paragraphs.map(row => ({ paragraph_id: row.paragraph_id, text: rewritten })) };
       return Response.json({ choices: [{ message: { content: JSON.stringify(response) } }], usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 } });
@@ -48,6 +52,7 @@ async function child(runDir, hold) {
     await db.prepare("INSERT INTO organizations(id,name,slug,status,created_by,created_at,updated_at) VALUES(?,'Restart fixture','restart-fixture','active',?,?,?)").bind(scope.organizationId, userId, now, now).run();
     await db.prepare("INSERT INTO organization_members(id,organization_id,user_id,role,status,created_by,updated_by,created_at,updated_at) VALUES('restart-member',?,?,'admin','active',?,?,?,?)").bind(scope.organizationId, userId, userId, userId, now, now).run();
     await db.prepare("INSERT INTO projects(id,organization_id,name,client_name,created_by,updated_by,created_at,updated_at) VALUES(?,?,'Restart fixture','Synthetic',?,?,?,?)").bind(scope.projectId, scope.organizationId, userId, userId, now, now).run();
+    await db.prepare("INSERT INTO content_strategies(id,organization_id,project_id,version,name,status,positioning,target_audience,pain_points_json,pillars_json,topic_mix_json,style_notes,objectives_json,created_by,updated_by,created_at,updated_at) VALUES('restart-strategy',?,?,1,'Synthetic','active','日常商品说明','日常使用者','[]','[]','{}','自然口语','[]',?,?,?,?)").bind(scope.organizationId, scope.projectId, userId, userId, now, now).run();
     await db.prepare("INSERT INTO script_rewrite_workspaces(id,organization_id,project_id,title,source_type,source_label,source_text,source_hash,source_character_count,created_by,updated_by,created_at,updated_at) VALUES('restart-rewrite',?,?,'Synthetic','pasted','Synthetic',?,'synthetic',?,?,?,?,?)").bind(scope.organizationId, scope.projectId, source, source.length, userId, userId, now, now).run();
     await db.prepare("INSERT INTO script_rewrite_versions(id,organization_id,project_id,workspace_id,version,variant,text,created_by,created_at) VALUES('restart-source',?,?,'restart-rewrite',1,'source',?,?,?)").bind(scope.organizationId, scope.projectId, source, userId, now).run();
     await db.prepare("INSERT INTO project_memory_events(id,organization_id,project_id,event_type,source_type,source_id,dedupe_key,payload_hash,payload_json,status,created_by,created_at,updated_at) VALUES('restart-memory',?,?,'manual','manual','synthetic','synthetic','synthetic','{}','pending',?,?,?)").bind(scope.organizationId, scope.projectId, userId, now, now).run();
@@ -92,37 +97,55 @@ if (process.argv[2] === "--child") {
   const recover = () => { const result = spawnSync(process.execPath, ["scripts/prepare-login-startup.mjs"], { cwd: runDir, encoding: "utf8", windowsHide: true, timeout: 30000 }); writeFileSync(path.join(runDir, "startup.log"), result.stdout + result.stderr, { flag: "a" }); assert.equal(result.status, 0, result.stderr); };
   try {
     await start(true); await login(); const created = expect(await http("/api/project-assistant/conversations", scope), 201), conversationId = created.conversation.id;
-    const attempts = [http("/api/script-rewrites/restart-rewrite/generate", { ...scope, variants: ["light_rewrite"] }), http("/api/project-memory/sync", { ...scope, limit: 1 }), http(`/api/project-assistant/conversations/${conversationId}/messages`, { ...scope, question: "请说明核对工作结果的方法" })].map(promise => promise.catch(error => ({ interrupted: true, reason: error.name })));
-    await check("three live HTTP tasks reach locally held provider requests", async () => { await deadline(new Promise(resolve => { const timer = setInterval(() => { if (providers.length === 3) { clearInterval(timer); resolve(); } }, 20); timer.unref(); })); });
+    expect(await http("/api/ecommerce/settings", { ...scope, enabled: true, revision: 0 }, "PUT"), 200);
+    const publicData = { category: "测试日用品", audience: { user: "日常使用者", buyer: "日常购买者" }, scenarios: "日常桌面喝水", prohibited: "不宣称未证实效果", claims: [] };
+    const product = expect(await http("/api/ecommerce/products", { ...scope, name: "合成重启杯", sku: "RESTART-SYNTHETIC", status: "draft", revision: 0, publicData, internalData: {} }), 201).product;
+    const evidence = expect(await http("/api/ecommerce/evidence", { ...scope, productId: product.id, title: "合成规格资料", kind: "specification", body: "容量350毫升", sourceLocator: "合成验收资料，非真实商品", status: "confirmed" }), 201).evidence;
+    const confirmed = expect(await http("/api/ecommerce/products", { ...scope, id: product.id, name: "合成重启杯", sku: "RESTART-SYNTHETIC", status: "confirmed", revision: 1, publicData: { ...publicData, claims: [{ id: "capacity", kind: "specification", statement: "容量350毫升", allowedExpression: "容量350毫升", evidenceIds: [evidence.id], status: "confirmed" }] }, internalData: {} }), 200).product;
+    for (const kind of ["hook", "visual", "structure", "sop"]) expect(await http("/api/ecommerce/components", { ...scope, name: `合成${kind}`, kind, instruction: "根据确认规格组织表达与镜头", problem: "说明商品规格", platforms: ["douyin"], targets: ["product_click"], inputContract: "商品事实和证据", outputContract: "口播和镜头", sourceLocator: "synthetic fixture", sourceVersion: "1", authorization: "合成验收", status: "confirmed" }), 201);
+    const task = expect(await http("/api/ecommerce/tasks", { ...scope, title: "合成进程恢复任务", productId: confirmed.id, productVersionId: confirmed.versionId, brief: { audience: { user: "日常使用者", buyer: "日常购买者", status: "confirmed" }, scene: "日常桌面喝水", barrier: "规格是否适用", claimId: "capacity", evidenceIds: [evidence.id], platform: "douyin", target: "product_click", destination: "当前商品卡查看规格", filming: ["product", "hands"], durationSec: 30 } }), 201).task;
+    const attempts = [http("/api/script-rewrites/restart-rewrite/generate", { ...scope, variants: ["light_rewrite"] }), http("/api/project-memory/sync", { ...scope, limit: 1 }), http(`/api/project-assistant/conversations/${conversationId}/messages`, { ...scope, question: "请说明核对工作结果的方法" }), http(`/api/ecommerce/tasks/${task.id}/generate`, { ...scope, revision: 1, baseVersion: 0, idempotencyKey: "ecommerce-interrupted" })].map(promise => promise.catch(error => ({ interrupted: true, reason: error.name })));
+    await check("four live HTTP tasks reach locally held provider requests", async () => { await deadline(new Promise(resolve => { const timer = setInterval(() => { if (providers.length === 4) { clearInterval(timer); resolve(); } }, 20); timer.unref(); })); });
     await check("forced isolated process-tree exit interrupts all requests", async () => { await terminate(); const replies = await deadline(Promise.all(attempts)); assert.ok(replies.every(reply => reply.interrupted)); });
     await check("actual guarded startup and Wrangler recover the persisted database", async () => {
       recover(); const files = readdirSync(path.join(runDir, ".wrangler/state/v3/d1"), { recursive: true }).filter(file => /^[0-9a-f]{64}\.sqlite$/.test(path.basename(file)));
       assert.equal(files.length, 1); sql = new DatabaseSync(path.join(runDir, ".wrangler/state/v3/d1", files[0]), { readOnly: true });
-      assert.equal(sql.prepare("SELECT COUNT(*) n FROM model_calls WHERE status='failed' AND error_code='WEB_PROCESS_INTERRUPTED'").get().n, 3);
+      assert.equal(sql.prepare("SELECT COUNT(*) n FROM model_calls WHERE status='failed' AND error_code='WEB_PROCESS_INTERRUPTED'").get().n, 4);
       assert.equal(sql.prepare("SELECT status FROM project_memory_events").get().status, "failed"); assert.equal(sql.prepare("SELECT status FROM script_rewrite_runs").get().status, "failed");
       assert.equal(sql.prepare("SELECT status FROM project_assistant_messages WHERE role='assistant'").get().status, "failed");
       assert.equal(sql.prepare("SELECT COUNT(*) n FROM script_rewrite_versions").get().n, 1);
+      const ecommerce = sql.prepare("SELECT status,error_code,call_count FROM ecommerce_generation_runs").get();
+      assert.equal(ecommerce.status, "failed"); assert.equal(ecommerce.error_code, "WEB_PROCESS_INTERRUPTED"); assert.equal(ecommerce.call_count, 1);
+      assert.equal(sql.prepare("SELECT COUNT(*) n FROM ecommerce_versions").get().n, 0);
     });
     await start(false);
     await check("old session is refused and fresh password login reads retained source and failed run", async () => {
       expect(await http("/api/auth/session"), 401); await login();
       const detail = expect(await http(`/api/script-rewrites/restart-rewrite?organizationId=${scope.organizationId}&projectId=${scope.projectId}`), 200);
       assert.equal(detail.versions.length, 1); assert.equal(detail.versions[0].text, source); assert.equal(detail.runs[0].unknownRequestCount, 1);
+      const commerce = expect(await http(`/api/ecommerce/tasks?taskId=${task.id}&organizationId=${scope.organizationId}&projectId=${scope.projectId}`), 200);
+      assert.ok(commerce.task); assert.equal(sql.prepare("SELECT current_version FROM ecommerce_tasks WHERE id=?").get(task.id).current_version, 0);
     });
-    await check("explicit rewrite retry, memory sync and new assistant turn succeed after restart", async () => {
+    await check("explicit rewrite, memory, assistant and ecommerce retries succeed after restart", async () => {
       const oldRun = sql.prepare("SELECT id FROM script_rewrite_runs").get().id;
       expect(await http("/api/script-rewrites/restart-rewrite/generate", { ...scope, variants: ["light_rewrite"], retryOfRunId: oldRun }), 201);
       const memory = expect(await http("/api/project-memory/sync", { ...scope, limit: 1 }), 200); assert.equal(memory.results[0].status, "completed");
       expect(await http(`/api/project-assistant/conversations/${conversationId}/messages`, { ...scope, question: "请说明核对工作结果的方法" }), 201);
+      expect(await http(`/api/ecommerce/tasks/${task.id}/generate`, { ...scope, revision: 1, baseVersion: 0, idempotencyKey: "ecommerce-explicit-retry" }), 201);
       assert.equal(sql.prepare("SELECT attempt_count FROM project_memory_events").get().attempt_count, 2);
-      assert.equal(sql.prepare("SELECT COUNT(*) n FROM model_calls").get().n, providers.length); assert.equal(providers.length, 7);
+      assert.equal(sql.prepare("SELECT COUNT(*) n FROM model_calls").get().n, providers.length); assert.equal(providers.length, 11);
+      assert.equal(sql.prepare("SELECT COUNT(*) n FROM ecommerce_versions").get().n, 1);
+      assert.equal(sql.prepare("SELECT status FROM ecommerce_generation_runs WHERE idempotency_key='ecommerce-interrupted'").get().status, "failed");
+      const ecommerceReceipts = sql.prepare("SELECT output_json FROM model_calls WHERE task_type LIKE 'ecommerce.%' AND status='completed'").all();
+      assert.equal(ecommerceReceipts.length, 3); assert.ok(ecommerceReceipts.every(row => JSON.parse(row.output_json).modelRequests[0].totalTokens === 200));
       assert.equal(sql.prepare("SELECT COUNT(*) n FROM project_assistant_messages WHERE role='assistant' AND status='failed'").get().n, 1);
       assert.equal(sql.prepare("SELECT COUNT(*) n FROM script_rewrite_versions").get().n, 2);
     });
     await check("repeated actual startup leaves finished receipts and drafts byte-identical", async () => {
-      const before = JSON.stringify([sql.prepare("SELECT * FROM model_calls ORDER BY id").all(), sql.prepare("SELECT * FROM script_rewrite_versions ORDER BY id").all(), sql.prepare("SELECT * FROM script_rewrite_runs ORDER BY id").all()]);
+      const snapshot = () => JSON.stringify(["model_calls", "script_rewrite_versions", "script_rewrite_runs", "ecommerce_versions", "ecommerce_generation_runs"].map(table => sql.prepare(`SELECT * FROM ${table} ORDER BY id`).all()));
+      const before = snapshot();
       const stopped = new Promise(resolve => host.once("exit", resolve)); host.send("stop"); await deadline(stopped); host = null; recover();
-      assert.equal(JSON.stringify([sql.prepare("SELECT * FROM model_calls ORDER BY id").all(), sql.prepare("SELECT * FROM script_rewrite_versions ORDER BY id").all(), sql.prepare("SELECT * FROM script_rewrite_runs ORDER BY id").all()]), before);
+      assert.equal(snapshot(), before);
     });
   } catch (error) { console.error(error.stack); process.exitCode = 1; }
   finally {

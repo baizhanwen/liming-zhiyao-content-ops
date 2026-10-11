@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomBytes, pbkdf2Sync } from "node:crypto";
+import { randomBytes, pbkdf2Sync, createHash } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -19,6 +19,8 @@ const moduleNames = ["index.js", ...readdirSync(server, { recursive: true }).fil
 const password = randomBytes(18).toString("base64url");
 const errors = [], failedRequests = [], checks = [], apiFailures = [];
 const model = createEcommerceTestModel();
+const cpuStart = process.cpuUsage(), startedAt = new Date().toISOString(), directRequests = [];
+let providerResponseHook, providerMode = "valid";
 let browser, page;
 const mf = new Miniflare({
   host: "127.0.0.1", port: 0,
@@ -27,7 +29,14 @@ const mf = new Miniflare({
   d1Databases: { DB: "ecommerce-browser-fixture" }, d1Persist: path.join(runDir, "d1"),
   r2Buckets: ["MEDIA", "MEDIA_LEGACY"], r2Persist: path.join(runDir, "r2"),
   assets: { directory: path.join(root, "dist/client"), binding: "ASSETS", routerConfig: { has_user_worker: true } },
-  outboundService: request => model.respond(request),
+  outboundService: async request => {
+    const response = await model.respond(request);
+    if (providerResponseHook) await providerResponseHook();
+    if (providerMode === "valid") return response;
+    const body = await response.json(); body.choices[0].message.content = "synthetic invalid JSON";
+    if (providerMode === "invalid-unknown") delete body.usage;
+    return Response.json(body);
+  },
   bindings: { DELIVERY_MODE: "1", LOCAL_DEV_AUTH: "0", TRUST_FORWARDED_IDENTITY: "0", CONTENT_MODEL_API_KEY: "synthetic-not-a-secret", CONTENT_MODEL_BASE_URL: "https://model.example.invalid", CONTENT_MODEL_NAME: "synthetic-test", CONTENT_MODEL_PROVIDER: "synthetic-test" },
 });
 try {
@@ -296,8 +305,73 @@ try {
   assert.equal(await ecommerceLink.getAttribute("aria-current"), "page");
   assert.equal(await sidebar.getByRole("link", { name: "内容生产", exact: true }).getAttribute("aria-current"), null);
   checks.push("电商中心位于内容生产下方，跳转保留空间且独立高亮，页内重复入口已移除");
+  const ledger = async () => (await db.prepare("SELECT id,status,error_code,output_json FROM model_calls WHERE task_type LIKE 'ecommerce.%' ORDER BY rowid").all()).results;
+  let rows = await ledger(); assert.equal(rows.length, model.calls.length);
+  assert.ok(rows.every(row => JSON.parse(row.output_json).modelRequests[0].totalTokens === 200));
+  checks.push("实际生成、局部修改和取消的所有供应商请求均保留合成 Token 回执");
+  const api = async (route, data) => {
+    const start = performance.now(), response = await context.request.post(new URL(route, origin).href, { data, timeout: 30000 });
+    const body = await response.json(); directRequests.push({ route, status: response.status(), ms: Math.round(performance.now() - start) });
+    return { status: response.status(), body };
+  };
+  const assertStatus = (response, status) => { assert.equal(response.status, status, JSON.stringify(response.body)); return response.body; };
+  const scope = { organizationId: "ec-org", projectId: "ec-project" };
+  const generate = async (key, taskId = task.id) => {
+    const current = await db.prepare("SELECT revision,current_version FROM ecommerce_tasks WHERE id=?").bind(taskId).first();
+    return api(`/api/ecommerce/tasks/${taskId}/generate`, { ...scope, revision: current.revision, baseVersion: current.current_version, idempotencyKey: key });
+  };
+  const quota = extra => run("INSERT INTO organization_settings(id,organization_id,monthly_model_call_quota,created_by,updated_by,created_at,updated_at) VALUES('ec-budget','ec-org',(SELECT COUNT(*) FROM model_calls WHERE organization_id='ec-org')+?,'ec-admin','ec-admin',?,?) ON CONFLICT(organization_id) DO UPDATE SET monthly_model_call_quota=excluded.monthly_model_call_quota", extra, now, now);
+  const charged = async (action, expected) => {
+    const before = model.calls.length; assertStatus(await action(), expected); assert.equal(model.calls.length - before, 1);
+    const last = (await ledger()).at(-1); assert.equal(JSON.parse(last.output_json).modelRequests[0].totalTokens, 200); assert.equal((await versions()).length, 6);
+    return last;
+  };
+  providerMode = "invalid";
+  await charged(() => generate("fees-invalid-json"), 502); providerMode = "valid";
+  checks.push("真实 HTTP 解析失败保留已收到的用量，不保存新稿");
+  providerMode = "invalid-unknown";
+  const unknownBefore = model.calls.length; assertStatus(await generate("fees-unknown-json"), 502); providerMode = "valid";
+  assert.equal(model.calls.length - unknownBefore, 1); const unknown = JSON.parse((await ledger()).at(-1).output_json).modelRequests[0];
+  assert.equal(unknown.usageKnown, false); assert.equal(unknown.totalTokens, null);
+  checks.push("供应商无用量回执时显示未知，未伪造零 Token");
+  providerResponseHook = async () => { providerResponseHook = undefined; await run("UPDATE organization_members SET status='inactive' WHERE user_id='ec-admin'"); };
+  await charged(() => generate("fees-revoked"), 403); await run("UPDATE organization_members SET status='active' WHERE user_id='ec-admin'");
+  checks.push("实际成员撤权后拒绝结果和后续请求，仍记录首个收费请求");
+  await run("CREATE TRIGGER fail_ecommerce_receipt BEFORE UPDATE OF output_json ON model_calls WHEN NEW.status='started' AND NEW.task_type LIKE 'ecommerce.%' BEGIN SELECT RAISE(ABORT,'Synthetic receipt failure'); END");
+  await charged(() => generate("fees-receipt-failed"), 502); await run("DROP TRIGGER fail_ecommerce_receipt");
+  checks.push("实际 D1 回执写入失败时补存已知用量，停止生成且旧稿不变");
+  await quota(10);
+  providerResponseHook = async () => { providerResponseHook = undefined; await quota(0); };
+  await charged(() => generate("fees-lowered"), 429);
+  checks.push("响应期间下调公司额度阻止第二次请求");
+  await quota(10); await run("UPDATE ecommerce_project_settings SET max_concurrent=2 WHERE project_id='ec-project'");
+  const sourceTask = await db.prepare("SELECT * FROM ecommerce_tasks WHERE id=?").bind(task.id).first();
+  const newTask = assertStatus(await api("/api/ecommerce/tasks", { ...scope, title: "合成预算竞争任务", productId: sourceTask.product_id, productVersionId: sourceTask.product_version_id, brief: JSON.parse(sourceTask.brief_json) }), 201).task;
+  await quota(1); const concurrentBefore = model.calls.length;
+  const competing = await Promise.all([generate("fees-concurrent-old"), generate("fees-concurrent-new", newTask.id)]);
+  for (const result of competing) assertStatus(result, 429);
+  assert.equal(model.calls.length - concurrentBefore, 1); assert.equal((await versions()).length, 6);
+  assert.equal((await db.prepare("SELECT current_version FROM ecommerce_tasks WHERE id=?").bind(newTask.id).first()).current_version, 0);
+  checks.push("两个任务共享公司最后一个请求名额，D1 原子预占不超额");
+  await quota(10);
+  providerResponseHook = async () => { providerResponseHook = undefined; await run("DELETE FROM local_sessions WHERE user_id='ec-admin'"); };
+  await charged(() => generate("fees-session-deleted"), 401);
+  assertStatus(await api("/api/auth/session", { email: "ecommerce@example.invalid", password }), 200);
+  checks.push("实际登录会话删除后终止请求，原用量保留且重新登录可用");
+  await run("CREATE TRIGGER reject_ecommerce_fee BEFORE INSERT ON model_calls WHEN NEW.task_type LIKE 'ecommerce.%' BEGIN SELECT RAISE(ABORT,'Synthetic registration failure'); END");
+  const beforeRegistry = model.calls.length; assertStatus(await generate("fees-register-failed"), 500); assert.equal(model.calls.length, beforeRegistry);
+  assert.equal((await db.prepare("SELECT call_count FROM ecommerce_generation_runs WHERE idempotency_key='fees-register-failed'").first()).call_count, 0);
+  await run("DROP TRIGGER reject_ecommerce_fee"); checks.push("真实 D1 登记事务失败回滚计数，未派发供应商请求");
+  rows = await ledger(); assert.equal(rows.length, model.calls.length);
+  const receipts = rows.map(row => JSON.parse(row.output_json).modelRequests[0]);
+  assert.equal(receipts.filter(receipt => !receipt.usageKnown).length, 1);
   assert.deepEqual(errors, [], "浏览器未处理异常"); assert.deepEqual(failedRequests, [], "浏览器请求失败");
-  const result = { syntheticOnly: true, checks, errors, failedRequests, apiFailures, modelStages: model.calls.map(c => c.stage), screenshots: ["products-desktop.png", "methods-desktop.png", "methods-mobile.png", "assembly-desktop.png", "assembly-mobile.png"] };
+  const times = directRequests.map(request => request.ms).sort((a, b) => a - b);
+  const result = { passed: true, syntheticOnly: true, startedAt, finishedAt: new Date().toISOString(), checks, errors, failedRequests, apiFailures, modelStages: model.calls.map(c => c.stage), directRequests,
+    buildSha256: createHash("sha256").update(readFileSync(path.join(root, "dist/server/index.js"))).digest("hex"),
+    modelAccounting: { requests: model.calls.length, ledgerRows: rows.length, knownRequests: receipts.filter(r => r.usageKnown).length, unknownRequests: receipts.filter(r => !r.usageKnown).length, syntheticTokens: receipts.reduce((sum, r) => sum + (r.totalTokens ?? 0), 0) },
+    metrics: { directHttpRequests: times.length, directP50Ms: times[Math.floor(times.length * .5)], directP95Ms: times[Math.floor(times.length * .95)], directMaxMs: times.at(-1), harnessRssBytes: process.memoryUsage().rss, harnessCpuMicroseconds: process.cpuUsage(cpuStart), boundary: "Direct HTTP timings only, excludes browser page requests; Node harness resources exclude browser/workerd/supplier. All accounts, materials and provider usage are synthetic; not real business acceptance." },
+    screenshots: ["products-desktop.png", "methods-desktop.png", "methods-mobile.png", "assembly-desktop.png", "assembly-mobile.png"] };
   writeFileSync(path.join(runDir, "result.json"), JSON.stringify(result, null, 2));
   console.log(JSON.stringify({ passed: checks.length, runDir }));
 } catch (error) {

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
-export const customerDocuments = ["docs/产品使用手册.html", "docs/产品使用手册.md", "docs/operations/备份恢复与升级操作.md"];
+export const customerDocuments = ["docs/产品使用手册.html", "docs/产品使用手册.md", "docs/operations/备份恢复与升级操作.md", "docs/电商素材使用说明.md"];
 
 /** Validate the reviewed offline documents, without copying internal reports. */
 export function verifyDeliveryDocumentation(packageRoot, sourceRoot) {
@@ -27,7 +27,7 @@ export function verifyDeliveryDocumentation(packageRoot, sourceRoot) {
       assert.ok(statSync(target).isFile(), `Missing manual resource: ${reference}`); linkedFiles += 1;
     }
   }
-  assert.ok(anchors >= 16 && linkedFiles >= 2, "Manual needs its navigation, text copy and recovery guide");
+  assert.ok(anchors >= 16 && linkedFiles >= customerDocuments.length - 1, "Manual needs its navigation and linked customer guides");
   const guide = readFileSync(path.join(root, "DELIVERY-GUIDE.txt"), "utf8");
   assert.ok(guide.includes("docs\\产品使用手册.html") && guide.includes("docs\\operations\\备份恢复与升级操作.md"), "Installation guide must locate the offline documents");
   return { documents: customerDocuments.length, anchors, linkedFiles };

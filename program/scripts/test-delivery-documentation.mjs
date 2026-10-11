@@ -67,6 +67,14 @@ try {
     assert.equal((await page.locator("body").innerText()).replaceAll("\r\n", "\n").trim(), expected);
     assert.ok(expected.includes(".dev.vars") && expected.includes("RESTORE") && expected.includes("仅源码"));
   });
+  await check("offline-ecommerce-guide-opens-with-usage-and-retry-instructions", async () => {
+    await page.goto(manual);
+    await page.getByRole("link", { name: "电商素材使用说明", exact: true }).click();
+    await page.waitForURL(pathToFileURL(path.join(packageRoot, customerDocuments[3])).href);
+    const expected = readFileSync(path.join(packageRoot, customerDocuments[3]), "utf8").replaceAll("\r\n", "\n").trim();
+    assert.equal((await page.locator("body").innerText()).replaceAll("\r\n", "\n").trim(), expected);
+    assert.ok(expected.includes("Token") && expected.includes("未知") && expected.includes("明确发起新运行"));
+  });
   assert.deepEqual(errors, []); assert.deepEqual(remoteRequests, []);
   report.passed = true;
 } catch (error) { report.passed = false; report.failure = error.message; console.error(error.stack); process.exitCode = 1; }
