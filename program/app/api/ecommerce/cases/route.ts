@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { getD1 } from "../../../../db/runtime";
-import { authorize, auditStatement, endpoint, enabledGuard, EcommerceError, queryScope, readInput, requireChanged } from "../../../../lib/ecommerce/access";
+import { authorize, auditStatement, commitMutation, writeBindings, endpoint, writeGuard, EcommerceError, queryScope, readInput, requireChanged } from "../../../../lib/ecommerce/access";
 import { caseSchema, confirmationSchema, scopeSchema } from "../../../../lib/ecommerce/contracts";
 import { hashJson } from "../../../../lib/ecommerce/products";
 import { quoteLocated, readCaseSource } from "../../../../lib/ecommerce/cases";
@@ -30,10 +30,10 @@ export async function POST(request: Request) {
     if (existing) throw new EcommerceError("CASE_ALREADY_EXISTS", "这份分析已有案例，请在上方编辑原案例。", 409);
     const id = crypto.randomUUID(), now = new Date().toISOString(), scope = [access.organizationId, access.projectId];
     const { organizationId, projectId, ...body } = input; void organizationId; void projectId;
-    const result = await getD1().batch([
+    const result = await commitMutation(request, access, [
       getD1().prepare(`INSERT INTO ecommerce_case_profiles (id,organization_id,project_id,reference_id,video_id,analysis_id,transcript_id,body_json,source_snapshot,content_hash,status,confirmed_by,confirmed_at,created_by,created_at,updated_at)
-        SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE ${enabledGuard} AND EXISTS(SELECT 1 FROM project_video_references WHERE id=? AND organization_id=? AND project_id=? AND status='active' AND purpose='benchmark')`)
-        .bind(id, ...scope, input.referenceId, source.video_id, input.analysisId, input.transcriptId, JSON.stringify(body), input.sourceQuote, await hashJson(body), input.status, input.status === "confirmed" ? access.userId : null, input.status === "confirmed" ? now : null, access.userId, now, now, ...scope, input.referenceId, ...scope),
+        SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE ${writeGuard} AND EXISTS(SELECT 1 FROM project_video_references WHERE id=? AND organization_id=? AND project_id=? AND status='active' AND purpose='benchmark')`)
+        .bind(id, ...scope, input.referenceId, source.video_id, input.analysisId, input.transcriptId, JSON.stringify(body), input.sourceQuote, await hashJson(body), input.status, input.status === "confirmed" ? access.userId : null, input.status === "confirmed" ? now : null, access.userId, now, now, ...writeBindings(access), input.referenceId, ...scope),
       auditStatement(access, "ecommerce.case.created", id),
     ]); requireChanged(result);
     return Response.json({ case: { id, revision: 1 } }, { status: 201 });
@@ -49,11 +49,11 @@ export async function PUT(request: Request) {
     const source = await readCaseSource(access, input.referenceId, input.analysisId, input.transcriptId);
     if (!quoteLocated(input.sourceQuote, source.sourceText)) throw new EcommerceError("CASE_QUOTE_NOT_FOUND", "引用片段无法在所选分析或转写中定位。", 409);
     const { organizationId, projectId, id, revision, ...body } = input; void organizationId; void projectId;
-    const result = await db.batch([
+    const result = await commitMutation(request, access, [
       db.prepare(`UPDATE ecommerce_case_profiles SET transcript_id=?,body_json=?,source_snapshot=?,content_hash=?,status='draft',revision=revision+1,confirmed_by=NULL,confirmed_at=NULL,updated_at=?
-        WHERE id=? AND organization_id=? AND project_id=? AND revision=? AND ${enabledGuard}
+        WHERE id=? AND organization_id=? AND project_id=? AND revision=? AND ${writeGuard}
         AND EXISTS(SELECT 1 FROM project_video_references WHERE id=? AND organization_id=? AND project_id=? AND status='active' AND purpose='benchmark')`)
-        .bind(input.transcriptId, JSON.stringify(body), input.sourceQuote, await hashJson(body), new Date().toISOString(), id, ...scope, revision, ...scope, input.referenceId, ...scope),
+        .bind(input.transcriptId, JSON.stringify(body), input.sourceQuote, await hashJson(body), new Date().toISOString(), id, ...scope, revision, ...writeBindings(access), input.referenceId, ...scope),
       auditStatement(access, "ecommerce.case.edited", id, { previousRevision: revision }),
     ]); requireChanged(result);
     return Response.json({ case: { id, revision: revision + 1, status: "draft" } });
@@ -70,9 +70,9 @@ export async function PATCH(request: Request) {
       if (!quoteLocated(row.source_snapshot, source.sourceText)) throw new EcommerceError("CASE_QUOTE_NOT_FOUND", "原引用已无法定位。", 409);
     }
     const now = new Date().toISOString();
-    const result = await db.batch([
-      db.prepare(`UPDATE ecommerce_case_profiles SET status=?,revision=revision+1,confirmed_by=?,confirmed_at=?,updated_at=? WHERE id=? AND organization_id=? AND project_id=? AND revision=? AND ${enabledGuard}`)
-        .bind(input.status, input.status === "confirmed" ? access.userId : null, input.status === "confirmed" ? now : null, now, input.id, ...scope, input.revision, ...scope),
+    const result = await commitMutation(request, access, [
+      db.prepare(`UPDATE ecommerce_case_profiles SET status=?,revision=revision+1,confirmed_by=?,confirmed_at=?,updated_at=? WHERE id=? AND organization_id=? AND project_id=? AND revision=? AND ${writeGuard}`)
+        .bind(input.status, input.status === "confirmed" ? access.userId : null, input.status === "confirmed" ? now : null, now, input.id, ...scope, input.revision, ...writeBindings(access)),
       auditStatement(access, "ecommerce.case.status", input.id, { status: input.status }),
     ]); requireChanged(result);
     return Response.json({ case: { id: input.id, revision: input.revision + 1, status: input.status } });

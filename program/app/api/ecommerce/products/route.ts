@@ -16,6 +16,6 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   return endpoint(async () => {
     const input = await readInput(request, productSchema), access = await authorize(request, input, true);
-    return Response.json({ product: await saveProduct(access, input) }, { status: input.id ? 200 : 201 });
+    return Response.json({ product: await saveProduct(request, access, input) }, { status: input.id ? 200 : 201 });
   });
 }

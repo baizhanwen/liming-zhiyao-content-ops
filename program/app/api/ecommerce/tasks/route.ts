@@ -27,6 +27,6 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   return endpoint(async () => {
     const input = await readInput(request, taskSchema), access = await authorize(request, input, true);
-    return Response.json({ task: await saveTask(access, input) }, { status: input.id ? 200 : 201 });
+    return Response.json({ task: await saveTask(request, access, input) }, { status: input.id ? 200 : 201 });
   });
 }

@@ -18,7 +18,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   return endpoint(async () => {
     const input = await readInput(request, metricsSchema), access = await authorize(request, input, true);
-    const snapshot = await saveMetricSnapshot(access, input);
+    const snapshot = await saveMetricSnapshot(request, access, input);
     return Response.json({ snapshot }, { status: snapshot.duplicate ? 200 : 201 });
   });
 }

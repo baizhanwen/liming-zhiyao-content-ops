@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { getD1 } from "../../db/runtime";
-import { auditStatement, enabledGuard, EcommerceError, requireChanged, type EcommerceAccess } from "./access";
+import { auditStatement, commitMutation, enabledGuard, EcommerceError, requireChanged, type EcommerceAccess } from "./access";
 import { buildEcommerceContext } from "./context";
 import { packSchema, scopeSchema, type EcommercePack } from "./contracts";
 import { validateEcommercePack } from "./generation-contract";
@@ -24,14 +24,14 @@ export async function readVersion(access: EcommerceAccess, taskId: string, versi
   return version;
 }
 
-export async function saveManualVersion(access: EcommerceAccess, taskId: string, input: z.infer<typeof manualVersionSchema>) {
+export async function saveManualVersion(request: Request, access: EcommerceAccess, taskId: string, input: z.infer<typeof manualVersionSchema>) {
   const context = await buildEcommerceContext(access, taskId), task = context.task, db = getD1(), scope = [access.organizationId, access.projectId];
   if (task.revision !== input.revision || task.current_version !== input.baseVersion || task.status === "archived") throw new EcommerceError("STATE_CHANGED", "任务或稿件已改变。", 409);
   const base = await db.prepare("SELECT id,product_version_id FROM ecommerce_versions WHERE task_id=? AND version=? AND organization_id=? AND project_id=?").bind(taskId, input.baseVersion, ...scope).first<{ id: string; product_version_id: string }>();
   if (!base || base.product_version_id !== task.product_version_id) throw new EcommerceError("VERSION_UNAVAILABLE", "请先为当前商品版本生成稿件。", 409);
   const validation = validateEcommercePack(input.pack, context), id = crypto.randomUUID(), now = new Date().toISOString();
   // Invalid drafts may be saved for editing, but cannot enter review or publication.
-  const saved = await db.batch([
+  const saved = await commitMutation(request, access, [
     db.prepare(`WITH expected AS (SELECT ? AS doc) UPDATE ecommerce_tasks SET current_version=current_version+1,status='draft',updated_by=?,updated_at=? WHERE id=? AND organization_id=? AND project_id=? AND revision=? AND current_version=? AND status!='archived'
       AND ${enabledGuard} AND ${generationSourceGuard} AND ${generationActorGuard} AND NOT EXISTS(SELECT 1 FROM ecommerce_generation_runs WHERE task_id=? AND status='running')`)
       .bind(JSON.stringify(context.input), access.userId, now, taskId, ...scope, input.revision, input.baseVersion, ...scope, access.userId, taskId),
@@ -43,7 +43,7 @@ export async function saveManualVersion(access: EcommerceAccess, taskId: string,
   return { id, version: input.baseVersion + 1, validation };
 }
 
-export async function reviewEcommerce(access: EcommerceAccess, taskId: string, input: z.infer<typeof reviewInputSchema>) {
+export async function reviewEcommerce(request: Request, access: EcommerceAccess, taskId: string, input: z.infer<typeof reviewInputSchema>) {
   const task = await readTask(access, taskId), version = await readVersion(access, taskId, input.versionId), db = getD1(), scope = [access.organizationId, access.projectId];
   if (task.revision !== input.revision || task.current_version !== version.version || task.status === "archived") throw new EcommerceError("STATE_CHANGED", "请针对当前稿件版本操作。", 409);
   const transitions: Record<string, { from: string[]; to: string }> = {
@@ -69,7 +69,7 @@ export async function reviewEcommerce(access: EcommerceAccess, taskId: string, i
   if (["submit", "approve", "changes_requested"].includes(input.action)) statements.push(db.prepare("INSERT INTO ecommerce_reviews (id,organization_id,project_id,task_id,version_id,decision,note,created_by,created_at) SELECT ?,?,?,?,?,?,?,?,? WHERE changes()=1")
     .bind(reviewId, ...scope, taskId, version.id, input.action === "submit" ? "submitted" : input.action === "approve" ? "approved" : "changes_requested", input.note, access.userId, now));
   statements.push(auditStatement(access, `ecommerce.review.${input.action}`, taskId, { versionId: version.id, confirmations: input.confirmations, note: input.note }));
-  requireChanged(await db.batch(statements));
+  requireChanged(await commitMutation(request, access, statements));
   return { id: taskId, status: transition.to, versionId: version.id };
 }
 

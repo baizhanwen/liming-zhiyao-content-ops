@@ -1,8 +1,8 @@
 import { getD1, sha256Hex } from "../../db/runtime";
-import { auditStatement, enabledGuard, EcommerceError, requireChanged, type EcommerceAccess } from "./access";
+import { auditStatement, commitMutation, writeBindings, writeGuard, EcommerceError, requireChanged, type EcommerceAccess } from "./access";
 import type { ProductInput } from "./contracts";
 
-export async function saveProduct(access: EcommerceAccess, input: ProductInput) {
+export async function saveProduct(request: Request, access: EcommerceAccess, input: ProductInput) {
   const db = getD1(), now = new Date().toISOString(), productId = input.id ?? crypto.randomUUID(), versionId = crypto.randomUUID();
   const scope = [access.organizationId, access.projectId];
   if (input.id && input.revision < 1 || !input.id && input.revision !== 0) throw new EcommerceError("INVALID_REVISION", "商品版本无效。", 400);
@@ -19,11 +19,11 @@ export async function saveProduct(access: EcommerceAccess, input: ProductInput) 
       throw new EcommerceError("CLAIM_UNVERIFIED", "已确认卖点需要有效证据和有效期。", 409);
   }
   const write = input.id
-    ? db.prepare(`UPDATE ecommerce_products SET sku = ?, name = ?, status = ?, revision = revision + 1, current_version = current_version + 1, updated_by = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND revision = ? AND ${enabledGuard}`)
-      .bind(input.sku, input.name, input.status, access.userId, now, productId, ...scope, input.revision, ...scope)
-    : db.prepare(`INSERT INTO ecommerce_products (id, organization_id, project_id, sku, name, status, created_by, updated_by, created_at, updated_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${enabledGuard}`)
-      .bind(productId, ...scope, input.sku, input.name, input.status, access.userId, access.userId, now, now, ...scope);
-  const result = await db.batch([
+    ? db.prepare(`UPDATE ecommerce_products SET sku = ?, name = ?, status = ?, revision = revision + 1, current_version = current_version + 1, updated_by = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND revision = ? AND ${writeGuard}`)
+      .bind(input.sku, input.name, input.status, access.userId, now, productId, ...scope, input.revision, ...writeBindings(access))
+    : db.prepare(`INSERT INTO ecommerce_products (id, organization_id, project_id, sku, name, status, created_by, updated_by, created_at, updated_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${writeGuard}`)
+      .bind(productId, ...scope, input.sku, input.name, input.status, access.userId, access.userId, now, now, ...writeBindings(access));
+  const result = await commitMutation(request, access, [
     write,
     db.prepare(`INSERT INTO ecommerce_product_versions (id, organization_id, project_id, product_id, version, name, sku, public_json, internal_json, confirmed_by, confirmed_at, created_by, created_at)
       SELECT ?, organization_id, project_id, id, current_version, name, sku, ?, ?, ?, ?, ?, ? FROM ecommerce_products WHERE id = ? AND organization_id = ? AND project_id = ? AND changes() = 1`)

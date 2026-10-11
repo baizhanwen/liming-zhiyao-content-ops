@@ -1,5 +1,5 @@
 import { getD1 } from "../../db/runtime";
-import { auditStatement, enabledGuard, EcommerceError, requireChanged, type EcommerceAccess } from "./access";
+import { auditStatement, commitMutation, writeBindings, writeGuard, EcommerceError, requireChanged, type EcommerceAccess } from "./access";
 import { taskBriefSchema, type TaskBrief } from "./contracts";
 
 export type TaskRow = {
@@ -36,18 +36,18 @@ export async function validateTaskReferences(access: EcommerceAccess, productId:
   }
 }
 
-export async function saveTask(access: EcommerceAccess, input: { id?: string; title: string; revision: number; productId: string; productVersionId: string; brief: TaskBrief }) {
+export async function saveTask(request: Request, access: EcommerceAccess, input: { id?: string; title: string; revision: number; productId: string; productVersionId: string; brief: TaskBrief }) {
   if (input.id && input.revision < 1 || !input.id && input.revision !== 0) throw new EcommerceError("INVALID_REVISION", "任务版本无效。");
   const brief = taskBriefSchema.parse(input.brief);
   await validateTaskReferences(access, input.productId, input.productVersionId, brief);
   const db = getD1(), id = input.id ?? crypto.randomUUID(), now = new Date().toISOString(), scope = [access.organizationId, access.projectId];
-  const results = await db.batch([
+  const results = await commitMutation(request, access, [
     input.id
       ? db.prepare(`UPDATE ecommerce_tasks SET title=?,product_id=?,product_version_id=?,brief_json=?,revision=revision+1,status='draft',updated_by=?,updated_at=?
-        WHERE id=? AND organization_id=? AND project_id=? AND revision=? AND status != 'archived' AND NOT EXISTS (SELECT 1 FROM ecommerce_generation_runs WHERE task_id=? AND status='running') AND ${enabledGuard}`)
-        .bind(input.title, input.productId, input.productVersionId, JSON.stringify(brief), access.userId, now, id, ...scope, input.revision, id, ...scope)
+        WHERE id=? AND organization_id=? AND project_id=? AND revision=? AND status != 'archived' AND NOT EXISTS (SELECT 1 FROM ecommerce_generation_runs WHERE task_id=? AND status='running') AND ${writeGuard}`)
+        .bind(input.title, input.productId, input.productVersionId, JSON.stringify(brief), access.userId, now, id, ...scope, input.revision, id, ...writeBindings(access))
       : db.prepare(`INSERT INTO ecommerce_tasks (id,organization_id,project_id,product_id,product_version_id,title,brief_json,created_by,updated_by,created_at,updated_at)
-        SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE ${enabledGuard}`).bind(id, ...scope, input.productId, input.productVersionId, input.title, JSON.stringify(brief), access.userId, access.userId, now, now, ...scope),
+        SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE ${writeGuard}`).bind(id, ...scope, input.productId, input.productVersionId, input.title, JSON.stringify(brief), access.userId, access.userId, now, now, ...writeBindings(access)),
     auditStatement(access, "ecommerce.task.saved", id, { productVersionId: input.productVersionId }),
   ]); requireChanged(results);
   return readTask(access, id);

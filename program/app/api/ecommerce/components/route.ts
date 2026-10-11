@@ -1,5 +1,5 @@
 import { getD1 } from "../../../../db/runtime";
-import { authorize, auditStatement, endpoint, enabledGuard, EcommerceError, queryScope, readInput, requireChanged } from "../../../../lib/ecommerce/access";
+import { authorize, auditStatement, commitMutation, writeBindings, endpoint, writeGuard, EcommerceError, queryScope, readInput, requireChanged } from "../../../../lib/ecommerce/access";
 import { componentSchema } from "../../../../lib/ecommerce/contracts";
 import { hashJson } from "../../../../lib/ecommerce/products";
 
@@ -23,12 +23,12 @@ export async function POST(request: Request) {
     const { organizationId: _org, projectId: _project, id: _id, revision: _revision, ...body } = input;
     void _org; void _project; void _id; void _revision;
     const sourceKey = await hashJson({ source: input.sourceLocator, version: input.sourceVersion, kind: input.kind, name: input.name });
-    const result = await db.batch([
+    const result = await commitMutation(request, access, [
       input.id
-        ? db.prepare(`UPDATE ecommerce_components SET name=?,kind=?,status=?,revision=revision+1,current_version=current_version+1,source_key=?,updated_by=?,updated_at=? WHERE id=? AND organization_id=? AND project_id=? AND scope='project' AND revision=? AND ${enabledGuard}`)
-          .bind(input.name, input.kind, input.status, sourceKey, access.userId, now, id, ...scope, input.revision, ...scope)
-        : db.prepare(`INSERT INTO ecommerce_components (id,organization_id,project_id,scope,name,kind,status,source_key,created_by,updated_by,created_at,updated_at) SELECT ?,?,?,'project',?,?,?,?,?,?,?,? WHERE ${enabledGuard}`)
-          .bind(id, ...scope, input.name, input.kind, input.status, sourceKey, access.userId, access.userId, now, now, ...scope),
+        ? db.prepare(`UPDATE ecommerce_components SET name=?,kind=?,status=?,revision=revision+1,current_version=current_version+1,source_key=?,updated_by=?,updated_at=? WHERE id=? AND organization_id=? AND project_id=? AND scope='project' AND revision=? AND ${writeGuard}`)
+          .bind(input.name, input.kind, input.status, sourceKey, access.userId, now, id, ...scope, input.revision, ...writeBindings(access))
+        : db.prepare(`INSERT INTO ecommerce_components (id,organization_id,project_id,scope,name,kind,status,source_key,created_by,updated_by,created_at,updated_at) SELECT ?,?,?,'project',?,?,?,?,?,?,?,? WHERE ${writeGuard}`)
+          .bind(id, ...scope, input.name, input.kind, input.status, sourceKey, access.userId, access.userId, now, now, ...writeBindings(access)),
       db.prepare(`INSERT INTO ecommerce_component_versions (id,component_id,version,body_json,content_hash,confirmed_by,confirmed_at,created_by,created_at)
         SELECT ?,id,current_version,?,?,?,?,?,? FROM ecommerce_components WHERE id=? AND organization_id=? AND project_id=? AND changes()=1`)
         .bind(versionId, JSON.stringify(body), await hashJson(body), input.status === "confirmed" ? access.userId : null, input.status === "confirmed" ? now : null, access.userId, now, id, ...scope),

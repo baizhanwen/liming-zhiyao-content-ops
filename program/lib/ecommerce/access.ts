@@ -3,6 +3,7 @@ import { getD1, getProjectAccess, type ProjectAccess } from "../../db/runtime";
 import { readRequestIdentity } from "../request-auth";
 import { apiError, errorResponse } from "../api-response";
 import { scopeSchema } from "./contracts";
+import { assertProjectWriteAccess, projectWriteAccessBindings, projectWriteAccessCondition, ProjectWriteAccessChangedError } from "../project-write-access";
 
 export class EcommerceError extends Error {
   constructor(public code: string, message: string, public status = 400) { super(message); }
@@ -66,6 +67,31 @@ export async function endpoint(action: () => Promise<Response>) {
 
 /** Used inside mutation SQL, so disabling the module between read and write is effective. */
 export const enabledGuard = "EXISTS (SELECT 1 FROM ecommerce_project_settings es WHERE es.organization_id = ? AND es.project_id = ? AND es.enabled = 1)";
+
+export const writeGuard = `${enabledGuard} AND ${projectWriteAccessCondition}`;
+export const writeBindings = (access: EcommerceAccess) => [access.organizationId, access.projectId, ...projectWriteAccessBindings(access)];
+export const adminAccessGuard = `${projectWriteAccessCondition} AND EXISTS(SELECT 1 FROM organization_members WHERE user_id=? AND organization_id=? AND status='active' AND role='admin')`;
+export const adminAccessBindings = (access: EcommerceAccess) => [...projectWriteAccessBindings(access), access.userId, access.organizationId];
+export const adminWriteGuard = `${enabledGuard} AND ${adminAccessGuard}`;
+export const adminWriteBindings = (access: EcommerceAccess) => [access.organizationId, access.projectId, ...adminAccessBindings(access)];
+
+type MutationOptions = { admin?: boolean; enabled?: boolean };
+/** Re-read the request after async validation; SQL guards also cover the commit race. */
+export async function assertMutationAccess(request: Request, access: EcommerceAccess, options: MutationOptions = {}) {
+  const current = await authorize(request, access, options.enabled !== false);
+  if (current.userId !== access.userId) throw new EcommerceError("ACCESS_DENIED", "登录用户已改变，请复制未保存内容并刷新后再操作。", 403);
+  try { await assertProjectWriteAccess(getD1(), access); }
+  catch (error) { if (error instanceof ProjectWriteAccessChangedError) throw new EcommerceError(error.code, "登录状态或空间权限已改变，资料未保存。请复制未保存内容并刷新确认权限。", 403); throw error; }
+  if (options.admin && !await getD1().prepare("SELECT 1 FROM organization_members WHERE user_id=? AND organization_id=? AND status='active' AND role='admin'").bind(access.userId, access.organizationId).first())
+    throw new EcommerceError("ADMIN_REQUIRED", "管理员权限已改变，操作未执行。请刷新确认当前权限。", 403);
+}
+
+export async function commitMutation(request: Request, access: EcommerceAccess, statements: D1PreparedStatement[], options: MutationOptions = {}) {
+  await assertMutationAccess(request, access, options);
+  const results = await getD1().batch(statements);
+  if (!results[0]?.meta.changes) await assertMutationAccess(request, access, options);
+  return results;
+}
 
 export function auditStatement(access: ProjectAccess, action: string, targetId: string, metadata: Record<string, unknown> = {}) {
   return getD1().prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) SELECT ?, ?, ?, ?, ?, 'ecommerce', ?, ?, ? WHERE changes() = 1")

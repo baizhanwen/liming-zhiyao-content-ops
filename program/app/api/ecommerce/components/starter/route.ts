@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { getD1 } from "../../../../../db/runtime";
-import { authorize, auditStatement, enabledGuard, endpoint, EcommerceError, queryScope, readInput } from "../../../../../lib/ecommerce/access";
+import { authorize, auditStatement, adminWriteGuard, adminWriteBindings, commitMutation, endpoint, EcommerceError, queryScope, readInput } from "../../../../../lib/ecommerce/access";
 import { scopeSchema } from "../../../../../lib/ecommerce/contracts";
 import { ECOMMERCE_STARTER_CARDS, ECOMMERCE_STARTER_VERSION } from "../../../../../lib/ecommerce/starter-catalog";
 import { hashJson } from "../../../../../lib/ecommerce/products";
@@ -29,14 +29,14 @@ export async function POST(request: Request) {
       const sourceKey = await hashJson({ source: body.sourceLocator, version: body.sourceVersion, kind: body.kind, name: body.name });
       statements.push(
         db.prepare(`INSERT INTO ecommerce_components (id,organization_id,project_id,scope,name,kind,status,source_key,created_by,updated_by,created_at,updated_at)
-          SELECT ?,?,?,'project',?,?,'confirmed',?,?,?,?,? WHERE ${enabledGuard}
-          ON CONFLICT DO NOTHING`).bind(id, ...scope, body.name, body.kind, sourceKey, access.userId, access.userId, now, now, ...scope),
+          SELECT ?,?,?,'project',?,?,'confirmed',?,?,?,?,? WHERE ${adminWriteGuard}
+          ON CONFLICT DO NOTHING`).bind(id, ...scope, body.name, body.kind, sourceKey, access.userId, access.userId, now, now, ...adminWriteBindings(access)),
         db.prepare(`INSERT INTO ecommerce_component_versions (id,component_id,version,body_json,content_hash,confirmed_by,confirmed_at,created_by,created_at)
           SELECT ?,?,1,?,?,?,?,?,? WHERE changes()=1`).bind(crypto.randomUUID(), id, JSON.stringify(body), await hashJson(body), access.userId, now, access.userId, now),
         auditStatement(access, "ecommerce.component.starter_imported", id, { key: entry.key, version: ECOMMERCE_STARTER_VERSION, methods: entry.methods }),
       );
     }
-    const results = await db.batch(statements);
+    const results = await commitMutation(request, access, statements, { admin: true });
     const imported = results.filter((_, i) => i % 3 === 0).reduce((sum, r) => sum + Number(r.meta.changes ?? 0), 0);
     return Response.json({ imported, skipped: keys.length - imported, version: ECOMMERCE_STARTER_VERSION });
   });

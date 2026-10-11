@@ -4,6 +4,6 @@ export const dynamic = "force-dynamic";
 export async function POST(request: Request, context: { params: Promise<{ taskId: string }> }) {
   return endpoint(async () => {
     const input = await readInput(request, manualVersionSchema), access = await authorize(request, input, true);
-    return Response.json({ version: await saveManualVersion(access, (await context.params).taskId, input) }, { status: 201 });
+    return Response.json({ version: await saveManualVersion(request, access, (await context.params).taskId, input) }, { status: 201 });
   });
 }

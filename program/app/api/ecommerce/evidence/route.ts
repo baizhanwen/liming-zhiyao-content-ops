@@ -1,5 +1,5 @@
 import { getD1 } from "../../../../db/runtime";
-import { authorize, auditStatement, endpoint, enabledGuard, EcommerceError, queryScope, readInput, requireChanged } from "../../../../lib/ecommerce/access";
+import { authorize, auditStatement, commitMutation, writeBindings, endpoint, writeGuard, EcommerceError, queryScope, readInput, requireChanged } from "../../../../lib/ecommerce/access";
 import { confirmationSchema, evidenceSchema, scopeSchema } from "../../../../lib/ecommerce/contracts";
 import { hashJson } from "../../../../lib/ecommerce/products";
 import { z } from "zod";
@@ -26,10 +26,10 @@ export async function POST(request: Request) {
       throw new EcommerceError("EVIDENCE_EXPIRED", "过期证据不能确认。", 409);
     const id = crypto.randomUUID(), now = new Date().toISOString();
     const body = { title: input.title, kind: input.kind, body: input.body, sourceLocator: input.sourceLocator, mediaAssetId: input.mediaAssetId, conditions: input.conditions, validUntil: input.validUntil };
-    const result = await db.batch([
+    const result = await commitMutation(request, access, [
       db.prepare(`INSERT INTO ecommerce_evidence (id,organization_id,project_id,product_id,title,kind,body_json,content_hash,media_asset_id,valid_until,status,confirmed_by,confirmed_at,created_by,created_at,updated_at)
-        SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE ${enabledGuard}`)
-        .bind(id, ...scope, input.productId, input.title, input.kind, JSON.stringify(body), await hashJson(body), input.mediaAssetId, input.validUntil, input.status, input.status === "confirmed" ? access.userId : null, input.status === "confirmed" ? now : null, access.userId, now, now, ...scope),
+        SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE ${writeGuard}`)
+        .bind(id, ...scope, input.productId, input.title, input.kind, JSON.stringify(body), await hashJson(body), input.mediaAssetId, input.validUntil, input.status, input.status === "confirmed" ? access.userId : null, input.status === "confirmed" ? now : null, access.userId, now, now, ...writeBindings(access)),
       auditStatement(access, "ecommerce.evidence.created", id),
     ]); requireChanged(result);
     return Response.json({ evidence: { id, revision: 1 } }, { status: 201 });
@@ -40,9 +40,9 @@ export async function PATCH(request: Request) {
   return endpoint(async () => {
     const input = await readInput(request, stateSchema), access = await authorize(request, input, true), now = new Date().toISOString();
     const scope = [access.organizationId, access.projectId];
-    const result = await getD1().batch([
-      getD1().prepare(`UPDATE ecommerce_evidence SET status=?,revision=revision+1,confirmed_by=?,confirmed_at=?,updated_at=? WHERE id=? AND organization_id=? AND project_id=? AND revision=? AND (? != 'confirmed' OR valid_until IS NULL OR julianday(valid_until) > julianday(?)) AND ${enabledGuard}`)
-        .bind(input.status, input.status === "confirmed" ? access.userId : null, input.status === "confirmed" ? now : null, now, input.id, ...scope, input.revision, input.status, now, ...scope),
+    const result = await commitMutation(request, access, [
+      getD1().prepare(`UPDATE ecommerce_evidence SET status=?,revision=revision+1,confirmed_by=?,confirmed_at=?,updated_at=? WHERE id=? AND organization_id=? AND project_id=? AND revision=? AND (? != 'confirmed' OR valid_until IS NULL OR julianday(valid_until) > julianday(?)) AND ${writeGuard}`)
+        .bind(input.status, input.status === "confirmed" ? access.userId : null, input.status === "confirmed" ? now : null, now, input.id, ...scope, input.revision, input.status, now, ...writeBindings(access)),
       auditStatement(access, "ecommerce.evidence.status", input.id, { status: input.status }),
     ]); requireChanged(result, "证据已过期、状态改变或不可用，请刷新核对。");
     return Response.json({ evidence: { id: input.id, revision: input.revision + 1, status: input.status } });

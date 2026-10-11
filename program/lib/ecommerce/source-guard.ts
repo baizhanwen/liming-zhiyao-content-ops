@@ -41,4 +41,4 @@ export const generationActorGuard = `EXISTS(SELECT 1 FROM users u
   JOIN organization_members om ON om.user_id=u.id AND om.organization_id=ecommerce_tasks.organization_id AND om.status='active'
   JOIN organizations o ON o.id=om.organization_id AND o.status='active'
   JOIN projects p ON p.id=ecommerce_tasks.project_id AND p.organization_id=o.id AND p.deleted_at IS NULL AND p.status!='archived'
-  WHERE u.id=? AND u.status='active' AND (om.role='admin' OR EXISTS(SELECT 1 FROM project_members pm WHERE pm.organization_id=o.id AND pm.project_id=p.id AND pm.user_id=u.id AND pm.status='active')))`;
+  WHERE u.id=? AND u.status='active' AND (om.role='admin' OR EXISTS(SELECT 1 FROM project_members pm WHERE pm.organization_id=o.id AND pm.project_id=p.id AND pm.user_id=u.id AND pm.status='active' AND pm.role IS NOT NULL)))`;
