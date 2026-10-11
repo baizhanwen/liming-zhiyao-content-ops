@@ -1,8 +1,16 @@
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import path from "node:path";
 
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
+if (process.platform === "win32" && !process.argv.includes("--locked")) {
+  const guard = spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+    path.join(projectRoot, "scripts/run-startup-guard.ps1"), "-NodePath", process.execPath,
+    ...(process.argv.includes("--guarded") ? ["-WebAlreadyLocked"] : [])], { cwd: projectRoot, stdio: "inherit", windowsHide: true });
+  if (guard.error) throw guard.error;
+  process.exit(guard.status ?? 1);
+}
 let configuration = "";
 try { configuration = readFileSync(new URL("../.dev.vars", import.meta.url), "utf8"); } catch { process.exit(0); }
 const flagEnabled = (name) => new RegExp(`^\\s*${name}\\s*=\\s*(?:1|"1"|'1')\\s*(?:#.*)?$`, "mu").test(configuration);
@@ -13,7 +21,7 @@ const lanMode = process.env.LAN_MODE?.trim() === "1" || flagEnabled("LAN_MODE")
   || Boolean(process.env.LAN_ACCESS_ORIGIN?.trim() || configuredLanOrigin);
 // Password-based local installations need the same fresh login as deliveries.
 // Only an explicitly enabled development identity skips session revocation.
-if (!deliveryMode && !lanMode && flagEnabled("LOCAL_DEV_AUTH")) process.exit(0);
+const skipSessionRevocation = !deliveryMode && !lanMode && flagEnabled("LOCAL_DEV_AUTH");
 
 const wranglerCli = fileURLToPath(new URL("../node_modules/wrangler/bin/wrangler.js", import.meta.url));
 const environment = {
@@ -22,6 +30,12 @@ const environment = {
   WRANGLER_LOG_PATH: ".wrangler/logs",
   MINIFLARE_REGISTRY_PATH: ".wrangler/registry",
 };
+const recoverySql = new URL("../resources/delivery/recover-startup-work.sql", import.meta.url);
+const recovered = spawnSync(process.execPath, [wranglerCli, "d1", "execute", "DB", "--local", "--config", "wrangler.local.jsonc", "--file", fileURLToPath(recoverySql)], { cwd: projectRoot, env: environment, stdio: "inherit" });
+if (recovered.error) throw recovered.error;
+if ((recovered.status ?? 1) !== 0) process.exit(recovered.status ?? 1);
+console.log("[Liming Zhiyao] Interrupted web work was marked failed. Drafts and model request records were preserved; no model retry was dispatched.");
+if (skipSessionRevocation) process.exit(0);
 const revokeSessionsSql = new URL("../resources/delivery/revoke-startup-sessions.sql", import.meta.url);
 const result = spawnSync(process.execPath, [
   wranglerCli, "d1", "execute", "DB", "--local", "--config", "wrangler.local.jsonc",

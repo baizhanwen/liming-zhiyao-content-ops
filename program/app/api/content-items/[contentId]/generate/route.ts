@@ -407,7 +407,7 @@ export async function POST(request: Request, context: { params: Promise<{ conten
           pack = { ...candidateWithHistory, sourceUsageReport: buildSourceUsageReport(sourceList, candidate.data.citations, selectedKnowledgeSourceIds) };
         } else pack = { ...candidateWithMethodology, sourceUsageReport: buildSourceUsageReport(sourceList, candidate.data.citations, selectedKnowledgeSourceIds) };
       } catch (error) {
-        if (error instanceof ModelRequestError && ["MODEL_QUOTA_EXCEEDED", "CONTENT_VERSION_CONFLICT"].includes(error.code)) throw error;
+        if (error instanceof ModelRequestError && ["MODEL_QUOTA_EXCEEDED", "CONTENT_VERSION_CONFLICT", "MODEL_REQUEST_INTERRUPTED"].includes(error.code)) throw error;
         if (!(error instanceof ModelRequestError) || attempt === maxAttempts - 1) throw error;
         const citationFailure = citationDraft && (isCitationRepairError(error.code) || error.code === "CITATION_REPAIR_FAILED");
         // Standard generation keeps its existing budget. Template mode allows two edits of the actual draft.

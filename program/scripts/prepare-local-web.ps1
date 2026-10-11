@@ -29,7 +29,7 @@ try {
 if ($migrationExitCode -ne 0) { exit $migrationExitCode }
 
 Write-Host "[Liming Zhiyao] Preparing login sessions..."
-& npm.cmd run auth:startup
+& npm.cmd run auth:startup -- --guarded
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host "[Liming Zhiyao] Checking authorized content knowledge..."

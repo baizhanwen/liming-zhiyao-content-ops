@@ -1,7 +1,7 @@
 import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess } from "../../../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../../../lib/api-response";
 import { PROJECT_ASSISTANT_PROMPT_VERSION, ProjectAssistantInvalidResponseError } from "../../../../../../lib/project-assistant-contract";
-import { runProjectAssistantConversationWithDb } from "../../../../../../lib/project-assistant-conversation";
+import { ProjectAssistantChatInterruptedError, runProjectAssistantConversationWithDb } from "../../../../../../lib/project-assistant-conversation";
 import { createRecordedProjectAssistantInvoker } from "../../../../../../lib/recorded-project-assistant-model";
 import {
   ProjectAssistantConfigurationError,
@@ -39,6 +39,7 @@ export async function POST(request: Request, context: { params: Promise<{ conver
     );
     return Response.json(result, { status: 201 });
   } catch (error) {
+    if (error instanceof ProjectAssistantChatInterruptedError) return apiError(error.code, error.message, 409);
     if (error instanceof ProjectAssistantConfigurationError) return apiError(error.code, error.message, 503);
     if (error instanceof ProjectAssistantRequestError) return apiError(error.code, error.message, error.code === "MODEL_QUOTA_EXCEEDED" ? 429 : 502);
     if (error instanceof ProjectAssistantInvalidResponseError) return apiError(error.code, error.message, 502);

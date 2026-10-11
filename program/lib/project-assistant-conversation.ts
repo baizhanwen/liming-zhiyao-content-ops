@@ -8,6 +8,10 @@ import type { ProjectAssistantDatabase } from "./project-memory-events.ts";
 import { CORE_STRATEGY_GUIDANCE, readCoreContentStrategy } from "./content-strategy-policy.ts";
 import { readInspirationMemories } from "./inspiration-memory.ts";
 
+export class ProjectAssistantChatInterruptedError extends Error {
+  readonly code = "PROJECT_ASSISTANT_CHAT_INTERRUPTED";
+}
+
 type InvocationFunction = (input: {
   system: string;
   user: string;
@@ -171,10 +175,17 @@ export async function runProjectAssistantConversationWithDb(
 
   const now = new Date().toISOString();
   const userMessageId = crypto.randomUUID();
-  await db.prepare(
+  const assistantMessageId = crypto.randomUUID();
+  await db.batch([db.prepare(
     "INSERT INTO project_assistant_messages (id, organization_id, project_id, conversation_id, role, status, content, suggestions_json, citations_json, memory_operations_json, created_by, created_at) VALUES (?, ?, ?, ?, 'user', 'completed', ?, '[]', '[]', '[]', ?, ?)",
-  ).bind(userMessageId, input.organizationId, input.projectId, input.conversationId, question, input.userId, now).run();
+  ).bind(userMessageId, input.organizationId, input.projectId, input.conversationId, question, input.userId, now),
+  db.prepare("INSERT INTO project_assistant_messages (id, organization_id, project_id, conversation_id, role, status, content, suggestions_json, citations_json, memory_operations_json, created_by, created_at) VALUES (?, ?, ?, ?, 'assistant', 'processing', '项目助理正在生成回复…', '[]', '[]', '[]', ?, ?)")
+    .bind(assistantMessageId, input.organizationId, input.projectId, input.conversationId, input.userId, now),
+  db.prepare("UPDATE project_assistant_conversations SET updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ?")
+    .bind(now, input.conversationId, input.organizationId, input.projectId),
+  ]);
 
+  try {
   const [benchmarks, history, coreStrategy, memoryLibrary] = await Promise.all([
     readProjectAssistantBenchmarksWithDb(db, {
       organizationId: input.organizationId,
@@ -184,7 +195,7 @@ export async function runProjectAssistantConversationWithDb(
       maxCharacters: 40_000,
     }),
     db.prepare(
-      "SELECT role, content FROM project_assistant_messages WHERE conversation_id = ? AND organization_id = ? AND project_id = ? AND id != ? ORDER BY created_at DESC LIMIT 24",
+      "SELECT role, content FROM project_assistant_messages WHERE conversation_id = ? AND organization_id = ? AND project_id = ? AND id != ? AND status = 'completed' ORDER BY created_at DESC LIMIT 24",
     ).bind(input.conversationId, input.organizationId, input.projectId, userMessageId).all<{ role: string; content: string }>(),
     readCoreContentStrategy(db, input),
     readInspirationMemories(db, { ...input, query: question }),
@@ -202,7 +213,6 @@ export async function runProjectAssistantConversationWithDb(
     requiresRecommendations,
   };
   let invocation: ProjectAssistantInvocation;
-  try {
     invocation = await input.invoke({
       system: chatSystemPrompt(),
       user: JSON.stringify(modelContext),
@@ -210,17 +220,6 @@ export async function runProjectAssistantConversationWithDb(
       maxTokens: 10_000,
       timeoutMs: 90_000,
     });
-  } catch (error) {
-    const errorCode = error && typeof error === "object" && "code" in error ? String((error as { code: unknown }).code) : "PROJECT_ASSISTANT_CHAT_FAILED";
-    const message = error instanceof Error ? error.message : "独立项目助理模型调用失败。";
-    await db.prepare(
-      "INSERT INTO project_assistant_messages (id, organization_id, project_id, conversation_id, role, status, content, suggestions_json, citations_json, memory_operations_json, error_code, created_by, created_at) VALUES (?, ?, ?, ?, 'assistant', 'failed', ?, '[]', '[]', '[]', ?, ?, ?)",
-    ).bind(crypto.randomUUID(), input.organizationId, input.projectId, input.conversationId, message.slice(0, 2000), errorCode.slice(0, 100), input.userId, new Date().toISOString()).run();
-    await db.prepare(
-      "UPDATE project_assistant_conversations SET updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ?",
-    ).bind(new Date().toISOString(), input.conversationId, input.organizationId, input.projectId).run();
-    throw error;
-  }
 
   let parsed = parseProjectAssistantChatResponse(invocation.content);
   if (requiresRecommendations && parsed.recommendations.length === 0) {
@@ -265,16 +264,11 @@ export async function runProjectAssistantConversationWithDb(
     memoryIds: (recommendation.memoryIds || []).filter(id => citedMemoryIds.has(id)),
     memorySources: memoryLibrary.filter(memory => (recommendation.memoryIds || []).includes(memory.id) && citedMemoryIds.has(memory.id)),
   }));
-  const assistantMessageId = crypto.randomUUID();
   const completedAt = new Date().toISOString();
-  await db.batch([
+  const saved = await db.batch([
     db.prepare(
-      "INSERT INTO project_assistant_messages (id, organization_id, project_id, conversation_id, role, status, content, suggestions_json, citations_json, memory_operations_json, model_provider, model_name, prompt_version, created_by, created_at) VALUES (?, ?, ?, ?, 'assistant', 'completed', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "UPDATE project_assistant_messages SET status='completed', content=?, suggestions_json=?, citations_json=?, memory_operations_json=?, model_provider=?, model_name=?, prompt_version=?, error_code=NULL WHERE id=? AND organization_id=? AND project_id=? AND conversation_id=? AND status='processing'",
     ).bind(
-      assistantMessageId,
-      input.organizationId,
-      input.projectId,
-      input.conversationId,
       parsed.reply,
       JSON.stringify(recommendations),
       JSON.stringify([...citations, ...memoryCitations]),
@@ -282,13 +276,16 @@ export async function runProjectAssistantConversationWithDb(
       invocation.provider,
       invocation.model,
       PROJECT_ASSISTANT_PROMPT_VERSION,
-      input.userId,
-      completedAt,
+      assistantMessageId,
+      input.organizationId,
+      input.projectId,
+      input.conversationId,
     ),
     db.prepare(
-      "UPDATE project_assistant_conversations SET title = CASE WHEN title = '新的灵感对话' THEN ? ELSE title END, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ?",
-    ).bind(question.slice(0, 36), completedAt, input.conversationId, input.organizationId, input.projectId),
+      "UPDATE project_assistant_conversations SET title = CASE WHEN title = '新的灵感对话' THEN ? ELSE title END, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND EXISTS (SELECT 1 FROM project_assistant_messages WHERE id=? AND status='completed')",
+    ).bind(question.slice(0, 36), completedAt, input.conversationId, input.organizationId, input.projectId, assistantMessageId),
   ]);
+  if (!saved[0].meta.changes) throw new ProjectAssistantChatInterruptedError("该助理回复已因中断或恢复而结束，晚到结果没有继续保存；请刷新对话后再操作。");
 
   return {
     userMessageId,
@@ -304,8 +301,19 @@ export async function runProjectAssistantConversationWithDb(
       model: invocation.model,
       promptVersion: PROJECT_ASSISTANT_PROMPT_VERSION,
       errorCode: null,
-      createdAt: completedAt,
+      createdAt: now,
     },
     knowledgeSource: "benchmark_and_memory_library" as const,
   };
+  } catch (error) {
+    const errorCode = error && typeof error === "object" && "code" in error ? String((error as { code: unknown }).code) : "PROJECT_ASSISTANT_CHAT_FAILED";
+    const message = error instanceof Error ? error.message : "独立项目助理回复失败。";
+    await db.batch([
+      db.prepare("UPDATE project_assistant_messages SET status='failed', content=?, error_code=? WHERE id=? AND organization_id=? AND project_id=? AND conversation_id=? AND status='processing'")
+        .bind(message.slice(0, 2000), errorCode.slice(0, 100), assistantMessageId, input.organizationId, input.projectId, input.conversationId),
+      db.prepare("UPDATE project_assistant_conversations SET updated_at=? WHERE id=? AND organization_id=? AND project_id=?")
+        .bind(new Date().toISOString(), input.conversationId, input.organizationId, input.projectId),
+    ]);
+    throw error;
+  }
 }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -31,7 +31,7 @@ for (const [label, configuration, revoke, lanEnvironment = {}] of [
       rmSync(dir, { recursive: true, force: true });
     });
     for (const relative of ["scripts", "resources/delivery", "node_modules/wrangler/bin"]) mkdirSync(path.join(dir, relative), { recursive: true });
-    for (const relative of ["scripts/prepare-login-startup.mjs", "resources/delivery/revoke-startup-sessions.sql"]) copyFileSync(new URL(relative, root), path.join(dir, relative));
+    for (const relative of ["scripts/prepare-login-startup.mjs", "resources/delivery/revoke-startup-sessions.sql", "resources/delivery/recover-startup-work.sql"]) copyFileSync(new URL(relative, root), path.join(dir, relative));
     writeFileSync(path.join(dir, ".dev.vars"), configuration);
     writeFileSync(path.join(dir, "node_modules/wrangler/bin/wrangler.js"), `
       const { DatabaseSync } = require("node:sqlite");
@@ -43,12 +43,13 @@ for (const [label, configuration, revoke, lanEnvironment = {}] of [
     `);
     const db = new DatabaseSync(path.join(dir, "synthetic.sqlite"));
     try {
-      db.exec("CREATE TABLE local_sessions (id TEXT); INSERT INTO local_sessions VALUES ('old-session'); CREATE TABLE local_login_attempts (email TEXT); INSERT INTO local_login_attempts VALUES ('synthetic@example.invalid'); CREATE TABLE business_data (id TEXT); INSERT INTO business_data VALUES ('keep');");
-      const result = spawnSync(process.execPath, [path.join(dir, "scripts/prepare-login-startup.mjs")], { cwd: dir, env: { ...process.env, LAN_MODE: "0", LAN_ACCESS_ORIGIN: "", ...lanEnvironment }, encoding: "utf8", timeout: 15000, windowsHide: true });
+      for (const filename of readdirSync(new URL("drizzle/", root)).filter(name => name.endsWith(".sql")).sort()) db.exec(readFileSync(new URL(`drizzle/${filename}`, root), "utf8"));
+      db.exec("INSERT INTO users(id,auth_subject,email,status,created_at,updated_at) VALUES('startup-user','startup-user','synthetic@example.invalid','active','2026-10-11','2026-10-11'); INSERT INTO local_sessions VALUES ('old-session','startup-user','synthetic-token','2099-01-01','2026-10-11','2026-10-11'); INSERT INTO local_login_attempts(email,updated_at) VALUES ('synthetic@example.invalid','2026-10-11'); CREATE TABLE business_data (id TEXT); INSERT INTO business_data VALUES ('keep');");
+      const result = spawnSync(process.execPath, [path.join(dir, "scripts/prepare-login-startup.mjs"), "--locked"], { cwd: dir, env: { ...process.env, LAN_MODE: "0", LAN_ACCESS_ORIGIN: "", ...lanEnvironment }, encoding: "utf8", timeout: 15000, windowsHide: true });
       assert.equal(result.status, 0, result.stderr);
       assert.equal(db.prepare("SELECT count(*) AS count FROM local_sessions").get().count, revoke ? 0 : 1);
       assert.equal(db.prepare("SELECT count(*) AS count FROM business_data").get().count, 1);
-      assert.equal(existsSync(path.join(dir, "cli-args.json")), revoke);
+      assert.equal(existsSync(path.join(dir, "cli-args.json")), true, "All startup modes recover interrupted work");
       if (revoke) {
         const args = JSON.parse(readFileSync(path.join(dir, "cli-args.json"), "utf8"));
         assert.ok(args.includes("--local"));

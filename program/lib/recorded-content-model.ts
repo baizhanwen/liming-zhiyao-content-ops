@@ -60,7 +60,8 @@ export async function invokeRecordedContentRequest(input: Parameters<typeof invo
   context.ledger.push(record);
   // The root's status represents the whole generation. Additional rows each
   // represent one request; the first request uses the existing root row.
-  await db.prepare("UPDATE model_calls SET status = ?, output_json = ?, latency_ms = ?, completed_at = ? WHERE id = ? AND status = 'started'")
+  const saved = await db.prepare("UPDATE model_calls SET status = ?, output_json = ?, latency_ms = ?, completed_at = ? WHERE id = ? AND status = 'started'")
     .bind(isRoot ? "started" : "completed", JSON.stringify({ content: response.content.slice(0, 200_000), usage: { inputTokens: record.inputTokens, outputTokens: record.outputTokens, totalTokens: record.totalTokens }, modelRequests: [record] }), response.latencyMs, isRoot ? null : new Date().toISOString(), context.id).run();
+  if (!saved.meta.changes) throw new ModelRequestError("该模型请求已因中断或恢复而结束，晚到结果没有继续保存。请刷新运行记录后再操作。", "MODEL_REQUEST_INTERRUPTED");
   return response;
 }
