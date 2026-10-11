@@ -34,7 +34,7 @@ async function fixture(t) {
   f.runtime.canWriteProjectAccess = Boolean;
   f.mock("lib/generation-freeze.mjs.ts", { isGenerationFrozen: () => false });
   f.mock("lib/topic-generation.ts", generation);
-  f.mock("lib/operations.ts", { checkOrganizationQuota: async () => ({ allowed: true }) });
+  f.mock("lib/operations.ts", { checkOrganizationQuota: async () => ({ allowed: true, limit: 1000 }) });
   f.mock("lib/model-adapter.ts", {
     ModelConfigurationError: class extends Error {}, ModelRequestError: class extends Error {},
     readContentModelConfig: () => ({ provider: "fixture", model: "fixture" }),

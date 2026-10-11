@@ -4,7 +4,6 @@ import {
 } from "./project-assistant-contract.ts";
 import {
   ProjectAssistantConfigurationError,
-  invokeProjectAssistantModel,
   type ProjectAssistantInvocation,
 } from "./project-assistant-model.ts";
 import {
@@ -16,6 +15,7 @@ import {
   type ProjectMemoryEventRow,
 } from "./project-memory-events.ts";
 import { analysisReportSourceText } from "./content-production.ts";
+import { createRecordedProjectAssistantInvoker } from "./recorded-project-assistant-model.ts";
 
 export const PROJECT_MEMORY_EXTRACTION_PROMPT_VERSION = "project-memory.v2-content-and-methods";
 
@@ -195,7 +195,7 @@ export async function processProjectMemoryEventWithDb(
       sourceId: event.source_id || event.id,
       quote: null,
     };
-    const invoke = input.invoke ?? invokeProjectAssistantModel;
+    const invoke = input.invoke ?? createRecordedProjectAssistantInvoker({ organizationId: event.organization_id, projectId: event.project_id, userId: event.created_by, taskType: "project_assistant.memory", promptVersion: PROJECT_MEMORY_EXTRACTION_PROMPT_VERSION, sourceId: event.id });
     const invocation = await invoke({
       system: memorySystemPrompt(),
       user: JSON.stringify({

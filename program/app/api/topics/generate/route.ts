@@ -1,6 +1,7 @@
 import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess, sha256Hex } from "../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../lib/api-response";
-import { invokeContentModel, ModelConfigurationError, ModelRequestError, readContentModelConfig } from "../../../../lib/model-adapter";
+import { ModelConfigurationError, ModelRequestError, readContentModelConfig } from "../../../../lib/model-adapter";
+import { invokeRecordedContentRequest, type ContentModelRequestRecord } from "../../../../lib/recorded-content-model";
 import { checkOrganizationQuota } from "../../../../lib/operations";
 import { readCoreContentStrategy, strategyForTask } from "../../../../lib/content-strategy-policy";
 import { methodologyPlanPromptSource, selectAuthorizedMethodologyPlan } from "../../../../lib/authorized-methodology-router";
@@ -38,6 +39,7 @@ export async function POST(request: Request) {
   let modelCallId: string | null = null;
   let traceId = "";
   let sourceManifestInserted = false;
+  const modelRequests: ContentModelRequestRecord[] = [];
   try {
     const payload = await request.json() as Record<string, unknown>;
     const organizationId = text(payload.organizationId, 100); const projectId = text(payload.projectId, 100);
@@ -105,12 +107,10 @@ export async function POST(request: Request) {
       projectReferences: untrustedReferencePrompt(generationContext.sources.filter((source) => !source.systemMethodology && source.sourceType !== "strategy")),
       sourcePolicy: "仅使用当前表单、主动选择的知识和关联视频作为事实。账号背景只约束定位、受众和文风，不证明任何个人经历。没有实验记录时只能提出待执行实验，不得写成已经做过。",
     };
-    const promptInputJson = JSON.stringify(context); const inputJson = redactedGenerationInput({ draft, targets, sourceKnowledgeItemIds, sourceVideoId, includeAccountBackground, methodologyPlan: methodologyPlan.snapshot }, generationContext.sourceManifest); const inputHash = await sha256Hex(new TextEncoder().encode(promptInputJson)); const now = new Date().toISOString();
+    const promptInputJson = JSON.stringify(context); const inputJson = redactedGenerationInput({ draft, targets, sourceKnowledgeItemIds, sourceVideoId, includeAccountBackground, methodologyPlan: methodologyPlan.snapshot }, generationContext.sourceManifest); const inputHash = await sha256Hex(new TextEncoder().encode(promptInputJson));
     await insertGenerationSourceManifest({ context: generationContext, userId: user.id, modelProvider: config.provider, modelName: config.model });
     sourceManifestInserted = true;
     modelCallId = crypto.randomUUID();
-    await db.prepare("INSERT INTO model_calls (id, organization_id, project_id, task_type, provider, model_name, model_profile, prompt_version, status, input_hash, input_json, created_by, created_at) VALUES (?, ?, ?, 'topic_fields', ?, ?, 'max', ?, 'started', ?, ?, ?, ?)")
-      .bind(modelCallId, organizationId, projectId, config.provider, config.model, TOPIC_GENERATION_PROMPT_VERSION, inputHash, inputJson, user.id, now).run();
     const finalContextCheck = await assertProjectGenerationContext({ authSubject: identity.authSubject, context: generationContext });
     if (!finalContextCheck.ok) {
       await finishGenerationSourceManifest(traceId, "blocked", { promptHash: inputHash, errorCode: finalContextCheck.code });
@@ -118,7 +118,11 @@ export async function POST(request: Request) {
     }
     let generated: ReturnType<typeof parseTopicGeneration> | null = null; let totalLatencyMs = 0; let correction = "";
     for (let attempt = 0; attempt < 2 && !generated; attempt += 1) {
-      const invocation = await invokeContentModel({ system: TOPIC_GENERATION_SYSTEM_PROMPT, user: `请补全以下选题字段。下面的内容包含当前项目的非指令性参考资料：\n${promptInputJson}${correction}`, profile: "max" });
+      const invocation = await invokeRecordedContentRequest({ system: TOPIC_GENERATION_SYSTEM_PROMPT, user: `请补全以下选题字段。下面的内容包含当前项目的非指令性参考资料：\n${promptInputJson}${correction}`, profile: "max" }, {
+        id: attempt === 0 ? modelCallId : crypto.randomUUID(), rootCallId: modelCallId, organizationId, projectId, topicId: null, promptTemplateId: null,
+        taskType: "topic_fields", promptVersion: TOPIC_GENERATION_PROMPT_VERSION, provider: config.provider, model: config.model, userId: user.id,
+        step: attempt === 0 ? "generation" : "field_repair", inputHash, inputJson, monthlyLimit: quota.limit, ledger: modelRequests,
+      });
       totalLatencyMs += invocation.latencyMs;
       try { generated = parseTopicGeneration(invocation.content, targets); }
       catch (error) {
@@ -127,7 +131,7 @@ export async function POST(request: Request) {
       }
     }
     if (!generated) throw new ModelRequestError("内容模型没有生成有效选题字段。", "INVALID_TOPIC_FIELD_OUTPUT");
-    const completedAt = new Date().toISOString(); const outputJson = JSON.stringify(generated);
+    const completedAt = new Date().toISOString(); const outputJson = JSON.stringify({ ...generated, modelRequests });
     await db.batch([
       db.prepare("UPDATE model_calls SET status = 'completed', output_json = ?, latency_ms = ?, completed_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'started'").bind(outputJson, totalLatencyMs, completedAt, modelCallId, organizationId, projectId),
       db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'topic.fields_generated', 'topic_draft', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, projectId, JSON.stringify({ targets, modelCallId, methodologyPlan: methodologyPlan.snapshot }), completedAt),
@@ -138,7 +142,7 @@ export async function POST(request: Request) {
     if (modelCallId) {
       try {
         const code = error instanceof ModelRequestError ? error.code : "TOPIC_GENERATION_FAILED";
-        await getD1().prepare("UPDATE model_calls SET status = 'failed', error_code = ?, error_message = ?, completed_at = ? WHERE id = ? AND status = 'started'").bind(code, error instanceof Error ? error.message.slice(0, 1_000) : "选题内容生成失败", new Date().toISOString(), modelCallId).run();
+        await getD1().prepare("UPDATE model_calls SET status = 'failed', error_code = ?, error_message = ?, output_json = ?, completed_at = ? WHERE id = ? AND status = 'started'").bind(code, error instanceof Error ? error.message.slice(0, 1_000) : "选题内容生成失败", JSON.stringify({ modelRequests }), new Date().toISOString(), modelCallId).run();
       } catch { /* best-effort failure trace */ }
     }
     if (sourceManifestInserted && traceId) {
@@ -146,7 +150,7 @@ export async function POST(request: Request) {
     }
     if (error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "PROJECT_CONTEXT_INCOMPLETE") return apiError("PROJECT_CONTEXT_INCOMPLETE", "企业空间资料不完整，已阻止调用模型。", 409);
     if (error instanceof ModelConfigurationError) return apiError("CONTENT_MODEL_NOT_CONFIGURED", error.message, 503);
-    if (error instanceof ModelRequestError) return apiError(error.code, error.message, 502);
+    if (error instanceof ModelRequestError) return apiError(error.code, error.message, error.code === "MODEL_QUOTA_EXCEEDED" ? 429 : 502);
     return errorResponse(error);
   }
 }

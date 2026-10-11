@@ -1,7 +1,8 @@
 import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess, sha256Hex } from "../../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../../lib/api-response";
 import { parseModelJson } from "../../../../../lib/content-production";
-import { invokeContentModel, ModelConfigurationError, ModelRequestError, readContentModelConfig } from "../../../../../lib/model-adapter";
+import { ModelConfigurationError, ModelRequestError, readContentModelConfig } from "../../../../../lib/model-adapter";
+import { invokeRecordedContentRequest, type ContentModelRequestRecord } from "../../../../../lib/recorded-content-model";
 import { checkOrganizationQuota } from "../../../../../lib/operations";
 import {
   applyRewriteCopyRepairs, batchScriptUnits, buildMicroRewritePlan, buildMissingRewriteFactSources, buildRestructureLengthTargets, buildRewriteCopyRepairWindows, buildRewriteFactRepairScope, buildScriptUnits, compactRestructureOutline, estimateRewriteUsage, fallbackRestructureOutline, immutableRewriteFacts, mergeImprovedRewriteParagraphRows, mergeMicroRewriteParts, mergeRewriteParagraphRows,
@@ -29,7 +30,7 @@ class RewriteContractError extends Error {
 }
 
 type Usage = { inputTokens: number; outputTokens: number; totalTokens: number };
-type TrackedCall = { id: string; provider: string; model: string; latencyMs: number; usage: Usage; json: unknown; reused?: boolean };
+type TrackedCall = { id: string; provider: string; model: string; latencyMs: number; usage: Usage; json: unknown; unknownRequestCount: number; reused?: boolean };
 type GenerationScope = { organizationId: string; projectId: string; userId: string; runId: string; resumeRunIds?: string[] };
 type GenerationResult = { text: string; paragraphs: string[]; sourceMapping: string[]; outline: RewriteOutlineSection[]; validation: RewriteValidation; calls: TrackedCall[] };
 type GeneratedRewriteSection = { sectionId: string; factIds: string[]; paragraphs: string[] };
@@ -61,34 +62,44 @@ async function invokeTrackedModel(input: {
     if (saved) {
       try {
         const output = JSON.parse(saved.output_json) as { response?: unknown };
-        if (asRecord(output.response)) return { id: saved.id, provider: saved.provider, model: saved.model_name, latencyMs: 0, usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }, json: output.response, reused: true } satisfies TrackedCall;
+        if (asRecord(output.response)) return { id: saved.id, provider: saved.provider, model: saved.model_name, latencyMs: 0, usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }, json: output.response, unknownRequestCount: 0, reused: true } satisfies TrackedCall;
       } catch { /* A damaged checkpoint is regenerated normally. */ }
     }
   }
   const quota = await checkOrganizationQuota(input.organizationId, input.userId, "modelCalls", 1);
   if (!quota.allowed) throw new RewriteContractError("当前月度模型调用额度已用完，未继续产生新的调用。", "MODEL_QUOTA_EXCEEDED", { current: quota.current, limit: quota.limit });
-  const id = crypto.randomUUID(); const now = new Date().toISOString();
-  await db.prepare(`INSERT INTO model_calls (id, organization_id, project_id, topic_id, prompt_template_id, task_type, provider, model_name, model_profile, prompt_version, status, input_hash, input_json, created_by, created_at) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, 'max', ?, 'started', ?, ?, ?, ?)`).bind(id, input.organizationId, input.projectId, input.taskType, config.provider, config.model, SCRIPT_REWRITE_PROMPT_VERSION, inputHash, inputJson, input.userId, now).run();
+  const id = crypto.randomUUID(); const modelRequests: ContentModelRequestRecord[] = [];
+  const usage: Usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
   let accumulatedLatencyMs = 0;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const invocation = await invokeContentModel({ system: input.system, user: userJson, profile: "max", nativeJson: attempt === 0, temperature: input.temperature, maxTokens: input.maxTokens });
+      const invocation = await invokeRecordedContentRequest({ system: input.system, user: userJson, profile: "max", nativeJson: attempt === 0, temperature: input.temperature, maxTokens: input.maxTokens }, {
+        id: attempt === 0 ? id : crypto.randomUUID(), rootCallId: id, organizationId: input.organizationId, projectId: input.projectId,
+        topicId: null, promptTemplateId: null, taskType: input.taskType, promptVersion: SCRIPT_REWRITE_PROMPT_VERSION, provider: config.provider, model: config.model, userId: input.userId,
+        step: attempt === 0 ? "generation" : "json_repair", inputHash, inputJson, monthlyLimit: quota.limit, ledger: modelRequests,
+      });
       accumulatedLatencyMs += invocation.latencyMs;
+      addUsage(usage, readRewriteModelUsage(invocation.raw));
       let json: unknown;
       try {
         json = parseModelJson(invocation.content);
       } catch (reason) {
         throw new ModelRequestError(reason instanceof Error ? reason.message : "改写模型没有返回完整 JSON。", "INVALID_MODEL_OUTPUT");
       }
-      const usage = readRewriteModelUsage(invocation.raw); const completedAt = new Date().toISOString();
-      await db.prepare("UPDATE model_calls SET status = 'completed', output_json = ?, latency_ms = ?, completed_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'started'").bind(JSON.stringify({ response: json, usage }), accumulatedLatencyMs, completedAt, id, input.organizationId, input.projectId).run();
-      return { id, provider: invocation.provider, model: invocation.model, latencyMs: accumulatedLatencyMs, usage, json } satisfies TrackedCall;
+      const completedAt = new Date().toISOString();
+      // Root usage describes its own request. Retry rows retain their own usage,
+      // while the returned logical step totals all actual attempts.
+      const first = modelRequests[0];
+      const rootUsage = { inputTokens: first?.inputTokens ?? 0, outputTokens: first?.outputTokens ?? 0, totalTokens: first?.totalTokens ?? 0 };
+      await db.prepare("UPDATE model_calls SET status = 'completed', error_code = NULL, error_message = NULL, output_json = ?, latency_ms = ?, completed_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'started'").bind(JSON.stringify({ response: json, usage: rootUsage, modelRequests }), accumulatedLatencyMs, completedAt, id, input.organizationId, input.projectId).run();
+      return { id, provider: invocation.provider, model: invocation.model, latencyMs: accumulatedLatencyMs, usage, json, unknownRequestCount: modelRequests.filter(request => !request.usageKnown).length } satisfies TrackedCall;
     } catch (error) {
       const retryable = attempt === 0 && error instanceof ModelRequestError
         && ["INVALID_MODEL_OUTPUT", "MODEL_OUTPUT_TRUNCATED", "MODEL_EMPTY_RESPONSE"].includes(error.code);
       if (retryable) continue;
       const code = error instanceof ModelRequestError ? error.code : "REWRITE_MODEL_RESPONSE_INVALID";
-      await db.prepare("UPDATE model_calls SET status = 'failed', error_code = ?, error_message = ?, completed_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'started'").bind(code, error instanceof Error ? error.message.slice(0, 1000) : "改写模型调用失败", new Date().toISOString(), id, input.organizationId, input.projectId).run();
+      const first = modelRequests[0];
+      await db.prepare("UPDATE model_calls SET status = 'failed', error_code = ?, error_message = ?, output_json = ?, completed_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'started'").bind(code, error instanceof Error ? error.message.slice(0, 1000) : "改写模型调用失败", JSON.stringify({ usage: { inputTokens: first?.inputTokens ?? 0, outputTokens: first?.outputTokens ?? 0, totalTokens: first?.totalTokens ?? 0 }, modelRequests }), new Date().toISOString(), id, input.organizationId, input.projectId).run();
       throw error;
     }
   }
@@ -672,7 +683,7 @@ async function recoverRestructuredDraft(scope: GenerationScope, units: ScriptUni
     if (!validateRewriteFactCards(units, facts).passed || !validateRestructurePlan(units, facts, outline).passed
       || !isReviewableDraft(validateRestructuredRewrite(units, facts, paragraphs, sourceMapping, outline), "restructured")) return null;
   } catch { return null; }
-  const calls: TrackedCall[] = [{ id: auditCall.id, provider: auditCall.provider, model: auditCall.model_name, latencyMs: 0, usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }, json: {}, reused: true }];
+  const calls: TrackedCall[] = [{ id: auditCall.id, provider: auditCall.provider, model: auditCall.model_name, latencyMs: 0, usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }, json: {}, unknownRequestCount: 0, reused: true }];
   paragraphs = await polishRestructuredParagraphs(scope, units, facts, paragraphs, sourceMapping, outline, calls);
   const text = paragraphs.join("\n\n");
   const deterministic = validateRestructuredRewrite(units, facts, paragraphs, sourceMapping, outline);
@@ -1036,20 +1047,26 @@ export async function POST(request: Request, context: { params: Promise<{ rewrit
           ? await generateLightRewrite({ organizationId, projectId, userId: user.id, runId, resumeRunIds }, homomorphicUnits)
           : await generateRestructuredRewrite({ organizationId, projectId, userId: user.id, runId, resumeRunIds }, units);
         const usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }; generated.calls.forEach((call) => addUsage(usage, call.usage));
+        const unknownRequestCount = generated.calls.reduce((count, call) => count + call.unknownRequestCount, 0);
         const latest = await db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM script_rewrite_versions WHERE organization_id = ? AND project_id = ? AND workspace_id = ?").bind(organizationId, projectId, rewriteId).first<{ version: number }>();
         const version = Number(latest?.version ?? 0) + 1; const versionId = crypto.randomUUID(); const completedAt = new Date().toISOString(); const firstCall = generated.calls[0];
         await db.batch([
           db.prepare(`INSERT INTO script_rewrite_versions (id, organization_id, project_id, workspace_id, version, variant, parent_version_id, run_id, text, paragraphs_json, source_mapping_json, outline_json, validation_json, model_provider, model_name, prompt_version, model_call_id, change_summary, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(versionId, organizationId, projectId, rewriteId, version, variant, sourceVersion.id, runId, generated.text, JSON.stringify(generated.paragraphs), JSON.stringify(generated.sourceMapping), JSON.stringify(generated.outline), JSON.stringify(generated.validation), firstCall?.provider ?? null, firstCall?.model ?? null, SCRIPT_REWRITE_PROMPT_VERSION, firstCall?.id ?? null, `${rewriteVariantLabel(variant)}自动生成`, user.id, completedAt),
-          db.prepare("UPDATE script_rewrite_runs SET status = 'completed', result_version_id = ?, actual_input_tokens = ?, actual_output_tokens = ?, actual_total_tokens = ?, model_call_id = ?, validation_json = ?, completed_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'started'").bind(versionId, usage.inputTokens, usage.outputTokens, usage.totalTokens, firstCall?.id ?? null, JSON.stringify(generated.validation), completedAt, runId, organizationId, projectId),
+          db.prepare("UPDATE script_rewrite_runs SET status = 'completed', result_version_id = ?, actual_input_tokens = ?, actual_output_tokens = ?, actual_total_tokens = ?, model_call_id = ?, validation_json = ?, completed_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'started'").bind(versionId, usage.inputTokens, usage.outputTokens, usage.totalTokens, firstCall?.id ?? null, JSON.stringify({ ...generated.validation, modelUsage: { unknownRequestCount } }), completedAt, runId, organizationId, projectId),
           db.prepare("UPDATE script_rewrite_workspaces SET updated_by = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ?").bind(user.id, completedAt, rewriteId, organizationId, projectId),
           db.prepare(`INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'script_rewrite.generated', 'script_rewrite_version', ?, ?, ?)`).bind(crypto.randomUUID(), organizationId, projectId, user.id, versionId, JSON.stringify({ workspaceId: rewriteId, runId, variant, version, sourceHash: workspace.source_hash, modelCallIds: generated.calls.map((call) => call.id), usage, validation: generated.validation }), completedAt),
         ]);
         results.push({ variant, status: "completed", runId, versionId, version, validation: generated.validation, usage, reusedCallCount: generated.calls.filter((call) => call.reused).length });
       } catch (error) {
         const completedAt = new Date().toISOString(); const contract = error instanceof RewriteContractError ? error : null; const code = contract?.code ?? (error instanceof ModelRequestError ? error.code : "REWRITE_GENERATION_FAILED"); const message = error instanceof Error ? error.message.slice(0, 1000) : "改写生成失败";
-        const callUsage = await db.prepare("SELECT COALESCE(SUM(CAST(json_extract(output_json, '$.usage.inputTokens') AS INTEGER)), 0) AS input_tokens, COALESCE(SUM(CAST(json_extract(output_json, '$.usage.outputTokens') AS INTEGER)), 0) AS output_tokens, COALESCE(SUM(CAST(json_extract(output_json, '$.usage.totalTokens') AS INTEGER)), 0) AS total_tokens, MIN(id) AS model_call_id FROM model_calls WHERE organization_id = ? AND project_id = ? AND created_by = ? AND json_extract(input_json, '$.runId') = ? AND task_type LIKE 'script_rewrite_%'").bind(organizationId, projectId, user.id, runId).first<{ input_tokens: number; output_tokens: number; total_tokens: number; model_call_id: string | null }>();
+        const callUsage = await db.prepare(`SELECT COALESCE(SUM(CAST(json_extract(output_json, '$.usage.inputTokens') AS INTEGER)), 0) AS input_tokens,
+          COALESCE(SUM(CAST(json_extract(output_json, '$.usage.outputTokens') AS INTEGER)), 0) AS output_tokens,
+          COALESCE(SUM(CAST(json_extract(output_json, '$.usage.totalTokens') AS INTEGER)), 0) AS total_tokens,
+          COALESCE(SUM(CASE WHEN json_extract(output_json, '$.modelRequests[0].usageKnown') = 1 THEN 0 ELSE 1 END), 0) AS unknown_requests,
+          MIN(id) AS model_call_id FROM model_calls WHERE organization_id = ? AND project_id = ? AND created_by = ?
+          AND json_extract(input_json, '$.runId') = ? AND task_type LIKE 'script_rewrite_%'`).bind(organizationId, projectId, user.id, runId).first<{ input_tokens: number; output_tokens: number; total_tokens: number; unknown_requests: number; model_call_id: string | null }>();
         await db.batch([
-          db.prepare("UPDATE script_rewrite_runs SET status = 'failed', actual_input_tokens = ?, actual_output_tokens = ?, actual_total_tokens = ?, model_call_id = ?, validation_json = ?, error_code = ?, error_message = ?, completed_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'started'").bind(callUsage?.input_tokens ?? 0, callUsage?.output_tokens ?? 0, callUsage?.total_tokens ?? 0, callUsage?.model_call_id ?? null, JSON.stringify(contract?.validation ?? {}), code, message, completedAt, runId, organizationId, projectId),
+          db.prepare("UPDATE script_rewrite_runs SET status = 'failed', actual_input_tokens = ?, actual_output_tokens = ?, actual_total_tokens = ?, model_call_id = ?, validation_json = ?, error_code = ?, error_message = ?, completed_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'started'").bind(callUsage?.input_tokens ?? 0, callUsage?.output_tokens ?? 0, callUsage?.total_tokens ?? 0, callUsage?.model_call_id ?? null, JSON.stringify({ ...(asRecord(contract?.validation) ?? {}), modelUsage: { unknownRequestCount: callUsage?.unknown_requests ?? 0 } }), code, message, completedAt, runId, organizationId, projectId),
           db.prepare(`INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'script_rewrite.failed', 'script_rewrite_run', ?, ?, ?)`).bind(crypto.randomUUID(), organizationId, projectId, user.id, runId, JSON.stringify({ workspaceId: rewriteId, variant, code, validation: contract?.validation ?? {} }), completedAt),
         ]);
         results.push({ variant, status: "failed", runId, error: { code, message }, validation: contract?.validation ?? {} });

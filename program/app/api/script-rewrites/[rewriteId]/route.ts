@@ -20,10 +20,13 @@ function publicVersion(row: Record<string, unknown>) {
 }
 
 function publicRun(row: Record<string, unknown>) {
+  const validation = parseJson(row.validation_json, {}) as { modelUsage?: { unknownRequestCount?: unknown } } | null;
+  const unknown = validation?.modelUsage?.unknownRequestCount;
   return {
     id: row.id, variant: row.variant, status: row.status, sourceVersionId: row.source_version_id, resultVersionId: row.result_version_id, retryOfRunId: row.retry_of_run_id,
     estimatedCallCount: row.estimated_call_count, estimatedInputTokens: row.estimated_input_tokens, maximumOutputTokens: row.maximum_output_tokens,
     actualInputTokens: row.actual_input_tokens, actualOutputTokens: row.actual_output_tokens, actualTotalTokens: row.actual_total_tokens,
+    unknownRequestCount: typeof unknown === "number" && Number.isSafeInteger(unknown) && unknown >= 0 ? unknown : null,
     modelCallId: row.model_call_id, promptVersion: row.prompt_version, validation: parseJson(row.validation_json, {}), errorCode: row.error_code, errorMessage: row.error_message, createdAt: row.created_at, completedAt: row.completed_at,
   };
 }

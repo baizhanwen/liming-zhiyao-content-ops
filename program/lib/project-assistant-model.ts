@@ -167,8 +167,8 @@ export async function invokeProjectAssistantModel(
   }
 }
 
-export async function probeProjectAssistantModel() {
-  const result = await invokeProjectAssistantModel({
+export async function probeProjectAssistantModel(invoke: (input: Parameters<typeof invokeProjectAssistantModel>[0]) => Promise<ProjectAssistantInvocation> = invokeProjectAssistantModel) {
+  const result = await invoke({
     system: "你是连接健康检查。只返回 JSON 对象。",
     user: '请返回 {"ok":true}。',
     maxTokens: 80,

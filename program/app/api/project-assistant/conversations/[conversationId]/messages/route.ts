@@ -1,9 +1,9 @@
 import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess } from "../../../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../../../lib/api-response";
-import { ProjectAssistantInvalidResponseError } from "../../../../../../lib/project-assistant-contract";
+import { PROJECT_ASSISTANT_PROMPT_VERSION, ProjectAssistantInvalidResponseError } from "../../../../../../lib/project-assistant-contract";
 import { runProjectAssistantConversationWithDb } from "../../../../../../lib/project-assistant-conversation";
+import { createRecordedProjectAssistantInvoker } from "../../../../../../lib/recorded-project-assistant-model";
 import {
-  invokeProjectAssistantModel,
   ProjectAssistantConfigurationError,
   ProjectAssistantRequestError,
 } from "../../../../../../lib/project-assistant-model";
@@ -34,13 +34,13 @@ export async function POST(request: Request, context: { params: Promise<{ conver
         conversationId,
         userId: user.id,
         question,
-        invoke: invokeProjectAssistantModel,
+        invoke: createRecordedProjectAssistantInvoker({ organizationId, projectId, userId: user.id, taskType: "project_assistant.chat", promptVersion: PROJECT_ASSISTANT_PROMPT_VERSION, sourceId: conversationId }),
       },
     );
     return Response.json(result, { status: 201 });
   } catch (error) {
     if (error instanceof ProjectAssistantConfigurationError) return apiError(error.code, error.message, 503);
-    if (error instanceof ProjectAssistantRequestError) return apiError(error.code, error.message, 502);
+    if (error instanceof ProjectAssistantRequestError) return apiError(error.code, error.message, error.code === "MODEL_QUOTA_EXCEEDED" ? 429 : 502);
     if (error instanceof ProjectAssistantInvalidResponseError) return apiError(error.code, error.message, 502);
     if (error instanceof Error && error.message.includes("不存在")) return apiError("CONVERSATION_NOT_FOUND", error.message, 404);
     return errorResponse(error);

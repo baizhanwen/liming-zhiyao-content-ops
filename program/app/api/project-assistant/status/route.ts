@@ -1,4 +1,5 @@
-import { getD1, getProjectAccess } from "../../../../db/runtime";
+import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess } from "../../../../db/runtime";
+import { createRecordedProjectAssistantInvoker } from "../../../../lib/recorded-project-assistant-model";
 import { apiError, errorResponse } from "../../../../lib/api-response";
 import {
   probeProjectAssistantModel,
@@ -22,7 +23,7 @@ async function authorize(request: Request, payload?: Record<string, unknown>) {
   if (!organizationId || !projectId) return { error: apiError("PROJECT_SCOPE_REQUIRED", "缺少公司或项目范围。", 400) } as const;
   const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
   if (!access) return { error: apiError("ACCESS_DENIED", "无权访问该项目助理。", 403) } as const;
-  return { organizationId, projectId } as const;
+  return { organizationId, projectId, identity, access } as const;
 }
 
 export async function GET(request: Request) {
@@ -45,11 +46,13 @@ export async function POST(request: Request) {
   const current = await authorize(request, payload);
   if ("error" in current) return current.error;
   try {
-    const health = await probeProjectAssistantModel();
+    if (!canWriteProjectAccess(current.access)) return apiError("WRITE_ACCESS_REQUIRED", "当前角色不能发起收费的模型连接检查。", 403);
+    const user = await ensureUser(current.identity);
+    const health = await probeProjectAssistantModel(createRecordedProjectAssistantInvoker({ organizationId: current.organizationId, projectId: current.projectId, userId: user.id, taskType: "project_assistant.probe", promptVersion: "project-assistant.probe.v1" }));
     return Response.json({ configuration: projectAssistantConfigurationStatus(), health: { checked: true, ...health } });
   } catch (error) {
     if (error instanceof ProjectAssistantConfigurationError) return apiError(error.code, error.message, 503);
-    if (error instanceof ProjectAssistantRequestError) return apiError(error.code, error.message, 502);
+    if (error instanceof ProjectAssistantRequestError) return apiError(error.code, error.message, error.code === "MODEL_QUOTA_EXCEEDED" ? 429 : 502);
     return errorResponse(error);
   }
 }

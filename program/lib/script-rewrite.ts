@@ -1070,6 +1070,13 @@ export function readRewriteModelUsage(raw: unknown) {
   return { inputTokens, outputTokens, totalTokens };
 }
 
+export function formatRewriteTokenUsage(totalTokens: number, unknownRequestCount: number | null) {
+  const recorded = `已记录 ${totalTokens.toLocaleString("zh-CN")} Token`;
+  if (unknownRequestCount === null) return totalTokens ? `${recorded}，部分用量未确认` : "模型用量未确认";
+  if (unknownRequestCount > 0) return totalTokens ? `${recorded}，另有 ${unknownRequestCount} 次请求用量未知` : `${unknownRequestCount} 次请求的模型用量未知`;
+  return recorded;
+}
+
 export function rewriteVariantLabel(variant: ScriptRewriteVariant) {
   return variant === "light_rewrite" ? "微调同构" : "内容等价重构";
 }

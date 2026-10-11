@@ -73,6 +73,7 @@ $excludedFiles = @(
     "resources\authorized\dbskill\SOURCE.md", "resources\delivery\DELIVERY-GUIDE.txt",
     "scripts\verify-delivery.mjs", "scripts\test-lan-runtime.mjs", "scripts\lan-browser-checks.mjs", "scripts\lan-worker-check.py",
     "scripts\test-lan-identity-runtime.mjs",
+    "scripts\test-model-budget-runtime.mjs",
     "scripts\test-ecommerce-browser.mjs", "scripts\test-ecommerce-model.mjs", "scripts\ecommerce-test-model.mjs",
     "scripts\verify-ecommerce-upgrade.mjs", "scripts\verify-analyzer-delivery.ps1",
     "scripts\start-analyzer.ps1", "services\analyzer\README.md", "services\analyzer\uv.lock", "tools\README.md"

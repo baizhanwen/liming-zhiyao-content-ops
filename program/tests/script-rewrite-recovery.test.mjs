@@ -155,7 +155,7 @@ async function fixture(t, source, respond) {
   seed("script_rewrite_versions", { id: "rewrite-source", workspace_id: workspaceId, version: 1, variant: "source", text: source });
   f.runtime.getProjectAccess = async (_subject, org, project) => org === organizationId && project === projectId ? { projectRole: "admin" } : null;
   f.runtime.canWriteProjectAccess = Boolean;
-  f.mock("lib/operations.ts", { checkOrganizationQuota: async () => ({ allowed: true }) });
+  f.mock("lib/operations.ts", { checkOrganizationQuota: async () => ({ allowed: true, limit: 1000 }) });
   const calls = [];
   const config = { provider: "fixture", model: "fixture" };
   f.mock("lib/model-adapter.ts", {

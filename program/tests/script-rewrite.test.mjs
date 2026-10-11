@@ -452,7 +452,7 @@ test("rewrite workspace is project-scoped, versioned and uses the confirmed rewr
   assert.doesNotMatch(listApi, /reanalyze|analysis_jobs.*INSERT/is);
   assert.match(detailApi, /script_rewrite_versions/);
   assert.match(detailApi, /manual_version_saved/);
-  assert.match(generateApi, /invokeContentModel/);
+  assert.match(generateApi, /invokeRecordedContentRequest/);
   assert.match(generateApi, /nativeJson: attempt === 0/);
   assert.match(generateApi, /MODEL_OUTPUT_TRUNCATED/);
   assert.match(generateApi, /INVALID_MODEL_OUTPUT/);
