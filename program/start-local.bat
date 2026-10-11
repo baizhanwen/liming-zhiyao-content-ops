@@ -23,7 +23,7 @@ if not defined LOCAL_APP_PORT (
 )
 set "LOCAL_APP_URL=http://127.0.0.1:%LOCAL_APP_PORT%"
 
-powershell.exe -NoProfile -Command "try { $r = Invoke-WebRequest -UseBasicParsing -Uri '%LOCAL_APP_URL%/api/health' -TimeoutSec 2; if ($r.StatusCode -eq 200) { exit 0 } } catch {}; exit 1" >nul 2>nul
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\local-web-identity.ps1" -CheckHealth -HealthPort %LOCAL_APP_PORT% >nul 2>nul
 if not errorlevel 1 (
   echo [Liming Zhiyao] The app is already running at %LOCAL_APP_URL%
   powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\start-analyzer-background.ps1" -BaseUrl "%LOCAL_APP_URL%"
@@ -49,7 +49,7 @@ if errorlevel 1 (
 
 set "ANALYZER_BASE_URL=%LOCAL_APP_URL%"
 echo [Liming Zhiyao] Starting %LOCAL_APP_URL%
-if not "%LOCAL_APP_PORT%"=="3000" echo [NOTICE] Windows reserved port 3000, so this run uses port %LOCAL_APP_PORT%.
+if not "%LOCAL_APP_PORT%"=="3000" echo [NOTICE] This installation uses port %LOCAL_APP_PORT%. Always use the address shown above.
 echo The browser and video analyzer will start automatically when ready.
 echo Press Ctrl+C or run stop-local.bat to stop everything.
 start "" /b powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0scripts\open-local.ps1" -Url "%LOCAL_APP_URL%"

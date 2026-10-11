@@ -2,6 +2,7 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $projectRoot
 . (Join-Path $PSScriptRoot 'analyzer-instance-lock.ps1')
+. (Join-Path $PSScriptRoot 'local-web-identity.ps1')
 $webLock = Enter-AnalyzerInstanceLock $projectRoot 'web'
 if ($null -eq $webLock) { throw 'Another startup, setup or maintenance operation is in progress. Stop the local server before starting LAN mode.' }
 try {
@@ -13,16 +14,13 @@ $recordedPort = 3000
 $portPath = Join-Path $projectRoot ".local\app.port"
 if (Test-Path -LiteralPath $portPath) {
     [void][int]::TryParse((Get-Content -Raw -LiteralPath $portPath).Trim(), [ref]$recordedPort)
-    if ($recordedPort -le 0) { $recordedPort = 3000 }
+    if ($recordedPort -lt 1 -or $recordedPort -gt 65535) { $recordedPort = 3000 }
 }
-try {
-    $running = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$recordedPort/api/health" -TimeoutSec 2
-    if ($running.StatusCode -eq 200) {
-        Write-Host "[ERROR] A local-only server is already using port $recordedPort."
-        Write-Host "Stop it with Ctrl+C, then run start-lan.bat again."
-        exit 1
-    }
-} catch {}
+if (Test-LocalWebHealth $projectRoot $recordedPort) {
+    Write-Host "[ERROR] This installation is already using port $recordedPort."
+    Write-Host "Stop it with Ctrl+C, then run start-lan.bat again."
+    exit 1
+}
 
 $appPort = [int](& "$PSScriptRoot\select-local-port.ps1" -BindAll)
 $hostUrl = "http://127.0.0.1:$appPort"
@@ -57,7 +55,7 @@ Write-Host ""
 Write-Host "[Liming Zhiyao] LAN team mode is starting."
 Write-Host "Host access:      $hostUrl"
 Write-Host "Colleague access: $env:LAN_ACCESS_ORIGIN"
-if ($appPort -ne 3000) { Write-Host "[NOTICE] Windows reserved port 3000, so this run uses port $appPort." }
+if ($appPort -ne 3000) { Write-Host "[NOTICE] This installation uses port $appPort. Always use the address shown above." }
 Write-Host "If Windows asks, allow Node.js on Private networks."
 Write-Host "The browser and video analyzer will start automatically."
 Write-Host "Keep this window open. Press Ctrl+C or run stop-local.bat to stop everything."

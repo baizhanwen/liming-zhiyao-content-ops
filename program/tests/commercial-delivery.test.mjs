@@ -126,4 +126,8 @@ test("every delivery plan retains the lifecycle locks required for setup and rec
   for (const name of ["run-web-guard.ps1", "run-migration-guard.ps1", "local-state-maintenance.ps1"]) {
     assert.match(read(`scripts/${name}`), /analyzer-instance-lock\.ps1/);
   }
+  assert.doesNotMatch(delivery, /Remove-PackagePath "scripts\\local-web-identity\.ps1"/);
+  for (const name of ["run-web-guard.ps1", "select-local-port.ps1", "start-lan.ps1"]) {
+    assert.match(read(`scripts/${name}`), /local-web-identity\.ps1/);
+  }
 });
