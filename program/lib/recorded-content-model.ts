@@ -1,4 +1,5 @@
 import { getD1 } from "../db/runtime";
+import { assertProjectWriteAccess, projectWriteAccessBindings, projectWriteAccessCondition } from "./project-write-access";
 import { canContinueRewriteWrite, rewriteWriteAccessBindings, rewriteWriteAccessCondition } from "./script-rewrite-write";
 import { invokeContentModel, ModelRequestError, type ModelInvocation } from "./model-adapter";
 
@@ -13,6 +14,8 @@ type RequestContext = {
   taskType?: string;
   modelProfile?: string;
   rewriteWorkspaceId?: string;
+  enforceProjectWriteAccess?: boolean;
+  assertWriteAccess?: () => Promise<void>;
   provider: string; model: string; userId: string; step: string;
   inputHash: string; inputJson: string; monthlyLimit: number;
   ledger: ContentModelRequestRecord[];
@@ -28,6 +31,7 @@ function readUsage(raw: unknown) {
 /** Reserve each provider request atomically, including failed attempts/retries. */
 export async function invokeRecordedContentRequest(input: Parameters<typeof invokeContentModel>[0], context: RequestContext, invokeModel: typeof invokeContentModel = invokeContentModel): Promise<ModelInvocation> {
   const db = getD1(), now = new Date().toISOString();
+  await context.assertWriteAccess?.();
   const month = now.slice(0, 7) + "-01T00:00:00.000Z";
   const isRoot = context.id === context.rootCallId;
   const rewriteScope = context.rewriteWorkspaceId ? { organizationId: context.organizationId, projectId: context.projectId, userId: context.userId, workspaceId: context.rewriteWorkspaceId } : null;
@@ -35,13 +39,16 @@ export async function invokeRecordedContentRequest(input: Parameters<typeof invo
     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'started', ?, ?, ?, ?
     WHERE (SELECT COUNT(*) FROM model_calls WHERE organization_id = ? AND created_at >= ?) <
       MIN(?, COALESCE((SELECT monthly_model_call_quota FROM organization_settings WHERE organization_id = ?), ?))
-      ${rewriteScope ? `AND ${rewriteWriteAccessCondition}` : ""}`)
+      ${rewriteScope ? `AND ${rewriteWriteAccessCondition}` : ""}
+      ${context.enforceProjectWriteAccess ? `AND ${projectWriteAccessCondition}` : ""}`)
     .bind(context.id, context.organizationId, context.projectId, context.topicId, context.promptTemplateId,
       isRoot ? (context.taskType ?? "content_draft") : (context.taskType ?? "content_draft") + ".request", context.provider, context.model, context.modelProfile ?? input.profile, context.promptVersion,
       context.inputHash, isRoot ? context.inputJson : JSON.stringify({ ...JSON.parse(context.inputJson), parentModelCallId: context.rootCallId, step: context.step }),
       context.userId, now, context.organizationId, month, context.monthlyLimit, context.organizationId, context.monthlyLimit,
-      ...(rewriteScope ? rewriteWriteAccessBindings(rewriteScope) : [])).run();
+      ...(rewriteScope ? rewriteWriteAccessBindings(rewriteScope) : []),
+      ...(context.enforceProjectWriteAccess ? projectWriteAccessBindings(context) : [])).run();
   if (!reserved.meta.changes) {
+    if (context.enforceProjectWriteAccess) await assertProjectWriteAccess(db, context);
     if (rewriteScope && !await canContinueRewriteWrite(db, rewriteScope)) throw new ModelRequestError("项目权限或改写工作区状态已改变，本次未发起新的模型请求。", "REWRITE_ACCESS_CHANGED");
     throw new ModelRequestError("公司本月模型调用额度已用尽，本次未发起新的模型请求。", "MODEL_QUOTA_EXCEEDED");
   }
@@ -63,5 +70,7 @@ export async function invokeRecordedContentRequest(input: Parameters<typeof invo
   const saved = await db.prepare("UPDATE model_calls SET status = ?, output_json = ?, latency_ms = ?, completed_at = ? WHERE id = ? AND status = 'started'")
     .bind(isRoot ? "started" : "completed", JSON.stringify({ content: response.content.slice(0, 200_000), usage: { inputTokens: record.inputTokens, outputTokens: record.outputTokens, totalTokens: record.totalTokens }, modelRequests: [record] }), response.latencyMs, isRoot ? null : new Date().toISOString(), context.id).run();
   if (!saved.meta.changes) throw new ModelRequestError("该模型请求已因中断或恢复而结束，晚到结果没有继续保存。请刷新运行记录后再操作。", "MODEL_REQUEST_INTERRUPTED");
+  if (context.enforceProjectWriteAccess) await assertProjectWriteAccess(db, context);
+  await context.assertWriteAccess?.();
   return response;
 }

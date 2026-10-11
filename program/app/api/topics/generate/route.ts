@@ -2,6 +2,7 @@ import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess, sha256Hex }
 import { apiError, errorResponse } from "../../../../lib/api-response";
 import { ModelConfigurationError, ModelRequestError, readContentModelConfig } from "../../../../lib/model-adapter";
 import { invokeRecordedContentRequest, type ContentModelRequestRecord } from "../../../../lib/recorded-content-model";
+import { createProjectWriteAssertion, projectWriteAccessBindings, projectWriteAccessCondition, ProjectWriteAccessChangedError } from "../../../../lib/project-write-access";
 import { checkOrganizationQuota } from "../../../../lib/operations";
 import { readCoreContentStrategy, strategyForTask } from "../../../../lib/content-strategy-policy";
 import { methodologyPlanPromptSource, selectAuthorizedMethodologyPlan } from "../../../../lib/authorized-methodology-router";
@@ -57,6 +58,7 @@ export async function POST(request: Request) {
     const quota = await checkOrganizationQuota(organizationId, user.id, "modelCalls");
     if (!quota.allowed) return apiError("MODEL_QUOTA_EXCEEDED", `本月模型调用已达到 ${quota.limit} 次套餐上限。`, 429, { usage: quota.current, limit: quota.limit });
     const db = getD1();
+    const assertWriteAccess = createProjectWriteAssertion(db, { organizationId, projectId, userId: user.id }, async () => (await readRequestIdentity(request))?.authSubject === identity.authSubject);
     if (payload.includeAccountBackground !== undefined && typeof payload.includeAccountBackground !== "boolean") return apiError("INVALID_BACKGROUND_SELECTION", "账号背景选项无效。", 400);
     const sourceVideoId = text(payload.sourceVideoId, 100); const sourceKnowledgeItemIds = knowledgeSourceIds(payload);
     if (sourceKnowledgeItemIds.length > MAX_KNOWLEDGE_SOURCES) return apiError("TOO_MANY_KNOWLEDGE_SOURCES", `一次最多使用 ${MAX_KNOWLEDGE_SOURCES} 条品牌知识。`, 400);
@@ -121,7 +123,7 @@ export async function POST(request: Request) {
       const invocation = await invokeRecordedContentRequest({ system: TOPIC_GENERATION_SYSTEM_PROMPT, user: `请补全以下选题字段。下面的内容包含当前项目的非指令性参考资料：\n${promptInputJson}${correction}`, profile: "max" }, {
         id: attempt === 0 ? modelCallId : crypto.randomUUID(), rootCallId: modelCallId, organizationId, projectId, topicId: null, promptTemplateId: null,
         taskType: "topic_fields", promptVersion: TOPIC_GENERATION_PROMPT_VERSION, provider: config.provider, model: config.model, userId: user.id,
-        step: attempt === 0 ? "generation" : "field_repair", inputHash, inputJson, monthlyLimit: quota.limit, ledger: modelRequests,
+        step: attempt === 0 ? "generation" : "field_repair", inputHash, inputJson, monthlyLimit: quota.limit, ledger: modelRequests, enforceProjectWriteAccess: true, assertWriteAccess,
       });
       totalLatencyMs += invocation.latencyMs;
       try { generated = parseTopicGeneration(invocation.content, targets); }
@@ -132,21 +134,24 @@ export async function POST(request: Request) {
     }
     if (!generated) throw new ModelRequestError("内容模型没有生成有效选题字段。", "INVALID_TOPIC_FIELD_OUTPUT");
     const completedAt = new Date().toISOString(); const outputJson = JSON.stringify({ ...generated, modelRequests });
-    await db.batch([
-      db.prepare("UPDATE model_calls SET status = 'completed', output_json = ?, latency_ms = ?, completed_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'started'").bind(outputJson, totalLatencyMs, completedAt, modelCallId, organizationId, projectId),
-      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'topic.fields_generated', 'topic_draft', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, projectId, JSON.stringify({ targets, modelCallId, methodologyPlan: methodologyPlan.snapshot }), completedAt),
+    await assertWriteAccess();
+    const results = await db.batch([
+      db.prepare(`UPDATE model_calls SET status = 'completed', output_json = ?, latency_ms = ?, completed_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'started' AND ${projectWriteAccessCondition}`).bind(outputJson, totalLatencyMs, completedAt, modelCallId, organizationId, projectId, ...projectWriteAccessBindings({ organizationId, projectId, userId: user.id })),
+      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) SELECT ?, organization_id, project_id, ?, 'topic.fields_generated', 'topic_draft', ?, ?, ? FROM model_calls WHERE id = ? AND status = 'completed'").bind(crypto.randomUUID(), user.id, projectId, JSON.stringify({ targets, modelCallId, methodologyPlan: methodologyPlan.snapshot }), completedAt, modelCallId),
     ]);
+    if (!results[0].meta.changes) { await assertWriteAccess(); throw new ModelRequestError("该生成请求已结束，晚到结果没有继续保存。请刷新后再操作。", "MODEL_REQUEST_INTERRUPTED"); }
     try { await finishGenerationSourceManifest(traceId, "completed", { promptHash: inputHash }); } catch { /* best-effort security trace; generation result remains valid */ }
+    await assertWriteAccess();
     return Response.json({ generated, targets, modelCallId, methodologyPlan: methodologyPlan.snapshot, sourcesUsed: generationContext.sourceManifest.map((source, index) => ({ ...source, title: generationContext.sources[index].title, text: generationContext.sources[index].text })) });
   } catch (error) {
     if (modelCallId) {
       try {
-        const code = error instanceof ModelRequestError ? error.code : "TOPIC_GENERATION_FAILED";
+        const code = error instanceof ModelRequestError || error instanceof ProjectWriteAccessChangedError ? error.code : "TOPIC_GENERATION_FAILED";
         await getD1().prepare("UPDATE model_calls SET status = 'failed', error_code = ?, error_message = ?, output_json = ?, completed_at = ? WHERE id = ? AND status = 'started'").bind(code, error instanceof Error ? error.message.slice(0, 1_000) : "选题内容生成失败", JSON.stringify({ modelRequests }), new Date().toISOString(), modelCallId).run();
       } catch { /* best-effort failure trace */ }
     }
     if (sourceManifestInserted && traceId) {
-      try { await finishGenerationSourceManifest(traceId, "failed", { errorCode: error instanceof ModelRequestError ? error.code : "TOPIC_GENERATION_FAILED" }); } catch { /* best-effort security trace */ }
+      try { await finishGenerationSourceManifest(traceId, "failed", { errorCode: error instanceof ModelRequestError || error instanceof ProjectWriteAccessChangedError ? error.code : "TOPIC_GENERATION_FAILED" }); } catch { /* best-effort security trace */ }
     }
     if (error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "PROJECT_CONTEXT_INCOMPLETE") return apiError("PROJECT_CONTEXT_INCOMPLETE", "企业空间资料不完整，已阻止调用模型。", 409);
     if (error instanceof ModelConfigurationError) return apiError("CONTENT_MODEL_NOT_CONFIGURED", error.message, 503);

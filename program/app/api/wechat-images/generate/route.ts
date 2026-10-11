@@ -2,6 +2,7 @@ import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess, sha256Hex }
 import { apiError, errorResponse } from "../../../../lib/api-response";
 import { ModelConfigurationError, ModelRequestError, readContentModelConfig } from "../../../../lib/model-adapter";
 import { invokeRecordedContentRequest, type ContentModelRequestRecord } from "../../../../lib/recorded-content-model";
+import { createProjectWriteAssertion, projectWriteAccessBindings, projectWriteAccessCondition, ProjectWriteAccessChangedError } from "../../../../lib/project-write-access";
 import { checkOrganizationQuota } from "../../../../lib/operations";
 import { assertProjectGenerationContext, buildProjectGenerationContext, finishGenerationSourceManifest, insertGenerationSourceManifest, redactedGenerationInput, untrustedReferencePrompt } from "../../../../lib/project-generation-context";
 import { readRequestIdentity } from "../../../../lib/request-auth";
@@ -43,6 +44,7 @@ export async function POST(request: Request) {
     if (!quota.allowed) return apiError("MODEL_QUOTA_EXCEEDED", `本月模型调用已达到 ${quota.limit} 次套餐上限。`, 429);
 
     const db = getD1();
+    const assertWriteAccess = createProjectWriteAssertion(db, { organizationId, projectId, userId: user.id }, async () => (await readRequestIdentity(request))?.authSubject === identity.authSubject);
     const config = readContentModelConfig("max");
     const [project, strategy, knowledgeRows] = await Promise.all([
       db.prepare("SELECT name, client_name FROM projects WHERE id = ? AND organization_id = ? AND deleted_at IS NULL").bind(projectId, organizationId).first<{ name: string; client_name: string }>(),
@@ -98,7 +100,7 @@ export async function POST(request: Request) {
         }, {
           id: attempt === 0 ? modelCallId : crypto.randomUUID(), rootCallId: modelCallId, organizationId, projectId, topicId: null, promptTemplateId: null,
           taskType: "wechat_image", promptVersion: WECHAT_IMAGE_PROMPT_VERSION, provider: config.provider, model: config.model, userId: user.id,
-          step: attempt === 0 ? "generation" : "image_copy_repair", inputHash, inputJson, monthlyLimit: quota.limit, ledger: modelRequests,
+          step: attempt === 0 ? "generation" : "image_copy_repair", inputHash, inputJson, monthlyLimit: quota.limit, ledger: modelRequests, enforceProjectWriteAccess: true, assertWriteAccess,
         });
       } catch (error) {
         if (attempt === 0 && error instanceof ModelRequestError && error.code === "MODEL_EMPTY_RESPONSE") {
@@ -117,11 +119,14 @@ export async function POST(request: Request) {
     if (!generated) throw new ModelRequestError("内容模型没有生成有效的图片文案。", "INVALID_WECHAT_IMAGE_OUTPUT");
 
     const completedAt = new Date().toISOString();
-    await db.batch([
-      db.prepare("UPDATE model_calls SET status = 'completed', error_code = NULL, error_message = NULL, output_json = ?, latency_ms = ?, completed_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'started'").bind(JSON.stringify({ ...generated, modelRequests }), latencyMs, completedAt, modelCallId, organizationId, projectId),
-      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'wechat_image.generated', 'project', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, projectId, JSON.stringify({ templateId, ratioId, modelCallId, brandKnowledgeIds: knowledge.map((item) => item.id), traceId }), completedAt),
+    await assertWriteAccess();
+    const results = await db.batch([
+      db.prepare(`UPDATE model_calls SET status = 'completed', error_code = NULL, error_message = NULL, output_json = ?, latency_ms = ?, completed_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'started' AND ${projectWriteAccessCondition}`).bind(JSON.stringify({ ...generated, modelRequests }), latencyMs, completedAt, modelCallId, organizationId, projectId, ...projectWriteAccessBindings({ organizationId, projectId, userId: user.id })),
+      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) SELECT ?, organization_id, project_id, ?, 'wechat_image.generated', 'project', ?, ?, ? FROM model_calls WHERE id = ? AND status = 'completed'").bind(crypto.randomUUID(), user.id, projectId, JSON.stringify({ templateId, ratioId, modelCallId, brandKnowledgeIds: knowledge.map((item) => item.id), traceId }), completedAt, modelCallId),
     ]);
+    if (!results[0].meta.changes) { await assertWriteAccess(); throw new ModelRequestError("该生成请求已结束，晚到结果没有继续保存。请刷新后再操作。", "MODEL_REQUEST_INTERRUPTED"); }
     try { await finishGenerationSourceManifest(traceId, "completed", { promptHash: inputHash }); } catch { /* Best-effort security trace only. */ }
+    await assertWriteAccess();
     return Response.json({
       generated,
       modelCallId,
@@ -130,11 +135,11 @@ export async function POST(request: Request) {
   } catch (error) {
     if (modelCallId) {
       try {
-        const code = error instanceof ModelRequestError ? error.code : "WECHAT_IMAGE_GENERATION_FAILED";
+        const code = error instanceof ModelRequestError || error instanceof ProjectWriteAccessChangedError ? error.code : "WECHAT_IMAGE_GENERATION_FAILED";
         await getD1().prepare("UPDATE model_calls SET status = 'failed', error_code = ?, error_message = ?, output_json = ?, completed_at = ? WHERE id = ? AND status = 'started'").bind(code, error instanceof Error ? error.message.slice(0, 1_000) : "公众号图片生成失败", JSON.stringify({ modelRequests }), new Date().toISOString(), modelCallId).run();
       } catch { /* Best-effort trace only. */ }
     }
-    if (sourceManifestInserted && traceId) { try { await finishGenerationSourceManifest(traceId, "failed", { errorCode: error instanceof ModelRequestError ? error.code : "WECHAT_IMAGE_GENERATION_FAILED" }); } catch { /* Best-effort security trace only. */ } }
+    if (sourceManifestInserted && traceId) { try { await finishGenerationSourceManifest(traceId, "failed", { errorCode: error instanceof ModelRequestError || error instanceof ProjectWriteAccessChangedError ? error.code : "WECHAT_IMAGE_GENERATION_FAILED" }); } catch { /* Best-effort security trace only. */ } }
     if (error instanceof ModelConfigurationError) return apiError("CONTENT_MODEL_NOT_CONFIGURED", error.message, 503);
     if (error instanceof ModelRequestError) return apiError(error.code, error.message, error.code === "MODEL_QUOTA_EXCEEDED" ? 429 : 502);
     return errorResponse(error);

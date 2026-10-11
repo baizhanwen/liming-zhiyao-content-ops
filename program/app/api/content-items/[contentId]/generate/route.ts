@@ -17,6 +17,7 @@ import { applyCitationRepair, buildCitationDraftAnchors, buildCitationSourceAnch
 import { incompleteScriptReason } from "../../../../../lib/content-writing-intent";
 import type { ContentStatus } from "../../../../../lib/content-workflow";
 import { contentVersionSourceSql, contentVersionSourceBindings, contentVersionWrittenSql, contentVersionWrittenBindings, contentVersionFollowupStatements, statusAfterContentRevision } from "../../../../../lib/content-version-write";
+import { createProjectWriteAssertion, ProjectWriteAccessChangedError } from "../../../../../lib/project-write-access";
 
 import { topicKnowledgeSelection } from "../../../../../lib/topic-knowledge-selection";
 import { BENCHMARK_CONTENT_GUIDANCE } from "../../../../../lib/benchmark-content-policy";
@@ -76,6 +77,7 @@ export async function POST(request: Request, context: { params: Promise<{ conten
     if (!quota.allowed) return apiError("MODEL_QUOTA_EXCEEDED", `本月模型调用已达到 ${quota.limit} 次套餐上限。`, 429, { usage: quota.current, limit: quota.limit });
     const config = readContentModelConfig(modelProfile);
     const { contentId } = await context.params; const db = getD1();
+    const assertWriteAccess = createProjectWriteAssertion(db, { organizationId, projectId, userId: user.id }, async () => (await readRequestIdentity(request))?.authSubject === identity.authSubject);
     const item = await db.prepare(`
       SELECT c.id, c.title, c.current_version, c.status, c.topic_id, t.title AS topic_title, t.angle, t.pillar, t.audience, t.objective, t.hook, t.rationale, t.selected_knowledge_ids_json
       FROM content_items c INNER JOIN topic_ideas t ON t.id = c.topic_id AND t.organization_id = c.organization_id AND t.project_id = c.project_id
@@ -242,7 +244,7 @@ export async function POST(request: Request, context: { params: Promise<{ conten
       if (!contextCheck.ok) throw new ModelRequestError(contextCheck.message, contextCheck.code);
       requestNumber += 1;
       return invokeRecordedContentRequest(input, { id: requestNumber === 1 ? modelCallId! : crypto.randomUUID(), rootCallId: modelCallId!, organizationId, projectId, topicId: item.topic_id, promptTemplateId: prompt!.id, promptVersion,
-        provider: config.provider, model: config.model, userId: user.id, step, inputHash, inputJson, monthlyLimit: quota.limit, ledger: modelRequests });
+        provider: config.provider, model: config.model, userId: user.id, step, inputHash, inputJson, monthlyLimit: quota.limit, ledger: modelRequests, enforceProjectWriteAccess: true, assertWriteAccess });
     };
     let pack: ReturnType<typeof productionPackSchema.parse> | null = null; let totalLatencyMs = 0; let correction = "";
     let citationDraft: ReturnType<typeof productionPackSchema.parse> | null = null;
@@ -439,8 +441,10 @@ export async function POST(request: Request, context: { params: Promise<{ conten
       ...pack.citations.map((citation) => db.prepare("INSERT INTO content_citations (id, organization_id, project_id, content_item_id, content_version_id, citation_type, citation_id, quote, created_by, created_at) SELECT ?, ?, ?, ?, id, ?, ?, ?, ?, ? FROM content_versions WHERE id = ? AND organization_id = ? AND project_id = ?").bind(crypto.randomUUID(), organizationId, projectId, contentId, citation.sourceType, citation.sourceId, citation.quote, user.id, completedAt, versionId, organizationId, projectId)),
       db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) SELECT ?, organization_id, project_id, ?, 'content.generated', 'content_item', content_item_id, ?, ? FROM content_versions WHERE id = ? AND organization_id = ? AND project_id = ? AND version = ?").bind(crypto.randomUUID(), user.id, JSON.stringify({ version: nextVersion, fromStatus: item.status, toStatus: statusAfterContentRevision(item.status), modelCallId, promptVersion, creationMode, methodologyPlan: methodologyPlan.snapshot, benchmarkEntryIds, recommendedBenchmarkIds, manuallyAddedBenchmarkIds: benchmarkEntryIds.filter((id) => !recommendedBenchmarkIds.includes(id)), manuallyRemovedBenchmarkIds: recommendedBenchmarkIds.filter((id) => !benchmarkEntryIds.includes(id)), benchmarkCitations: pack.citations.filter((citation) => citation.sourceType === "benchmark").length, benchmarkUsage, historicalCopyIds: historicalMatches.map((match) => match.record.id), historicalCopyCitations: pack.citations.filter((citation) => citation.sourceType === "historical_copy").length, historicalStyleStatus: pack.historicalStyleApplication?.status || null, historicalStyleMatchedChecks: pack.historicalStyleApplication?.matchedChecks || 0, historicalStyleTotalChecks: pack.historicalStyleApplication?.totalChecks || 0 }), completedAt, versionId, organizationId, projectId, nextVersion),
     ];
+    await assertWriteAccess();
     const results = await db.batch(statements);
     if (!results[0].meta.changes) {
+      await assertWriteAccess();
       await db.prepare("UPDATE model_calls SET status = 'failed', error_code = 'CONTENT_VERSION_CONFLICT', error_message = '生成期间稿件版本或状态已改变，本次结果未保存。', completed_at = ? WHERE id = ? AND status = 'started'").bind(completedAt, modelCallId).run();
       await finishGenerationSourceManifest(traceId, "failed", { promptHash: inputHash, errorCode: "CONTENT_VERSION_CONFLICT" });
       return apiError("CONTENT_VERSION_CONFLICT", "生成期间稿件版本或状态已改变，本次结果未覆盖已有内容，请刷新后重试。", 409);
@@ -451,12 +455,13 @@ export async function POST(request: Request, context: { params: Promise<{ conten
     console.error("[content.generate] Unhandled generation error", error);
     if (modelCallId) {
       try {
-        const db = getD1(); const code = error instanceof ModelRequestError ? error.code : "MODEL_GENERATION_FAILED";
+        const db = getD1(); const code = error instanceof ModelRequestError || error instanceof ProjectWriteAccessChangedError ? error.code : "MODEL_GENERATION_FAILED";
         await db.prepare("UPDATE model_calls SET status = 'failed', error_code = ?, error_message = ?, output_json = json_set(COALESCE(output_json, '{}'), '$.modelRequests', json(?)), completed_at = ? WHERE id = ? AND status = 'started'").bind(code, error instanceof Error ? error.message.slice(0, 1000) : "内容生成失败", JSON.stringify(modelRequests), new Date().toISOString(), modelCallId).run();
       } catch { /* best-effort failure trace */ }
     }
-    if (sourceManifestInserted && traceId) { try { await finishGenerationSourceManifest(traceId, "failed", { errorCode: error instanceof ModelRequestError ? error.code : "MODEL_GENERATION_FAILED" }); } catch { /* best-effort security trace */ } }
+    if (sourceManifestInserted && traceId) { try { await finishGenerationSourceManifest(traceId, "failed", { errorCode: error instanceof ModelRequestError || error instanceof ProjectWriteAccessChangedError ? error.code : "MODEL_GENERATION_FAILED" }); } catch { /* best-effort security trace */ } }
     if (error instanceof ModelConfigurationError) return apiError("CONTENT_MODEL_NOT_CONFIGURED", error.message, 503);
+    if (error instanceof ProjectWriteAccessChangedError) return errorResponse(error);
     if (error instanceof ModelRequestError) {
       if (error.code === "MODEL_QUOTA_EXCEEDED") return apiError(error.code, error.message, 429);
       if (error.code === "CONTENT_VERSION_CONFLICT") return apiError(error.code, error.message, 409);

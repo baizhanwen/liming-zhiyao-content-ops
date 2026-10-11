@@ -9,6 +9,7 @@ import { benchmarkRewriteReportSchema, rewriteCharacterCount } from "../../../..
 import { incompleteScriptReason } from "../../../../lib/content-writing-intent";
 import type { ContentStatus } from "../../../../lib/content-workflow";
 import { contentVersionSourceSql, contentVersionSourceBindings, contentVersionWrittenSql, contentVersionWrittenBindings, contentVersionFollowupStatements, statusAfterContentRevision } from "../../../../lib/content-version-write";
+import { createProjectWriteAssertion } from "../../../../lib/project-write-access";
 
 export const dynamic = "force-dynamic";
 
@@ -117,8 +118,10 @@ export async function PATCH(request: Request, context: { params: Promise<{ conte
       ...pack.citations.map((citation) => db.prepare(`INSERT INTO content_citations (id, organization_id, project_id, content_item_id, content_version_id, citation_type, citation_id, quote, created_by, created_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${contentVersionWrittenSql}`).bind(crypto.randomUUID(), organizationId, projectId, contentId, versionId, citation.sourceType, citation.sourceId, citation.quote, user.id, now, ...contentVersionWrittenBindings(write))),
       db.prepare(`INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) SELECT ?, ?, ?, ?, 'content.version.created', 'content_item', ?, ?, ? WHERE ${contentVersionWrittenSql}`).bind(crypto.randomUUID(), organizationId, projectId, user.id, contentId, JSON.stringify({ version: nextVersion, mode: "manual", fromStatus: item.status, toStatus: statusAfterContentRevision(item.status) }), now, ...contentVersionWrittenBindings(write)),
     ];
+    const assertWriteAccess = createProjectWriteAssertion(db, { organizationId, projectId, userId: user.id }, async () => (await readRequestIdentity(request))?.authSubject === identity.authSubject);
+    await assertWriteAccess();
     const results = await db.batch(statements);
-    if (!results[0].meta.changes) return apiError("CONTENT_VERSION_CONFLICT", "内容已被其他成员更新，请刷新后重试。", 409);
+    if (!results[0].meta.changes) { await assertWriteAccess(); return apiError("CONTENT_VERSION_CONFLICT", "内容已被其他成员更新，请刷新后重试。", 409); }
     return Response.json({ item: { id: contentId, status: statusAfterContentRevision(item.status), current_version: nextVersion, version_id: versionId, generation_mode: "manual", pack_json: packJson, full_script: validatedPack.fullScript, short_script: validatedPack.shortScript, updated_at: now } });
   } catch (error) { return errorResponse(error); }
 }

@@ -1,8 +1,11 @@
+import { ProjectWriteAccessChangedError } from "./project-write-access.ts";
+
 export function apiError(code: string, message: string, status: number, details?: Record<string, unknown>) {
   return Response.json({ error: { code, message, ...details } }, { status });
 }
 
 export function errorResponse(error: unknown) {
+  if (error instanceof ProjectWriteAccessChangedError) return apiError(error.code, error.message, 403);
   const message = error instanceof Error ? error.message : "Unexpected error";
   if (message.includes("ANALYSIS_USER_QUEUE_FULL")) return apiError("ANALYSIS_USER_QUEUE_FULL", "你已有 10 条未结束的分析任务（跨项目累计），请等待完成后再提交。本批已成功提交的任务会继续处理。", 429);
   if (message.includes("ANALYSIS_HOST_QUEUE_FULL")) return apiError("ANALYSIS_HOST_QUEUE_FULL", "主机已有 50 条未结束的分析任务，请等待队列释放名额后再提交。本批已成功提交的任务会继续处理。", 429);

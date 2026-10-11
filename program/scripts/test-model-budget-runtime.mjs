@@ -12,7 +12,7 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const runDir = path.join(root, ".local/mb", randomBytes(4).toString("hex")); mkdirSync(runDir, { recursive: true });
 const scope = { organizationId: "fee-org", projectId: "fee-project" }, userId = "fee-user";
 const password = randomBytes(18).toString("base64url"), scenarios = [], requests = [], providerCalls = [];
-let mf, db, origin, cookie, mode = "valid", modeCalls = 0, rewriteResponseHook;
+let mf, db, origin, cookie, mode = "valid", modeCalls = 0, rewriteResponseHook, responseHook;
 const audit = { missing_paragraph_ids: [], problem_paragraph_ids: [], added_claims: [], core_information_retention: 100, structure_aligned: true, style_aligned: true, conclusion_aligned: true, production_notes_preserved: true, copy_risk: "low", notes: [] };
 const source = "企业在2027年要让AI增长7.1%，我们会先把每次测试的过程记录下来，然后逐项核对结果，最后才决定怎样调整。";
 const rewritten = "面向2027年AI增长7.1%的目标，我们先留下每轮测试的过程记录，核验各项结果以后，再据此安排后续调整。";
@@ -52,6 +52,7 @@ try {
       if (url.hostname === "assistant.example.invalid") result = { reply: "当前暂无对标资料，先从一个业务问题验证方向。", recommendations: [], citations: [], memoryOperations: [{ operation: "noop", confidence: 100, reason: "没有新证据" }] };
       else if (context?.task) result = context.task === "audit_micro_homomorphic_script" ? audit : { paragraphs: context.source_paragraphs.map(row => ({ paragraph_id: row.paragraph_id, text: rewritten })) };
       if (context?.task && rewriteResponseHook) await rewriteResponseHook(context);
+      if (responseHook) await responseHook();
       return Response.json({ choices: [{ message: { content: mode === "invalid-first" && modeCalls === 1 ? "{" : JSON.stringify(result) } }], ...(mode === "unknown-usage" ? {} : { usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 } }) });
     },
   });
@@ -166,11 +167,47 @@ try {
     expect(await http(`/api/script-rewrites/fee-rewrite?organizationId=${scope.organizationId}&projectId=${scope.projectId}`), 200);
     assert.equal(await count(), providerCalls.length);
   });
+  await check("topic reply after membership removal is denied and the actual request remains counted", async () => {
+    await allowance(10); const before = providerCalls.length;
+    responseHook = async () => { responseHook = undefined; await db.prepare("UPDATE organization_members SET status='inactive' WHERE user_id=?").bind(userId).run(); };
+    const data = expect(await topic(), 403); assert.equal(data.error.code, "PROJECT_WRITE_ACCESS_CHANGED"); assert.equal(providerCalls.length - before, 1);
+    await db.prepare("UPDATE organization_members SET status='active' WHERE user_id=?").bind(userId).run();
+  });
+  await check("image copy reply after project archival is denied without repair or a success audit", async () => {
+    const before = providerCalls.length;
+    responseHook = async () => { responseHook = undefined; await db.prepare("UPDATE projects SET status='archived' WHERE id=?").bind(scope.projectId).run(); };
+    const data = expect(await http("/api/wechat-images/generate", { ...scope, topic: "如何核对工作结果", templateId: "method-warm", ratioId: "3:4" }), 403);
+    assert.equal(data.error.code, "PROJECT_WRITE_ACCESS_CHANGED"); assert.equal(providerCalls.length - before, 1);
+    assert.equal((await db.prepare("SELECT COUNT(*) n FROM audit_logs WHERE action='wechat_image.generated'").first()).n, 0);
+    await db.prepare("UPDATE projects SET status='active' WHERE id=?").bind(scope.projectId).run();
+  });
+  await check("content reply after membership removal cannot create a version or overwrite the old draft", async () => {
+    await db.prepare("INSERT INTO topic_ideas(id,organization_id,project_id,title,source_type,created_by,updated_by,created_at,updated_at) VALUES('fee-topic',?,?,'如何核对任务','manual',?,?,?,?)").bind(scope.organizationId, scope.projectId, userId, userId, now, now).run();
+    await db.prepare("INSERT INTO content_items(id,organization_id,project_id,topic_id,title,created_by,updated_by,created_at,updated_at) VALUES('fee-content',?,?,'fee-topic','Synthetic content',?,?,?,?)").bind(scope.organizationId, scope.projectId, userId, userId, now, now).run();
+    await db.prepare("INSERT INTO content_versions(id,organization_id,project_id,content_item_id,version,generation_mode,pack_json,full_script,short_script,created_by,created_at) VALUES('fee-original',?,?,'fee-content',1,'manual','{}',?,'保留原稿',?,?)").bind(scope.organizationId, scope.projectId, source, userId, now).run();
+    const before = providerCalls.length;
+    responseHook = async () => { responseHook = undefined; await db.prepare("UPDATE organization_members SET status='inactive' WHERE user_id=?").bind(userId).run(); };
+    const data = expect(await http("/api/content-items/fee-content/generate", { ...scope }), 403);
+    assert.equal(data.error.code, "PROJECT_WRITE_ACCESS_CHANGED"); assert.equal(providerCalls.length - before, 1);
+    assert.equal((await db.prepare("SELECT current_version FROM content_items WHERE id='fee-content'").first()).current_version, 1);
+    assert.equal((await db.prepare("SELECT COUNT(*) n FROM content_versions WHERE content_item_id='fee-content'").first()).n, 1);
+    assert.equal((await db.prepare("SELECT full_script FROM content_versions WHERE id='fee-original'").first()).full_script, source);
+    await db.prepare("UPDATE organization_members SET status='active' WHERE user_id=?").bind(userId).run();
+  });
+  await check("topic response after real session deletion is denied and fresh login remains usable", async () => {
+    const before = providerCalls.length;
+    responseHook = async () => { responseHook = undefined; await db.prepare("DELETE FROM local_sessions WHERE user_id=?").bind(userId).run(); };
+    const data = expect(await topic(), 403); assert.equal(data.error.code, "PROJECT_WRITE_ACCESS_CHANGED"); assert.equal(providerCalls.length - before, 1);
+    const login = await http("/api/auth/session", { email: "fee@example.invalid", password }, false); expect(login, 200); cookie = login.headers.get("set-cookie").split(";")[0];
+    expect(await topic(), 200);
+    assert.equal(await count(), providerCalls.length);
+    assert.equal((await db.prepare("SELECT COUNT(*) n FROM model_calls WHERE error_code='PROJECT_WRITE_ACCESS_CHANGED'").first()).n, 4);
+  });
 } catch (error) { console.error(error.stack); if (error.cause) console.error(error.cause); process.exitCode = 1; }
 finally {
   if (mf) await mf.dispose();
   const timings = requests.map(request => request.ms).sort((a, b) => a - b);
-  const report = { passed: !process.exitCode && scenarios.length === 15 && scenarios.every(scenario => scenario.passed), startedAt, finishedAt: new Date().toISOString(),
+  const report = { passed: !process.exitCode && scenarios.length === 19 && scenarios.every(scenario => scenario.passed), startedAt, finishedAt: new Date().toISOString(),
     boundary: "Built Worker, real HTTP/password/D1; locally mocked providers, synthetic accounts/materials/token usage; no real model spend or multi-device business acceptance.",
     buildSha256: createHash("sha256").update(readFileSync(path.join(root, "dist/server/index.js"))).digest("hex"), scenarios, providerCalls, requests,
     metrics: { requests: requests.length, providerRequests: providerCalls.length, p50Ms: timings[Math.floor(timings.length * .5)] ?? 0, p95Ms: timings[Math.floor(timings.length * .95)] ?? 0, maxMs: timings.at(-1) ?? 0,
