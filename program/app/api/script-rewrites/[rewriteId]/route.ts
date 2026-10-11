@@ -2,6 +2,7 @@ import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess } from "../.
 import { apiError, errorResponse } from "../../../../lib/api-response";
 import { buildScriptUnits, SCRIPT_REWRITE_MAX_CHARACTERS } from "../../../../lib/script-rewrite";
 import { readRequestIdentity } from "../../../../lib/request-auth";
+import { rewriteVersionAudit, rewriteVersionInsert } from "../../../../lib/script-rewrite-write";
 
 export const dynamic = "force-dynamic";
 
@@ -81,13 +82,18 @@ export async function PATCH(request: Request, context: { params: Promise<{ rewri
       const parent = await db.prepare("SELECT id FROM script_rewrite_versions WHERE id = ? AND organization_id = ? AND project_id = ? AND workspace_id = ?").bind(parentVersionId, organizationId, projectId, rewriteId).first();
       if (!parent) return apiError("REWRITE_PARENT_VERSION_NOT_FOUND", "要编辑的来源版本不存在。", 404);
     }
-    const latest = await db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM script_rewrite_versions WHERE organization_id = ? AND project_id = ? AND workspace_id = ?").bind(organizationId, projectId, rewriteId).first<{ version: number }>();
-    const version = Number(latest?.version ?? 0) + 1; const versionId = crypto.randomUUID(); const user = await ensureUser(identity); const now = new Date().toISOString(); const units = buildScriptUnits(body, SCRIPT_REWRITE_MAX_CHARACTERS);
-    await db.batch([
-      db.prepare(`INSERT INTO script_rewrite_versions (id, organization_id, project_id, workspace_id, version, variant, parent_version_id, run_id, text, paragraphs_json, source_mapping_json, outline_json, validation_json, model_provider, model_name, prompt_version, model_call_id, change_summary, created_by, created_at) VALUES (?, ?, ?, ?, ?, 'manual', ?, NULL, ?, ?, ?, '[]', '{}', NULL, NULL, NULL, NULL, ?, ?, ?)`).bind(versionId, organizationId, projectId, rewriteId, version, parentVersionId || null, body, JSON.stringify(units.map((item) => item.text)), JSON.stringify(units.map((item) => item.paragraphId)), clean(payload.changeSummary, 500) || "人工编辑保存", user.id, now),
-      db.prepare("UPDATE script_rewrite_workspaces SET updated_by = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ?").bind(user.id, now, rewriteId, organizationId, projectId),
-      db.prepare(`INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'script_rewrite.manual_version_saved', 'script_rewrite_version', ?, ?, ?)`).bind(crypto.randomUUID(), organizationId, projectId, user.id, versionId, JSON.stringify({ workspaceId: rewriteId, version, parentVersionId: parentVersionId || null }), now),
+    const versionId = crypto.randomUUID(); const user = await ensureUser(identity); const now = new Date().toISOString(); const units = buildScriptUnits(body, SCRIPT_REWRITE_MAX_CHARACTERS);
+    const scope = { organizationId, projectId, workspaceId: rewriteId, userId: user.id };
+    const currentIdentity = await readRequestIdentity(request);
+    if (!currentIdentity || currentIdentity.authSubject !== identity.authSubject) return apiError("REWRITE_ACCESS_CHANGED", "登录状态已改变，请重新登录后保存；编辑内容仍保留在输入框中。", 403);
+    const saved = await db.batch([
+      rewriteVersionInsert(db, { ...scope, id: versionId, variant: "manual", parentVersionId: parentVersionId || null, text: body, paragraphs: units.map(item => item.text), sourceMapping: units.map(item => item.paragraphId), changeSummary: clean(payload.changeSummary, 500) || "人工编辑保存", now }),
+      db.prepare("UPDATE script_rewrite_workspaces SET updated_by = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND EXISTS (SELECT 1 FROM script_rewrite_versions WHERE id = ?)").bind(user.id, now, rewriteId, organizationId, projectId, versionId),
+      rewriteVersionAudit(db, { ...scope, id: crypto.randomUUID(), versionId, action: "script_rewrite.manual_version_saved", metadata: { workspaceId: rewriteId, parentVersionId: parentVersionId || null }, now }),
+      db.prepare("SELECT version FROM script_rewrite_versions WHERE id = ?").bind(versionId),
     ]);
+    if (!saved[0].meta.changes) return apiError("REWRITE_ACCESS_CHANGED", "项目权限或工作区状态已改变，未保存新版本；请刷新确认权限，编辑内容仍保留在输入框中。", 403);
+    const version = (saved[3].results[0] as { version: number }).version;
     return Response.json({ version: { id: versionId, version, variant: "manual", text: body, paragraphs: units.map((item) => item.text), parentVersionId: parentVersionId || null, createdAt: now } }, { status: 201 });
   } catch (error) { return errorResponse(error); }
 }

@@ -1,4 +1,5 @@
 import { getD1 } from "../db/runtime";
+import { canContinueRewriteWrite, rewriteWriteAccessBindings, rewriteWriteAccessCondition } from "./script-rewrite-write";
 import { invokeContentModel, ModelRequestError, type ModelInvocation } from "./model-adapter";
 
 export type ContentModelRequestRecord = {
@@ -11,6 +12,7 @@ type RequestContext = {
   topicId: string | null; promptTemplateId: string | null; promptVersion: string;
   taskType?: string;
   modelProfile?: string;
+  rewriteWorkspaceId?: string;
   provider: string; model: string; userId: string; step: string;
   inputHash: string; inputJson: string; monthlyLimit: number;
   ledger: ContentModelRequestRecord[];
@@ -28,15 +30,21 @@ export async function invokeRecordedContentRequest(input: Parameters<typeof invo
   const db = getD1(), now = new Date().toISOString();
   const month = now.slice(0, 7) + "-01T00:00:00.000Z";
   const isRoot = context.id === context.rootCallId;
+  const rewriteScope = context.rewriteWorkspaceId ? { organizationId: context.organizationId, projectId: context.projectId, userId: context.userId, workspaceId: context.rewriteWorkspaceId } : null;
   const reserved = await db.prepare(`INSERT INTO model_calls (id, organization_id, project_id, topic_id, prompt_template_id, task_type, provider, model_name, model_profile, prompt_version, status, input_hash, input_json, created_by, created_at)
     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'started', ?, ?, ?, ?
     WHERE (SELECT COUNT(*) FROM model_calls WHERE organization_id = ? AND created_at >= ?) <
-      MIN(?, COALESCE((SELECT monthly_model_call_quota FROM organization_settings WHERE organization_id = ?), ?))`)
+      MIN(?, COALESCE((SELECT monthly_model_call_quota FROM organization_settings WHERE organization_id = ?), ?))
+      ${rewriteScope ? `AND ${rewriteWriteAccessCondition}` : ""}`)
     .bind(context.id, context.organizationId, context.projectId, context.topicId, context.promptTemplateId,
       isRoot ? (context.taskType ?? "content_draft") : (context.taskType ?? "content_draft") + ".request", context.provider, context.model, context.modelProfile ?? input.profile, context.promptVersion,
       context.inputHash, isRoot ? context.inputJson : JSON.stringify({ ...JSON.parse(context.inputJson), parentModelCallId: context.rootCallId, step: context.step }),
-      context.userId, now, context.organizationId, month, context.monthlyLimit, context.organizationId, context.monthlyLimit).run();
-  if (!reserved.meta.changes) throw new ModelRequestError("公司本月模型调用额度已用尽，本次未发起新的模型请求。", "MODEL_QUOTA_EXCEEDED");
+      context.userId, now, context.organizationId, month, context.monthlyLimit, context.organizationId, context.monthlyLimit,
+      ...(rewriteScope ? rewriteWriteAccessBindings(rewriteScope) : [])).run();
+  if (!reserved.meta.changes) {
+    if (rewriteScope && !await canContinueRewriteWrite(db, rewriteScope)) throw new ModelRequestError("项目权限或改写工作区状态已改变，本次未发起新的模型请求。", "REWRITE_ACCESS_CHANGED");
+    throw new ModelRequestError("公司本月模型调用额度已用尽，本次未发起新的模型请求。", "MODEL_QUOTA_EXCEEDED");
+  }
   const started = Date.now();
   let response: ModelInvocation;
   try {

@@ -12,14 +12,14 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const runDir = path.join(root, ".local/mb", randomBytes(4).toString("hex")); mkdirSync(runDir, { recursive: true });
 const scope = { organizationId: "fee-org", projectId: "fee-project" }, userId = "fee-user";
 const password = randomBytes(18).toString("base64url"), scenarios = [], requests = [], providerCalls = [];
-let mf, db, origin, cookie, mode = "valid", modeCalls = 0;
+let mf, db, origin, cookie, mode = "valid", modeCalls = 0, rewriteResponseHook;
 const audit = { missing_paragraph_ids: [], problem_paragraph_ids: [], added_claims: [], core_information_retention: 100, structure_aligned: true, style_aligned: true, conclusion_aligned: true, production_notes_preserved: true, copy_risk: "low", notes: [] };
 const source = "企业在2027年要让AI增长7.1%，我们会先把每次测试的过程记录下来，然后逐项核对结果，最后才决定怎样调整。";
 const rewritten = "面向2027年AI增长7.1%的目标，我们先留下每轮测试的过程记录，核验各项结果以后，再据此安排后续调整。";
 const setMode = next => { mode = next; modeCalls = 0; };
-async function http(route, body, authenticated = true) {
+async function http(route, body, authenticated = true, method = body ? "POST" : "GET") {
   const start = performance.now();
-  const response = await fetch(new URL(route, origin), { method: body ? "POST" : "GET", headers: { connection: "close", ...(body ? { "content-type": "application/json" } : {}), ...(authenticated && cookie ? { cookie } : {}) }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(30000) });
+  const response = await fetch(new URL(route, origin), { method, headers: { connection: "close", ...(body ? { "content-type": "application/json" } : {}), ...(authenticated && cookie ? { cookie } : {}) }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(30000) });
   const data = await response.json(); requests.push({ route, status: response.status, ms: Math.round(performance.now() - start) });
   return { status: response.status, headers: response.headers, data };
 }
@@ -51,6 +51,7 @@ try {
       let context; try { context = JSON.parse(user); } catch { /* Topic prompt has a prose prefix. */ }
       if (url.hostname === "assistant.example.invalid") result = { reply: "当前暂无对标资料，先从一个业务问题验证方向。", recommendations: [], citations: [], memoryOperations: [{ operation: "noop", confidence: 100, reason: "没有新证据" }] };
       else if (context?.task) result = context.task === "audit_micro_homomorphic_script" ? audit : { paragraphs: context.source_paragraphs.map(row => ({ paragraph_id: row.paragraph_id, text: rewritten })) };
+      if (context?.task && rewriteResponseHook) await rewriteResponseHook(context);
       return Response.json({ choices: [{ message: { content: mode === "invalid-first" && modeCalls === 1 ? "{" : JSON.stringify(result) } }], ...(mode === "unknown-usage" ? {} : { usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 } }) });
     },
   });
@@ -126,11 +127,50 @@ try {
     assert.equal(run.actualTotalTokens, 0); assert.equal(run.unknownRequestCount, providerCalls.length - before); assert.ok(run.unknownRequestCount > 0);
     assert.equal(await count(), providerCalls.length);
   });
+  await check("concurrent generated replies retain every independent version and matching audit", async () => {
+    await allowance(20); setMode("valid"); const before = providerCalls.length;
+    const replies = await Promise.all(Array.from({ length: 3 }, () => http("/api/script-rewrites/fee-rewrite/generate", { ...scope, variants: ["light_rewrite"] })));
+    const results = replies.map(reply => expect(reply, 201).results[0]);
+    assert.equal(new Set(results.map(result => result.version)).size, 3); assert.equal(providerCalls.length - before, 6);
+    for (const result of results) {
+      const row = await db.prepare("SELECT v.version,r.status,r.result_version_id,a.metadata_json FROM script_rewrite_versions v INNER JOIN script_rewrite_runs r ON r.id=v.run_id INNER JOIN audit_logs a ON a.target_id=v.id AND a.action='script_rewrite.generated' WHERE v.id=?").bind(result.versionId).first();
+      assert.equal(row.version, result.version); assert.equal(row.status, "completed"); assert.equal(row.result_version_id, result.versionId); assert.equal(JSON.parse(row.metadata_json).version, row.version);
+    }
+  });
+  await check("five concurrent manual HTTP saves preserve all submitted drafts", async () => {
+    const before = providerCalls.length, bodies = Array.from({ length: 5 }, (_, index) => `并发人工稿${index}：${source}`);
+    const replies = await Promise.all(bodies.map(text => http("/api/script-rewrites/fee-rewrite", { ...scope, parentVersionId: "fee-source", text }, true, "PATCH")));
+    const results = replies.map(reply => expect(reply, 201).version);
+    assert.equal(new Set(results.map(result => result.version)).size, 5); assert.equal(providerCalls.length, before);
+    const rows = (await db.prepare("SELECT text FROM script_rewrite_versions WHERE workspace_id='fee-rewrite' AND variant='manual'").all()).results;
+    assert.deepEqual(new Set(rows.map(row => row.text)), new Set(bodies));
+  });
+  await check("company membership revoked during the provider reply blocks subsequent spend and result writes", async () => {
+    await allowance(10); const before = providerCalls.length;
+    const versions = (await db.prepare("SELECT COUNT(*) n FROM script_rewrite_versions").first()).n;
+    rewriteResponseHook = async () => { rewriteResponseHook = undefined; await db.prepare("UPDATE organization_members SET status='inactive' WHERE user_id=?").bind(userId).run(); };
+    const data = expect(await http("/api/script-rewrites/fee-rewrite/generate", { ...scope, variants: ["light_rewrite"] }), 207);
+    assert.equal(data.results[0].error.code, "REWRITE_ACCESS_CHANGED"); assert.equal(providerCalls.length - before, 1);
+    assert.equal((await db.prepare("SELECT COUNT(*) n FROM script_rewrite_versions").first()).n, versions);
+    assert.equal((await db.prepare("SELECT actual_total_tokens FROM script_rewrite_runs WHERE id=?").bind(data.results[0].runId).first()).actual_total_tokens, 8);
+    await db.prepare("UPDATE organization_members SET status='active' WHERE user_id=?").bind(userId).run();
+  });
+  await check("session revocation during the final audit refuses the late version and requires a fresh login", async () => {
+    const before = providerCalls.length, versions = (await db.prepare("SELECT COUNT(*) n FROM script_rewrite_versions").first()).n;
+    rewriteResponseHook = async context => { if (context.task === "audit_micro_homomorphic_script") { rewriteResponseHook = undefined; await db.prepare("DELETE FROM local_sessions WHERE user_id=?").bind(userId).run(); } };
+    const data = expect(await http("/api/script-rewrites/fee-rewrite/generate", { ...scope, variants: ["light_rewrite"] }), 207);
+    assert.equal(data.results[0].error.code, "REWRITE_ACCESS_CHANGED"); assert.equal(providerCalls.length - before, 2);
+    assert.equal((await db.prepare("SELECT COUNT(*) n FROM script_rewrite_versions").first()).n, versions);
+    expect(await http(`/api/script-rewrites/fee-rewrite?organizationId=${scope.organizationId}&projectId=${scope.projectId}`), 401);
+    const login = await http("/api/auth/session", { email: "fee@example.invalid", password }, false); expect(login, 200); cookie = login.headers.get("set-cookie").split(";")[0];
+    expect(await http(`/api/script-rewrites/fee-rewrite?organizationId=${scope.organizationId}&projectId=${scope.projectId}`), 200);
+    assert.equal(await count(), providerCalls.length);
+  });
 } catch (error) { console.error(error.stack); if (error.cause) console.error(error.cause); process.exitCode = 1; }
 finally {
   if (mf) await mf.dispose();
   const timings = requests.map(request => request.ms).sort((a, b) => a - b);
-  const report = { passed: !process.exitCode && scenarios.length === 11 && scenarios.every(scenario => scenario.passed), startedAt, finishedAt: new Date().toISOString(),
+  const report = { passed: !process.exitCode && scenarios.length === 15 && scenarios.every(scenario => scenario.passed), startedAt, finishedAt: new Date().toISOString(),
     boundary: "Built Worker, real HTTP/password/D1; locally mocked providers, synthetic accounts/materials/token usage; no real model spend or multi-device business acceptance.",
     buildSha256: createHash("sha256").update(readFileSync(path.join(root, "dist/server/index.js"))).digest("hex"), scenarios, providerCalls, requests,
     metrics: { requests: requests.length, providerRequests: providerCalls.length, p50Ms: timings[Math.floor(timings.length * .5)] ?? 0, p95Ms: timings[Math.floor(timings.length * .95)] ?? 0, maxMs: timings.at(-1) ?? 0,

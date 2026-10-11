@@ -115,10 +115,14 @@ export function ScriptRewriteWorkspace({ initialOrganizationId = "", initialProj
     setGenerating(true); setError(""); setMessage("");
     try {
       const response = await scopedFetch(`/api/script-rewrites/${encodeURIComponent(detail.workspace.id)}/generate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, variants: selectedVariants, retryOfRunId: retryOfRunId || undefined }) });
-      const body = await response.json().catch(() => null) as { results?: Array<{ status: string; versionId?: string; error?: { message?: string } }> ; error?: { message?: string } } | null;
+      const body = await response.json().catch(() => null) as { results?: Array<{ status: string; versionId?: string; error?: { code?: string; message?: string } }> ; error?: { message?: string } } | null;
       if (!response.ok) { setError(body?.error?.message ?? "改写生成失败。"); return; }
       const completed = body?.results?.filter((item) => item.status === "completed") ?? []; const failed = body?.results?.filter((item) => item.status === "failed") ?? [];
       setMessage(failed.length ? `${completed.length} 个版本生成成功，${failed.length} 个版本失败；失败版本没有使用原稿补位。` : `${completed.length} 个版本生成完成。`);
+      if (failed.length) setError([...new Set(failed.map(item => item.error?.message || "改写未完成，请查看失败运行记录。"))].join("\n"));
+      if (failed.some(item => item.error?.code === "REWRITE_ACCESS_CHANGED")) {
+        setCanWrite(false); setDetail(current => current ? { ...current, canWrite: false } : current); return;
+      }
       await loadWorkspace(organizationId, projectId, detail.workspace.id); if (completed[0]?.versionId) await loadDetail(organizationId, projectId, detail.workspace.id, completed[0].versionId);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "改写生成失败。"); } finally { setGenerating(false); }
   }

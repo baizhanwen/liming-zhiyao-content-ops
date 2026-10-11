@@ -19,6 +19,7 @@ import {
   MICRO_HOMOMORPHIC_WRITER_PROMPT, MICRO_HOMOMORPHIC_COPY_REPAIR_PROMPT,
 } from "../../../../../lib/script-rewrite-prompts";
 import { readRequestIdentity } from "../../../../../lib/request-auth";
+import { canContinueRewriteWrite, rewriteVersionAudit, rewriteVersionInsert } from "../../../../../lib/script-rewrite-write";
 
 export const dynamic = "force-dynamic";
 
@@ -31,7 +32,7 @@ class RewriteContractError extends Error {
 
 type Usage = { inputTokens: number; outputTokens: number; totalTokens: number };
 type TrackedCall = { id: string; provider: string; model: string; latencyMs: number; usage: Usage; json: unknown; unknownRequestCount: number; reused?: boolean };
-type GenerationScope = { organizationId: string; projectId: string; userId: string; runId: string; resumeRunIds?: string[] };
+type GenerationScope = { organizationId: string; projectId: string; userId: string; workspaceId: string; runId: string; resumeRunIds?: string[]; assertWritable: () => Promise<void> };
 type GenerationResult = { text: string; paragraphs: string[]; sourceMapping: string[]; outline: RewriteOutlineSection[]; validation: RewriteValidation; calls: TrackedCall[] };
 type GeneratedRewriteSection = { sectionId: string; factIds: string[]; paragraphs: string[] };
 type RewriteSourceProfile = {
@@ -50,9 +51,10 @@ function addUsage(total: Usage, next: Usage) {
   total.inputTokens += next.inputTokens; total.outputTokens += next.outputTokens; total.totalTokens += next.totalTokens;
 }
 
-async function invokeTrackedModel(input: {
-  organizationId: string; projectId: string; userId: string; runId: string; resumeRunIds?: string[]; taskType: string; system: string; payload: unknown; maxTokens: number; temperature: number;
+async function invokeTrackedModel(input: GenerationScope & {
+  taskType: string; system: string; payload: unknown; maxTokens: number; temperature: number;
 }) {
+  await input.assertWritable();
   const db = getD1(); const config = readContentModelConfig("max");
   const userJson = JSON.stringify(input.payload); const inputJson = JSON.stringify({ runId: input.runId, payload: input.payload }); const inputHash = await sha256Hex(new TextEncoder().encode(`${input.system}\n${userJson}`));
   // Only foundation steps can resume. Repairs and audits must use fresh feedback.
@@ -73,10 +75,12 @@ async function invokeTrackedModel(input: {
   let accumulatedLatencyMs = 0;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
+      await input.assertWritable();
       const invocation = await invokeRecordedContentRequest({ system: input.system, user: userJson, profile: "max", nativeJson: attempt === 0, temperature: input.temperature, maxTokens: input.maxTokens }, {
         id: attempt === 0 ? id : crypto.randomUUID(), rootCallId: id, organizationId: input.organizationId, projectId: input.projectId,
         topicId: null, promptTemplateId: null, taskType: input.taskType, promptVersion: SCRIPT_REWRITE_PROMPT_VERSION, provider: config.provider, model: config.model, userId: input.userId,
         step: attempt === 0 ? "generation" : "json_repair", inputHash, inputJson, monthlyLimit: quota.limit, ledger: modelRequests,
+        rewriteWorkspaceId: input.workspaceId,
       });
       accumulatedLatencyMs += invocation.latencyMs;
       addUsage(usage, readRewriteModelUsage(invocation.raw));
@@ -1034,6 +1038,13 @@ export async function POST(request: Request, context: { params: Promise<{ rewrit
     }
     readContentModelConfig("max");
     const estimate = estimateRewriteUsage(workspace.source_text, variants); const user = await ensureUser(identity);
+    const writeScope = { organizationId, projectId, workspaceId: rewriteId, userId: user.id };
+    const assertWritable = async () => {
+      const currentIdentity = await readRequestIdentity(request);
+      if (!currentIdentity || currentIdentity.authSubject !== identity.authSubject || !await canContinueRewriteWrite(db, writeScope)) {
+        throw new RewriteContractError("登录状态、项目权限或工作区状态已改变，已停止后续模型请求和版本保存；此前已发出的请求仍计入用量。请刷新确认权限后再操作。", "REWRITE_ACCESS_CHANGED");
+      }
+    };
     const quota = await checkOrganizationQuota(organizationId, user.id, "modelCalls", estimate.callCount);
     if (!quota.allowed && !resumeRunIds.length) return apiError("MODEL_QUOTA_EXCEEDED", `本次预计调用 ${estimate.callCount} 次模型，当前月度剩余额度不足。`, 429, { usage: quota.current, limit: quota.limit, requested: estimate.callCount });
     const units = buildScriptUnits(workspace.source_text);
@@ -1044,18 +1055,21 @@ export async function POST(request: Request, context: { params: Promise<{ rewrit
       await db.prepare(`INSERT INTO script_rewrite_runs (id, organization_id, project_id, workspace_id, variant, status, source_version_id, result_version_id, retry_of_run_id, estimated_call_count, estimated_input_tokens, maximum_output_tokens, actual_input_tokens, actual_output_tokens, actual_total_tokens, model_call_id, prompt_version, validation_json, error_code, error_message, created_by, created_at, completed_at) VALUES (?, ?, ?, ?, ?, 'started', ?, NULL, ?, ?, ?, ?, 0, 0, 0, NULL, ?, '{}', NULL, NULL, ?, ?, NULL)`).bind(runId, organizationId, projectId, rewriteId, variant, sourceVersion.id, retryOfRunId || null, variantEstimate.callCount, variantEstimate.estimatedInputTokens, variantEstimate.maximumOutputTokens, SCRIPT_REWRITE_PROMPT_VERSION, user.id, startedAt).run();
       try {
         const generated = variant === "light_rewrite"
-          ? await generateLightRewrite({ organizationId, projectId, userId: user.id, runId, resumeRunIds }, homomorphicUnits)
-          : await generateRestructuredRewrite({ organizationId, projectId, userId: user.id, runId, resumeRunIds }, units);
+          ? await generateLightRewrite({ ...writeScope, runId, resumeRunIds, assertWritable }, homomorphicUnits)
+          : await generateRestructuredRewrite({ ...writeScope, runId, resumeRunIds, assertWritable }, units);
         const usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }; generated.calls.forEach((call) => addUsage(usage, call.usage));
         const unknownRequestCount = generated.calls.reduce((count, call) => count + call.unknownRequestCount, 0);
-        const latest = await db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM script_rewrite_versions WHERE organization_id = ? AND project_id = ? AND workspace_id = ?").bind(organizationId, projectId, rewriteId).first<{ version: number }>();
-        const version = Number(latest?.version ?? 0) + 1; const versionId = crypto.randomUUID(); const completedAt = new Date().toISOString(); const firstCall = generated.calls[0];
-        await db.batch([
-          db.prepare(`INSERT INTO script_rewrite_versions (id, organization_id, project_id, workspace_id, version, variant, parent_version_id, run_id, text, paragraphs_json, source_mapping_json, outline_json, validation_json, model_provider, model_name, prompt_version, model_call_id, change_summary, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(versionId, organizationId, projectId, rewriteId, version, variant, sourceVersion.id, runId, generated.text, JSON.stringify(generated.paragraphs), JSON.stringify(generated.sourceMapping), JSON.stringify(generated.outline), JSON.stringify(generated.validation), firstCall?.provider ?? null, firstCall?.model ?? null, SCRIPT_REWRITE_PROMPT_VERSION, firstCall?.id ?? null, `${rewriteVariantLabel(variant)}自动生成`, user.id, completedAt),
-          db.prepare("UPDATE script_rewrite_runs SET status = 'completed', result_version_id = ?, actual_input_tokens = ?, actual_output_tokens = ?, actual_total_tokens = ?, model_call_id = ?, validation_json = ?, completed_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'started'").bind(versionId, usage.inputTokens, usage.outputTokens, usage.totalTokens, firstCall?.id ?? null, JSON.stringify({ ...generated.validation, modelUsage: { unknownRequestCount } }), completedAt, runId, organizationId, projectId),
-          db.prepare("UPDATE script_rewrite_workspaces SET updated_by = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ?").bind(user.id, completedAt, rewriteId, organizationId, projectId),
-          db.prepare(`INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'script_rewrite.generated', 'script_rewrite_version', ?, ?, ?)`).bind(crypto.randomUUID(), organizationId, projectId, user.id, versionId, JSON.stringify({ workspaceId: rewriteId, runId, variant, version, sourceHash: workspace.source_hash, modelCallIds: generated.calls.map((call) => call.id), usage, validation: generated.validation }), completedAt),
+        await assertWritable();
+        const versionId = crypto.randomUUID(); const completedAt = new Date().toISOString(); const firstCall = generated.calls[0];
+        const saved = await db.batch([
+          rewriteVersionInsert(db, { ...writeScope, id: versionId, variant, parentVersionId: sourceVersion.id, runId, text: generated.text, paragraphs: generated.paragraphs, sourceMapping: generated.sourceMapping, outline: generated.outline, validation: generated.validation, modelProvider: firstCall?.provider, modelName: firstCall?.model, promptVersion: SCRIPT_REWRITE_PROMPT_VERSION, modelCallId: firstCall?.id, changeSummary: `${rewriteVariantLabel(variant)}自动生成`, now: completedAt }),
+          db.prepare("UPDATE script_rewrite_runs SET status = 'completed', result_version_id = ?, actual_input_tokens = ?, actual_output_tokens = ?, actual_total_tokens = ?, model_call_id = ?, validation_json = ?, completed_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'started' AND EXISTS (SELECT 1 FROM script_rewrite_versions WHERE id = ?)").bind(versionId, usage.inputTokens, usage.outputTokens, usage.totalTokens, firstCall?.id ?? null, JSON.stringify({ ...generated.validation, modelUsage: { unknownRequestCount } }), completedAt, runId, organizationId, projectId, versionId),
+          db.prepare("UPDATE script_rewrite_workspaces SET updated_by = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND EXISTS (SELECT 1 FROM script_rewrite_versions WHERE id = ?)").bind(user.id, completedAt, rewriteId, organizationId, projectId, versionId),
+          rewriteVersionAudit(db, { ...writeScope, id: crypto.randomUUID(), versionId, action: "script_rewrite.generated", metadata: { workspaceId: rewriteId, runId, variant, sourceHash: workspace.source_hash, modelCallIds: generated.calls.map(call => call.id), usage, validation: generated.validation }, now: completedAt }),
+          db.prepare("SELECT version FROM script_rewrite_versions WHERE id = ?").bind(versionId),
         ]);
+        if (!saved[0].meta.changes) throw new RewriteContractError("项目权限、工作区或运行状态在保存前已改变，结果没有写入新版本。请刷新确认后再操作；原有版本保留。", "REWRITE_SAVE_CONFLICT");
+        const version = (saved[4].results[0] as { version: number }).version;
         results.push({ variant, status: "completed", runId, versionId, version, validation: generated.validation, usage, reusedCallCount: generated.calls.filter((call) => call.reused).length });
       } catch (error) {
         const completedAt = new Date().toISOString(); const contract = error instanceof RewriteContractError ? error : null; const code = contract?.code ?? (error instanceof ModelRequestError ? error.code : "REWRITE_GENERATION_FAILED"); const message = error instanceof Error ? error.message.slice(0, 1000) : "改写生成失败";
