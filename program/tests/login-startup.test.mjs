@@ -9,13 +9,18 @@ import { runtimeFixture } from "./helpers/runtime-fixture.mjs";
 
 const root = new URL("../", import.meta.url);
 
-for (const [label, configuration, revoke] of [
+for (const [label, configuration, revoke, lanEnvironment = {}] of [
   ["local password login", "LOCAL_DEV_AUTH=0\nDELIVERY_MODE=0\n", true],
   ["default password login", "DELIVERY_MODE=0\n", true],
   ["explicit development bypass", "LOCAL_DEV_AUTH=1\nDELIVERY_MODE=0\n", false],
   ["quoted development bypass", 'LOCAL_DEV_AUTH="1" # developer only\n', false],
   ["delivery overrides development bypass", "LOCAL_DEV_AUTH=1\nDELIVERY_MODE=1\n", true],
   ["quoted delivery mode", "LOCAL_DEV_AUTH=1\nDELIVERY_MODE='1' # customer\n", true],
+  ["LAN environment overrides development bypass", "LOCAL_DEV_AUTH=1\nDELIVERY_MODE=0\n", true, { LAN_MODE: "1" }],
+  ["LAN origin environment overrides development bypass", "LOCAL_DEV_AUTH=1\nDELIVERY_MODE=0\n", true, { LAN_ACCESS_ORIGIN: "http://192.168.1.10:3000" }],
+  ["LAN configuration overrides development bypass", "LOCAL_DEV_AUTH=1\nLAN_MODE='1'\n", true],
+  ["LAN origin configuration overrides development bypass", 'LOCAL_DEV_AUTH=1\nLAN_ACCESS_ORIGIN="http://192.168.1.10:3000"\n', true],
+  ["empty LAN origin preserves explicit loopback bypass", 'LOCAL_DEV_AUTH=1\nLAN_ACCESS_ORIGIN=""\n', false],
 ]) {
   test(`startup session revocation: ${label}`, t => {
     const tempRoot = path.resolve(tmpdir());
@@ -39,7 +44,7 @@ for (const [label, configuration, revoke] of [
     const db = new DatabaseSync(path.join(dir, "synthetic.sqlite"));
     try {
       db.exec("CREATE TABLE local_sessions (id TEXT); INSERT INTO local_sessions VALUES ('old-session'); CREATE TABLE local_login_attempts (email TEXT); INSERT INTO local_login_attempts VALUES ('synthetic@example.invalid'); CREATE TABLE business_data (id TEXT); INSERT INTO business_data VALUES ('keep');");
-      const result = spawnSync(process.execPath, [path.join(dir, "scripts/prepare-login-startup.mjs")], { cwd: dir, encoding: "utf8", timeout: 15000, windowsHide: true });
+      const result = spawnSync(process.execPath, [path.join(dir, "scripts/prepare-login-startup.mjs")], { cwd: dir, env: { ...process.env, LAN_MODE: "0", LAN_ACCESS_ORIGIN: "", ...lanEnvironment }, encoding: "utf8", timeout: 15000, windowsHide: true });
       assert.equal(result.status, 0, result.stderr);
       assert.equal(db.prepare("SELECT count(*) AS count FROM local_sessions").get().count, revoke ? 0 : 1);
       assert.equal(db.prepare("SELECT count(*) AS count FROM business_data").get().count, 1);

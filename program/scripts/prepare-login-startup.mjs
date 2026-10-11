@@ -7,9 +7,13 @@ let configuration = "";
 try { configuration = readFileSync(new URL("../.dev.vars", import.meta.url), "utf8"); } catch { process.exit(0); }
 const flagEnabled = (name) => new RegExp(`^\\s*${name}\\s*=\\s*(?:1|"1"|'1')\\s*(?:#.*)?$`, "mu").test(configuration);
 const deliveryMode = flagEnabled("DELIVERY_MODE");
+const configuredLanOrigin = configuration.match(/^\s*LAN_ACCESS_ORIGIN\s*=\s*(.*?)\s*$/mu)?.[1]
+  ?.replace(/\s+#.*$/u, "").replace(/^(['"])(.*)\1$/u, "$2").trim();
+const lanMode = process.env.LAN_MODE?.trim() === "1" || flagEnabled("LAN_MODE")
+  || Boolean(process.env.LAN_ACCESS_ORIGIN?.trim() || configuredLanOrigin);
 // Password-based local installations need the same fresh login as deliveries.
 // Only an explicitly enabled development identity skips session revocation.
-if (!deliveryMode && flagEnabled("LOCAL_DEV_AUTH")) process.exit(0);
+if (!deliveryMode && !lanMode && flagEnabled("LOCAL_DEV_AUTH")) process.exit(0);
 
 const wranglerCli = fileURLToPath(new URL("../node_modules/wrangler/bin/wrangler.js", import.meta.url));
 const environment = {

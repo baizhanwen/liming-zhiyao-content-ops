@@ -44,12 +44,11 @@ if (-not $lanIp) {
     exit 1
 }
 
-& "$PSScriptRoot\prepare-local-web.ps1"
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
 $env:LAN_MODE = "1"
 $env:LAN_ACCESS_ORIGIN = "http://${lanIp}:$appPort"
 $env:ANALYZER_BASE_URL = $hostUrl
+& "$PSScriptRoot\prepare-local-web.ps1"
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-Host ""
 Write-Host "[Liming Zhiyao] LAN team mode is starting."
 Write-Host "Host access:      $hostUrl"

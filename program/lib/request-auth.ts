@@ -14,6 +14,8 @@ type LocalAuthEnv = typeof env & {
   LOCAL_DEV_USER_NAME?: string;
   TRUST_FORWARDED_IDENTITY?: string;
   DELIVERY_MODE?: string;
+  LAN_MODE?: string;
+  LAN_ACCESS_ORIGIN?: string;
 };
 
 function isLoopbackRequest(request: Request) {
@@ -45,6 +47,10 @@ export async function readRequestIdentity(request: Request): Promise<RequestIden
   if (localSession) return localSession;
 
   const runtime = env as LocalAuthEnv;
+  // A client controls the URL/Host; a loopback hostname does not prove that a
+  // request reached a LAN listener from the host machine. LAN always requires
+  // a database-backed session, including when old development/proxy flags remain.
+  if (runtime.LAN_MODE?.trim() === "1" || runtime.LAN_ACCESS_ORIGIN?.trim()) return null;
   // Platform identity headers are safe only behind a trusted proxy that strips
   // client-supplied values. LAN mode talks to this worker directly, so accepting
   // them by default would allow another device to impersonate any account.

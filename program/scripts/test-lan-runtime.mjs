@@ -40,6 +40,7 @@ async function start() {
     outboundService: () => new Response("External access disabled in LAN runtime test", { status: 502 }),
     bindings: {
       DELIVERY_MODE: "1", LOCAL_DEV_AUTH: "0", TRUST_FORWARDED_IDENTITY: "0",
+      ...(process.env.LAN_TEST_DEV_AUTH === "1" ? { DELIVERY_MODE: "0", LOCAL_DEV_AUTH: "1", TRUST_FORWARDED_IDENTITY: "1", LAN_MODE: "1", LAN_ACCESS_ORIGIN: "http://192.168.50.10:3000" } : {}),
       ANALYZER_SERVICE_TOKEN: serviceToken, ANALYZER_LLM_API_KEY: "synthetic-runtime-fixture",
       ANALYZER_LLM_BASE_URL: "https://model.example.invalid", ANALYZER_LLM_MODEL: "runtime-fixture", ANALYZER_LLM_PROVIDER: "openai",
     },
@@ -375,6 +376,7 @@ try {
     at: new Date().toISOString(), passed: scenarios.every(s => s.passed), browser: browserResult ?? "未运行（设置 LAN_TEST_PLAYWRIGHT_MODULE 可启用）", pythonWorker: pythonResult ?? "未运行（设置 LAN_TEST_PYTHON 可启用）",
     boundary: "真实编译 Worker、HTTP、D1、R2、密码登录；同机 10 客户端，Node 请求使用短连接，浏览器场景使用正常连接；外部下载/转写/模型使用测试替身，未验证真实局域网链路、视频处理速度或抖音成功率。",
     buildSha256: createHash("sha256").update(readFileSync(path.join(root, "dist/server/index.js"))).digest("hex"),
+    authProfile: process.env.LAN_TEST_DEV_AUTH === "1" ? "LAN with stale local-development and trusted-proxy flags enabled" : "Commercial password-only authentication",
     scenarios, metrics: { requests: requests.length, http5xx: requests.filter(r => r.status >= 500).length, p50Ms: timings[Math.floor(timings.length * .5)] ?? 0, p95Ms: timings[Math.floor(timings.length * .95)] ?? 0, maxMs: timings.at(-1) ?? 0 }, requests,
   };
   writeFileSync(path.join(runDir, "report.json"), JSON.stringify(report, null, 2));

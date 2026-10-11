@@ -36,7 +36,7 @@ h2{font-size:25px;line-height:1.5;margin:56px 0 22px;padding-top:24px;border-top
 <p>请打开包含 <code>start-local.bat</code>、<code>start-lan.bat</code>、<code>stop-local.bat</code> 和 <code>program</code> 文件夹的那一层目录。下面的路径均从这一层开始计算。</p>
 <div class="table-wrap"><table><thead><tr><th scope="col">场景</th><th scope="col">双击哪个文件</th></tr></thead><tbody><tr><td>第一次安装</td><td><code>program\setup-local.bat</code></td></tr><tr><td>只在这台主机使用</td><td><code>start-local.bat</code></td></tr><tr><td>让同一局域网的同事访问</td><td><code>start-lan.bat</code></td></tr><tr><td>关闭网页服务和视频分析后台</td><td><code>stop-local.bat</code></td></tr></tbody></table></div>
 <p>安装完成后再启动。启动窗口需要保持开启；浏览器没有自动打开时，使用窗口显示的地址。</p>
-<p>如果出现「首次开通」向导，按交付凭证输入初始化码，创建公司与管理员。普通本地开发副本则可以从「企业空间」创建公司。交付版每次重启服务后需要重新登录。</p>
+<p>如果出现「首次开通」向导，按交付凭证输入初始化码，创建公司与管理员。普通本地开发副本则可以从「企业空间」创建公司。交付版及局域网模式每次重启服务后需要重新登录；局域网模式中，主机上的管理员也使用邮箱和密码登录。</p>
 <h3>2.3 管理员第一次开放局域网访问</h3>
 <ol><li>先在主机上完成公司和管理员初始化。</li><li>在「系统设置 → 局域网账号」设置至少 10 个字符的密码。</li><li>停止本地服务，双击 <code>start-lan.bat</code>。</li><li>把启动窗口显示的局域网地址发给同事；防火墙询问时允许专用网络访问。</li><li>在「成员与权限」邀请同事，并分配企业空间。</li></ol>
 <p>主机要保持开机、网络连接和服务运行。主机地址改变后，以新的启动窗口显示为准。调用 AI 时，主机还需要能访问模型服务。</p>

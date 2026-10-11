@@ -48,7 +48,7 @@ const localBindingConfig = {
         },
       ]
     : [],
-  ...(lanAccessOrigin ? { vars: { LAN_ACCESS_ORIGIN: lanAccessOrigin } } : {}),
+  ...(lanMode || lanAccessOrigin ? { vars: { LAN_MODE: lanMode ? "1" : "0", LAN_ACCESS_ORIGIN: lanAccessOrigin } } : {}),
 };
 
 export default defineConfig(async () => {
