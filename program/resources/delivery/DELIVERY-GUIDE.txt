@@ -21,8 +21,12 @@
 
 自动安装 FFmpeg 需要 Windows Package Manager（winget）。如果系统提示 winget 不存在，请先从 Microsoft Store 安装或更新“应用安装程序（App Installer）”，再重新运行 tools\setup-analyzer.bat。首次安装分析模型和依赖需要稳定网络，耗时取决于网速。
 
-五、清除业务数据
+五、备份、恢复与清除业务数据
+由主机管理员先通知同事暂停操作，等待任务完成，再运行 stop-local.bat。备份用 tools\backup-local.bat，恢复用 tools\restore-local.bat；状态 ZIP 保存数据库与附件，.dev.vars 等密钥配置须单独保管。恢复前在隔离安装中演练，不要只复制 SQLite 文件。
+详细操作、配置保存、升级与回退步骤见 docs\operations\备份恢复与升级操作.md。
 双击 factory-reset.bat，并按提示确认。该工具会先创建本地备份，再恢复空数据库结构。
+
+产品使用手册：双击 docs\产品使用手册.html，可离线查看目录、搜索和打印；旁边的 docs\产品使用手册.md 是文字版。手册介绍各套餐功能，当前包的可用模块以本说明末尾的授权套餐清单和实际菜单为准。
 
 六、本地与外部服务边界
 网页、业务数据库、媒体处理和本地分析模型在客户电脑运行，不依赖利明智耀授权服务器。当执行内容生成或结构化分析时，完成任务必需的提示词、转写片段、知识片段或文稿会发送给客户在 .dev.vars 中配置的 DeepSeek 或其他模型供应商。客户应在使用前确认该供应商的数据处理与费用条款。

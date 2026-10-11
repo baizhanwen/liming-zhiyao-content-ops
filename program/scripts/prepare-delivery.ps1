@@ -75,6 +75,7 @@ $excludedFiles = @(
     "scripts\test-lan-identity-runtime.mjs",
     "scripts\test-model-budget-runtime.mjs",
     "scripts\test-startup-recovery-runtime.mjs",
+    "scripts\delivery-documentation.mjs", "scripts\test-delivery-documentation.mjs",
     "scripts\test-ecommerce-browser.mjs", "scripts\test-ecommerce-model.mjs", "scripts\ecommerce-test-model.mjs",
     "scripts\verify-ecommerce-upgrade.mjs", "scripts\verify-analyzer-delivery.ps1",
     "scripts\start-analyzer.ps1", "services\analyzer\README.md", "services\analyzer\uv.lock", "tools\README.md"
@@ -295,6 +296,13 @@ export const ECOMMERCE_STARTER_CARDS: { key: string; card: Card; methods: { id: 
 
     $guideSource = Join-Path $projectRoot "resources\delivery\DELIVERY-GUIDE.txt"
     Copy-Item -LiteralPath $guideSource -Destination (Join-Path $packageRoot "DELIVERY-GUIDE.txt")
+    # Only reviewed customer documentation is copied; internal audit reports and
+    # other future docs remain outside the runtime directory allowlist.
+    foreach ($document in @("docs\产品使用手册.html", "docs\产品使用手册.md", "docs\operations\备份恢复与升级操作.md")) {
+        $documentTarget = Join-Path $packageRoot $document
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $documentTarget) | Out-Null
+        Copy-Item -LiteralPath (Join-Path $projectRoot $document) -Destination $documentTarget
+    }
     $includedFeatures = @("客户项目与成员协作", "选题、内容生产、内部审核与发布", "品牌知识库")
     if ($includeAuthorizedKnowledge) { $includedFeatures += "利明智耀授权方法库（4,176 条方法原子）" }
     if ($selectedPlan.videoAnalysis) { $includedFeatures += "视频分析、素材中心与对标内容库" }

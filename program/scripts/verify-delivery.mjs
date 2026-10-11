@@ -6,6 +6,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { DatabaseSync } from "node:sqlite";
+import { verifyDeliveryDocumentation } from "./delivery-documentation.mjs";
 
 // Validate the final, pruned customer files in a separate installation. Never
 // load the development .dev.vars or touch the customer's persistent storage.
@@ -93,6 +94,9 @@ try {
       assert.match(catalog, /ECOMMERCE_STARTER_VERSION = "excluded"/);
       assert.doesNotMatch(catalog, /scene-question|barrier-first|authorized-methodology-router/);
     }
+  });
+  await check("offline-customer-manual-and-recovery-links", async () => {
+    verifyDeliveryDocumentation(packageRoot, sourceRoot);
   });
   cpSync(packageRoot, installRoot, { recursive: true });
   let syntheticVars = readFileSync(path.join(installRoot, ".dev.vars"), "utf8").replace(/^FIRST_RUN_SETUP_CODE_HASH=.*$/m, `FIRST_RUN_SETUP_CODE_HASH=${createHash("sha256").update(setupCode).digest("hex")}`).replace(/^ANALYZER_SERVICE_TOKEN=.*$/m, `ANALYZER_SERVICE_TOKEN=${randomBytes(32).toString("hex")}`);
