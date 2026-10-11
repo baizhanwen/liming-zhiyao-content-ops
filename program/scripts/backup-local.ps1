@@ -1,26 +1,22 @@
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
-Set-Location -LiteralPath $projectRoot
-
-$appPort = 3000
-$portPath = Join-Path $projectRoot ".local\app.port"
-if (Test-Path -LiteralPath $portPath) { [void][int]::TryParse((Get-Content -Raw -LiteralPath $portPath).Trim(), [ref]$appPort) }
-$listener = Get-NetTCPConnection -LocalPort $appPort -State Listen -ErrorAction SilentlyContinue
-if ($listener) { throw "Stop the local server with Ctrl+C before creating a backup." }
-if (-not (Test-Path -LiteralPath ".wrangler\state")) { throw "Local state was not found. Run the project once before creating a backup." }
-
-$backupRoot = Join-Path $projectRoot "backups"
-New-Item -ItemType Directory -Force -Path $backupRoot | Out-Null
-$timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$destination = Join-Path $backupRoot "liming-zhiyao-$timestamp.zip"
-$staging = Join-Path ([System.IO.Path]::GetTempPath()) "liming-zhiyao-backup-$timestamp"
-$temporaryRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\') + '\'
-$staging = [System.IO.Path]::GetFullPath($staging)
-if (-not $staging.StartsWith($temporaryRoot, [StringComparison]::OrdinalIgnoreCase)) { throw "Backup staging must stay inside the temporary directory." }
-New-Item -ItemType Directory -Force -Path $staging | Out-Null
+. (Join-Path $PSScriptRoot "local-state-maintenance.ps1")
+$maintenanceLocks = @(Enter-LocalStateMaintenance $projectRoot)
+$partial = $null
 try {
-    Copy-Item -LiteralPath ".wrangler\state" -Destination (Join-Path $staging "state") -Recurse
-    @{ createdAt = (Get-Date).ToString("o"); project = "liming-zhiyao"; formatVersion = 1 } | ConvertTo-Json | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $staging "manifest.json")
-    Compress-Archive -LiteralPath (Join-Path $staging "state"),(Join-Path $staging "manifest.json") -DestinationPath $destination -CompressionLevel Optimal
-} finally { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }
-Write-Host "Backup completed: $destination" -ForegroundColor Green
+    Assert-LocalStateStopped $projectRoot
+    $statePath = Join-Path $projectRoot ".wrangler\state"
+    if (-not (Test-Path -LiteralPath $statePath -PathType Container)) { throw "Local state was not found. Run the project once before creating a backup." }
+    $backupRoot = Join-Path $projectRoot "backups"
+    New-Item -ItemType Directory -Force -Path $backupRoot | Out-Null
+    $suffix = (Get-Date -Format "yyyyMMdd-HHmmss") + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
+    $destination = Join-Path $backupRoot "liming-zhiyao-$suffix.zip"
+    $partial = "$destination.partial"
+    Write-StateArchive $statePath $partial
+    Assert-LocalStateStopped $projectRoot
+    Move-Item -LiteralPath $partial -Destination $destination
+    Write-Host "Backup completed: $destination" -ForegroundColor Green
+} finally {
+    if ($partial -and (Test-Path -LiteralPath $partial)) { Remove-Item -LiteralPath $partial -Force }
+    Exit-LocalStateMaintenance $maintenanceLocks
+}

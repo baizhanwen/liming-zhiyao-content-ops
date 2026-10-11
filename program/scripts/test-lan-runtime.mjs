@@ -1,7 +1,7 @@
 import { splitSql } from "./sql-statements.mjs";
 import assert from "node:assert/strict";
 import { randomBytes, pbkdf2Sync, createHash } from "node:crypto";
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Miniflare } from "miniflare";
@@ -19,6 +19,7 @@ const requests = [];
 const burstRounds = Number(process.env.LAN_TEST_ROUNDS || 10);
 assert.ok(Number.isInteger(burstRounds) && burstRounds > 0 && burstRounds <= 100);
 let mf, db, origin, currentScenario = "setup";
+let d1Persist = path.join(runDir, "d1"), r2Persist = path.join(runDir, "r2");
 const users = Array.from({ length: 11 }, (_, i) => ({
   id: `runtime-user-${i}`, email: `runtime-${i}@example.invalid`,
   org: i === 10 ? "org-other" : "org-team", project: i === 10 ? "project-other" : i % 2 ? "project-b" : "project-a",
@@ -32,8 +33,8 @@ async function start() {
     host: "127.0.0.1", port: 0,
     modules: moduleNames.map(p => ({ type: "ESModule", path: path.join(server, p) })), modulesRoot: server,
     compatibilityDate: config.compatibility_date, compatibilityFlags: config.compatibility_flags,
-    d1Databases: { DB: "lan-runtime-fixture" }, d1Persist: path.join(runDir, "d1"),
-    r2Buckets: ["MEDIA", "MEDIA_LEGACY"], r2Persist: path.join(runDir, "r2"),
+    d1Databases: { DB: "lan-runtime-fixture" }, d1Persist,
+    r2Buckets: ["MEDIA", "MEDIA_LEGACY"], r2Persist,
     assets: { directory: path.join(root, "dist/client"), binding: "ASSETS", routerConfig: { has_user_worker: true } },
     // Reject any accidental external fetch from the application under test.
     outboundService: () => new Response("External access disabled in LAN runtime test", { status: 502 }),
@@ -197,7 +198,7 @@ try {
     const source = await http(route, { service: true, headers: { "x-worker-id": "runtime-upload" } }); expect(source, 200); assert.deepEqual(source.bytes, bytes);
     expect(await http(route, { service: true, headers: { "x-worker-id": "runtime-wrong" } }), 409);
     const objects = await (await mf.getR2Bucket("MEDIA")).list(); assert.equal(objects.objects.length, 1);
-    uploadFixture = { key: objects.objects[0].key, hash: createHash("sha256").update(bytes).digest("hex") };
+    uploadFixture = { key: objects.objects[0].key, videoId: created.video.id, hash: createHash("sha256").update(bytes).digest("hex") };
     expect(await cancel(users[0], job.id), 200);
     expect(await claim("must-wait-for-release"), 204);
     expect(await release(job), 200);
@@ -266,6 +267,59 @@ try {
     assert.equal(createHash("sha256").update(Buffer.from(await object.arrayBuffer())).digest("hex"), uploadFixture.hash);
     const job = expect(await claim("runtime-after-restart"), 200).job; assert.equal(job.id, persistentJob);
     expect(await complete(await analyzing(job)), 200);
+  });
+  if (process.env.LAN_TEST_BACKUP === "1") await scenario("实际备份脚本恢复数据库与 R2：重新登录、版本关联、附件权限与继续审核发布", async () => {
+    assert.equal(process.platform, "win32", "Shipped maintenance scripts require Windows");
+    // Native Windows SQLite cannot use the long evidence-directory prefix.
+    const installation = path.join(root, ".local/br", randomBytes(4).toString("hex"));
+    const scripts = path.join(installation, "scripts"); mkdirSync(scripts, { recursive: true });
+    for (const filename of ["backup-local.ps1", "restore-local.ps1", "local-state-maintenance.ps1", "analyzer-instance-lock.ps1"]) {
+      cpSync(path.join(root, "scripts", filename), path.join(scripts, filename));
+    }
+    const tables = ["users", "local_credentials", "projects", "videos", "media_assets", "analysis_jobs", "video_analyses", "content_items", "content_versions", "content_reviews", "publication_records", "published_copy_records"];
+    const snapshot = async () => Object.fromEntries(await Promise.all(tables.map(async name => {
+      const rows = (await db.prepare(`SELECT * FROM ${name}`).all()).results.map(row => JSON.stringify(row)).sort();
+      return [name, { rows: rows.length, sha256: createHash("sha256").update(JSON.stringify(rows)).digest("hex") }];
+    })));
+    const before = await snapshot();
+    const oldPort = new URL(origin).port;
+    await mf.dispose(); mf = null;
+    const state = path.join(installation, ".wrangler/state"); mkdirSync(state, { recursive: true });
+    cpSync(d1Persist, path.join(state, "v3/d1"), { recursive: true }); cpSync(r2Persist, path.join(state, "v3/r2"), { recursive: true });
+    d1Persist = path.join(state, "v3/d1"); r2Persist = path.join(state, "v3/r2");
+    mkdirSync(path.join(installation, ".local")); writeFileSync(path.join(installation, ".local/app.port"), oldPort);
+    const runMaintenance = async (name, input = "") => new Promise((resolve, reject) => {
+      const child = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(scripts, name)], { cwd: installation, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+      let output = ""; child.stdout.on("data", data => { output += data; }); child.stderr.on("data", data => { output += data; });
+      const timer = setTimeout(() => {
+        spawn("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+        reject(new Error(`Maintenance timeout: ${name}`));
+      }, 120000);
+      child.on("error", error => { clearTimeout(timer); reject(error); });
+      child.on("close", code => {
+        clearTimeout(timer); writeFileSync(path.join(runDir, name + ".log"), output);
+        if (code === 0) resolve(); else reject(new Error(`Maintenance failed (${code}): ${name}; see ${runDir}`));
+      });
+      child.stdin.on("error", () => {}); child.stdin.end(input);
+    });
+    await runMaintenance("backup-local.ps1");
+    await start();
+    await db.prepare("UPDATE projects SET name = 'changed-after-backup' WHERE id = ?").bind(users[0].project).run();
+    await (await mf.getR2Bucket("MEDIA")).put(uploadFixture.key, "changed-after-backup");
+    await mf.dispose(); mf = null;
+    await runMaintenance("restore-local.ps1", "1\nRESTORE\n");
+    await start();
+    assert.deepEqual(await snapshot(), before, "All selected business table rows and links must return to the backup point");
+    const login = await http("/api/auth/session", { method: "POST", body: { email: users[0].email, password } }); expect(login, 200);
+    users[0].cookie = login.headers.get("set-cookie").split(";")[0];
+    const mediaRoute = `/api/videos/${uploadFixture.videoId}/media?${scope(users[0])}`;
+    const media = await http(mediaRoute, { user: users[0] }); expect(media, 200);
+    assert.equal(createHash("sha256").update(media.bytes).digest("hex"), uploadFixture.hash);
+    expect(await http(mediaRoute, { user: users[10] }), 403);
+    // Run the complete write/review/publish lifecycle against the restored database.
+    const { runContentLifecycleChecks } = await import("./content-lifecycle-checks.mjs");
+    await runContentLifecycleChecks({ db, http, expect, users, fixtureSuffix: "-restored" });
+    writeFileSync(path.join(runDir, "backup-recovery.json"), JSON.stringify({ passed: true, synthetic: true, installation, tables: before, login: true, mediaSha256: uploadFixture.hash, mediaUnauthorizedStatus: 403, lifecycleAfterRestore: true, config: "No business configuration or API keys loaded; private configuration recovery requires separate administrator steps." }, null, 2));
   });
   if (process.env.LAN_TEST_PYTHON) await scenario("5 人各 10 条：隔离处理进程经历卡死、崩溃、取消、断网和丢失响应后完成队列", async () => {
     const submissions = await Promise.all(users.slice(0, 5).flatMap(user => Array.from({ length: 10 }, () => submit(user))));

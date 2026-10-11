@@ -2,20 +2,23 @@ import assert from "node:assert/strict";
 import { createProductionScaffold } from "../lib/content-production.ts";
 
 // Called by the isolated built Worker harness, using real HTTP/D1 sessions.
-export async function runContentLifecycleChecks({ db, http, expect, users }) {
+export async function runContentLifecycleChecks({ db, http, expect, users, fixtureSuffix = "" }) {
   const user = users[0], now = new Date().toISOString();
   const scope = { organizationId: user.org, projectId: user.project };
-  const topicId = "runtime-content-topic";
+  const topicId = "runtime-content-topic" + fixtureSuffix;
+  const strategyId = "runtime-content-strategy";
   await db.prepare("INSERT INTO topic_ideas (id, organization_id, project_id, title, source_type, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, '隔离内容流程验收', 'manual', ?, ?, ?, ?)")
     .bind(topicId, user.org, user.project, user.id, user.id, now, now).run();
-  await db.prepare("INSERT INTO content_strategies (id, organization_id, project_id, version, name, positioning, target_audience, status, pain_points_json, pillars_json, topic_mix_json, objectives_json, created_by, updated_by, created_at, updated_at) VALUES ('runtime-content-strategy', ?, ?, 1, '隔离策略', '清楚交代任务的具体目标', '初学者', 'active', '[]', '[]', '{}', '[]', ?, ?, ?, ?)")
-    .bind(user.org, user.project, user.id, user.id, now, now).run();
+  if (!fixtureSuffix) {
+    await db.prepare("INSERT INTO content_strategies (id, organization_id, project_id, version, name, positioning, target_audience, status, pain_points_json, pillars_json, topic_mix_json, objectives_json, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, 1, '隔离策略', '清楚交代任务的具体目标', '初学者', 'active', '[]', '[]', '{}', '[]', ?, ?, ?, ?)")
+      .bind(strategyId, user.org, user.project, user.id, user.id, now, now).run();
+  }
   const item = expect(await http("/api/content-items", { user, method: "POST", body: { ...scope, topicId } }), 201).item;
   const route = `/api/content-items/${item.id}`;
   const pack = { ...createProductionScaffold({ id: topicId, title: item.title }),
     fullScript: "交代一项任务时，先说明背景，再说清目标。最后约定交付时间和格式，双方复述一遍要求，才能减少来回修改。",
     shortScript: "交代任务时说明背景、目标和交付标准，再约定时间与格式。" };
-  pack.citations.push({ sourceType: "strategy", sourceId: "runtime-content-strategy", quote: "清楚交代任务的具体目标" });
+  pack.citations.push({ sourceType: "strategy", sourceId: strategyId, quote: "清楚交代任务的具体目标" });
   const save = (expectedVersion, extra = {}) => http(route, { user, method: "PATCH", body: { ...scope, expectedVersion, pack, ...extra } });
   const transition = (expectedVersion, toStatus) => http(`${route}/transition`, { user, method: "POST", body: { ...scope, expectedVersion, toStatus } });
   const publish = (expectedVersion, extra = {}) => http(`${route}/publications`, { user, method: "POST", body: { ...scope, expectedVersion, platform: "douyin", status: "published", externalUrl: "https://example.invalid/published", ...extra } });
