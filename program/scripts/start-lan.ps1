@@ -1,6 +1,10 @@
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $projectRoot
+. (Join-Path $PSScriptRoot 'analyzer-instance-lock.ps1')
+$webLock = Enter-AnalyzerInstanceLock $projectRoot 'web'
+if ($null -eq $webLock) { throw 'Another startup, setup or maintenance operation is in progress. Stop the local server before starting LAN mode.' }
+try {
 
 & "$PSScriptRoot\prepare-local-web.ps1" -CheckDependenciesOnly
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -63,3 +67,4 @@ Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @(
 )
 & npm.cmd run dev -- --hostname 0.0.0.0 --port $appPort
 exit $LASTEXITCODE
+} finally { Exit-AnalyzerInstanceLock $webLock }

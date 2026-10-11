@@ -12,9 +12,10 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const installation = path.join(root, ".local/la", randomBytes(4).toString("hex"));
 mkdirSync(installation, { recursive: true });
 for (const name of ["app", "components", "db", "drizzle", "lib", "worker", "build", "public", "resources", ".openai"]) cpSync(path.join(root, name), path.join(installation, name), { recursive: true });
-for (const name of ["package.json", "package-lock.json", "tsconfig.json", "next-env.d.ts", "next.config.ts", "vite.config.ts", "postcss.config.mjs", "wrangler.local.jsonc"]) cpSync(path.join(root, name), path.join(installation, name));
-mkdirSync(path.join(installation, "scripts"));
-cpSync(path.join(root, "scripts/prepare-login-startup.mjs"), path.join(installation, "scripts/prepare-login-startup.mjs"));
+for (const name of ["package.json", "package-lock.json", "tsconfig.json", "next-env.d.ts", "next.config.ts", "vite.config.ts", "postcss.config.mjs", "wrangler.local.jsonc", "start-local.bat", "setup-local.bat"]) cpSync(path.join(root, name), path.join(installation, name));
+cpSync(path.join(root, "scripts"), path.join(installation, "scripts"), { recursive: true });
+// Exercise the actual startup while keeping browser/paid analyzer side effects disabled.
+writeFileSync(path.join(installation, "scripts/open-local.ps1"), 'param([string]$Url)\n[IO.File]::WriteAllText((Join-Path (Split-Path $PSScriptRoot) ".local/open-request"), $Url)\n');
 const port = await new Promise((resolve, reject) => { const socket = createServer(); socket.on("error", reject); socket.listen(0, "127.0.0.1", () => { const value = socket.address().port; socket.close(() => resolve(value)); }); });
 const origin = `http://127.0.0.1:${port}`;
 const environment = { ...process.env, LAN_MODE: "1", LAN_ACCESS_ORIGIN: `http://192.168.50.10:${port}`, CI: "1", WRANGLER_SEND_METRICS: "false", WRANGLER_WRITE_LOGS: "false" };
@@ -32,12 +33,13 @@ async function stop(child) {
   for (let i = 0; i < 50 && child.exitCode === null; i++) await wait(100);
   assert.notEqual(child.exitCode, null, "Child did not stop");
 }
-async function run(args) {
+async function run(args, { executable = process.execPath, expectedCode = 0, input = "" } = {}) {
   await new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, args, { cwd: installation, env: environment, windowsHide: true, stdio: ["ignore", log, log] });
+    const child = spawn(executable, args, { cwd: installation, env: environment, windowsHide: true, stdio: ["pipe", log, log] });
     const timer = setTimeout(() => { void stop(child); reject(new Error("CLI timed out")); }, 300000);
     child.on("error", error => { clearTimeout(timer); reject(error); });
-    child.on("close", code => { clearTimeout(timer); if (code === 0) resolve(); else reject(new Error(`CLI failed (${code}); see ${installation}`)); });
+    child.on("close", code => { clearTimeout(timer); if (code === expectedCode) resolve(); else reject(new Error(`CLI failed (${code}, expected ${expectedCode}); see ${installation}`)); });
+    child.stdin.on("error", () => {}); child.stdin.end(input);
   });
 }
 async function http(route, { cookie, body, headers = {} } = {}) {
@@ -46,7 +48,8 @@ async function http(route, { cookie, body, headers = {} } = {}) {
   return { status: response.status, headers: response.headers, data };
 }
 async function start() {
-  server = spawn(process.execPath, [path.join(installation, "node_modules/vinext/dist/cli.js"), "dev", "--hostname", "127.0.0.1", "--port", String(port)], { cwd: installation, env: environment, windowsHide: true, stdio: ["ignore", log, log] });
+  server = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(installation, "scripts/run-web-guard.ps1"), "-Entry", "start-local"], { cwd: installation, env: environment, windowsHide: true, stdio: ["pipe", log, log] });
+  server.stdin.on("error", () => {}); server.stdin.end("\n");
   let error; server.on("error", value => { error = value; });
   for (let i = 0; i < 90; i++) {
     if (error) throw error;
@@ -62,8 +65,14 @@ const credentials = { email: "lan-admin@example.invalid", password };
 let cookie;
 try {
   console.log(`Evidence: ${installation}`);
-  const npmCli = process.env.npm_execpath || path.join(path.dirname(process.execPath), "node_modules/npm/bin/npm-cli.js");
-  await run([npmCli, "ci", "--prefer-offline", "--no-audit", "--no-fund", "--cache", path.join(root, ".local/npm-cache")]);
+  await check("official setup installs dependencies, migrates fresh data and preserves supplied configuration", async () => {
+    const { readFileSync } = await import("node:fs");
+    const original = readFileSync(path.join(installation, ".dev.vars"), "utf8");
+    environment.npm_config_cache = path.join(root, ".local/npm-cache");
+    environment.npm_config_prefer_offline = "true";
+    await run(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(installation, "scripts/run-web-guard.ps1"), "-Entry", "setup-local"], { executable: "powershell.exe", input: "\n" });
+    assert.equal(readFileSync(path.join(installation, ".dev.vars"), "utf8"), original);
+  });
   const cli = path.join(installation, "node_modules/wrangler/bin/wrangler.js");
   await run([cli, "d1", "migrations", "apply", "DB", "--local", "--config", "wrangler.local.jsonc"]);
   const salt = randomBytes(16), hash = pbkdf2Sync(password, salt, 210000, 32, "sha256");
@@ -86,6 +95,15 @@ INSERT INTO organization_members(id,organization_id,user_id,role,status,created_
     assert.equal((await http("/api/auth/session", { cookie })).status, 200);
     assert.equal((await http("/api/projects", { cookie, body: { organizationId: "lan-org", name: "LAN authorized fixture" } })).status, 201);
   });
+  await check("live official startup rejects maintenance and setup without affecting sessions", async () => {
+    for (const name of ["backup-local.ps1", "restore-local.ps1", "factory-reset.ps1"]) {
+      await run(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(installation, "scripts", name)], { executable: "powershell.exe", expectedCode: 1 });
+    }
+    await run(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(installation, "scripts/run-web-guard.ps1"), "-Entry", "setup-local"], { executable: "powershell.exe", expectedCode: 1 });
+    // Intercept only browser opening; the real duplicate-start check and process verification run.
+    await run(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", `function Start-Process { param([string]$FilePath) }; & '${path.join(installation, "scripts/run-web-guard.ps1").replaceAll("'", "''")}' -Entry start-local; exit $LASTEXITCODE`], { executable: "powershell.exe" });
+    assert.equal((await http("/api/auth/session", { cookie })).status, 200, "A duplicate open revoked a live session");
+  });
   await stop(server); server = null;
   await run(["scripts/prepare-login-startup.mjs"]);
   await start();
@@ -93,6 +111,28 @@ INSERT INTO organization_members(id,organization_id,user_id,role,status,created_
     assert.equal((await http("/api/auth/session", { cookie })).status, 401);
     const response = await http("/api/auth/session", { body: credentials }); assert.equal(response.status, 200); cookie = response.headers.get("set-cookie").split(";")[0];
     const projects = await http("/api/projects?organizationId=lan-org", { cookie }); assert.equal(projects.status, 200); assert.ok(projects.data.projects.some(project => project.name === "LAN authorized fixture"));
+  });
+  await stop(server); server = null;
+  await check("after abrupt stop, backup and factory reset use real Wrangler and preserve rollback copies", async () => {
+    await run(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(installation, "scripts/backup-local.ps1")], { executable: "powershell.exe" });
+    writeFileSync(path.join(installation, ".local/douyin-cookies.txt"), "synthetic cookie reset fixture");
+    const varsBefore = (await import("node:fs")).readFileSync(path.join(installation, ".dev.vars"), "utf8");
+    await run(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(installation, "scripts/factory-reset.ps1")], { executable: "powershell.exe", input: "FACTORY RESET\n" });
+    const { existsSync, readdirSync, readFileSync } = await import("node:fs");
+    assert.equal(readFileSync(path.join(installation, ".dev.vars"), "utf8"), varsBefore);
+    assert.equal(existsSync(path.join(installation, ".local/douyin-cookies.txt")), false);
+    const rollback = readdirSync(path.join(installation, "backups")).find(name => name.startsWith("private-reset-"));
+    assert.equal(readFileSync(path.join(installation, "backups", rollback, ".local/douyin-cookies.txt"), "utf8"), "synthetic cookie reset fixture");
+    assert.ok(readdirSync(path.join(installation, ".wrangler")).some(name => name.startsWith("state-before-factory-reset-")));
+    const { DatabaseSync } = await import("node:sqlite");
+    const databaseDirectory = path.join(installation, ".wrangler/state/v3/d1/miniflare-D1DatabaseObject");
+    const files = readdirSync(databaseDirectory).filter(name => /^[a-f0-9]{64}\.sqlite$/u.test(name)); assert.equal(files.length, 1);
+    const database = new DatabaseSync(path.join(databaseDirectory, files[0]), { readOnly: true });
+    try {
+      assert.equal(database.prepare("SELECT COUNT(*) AS n FROM projects").get().n, 0);
+      assert.equal(database.prepare("SELECT COUNT(*) AS n FROM organizations").get().n, 0);
+      assert.equal(database.prepare("PRAGMA integrity_check").get().integrity_check, "ok");
+    } finally { database.close(); }
   });
   writeFileSync(path.join(installation, ".local/report.json"), JSON.stringify({ passed: true, checks, boundary: "Actual Vite LAN binding config and Wrangler D1, local HTTP clients; synthetic accounts, no model calls, no real LAN client or OS reboot." }, null, 2));
 } catch (error) {

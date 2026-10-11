@@ -6,10 +6,10 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 function Enter-LocalStateMaintenance([string]$ProjectRoot) {
     $locks = @()
     try {
-        # Keep these locks until maintenance completes so an analyzer cannot start mid-restore.
-        foreach ($purpose in @('maintenance', 'startup', 'supervisor', 'worker')) {
+        # Hold lifecycle locks until maintenance completes, including the pre-listen startup window.
+        foreach ($purpose in @('maintenance', 'web', 'database-write', 'startup', 'supervisor', 'worker')) {
             $lock = Enter-AnalyzerInstanceLock $ProjectRoot $purpose
-            if ($null -eq $lock) { throw "Another maintenance operation or analyzer $purpose is running. Stop the project first." }
+            if ($null -eq $lock) { throw "Another maintenance, web startup/setup or analyzer $purpose is running. Stop the project first." }
             $locks += $lock
         }
         return $locks

@@ -11,6 +11,17 @@ if (process.platform === "win32" && sqlitePath.length >= 260) {
   process.exit(1);
 }
 
+// Normal direct invocations share the maintenance gate. The guard re-enters
+// with --guarded; factory reset already owns that gate for its whole transaction.
+if (process.platform === "win32" && !process.argv.includes("--guarded")) {
+  const guarded = spawnSync("powershell.exe", [
+    "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+    path.join(projectRoot, "scripts/run-migration-guard.ps1"), "-NodePath", process.execPath,
+  ], { cwd: projectRoot, stdio: "inherit", windowsHide: true });
+  if (guarded.error) throw guarded.error;
+  process.exit(guarded.status ?? 1);
+}
+
 const wranglerCli = fileURLToPath(
   new URL("../node_modules/wrangler/bin/wrangler.js", import.meta.url),
 );

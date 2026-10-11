@@ -119,3 +119,11 @@ test("factory reset backs up before replacing local state", () => {
   assert.match(reset, /state-before-factory-reset/);
   assert.match(reset, /db:local:migrate/);
 });
+
+test("every delivery plan retains the lifecycle locks required for setup and recovery", () => {
+  const delivery = read("scripts/prepare-delivery.ps1");
+  assert.doesNotMatch(delivery, /Remove-PackagePath "scripts\\analyzer-instance-lock\.ps1"/);
+  for (const name of ["run-web-guard.ps1", "run-migration-guard.ps1", "local-state-maintenance.ps1"]) {
+    assert.match(read(`scripts/${name}`), /analyzer-instance-lock\.ps1/);
+  }
+});

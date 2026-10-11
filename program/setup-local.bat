@@ -2,6 +2,13 @@
 setlocal
 cd /d "%~dp0"
 
+if /i "%~1"=="--check-runtime" goto :guard_ready
+if /i "%~1"=="--guarded" goto :guard_ready
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\run-web-guard.ps1" -Entry setup-local
+exit /b %errorlevel%
+
+:guard_ready
+
 echo [Liming Zhiyao] Checking the local runtime...
 call :find_node
 if /i "%~1"=="--check-runtime" goto :check_runtime

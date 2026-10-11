@@ -179,7 +179,8 @@ export function deliveryFeatureEnabled(feature: DeliveryFeature) {
     Replace-PackageText "vite.config.ts" '(?m)^\s+sites\(\),\r?\n' ''
 
     if (-not $selectedPlan.videoAnalysis) {
-        Remove-PackagePath "scripts\analyzer-instance-lock.ps1"
+        # The lock helper also protects web setup, migrations and backup/restore.
+        # Keep it in every plan even when all video-analysis features are removed.
         @(
             "app\analysis", "app\api\analysis-jobs", "app\api\analyzer", "app\api\internal", "app\api\video-library", "app\api\videos",
             "components\AnalysisDetail.tsx", "components\AnalysisWorkspace.tsx", "components\VideoLibraryWorkspace.tsx", "components\useAnalysisProfile.ts",
