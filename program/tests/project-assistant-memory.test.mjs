@@ -134,6 +134,17 @@ CREATE TABLE video_metric_snapshots (
 function createD1TestDatabase() {
   const sqlite = new DatabaseSync(":memory:");
   sqlite.exec(SCHEMA);
+  sqlite.exec(`
+    CREATE TABLE users(id TEXT PRIMARY KEY,status TEXT NOT NULL);
+    CREATE TABLE organizations(id TEXT PRIMARY KEY,status TEXT NOT NULL);
+    CREATE TABLE organization_members(user_id TEXT,organization_id TEXT,role TEXT,status TEXT);
+    CREATE TABLE project_members(user_id TEXT,organization_id TEXT,project_id TEXT,role TEXT,status TEXT);
+    CREATE TABLE projects(id TEXT PRIMARY KEY,organization_id TEXT,status TEXT,deleted_at TEXT);
+    INSERT INTO users VALUES('user-1','active');
+    INSERT INTO organizations VALUES('org-1','active');
+    INSERT INTO organization_members VALUES('user-1','org-1','admin','active');
+    INSERT INTO projects VALUES('project-1','org-1','active',NULL),('project-2','org-1','active',NULL);
+  `);
   const prepare = (sql) => {
     let values = [];
     const statement = {

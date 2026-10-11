@@ -13,6 +13,7 @@ const runDir = path.join(root, ".local/mb", randomBytes(4).toString("hex")); mkd
 const scope = { organizationId: "fee-org", projectId: "fee-project" }, userId = "fee-user";
 const password = randomBytes(18).toString("base64url"), scenarios = [], requests = [], providerCalls = [];
 let mf, db, origin, cookie, mode = "valid", modeCalls = 0, rewriteResponseHook, responseHook;
+let assistantMemoryOperations = [{ operation: "noop", confidence: 100, reason: "没有新证据" }];
 const audit = { missing_paragraph_ids: [], problem_paragraph_ids: [], added_claims: [], core_information_retention: 100, structure_aligned: true, style_aligned: true, conclusion_aligned: true, production_notes_preserved: true, copy_risk: "low", notes: [] };
 const source = "企业在2027年要让AI增长7.1%，我们会先把每次测试的过程记录下来，然后逐项核对结果，最后才决定怎样调整。";
 const rewritten = "面向2027年AI增长7.1%的目标，我们先留下每轮测试的过程记录，核验各项结果以后，再据此安排后续调整。";
@@ -49,7 +50,7 @@ try {
       let result = { angle: "先记录过程，再逐项核对结果" };
       const user = payload.messages.at(-1).content;
       let context; try { context = JSON.parse(user); } catch { /* Topic prompt has a prose prefix. */ }
-      if (url.hostname === "assistant.example.invalid") result = { reply: "当前暂无对标资料，先从一个业务问题验证方向。", recommendations: [], citations: [], memoryOperations: [{ operation: "noop", confidence: 100, reason: "没有新证据" }] };
+      if (url.hostname === "assistant.example.invalid") result = { reply: "当前暂无对标资料，先从一个业务问题验证方向。", recommendations: [], citations: [], memoryOperations: assistantMemoryOperations };
       else if (context?.task) result = context.task === "audit_micro_homomorphic_script" ? audit : { paragraphs: context.source_paragraphs.map(row => ({ paragraph_id: row.paragraph_id, text: rewritten })) };
       if (context?.task && rewriteResponseHook) await rewriteResponseHook(context);
       if (responseHook) await responseHook();
@@ -203,11 +204,65 @@ try {
     assert.equal(await count(), providerCalls.length);
     assert.equal((await db.prepare("SELECT COUNT(*) n FROM model_calls WHERE error_code='PROJECT_WRITE_ACCESS_CHANGED'").first()).n, 4);
   });
+  await check("assistant chat after membership revocation refuses output and leaves a failed durable reply", async () => {
+    await allowance(20); const before = providerCalls.length;
+    responseHook = async () => { responseHook = undefined; await db.prepare("UPDATE organization_members SET status='inactive' WHERE user_id=?").bind(userId).run(); };
+    const data = expect(await http(`/api/project-assistant/conversations/${conversationId}/messages`, { ...scope, question: "请说明怎样核对一个业务问题" }), 403);
+    assert.equal(data.error.code, "PROJECT_WRITE_ACCESS_CHANGED"); assert.equal(providerCalls.length - before, 1);
+    assert.equal((await db.prepare("SELECT COUNT(*) n FROM project_assistant_messages WHERE conversation_id=? AND error_code='PROJECT_WRITE_ACCESS_CHANGED' AND status='failed'").bind(conversationId).first()).n, 1);
+    await db.prepare("UPDATE organization_members SET status='active' WHERE user_id=?").bind(userId).run();
+  });
+  await check("paid assistant probe after session deletion is refused and retains its ledger", async () => {
+    const before = providerCalls.length;
+    responseHook = async () => { responseHook = undefined; await db.prepare("DELETE FROM local_sessions WHERE user_id=?").bind(userId).run(); };
+    const data = expect(await http("/api/project-assistant/status", scope), 403); assert.equal(data.error.code, "PROJECT_WRITE_ACCESS_CHANGED"); assert.equal(providerCalls.length - before, 1);
+    const login = await http("/api/auth/session", { email: "fee@example.invalid", password }, false); expect(login, 200); cookie = login.headers.get("set-cookie").split(";")[0];
+  });
+  const addMemoryEvent = async (id, author = userId, createdAt = now) => db.prepare("INSERT INTO project_memory_events(id,organization_id,project_id,event_type,source_type,source_id,dedupe_key,payload_json,payload_hash,created_by,created_at,updated_at) VALUES(?,?,?,'manual','manual',?,?,'{}','synthetic',?,?,?)").bind(id, scope.organizationId, scope.projectId, id, id, author, createdAt, createdAt).run();
+  await check("current admin syncs a disabled historical author's source and owns the paid request", async () => {
+    await db.prepare("INSERT INTO users(id,auth_subject,email,display_name,status,created_at,updated_at) VALUES('historical-author','historical-author','old@example.invalid','Historical','disabled',?,?)").bind(now, now).run();
+    await addMemoryEvent("memory-historical", "historical-author");
+    expect(await http("/api/project-memory/sync", { ...scope, limit: 1 }), 200);
+    assert.equal((await db.prepare("SELECT status FROM project_memory_events WHERE id='memory-historical'").first()).status, "completed");
+    assert.equal((await db.prepare("SELECT created_by FROM model_calls WHERE json_extract(input_json,'$.sourceId')='memory-historical'").first()).created_by, userId);
+  });
+  await check("memory revocation refuses all candidates and leaves the next event pending", async () => {
+    await addMemoryEvent("memory-denied", userId, "2026-01-01T00:00:00Z"); await addMemoryEvent("memory-next", userId, "2026-02-01T00:00:00Z"); const before = providerCalls.length;
+    responseHook = async () => { responseHook = undefined; await db.prepare("UPDATE organization_members SET status='inactive' WHERE user_id=?").bind(userId).run(); };
+    const data = expect(await http("/api/project-memory/sync", { ...scope, limit: 3 }), 403); assert.equal(data.error.code, "PROJECT_WRITE_ACCESS_CHANGED"); assert.equal(providerCalls.length - before, 1);
+    assert.equal((await db.prepare("SELECT status FROM project_memory_events WHERE id='memory-next'").first()).status, "pending");
+    await db.prepare("UPDATE organization_members SET status='active' WHERE user_id=?").bind(userId).run();
+    await db.prepare("UPDATE project_memory_events SET status='completed' WHERE id IN ('memory-denied','memory-next')").run(); // End these isolated scenario fixtures.
+  });
+  await check("D1 rolls back every memory operation on late evidence failure and explicit retry succeeds", async () => {
+    assistantMemoryOperations = [
+      { operation: "add", canonicalKey: "runtime-input", title: "输入责任", content: "任务开始前约定由谁提供输入资料，减少等待与返工。", confidence: 90, evidence: [{ sourceType: "manual", sourceId: "runtime-first" }] },
+      { operation: "add", canonicalKey: "runtime-review", title: "复查时间", content: "审核时约定复查日期，按截止时间安排审核人员。", confidence: 90, evidence: [{ sourceType: "manual", sourceId: "runtime-second" }] },
+    ];
+    await addMemoryEvent("memory-atomic", userId, "2000-01-01T00:00:00Z");
+    await db.prepare("CREATE TRIGGER injected_runtime_evidence BEFORE INSERT ON project_memory_evidence WHEN NEW.source_id='runtime-second' BEGIN SELECT RAISE(ABORT,'Synthetic evidence failure'); END").run();
+    const failed = expect(await http("/api/project-memory/sync", { ...scope, limit: 1 }), 200); assert.equal(failed.results[0].status, "failed");
+    assert.equal((await db.prepare("SELECT COUNT(*) n FROM project_memory_items WHERE source_id='memory-atomic'").first()).n, 0);
+    assert.equal((await db.prepare("SELECT COUNT(*) n FROM project_memory_evidence").first()).n, 0);
+    await db.prepare("DROP TRIGGER injected_runtime_evidence").run();
+    const retried = expect(await http("/api/project-memory/sync", { ...scope, limit: 1 }), 200); assert.equal(retried.results[0].status, "completed");
+    assert.equal((await db.prepare("SELECT COUNT(*) n FROM project_memory_items WHERE source_id='memory-atomic'").first()).n, 2);
+    assert.equal((await db.prepare("SELECT COUNT(*) n FROM project_memory_evidence").first()).n, 2);
+    assert.equal((await db.prepare("SELECT attempt_count FROM project_memory_events WHERE id='memory-atomic'").first()).attempt_count, 2);
+  });
+  await check("late memory output cannot write into a newer processing attempt", async () => {
+    await addMemoryEvent("memory-late", userId, "1999-01-01T00:00:00Z"); const before = providerCalls.length;
+    responseHook = async () => { responseHook = undefined; await db.prepare("UPDATE project_memory_events SET attempt_count=attempt_count+1 WHERE id='memory-late'").run(); };
+    const data = expect(await http("/api/project-memory/sync", { ...scope, limit: 1 }), 200); assert.equal(data.results[0].error.code, "PROJECT_MEMORY_ATTEMPT_CHANGED");
+    assert.equal(providerCalls.length - before, 1); assert.equal((await db.prepare("SELECT COUNT(*) n FROM project_memory_items WHERE source_id='memory-late'").first()).n, 0);
+    const event = await db.prepare("SELECT status,attempt_count,error_code FROM project_memory_events WHERE id='memory-late'").first(); assert.equal(event.status, "processing"); assert.equal(event.attempt_count, 2); assert.equal(event.error_code, null);
+    assert.equal(await count(), providerCalls.length);
+  });
 } catch (error) { console.error(error.stack); if (error.cause) console.error(error.cause); process.exitCode = 1; }
 finally {
   if (mf) await mf.dispose();
   const timings = requests.map(request => request.ms).sort((a, b) => a - b);
-  const report = { passed: !process.exitCode && scenarios.length === 19 && scenarios.every(scenario => scenario.passed), startedAt, finishedAt: new Date().toISOString(),
+  const report = { passed: !process.exitCode && scenarios.length === 25 && scenarios.every(scenario => scenario.passed), startedAt, finishedAt: new Date().toISOString(),
     boundary: "Built Worker, real HTTP/password/D1; locally mocked providers, synthetic accounts/materials/token usage; no real model spend or multi-device business acceptance.",
     buildSha256: createHash("sha256").update(readFileSync(path.join(root, "dist/server/index.js"))).digest("hex"), scenarios, providerCalls, requests,
     metrics: { requests: requests.length, providerRequests: providerCalls.length, p50Ms: timings[Math.floor(timings.length * .5)] ?? 0, p95Ms: timings[Math.floor(timings.length * .95)] ?? 0, maxMs: timings.at(-1) ?? 0,

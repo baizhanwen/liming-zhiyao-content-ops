@@ -9,6 +9,7 @@ import {
 } from "../../../../../../lib/project-assistant-model";
 import type { ProjectAssistantDatabase } from "../../../../../../lib/project-memory-events";
 import { readRequestIdentity } from "../../../../../../lib/request-auth";
+import { createProjectWriteAssertion } from "../../../../../../lib/project-write-access";
 
 const text = (value: unknown, maximum: number) => typeof value === "string" ? value.trim().slice(0, maximum) : "";
 
@@ -26,6 +27,7 @@ export async function POST(request: Request, context: { params: Promise<{ conver
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
     if (!access || !canWriteProjectAccess(access)) return apiError("WRITE_ACCESS_REQUIRED", "当前角色不能发送灵感对话。", 403);
     const user = await ensureUser(identity);
+    const assertWriteAccess = createProjectWriteAssertion(getD1(), { organizationId, projectId, userId: user.id }, async () => (await readRequestIdentity(request))?.authSubject === identity.authSubject);
     const result = await runProjectAssistantConversationWithDb(
       getD1() as unknown as ProjectAssistantDatabase,
       {
@@ -34,7 +36,8 @@ export async function POST(request: Request, context: { params: Promise<{ conver
         conversationId,
         userId: user.id,
         question,
-        invoke: createRecordedProjectAssistantInvoker({ organizationId, projectId, userId: user.id, taskType: "project_assistant.chat", promptVersion: PROJECT_ASSISTANT_PROMPT_VERSION, sourceId: conversationId }),
+        assertWriteAccess,
+        invoke: createRecordedProjectAssistantInvoker({ organizationId, projectId, userId: user.id, taskType: "project_assistant.chat", promptVersion: PROJECT_ASSISTANT_PROMPT_VERSION, sourceId: conversationId, assertWriteAccess }),
       },
     );
     return Response.json(result, { status: 201 });

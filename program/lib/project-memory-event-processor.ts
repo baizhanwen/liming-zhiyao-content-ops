@@ -16,6 +16,8 @@ import {
 } from "./project-memory-events.ts";
 import { analysisReportSourceText } from "./content-production.ts";
 import { createRecordedProjectAssistantInvoker } from "./recorded-project-assistant-model.ts";
+import { ProjectWriteAccessChangedError } from "./project-write-access.ts";
+import { assertMemoryAttempt, ProjectMemoryAttemptChangedError } from "./project-memory-write.ts";
 
 export const PROJECT_MEMORY_EXTRACTION_PROMPT_VERSION = "project-memory.v2-content-and-methods";
 
@@ -162,8 +164,11 @@ export async function processProjectMemoryEventWithDb(
     organizationId: string;
     projectId: string;
     invoke?: InvocationFunction;
+    userId?: string;
+    assertWriteAccess?: () => Promise<void>;
   },
 ) {
+  await input.assertWriteAccess?.();
   const claimed = await claimProjectMemoryEventWithDb(db, input);
   if (!claimed.claimed) return { status: claimed.status, processed: false as const, operations: [] };
   const event = await db.prepare(
@@ -171,6 +176,8 @@ export async function processProjectMemoryEventWithDb(
   ).bind(input.eventId, input.organizationId, input.projectId).first<ProjectMemoryEventRow>();
   if (!event) throw new Error("已认领的项目记忆事件不存在。");
   try {
+    if (event.status !== "processing" || event.attempt_count !== claimed.attemptCount) throw new ProjectMemoryAttemptChangedError();
+    const assertWriteAccess = async () => { await input.assertWriteAccess?.(); await assertMemoryAttempt(db, { ...input, attemptCount: claimed.attemptCount }); };
     const [currentMemories, source] = await Promise.all([
       readProjectMemoryExtractionContextWithDb(db, input),
       loadEventSource(db, event),
@@ -187,6 +194,8 @@ export async function processProjectMemoryEventWithDb(
         provider: "system",
         model: "benchmark-scope-gate",
         promptVersion: PROJECT_MEMORY_EXTRACTION_PROMPT_VERSION,
+        userId: input.userId,
+        assertWriteAccess,
       });
       return { status: "completed" as const, processed: true as const, operations: applied };
     }
@@ -195,7 +204,8 @@ export async function processProjectMemoryEventWithDb(
       sourceId: event.source_id || event.id,
       quote: null,
     };
-    const invoke = input.invoke ?? createRecordedProjectAssistantInvoker({ organizationId: event.organization_id, projectId: event.project_id, userId: event.created_by, taskType: "project_assistant.memory", promptVersion: PROJECT_MEMORY_EXTRACTION_PROMPT_VERSION, sourceId: event.id });
+    const invoke = input.invoke ?? createRecordedProjectAssistantInvoker({ organizationId: event.organization_id, projectId: event.project_id, userId: input.userId ?? event.created_by, taskType: "project_assistant.memory", promptVersion: PROJECT_MEMORY_EXTRACTION_PROMPT_VERSION, sourceId: event.id, assertWriteAccess, memoryEventId: event.id, memoryAttemptCount: claimed.attemptCount });
+    await assertWriteAccess();
     const invocation = await invoke({
       system: memorySystemPrompt(),
       user: JSON.stringify({
@@ -223,6 +233,8 @@ export async function processProjectMemoryEventWithDb(
       provider: invocation.provider,
       model: invocation.model,
       promptVersion: PROJECT_MEMORY_EXTRACTION_PROMPT_VERSION,
+      userId: input.userId,
+      assertWriteAccess,
     });
     return { status: "completed" as const, processed: true as const, operations: applied };
   } catch (error) {
@@ -240,7 +252,9 @@ export async function processProjectMemoryEventWithDb(
       status: blocked ? "blocked" : "failed",
       code,
       message,
+      attemptCount: claimed.attemptCount,
     });
+    if (error instanceof ProjectWriteAccessChangedError) throw error;
     return { status: blocked ? "blocked" as const : "failed" as const, processed: false as const, operations: [], error: { code, message } };
   }
 }
@@ -252,9 +266,12 @@ export async function syncProjectMemoryEventsWithDb(
     projectId: string;
     limit?: number;
     invoke?: InvocationFunction;
+    userId?: string;
+    assertWriteAccess?: () => Promise<void>;
   },
 ) {
   const limit = Math.max(1, Math.min(5, input.limit ?? 3));
+  await input.assertWriteAccess?.();
   const now = new Date().toISOString();
   await db.prepare(`
     UPDATE project_memory_events
@@ -282,6 +299,7 @@ export async function syncProjectMemoryEventsWithDb(
   ).bind(input.organizationId, input.projectId, limit).all<{ id: string }>();
   const results = [];
   for (const row of rows.results) {
+    await input.assertWriteAccess?.();
     results.push(await processProjectMemoryEventWithDb(db, {
       ...input,
       eventId: row.id,

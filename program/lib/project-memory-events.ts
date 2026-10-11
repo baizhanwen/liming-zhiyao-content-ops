@@ -2,6 +2,9 @@ import type { ProjectAssistantMemoryOperation } from "./project-assistant-contra
 import { PROJECT_MEMORY_STORAGE_CATEGORY, PROJECT_MEMORY_STORAGE_KIND } from "./project-memory-taxonomy.ts";
 import { collapseProjectMemoryListItems } from "./project-memory-list.ts";
 import { areProjectMemoriesEquivalent, projectMemorySimilarity } from "./project-memory-similarity.ts";
+import { assertProjectWriteAccess, projectWriteAccessBindings, projectWriteAccessCondition } from "./project-write-access.ts";
+import { memoryAttemptBindings, memoryAttemptCondition, ProjectMemoryAttemptChangedError } from "./project-memory-write.ts";
+export { ProjectMemoryAttemptChangedError } from "./project-memory-write.ts";
 
 
 export type ProjectAssistantDbResult = { meta: { changes: number } };
@@ -243,19 +246,23 @@ export async function enqueueProjectMemoryEventWithDb(
 
 export async function claimProjectMemoryEventWithDb(
   db: ProjectAssistantDatabase,
-  input: { eventId: string; organizationId: string; projectId: string; now?: string },
+  input: { eventId: string; organizationId: string; projectId: string; now?: string; userId?: string },
 ) {
   const now = input.now ?? new Date().toISOString();
+  const previous = await db.prepare("SELECT status, attempt_count FROM project_memory_events WHERE id=? AND organization_id=? AND project_id=?")
+    .bind(input.eventId, input.organizationId, input.projectId).first<{ status: ProjectMemoryEventStatus; attempt_count: number }>();
+  const attemptCount = Number(previous?.attempt_count ?? 0) + 1;
   const result = await db.prepare(
-    "UPDATE project_memory_events SET status = 'processing', attempt_count = attempt_count + 1, error_code = NULL, error_message = NULL, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status IN ('pending', 'blocked', 'failed')",
-  ).bind(now, input.eventId, input.organizationId, input.projectId).run();
+    `UPDATE project_memory_events SET status = 'processing', attempt_count = attempt_count + 1, error_code = NULL, error_message = NULL, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status IN ('pending', 'blocked', 'failed') AND attempt_count=? ${input.userId ? `AND ${projectWriteAccessCondition}` : ""}`,
+  ).bind(now, input.eventId, input.organizationId, input.projectId, attemptCount - 1, ...(input.userId ? projectWriteAccessBindings({ ...input, userId: input.userId }) : [])).run();
   if (!result.meta.changes) {
+    if (input.userId) await assertProjectWriteAccess(db, { ...input, userId: input.userId });
     const current = await db.prepare(
       "SELECT status FROM project_memory_events WHERE id = ? AND organization_id = ? AND project_id = ?",
     ).bind(input.eventId, input.organizationId, input.projectId).first<{ status: ProjectMemoryEventStatus }>();
     return { claimed: false as const, status: current?.status ?? null };
   }
-  return { claimed: true as const, status: "processing" as const };
+  return { claimed: true as const, status: "processing" as const, attemptCount };
 }
 
 export async function markProjectMemoryEventFailureWithDb(
@@ -268,11 +275,12 @@ export async function markProjectMemoryEventFailureWithDb(
     code: string;
     message: string;
     now?: string;
+    attemptCount?: number;
   },
 ) {
   const now = input.now ?? new Date().toISOString();
   await db.prepare(
-    "UPDATE project_memory_events SET status = ?, error_code = ?, error_message = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'processing'",
+    `UPDATE project_memory_events SET status = ?, error_code = ?, error_message = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'processing' ${input.attemptCount === undefined ? "" : "AND attempt_count=?"}`,
   ).bind(
     input.status,
     input.code.slice(0, 100),
@@ -281,6 +289,7 @@ export async function markProjectMemoryEventFailureWithDb(
     input.eventId,
     input.organizationId,
     input.projectId,
+    ...(input.attemptCount === undefined ? [] : [input.attemptCount]),
   ).run();
 }
 
@@ -348,10 +357,20 @@ export async function applyProjectMemoryOperationsWithDb(
     model: string;
     promptVersion: string;
     now?: string;
+    userId?: string;
+    assertWriteAccess?: () => Promise<void>;
   },
 ) {
   const now = input.now ?? new Date().toISOString();
   const summaries: AppliedMemoryOperation[] = [];
+  const writes: ProjectAssistantBoundStatement[] = [];
+  const writeCondition = `${memoryAttemptCondition}${input.userId ? ` AND ${projectWriteAccessCondition}` : ""}`;
+  const writeBindings = [...memoryAttemptBindings({ eventId: input.event.id, organizationId: input.event.organization_id, projectId: input.event.project_id, attemptCount: input.event.attempt_count }),
+    ...(input.userId ? projectWriteAccessBindings({ organizationId: input.event.organization_id, projectId: input.event.project_id, userId: input.userId }) : [])];
+  type PlannedMemory = MemoryRow & { value_json: string; updated_at: string };
+  type Evidence = { sourceType: string; sourceId: string; quote: string | null; relevance: number };
+  const planned = new Map<string, PlannedMemory>(), plannedEvidence = new Map<string, Evidence[]>();
+  const evidenceStatement = (memoryId: string, evidence: Evidence) => db.prepare(`INSERT INTO project_memory_evidence (id, organization_id, project_id, memory_item_id, source_type, source_id, quote, relevance, created_by, created_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${writeCondition} AND NOT EXISTS (SELECT 1 FROM project_memory_evidence WHERE memory_item_id=? AND source_type=? AND source_id=?)`).bind(crypto.randomUUID(), input.event.organization_id, input.event.project_id, memoryId, evidence.sourceType, evidence.sourceId, evidence.quote, evidence.relevance, input.userId ?? input.event.created_by, now, ...writeBindings, memoryId, evidence.sourceType, evidence.sourceId);
   for (const operation of input.operations.slice(0, 30)) {
     if (operation.operation === "noop" || !operation.canonicalKey) {
       summaries.push({
@@ -370,9 +389,11 @@ export async function applyProjectMemoryOperationsWithDb(
       summaries.push({ operation: operation.operation, canonicalKey: operation.canonicalKey, outcome: "skipped", confidence: operation.confidence, reason: "视频候选至少需要一条可核验的视频分析依据。" });
       continue;
     }
-    const latest = await db.prepare(
+    let latest = await db.prepare(
       "SELECT id, canonical_key, status, title, content, revision, content_hash FROM project_memory_items WHERE organization_id = ? AND project_id = ? AND canonical_key = ? ORDER BY revision DESC LIMIT 1",
     ).bind(input.event.organization_id, input.event.project_id, operation.canonicalKey).first<MemoryRow>();
+    const stagedLatest = [...planned.values()].filter(row => row.canonical_key === operation.canonicalKey).sort((a, b) => b.revision - a.revision)[0];
+    if (stagedLatest && (!latest || stagedLatest.revision > latest.revision)) latest = stagedLatest;
     const confirmed = await db.prepare(
       "SELECT id, canonical_key, status, title, content, revision, content_hash FROM project_memory_items WHERE organization_id = ? AND project_id = ? AND canonical_key = ? AND status = 'confirmed' ORDER BY revision DESC LIMIT 1",
     ).bind(input.event.organization_id, input.event.project_id, operation.canonicalKey).first<MemoryRow>();
@@ -397,17 +418,22 @@ export async function applyProjectMemoryOperationsWithDb(
       status: string;
       title: string;
       content: string;
+      content_hash: string;
       value_json: string;
       updated_at: string;
     };
     let duplicate = await db.prepare(
-      "SELECT id, canonical_key, revision, status, title, content, value_json, updated_at FROM project_memory_items WHERE organization_id = ? AND project_id = ? AND content_hash = ? AND status IN ('candidate', 'confirmed') ORDER BY CASE status WHEN 'confirmed' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1",
+      "SELECT id, canonical_key, revision, status, title, content, content_hash, value_json, updated_at FROM project_memory_items WHERE organization_id = ? AND project_id = ? AND content_hash = ? AND status IN ('candidate', 'confirmed') ORDER BY CASE status WHEN 'confirmed' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1",
     ).bind(input.event.organization_id, input.event.project_id, contentHash).first<DuplicateMemoryRow>();
+    duplicate ??= [...planned.values()].find(row => row.content_hash === contentHash);
+    if (duplicate && planned.has(duplicate.id)) duplicate = planned.get(duplicate.id)!;
     if (!duplicate) {
       const activeRows = await db.prepare(
-        "SELECT id, canonical_key, revision, status, title, content, value_json, updated_at FROM project_memory_items WHERE organization_id = ? AND project_id = ? AND canonical_key != ? AND status IN ('candidate', 'confirmed') ORDER BY updated_at DESC LIMIT 300",
+        "SELECT id, canonical_key, revision, status, title, content, content_hash, value_json, updated_at FROM project_memory_items WHERE organization_id = ? AND project_id = ? AND canonical_key != ? AND status IN ('candidate', 'confirmed') ORDER BY updated_at DESC LIMIT 300",
       ).bind(input.event.organization_id, input.event.project_id, operation.canonicalKey).all<DuplicateMemoryRow>();
-      duplicate = activeRows.results
+      const candidates = new Map(activeRows.results.map(row => [row.id, row]));
+      for (const row of planned.values()) if (row.canonical_key !== operation.canonicalKey) candidates.set(row.id, row);
+      duplicate = [...candidates.values()]
         .filter((row) => areProjectMemoriesEquivalent(
           { title: operation.title || "", content: operation.content || "" },
           { title: row.title, content: row.content },
@@ -424,6 +450,7 @@ export async function applyProjectMemoryOperationsWithDb(
       if (operation.evidence.length) {
         const priorEvidence = await db.prepare("SELECT source_type, source_id FROM project_memory_evidence WHERE memory_item_id = ?").bind(duplicate.id).all<{ source_type: string; source_id: string }>();
         const known = new Set(priorEvidence.results.map((item) => `${item.source_type}:${item.source_id}`));
+        for (const evidence of plannedEvidence.get(duplicate.id) ?? []) known.add(`${evidence.sourceType}:${evidence.sourceId}`);
         const additions = operation.evidence.filter((item) => {
           const evidenceKey = `${item.sourceType}:${item.sourceId}`;
           if (known.has(evidenceKey)) return false;
@@ -431,7 +458,9 @@ export async function applyProjectMemoryOperationsWithDb(
           return true;
         }).slice(0, 20);
         if (additions.length) {
-          await db.batch(additions.map((evidence) => db.prepare("INSERT INTO project_memory_evidence (id, organization_id, project_id, memory_item_id, source_type, source_id, quote, relevance, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), input.event.organization_id, input.event.project_id, duplicate.id, evidence.sourceType, evidence.sourceId, evidence.quote, operation.confidence, input.event.created_by, now)));
+          const addedEvidence = additions.map(evidence => ({ ...evidence, relevance: operation.confidence }));
+          writes.push(...addedEvidence.map(evidence => evidenceStatement(duplicate.id, evidence)));
+          plannedEvidence.set(duplicate.id, [...(plannedEvidence.get(duplicate.id) ?? []), ...addedEvidence]);
           let duplicateMetadata: Record<string, unknown> = {};
           try {
             duplicateMetadata = JSON.parse(duplicate.value_json || "{}") as Record<string, unknown>;
@@ -439,11 +468,13 @@ export async function applyProjectMemoryOperationsWithDb(
             duplicateMetadata = {};
           }
           const evidenceCount = known.size;
-          await db.prepare("UPDATE project_memory_items SET value_json = ?, updated_at = ? WHERE id = ?").bind(JSON.stringify({
+          const valueJson = JSON.stringify({
             ...duplicateMetadata,
             evidenceCount,
             validationState: "ready_for_review",
-          }), now, duplicate.id).run();
+          });
+          writes.push(db.prepare(`UPDATE project_memory_items SET value_json=json_set(CASE WHEN json_valid(value_json) THEN CASE WHEN json_type(value_json)='object' THEN value_json ELSE '{}' END ELSE '{}' END, '$.evidenceCount', (SELECT COUNT(*) FROM project_memory_evidence WHERE memory_item_id=?), '$.validationState', 'ready_for_review'), updated_at=? WHERE id=? AND ${writeCondition}`).bind(duplicate.id, now, duplicate.id, ...writeBindings));
+          planned.set(duplicate.id, { ...duplicate, value_json: valueJson, updated_at: now });
         }
       }
       summaries.push({ operation: operation.operation, canonicalKey: operation.canonicalKey, outcome: "deduplicated", memoryId: duplicate.id, revision: duplicate.revision, confidence: operation.confidence, reason: "相同或语义等价的知识原子已存在，已归并依据。" });
@@ -457,7 +488,7 @@ export async function applyProjectMemoryOperationsWithDb(
       ? (await db.prepare("SELECT source_type, source_id, quote, relevance FROM project_memory_evidence WHERE memory_item_id = ?").bind(latest.id).all<{ source_type: string; source_id: string; quote: string | null; relevance: number | null }>()).results
       : [];
     const evidenceBySource = new Map<string, { sourceType: string; sourceId: string; quote: string | null; relevance: number }>();
-    for (const evidence of [...inheritedEvidence.map((item) => ({ sourceType: item.source_type, sourceId: item.source_id, quote: item.quote, relevance: Number(item.relevance ?? operation.confidence) })), ...operation.evidence.map((item) => ({ ...item, relevance: operation.confidence }))]) {
+    for (const evidence of [...inheritedEvidence.map((item) => ({ sourceType: item.source_type, sourceId: item.source_id, quote: item.quote, relevance: Number(item.relevance ?? operation.confidence) })), ...(latest ? plannedEvidence.get(latest.id) ?? [] : []), ...operation.evidence.map((item) => ({ ...item, relevance: operation.confidence }))]) {
       if (evidence.sourceType && evidence.sourceId) evidenceBySource.set(`${evidence.sourceType}:${evidence.sourceId}`, evidence);
     }
     const combinedEvidence = Array.from(evidenceBySource.values()).slice(0, 20);
@@ -472,9 +503,8 @@ export async function applyProjectMemoryOperationsWithDb(
       evidenceCount: combinedEvidence.length,
       validationState: "ready_for_review",
     };
-    const writes: ProjectAssistantBoundStatement[] = [
-      db.prepare(
-        "INSERT INTO project_memory_items (id, organization_id, project_id, canonical_key, category, kind, status, title, content, value_json, source_type, source_id, revision, content_hash, created_by, confirmed_by, confirmed_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'project_assistant', ?, ?, ?, ?, ?, ?, ?, ?)",
+    writes.push(db.prepare(
+        `INSERT INTO project_memory_items (id, organization_id, project_id, canonical_key, category, kind, status, title, content, value_json, source_type, source_id, revision, content_hash, created_by, confirmed_by, confirmed_at, created_at, updated_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'project_assistant', ?, ?, ?, ?, ?, ?, ?, ? WHERE ${writeCondition}`,
       ).bind(
         id,
         input.event.organization_id,
@@ -489,30 +519,17 @@ export async function applyProjectMemoryOperationsWithDb(
         input.event.id,
         revision,
         contentHash,
-        input.event.created_by,
+        input.userId ?? input.event.created_by,
         null,
         null,
         now,
         now,
+        ...writeBindings,
       ),
-    ];
-    for (const evidence of combinedEvidence) {
-      writes.push(db.prepare(
-        "INSERT INTO project_memory_evidence (id, organization_id, project_id, memory_item_id, source_type, source_id, quote, relevance, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ).bind(
-        crypto.randomUUID(),
-        input.event.organization_id,
-        input.event.project_id,
-        id,
-        evidence.sourceType,
-        evidence.sourceId,
-        evidence.quote,
-        operation.confidence,
-        input.event.created_by,
-        now,
-      ));
-    }
-    await db.batch(writes);
+    );
+    writes.push(...combinedEvidence.map(evidence => evidenceStatement(id, evidence)));
+    planned.set(id, { id, canonical_key: operation.canonicalKey, revision, status, title: operation.title, content: operation.content, content_hash: contentHash, value_json: JSON.stringify(metadata), updated_at: now });
+    plannedEvidence.set(id, combinedEvidence);
     summaries.push({
       operation: operation.operation,
       canonicalKey: operation.canonicalKey,
@@ -524,8 +541,8 @@ export async function applyProjectMemoryOperationsWithDb(
     });
   }
 
-  await db.prepare(
-    "UPDATE project_memory_events SET status = 'completed', operation_summary_json = ?, error_code = NULL, error_message = NULL, model_provider = ?, model_name = ?, prompt_version = ?, processed_at = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'processing'",
+  writes.push(db.prepare(
+    `UPDATE project_memory_events SET status = 'completed', operation_summary_json = ?, error_code = NULL, error_message = NULL, model_provider = ?, model_name = ?, prompt_version = ?, processed_at = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'processing' AND ${writeCondition}`,
   ).bind(
     JSON.stringify(summaries),
     input.provider,
@@ -536,6 +553,10 @@ export async function applyProjectMemoryOperationsWithDb(
     input.event.id,
     input.event.organization_id,
     input.event.project_id,
-  ).run();
+    ...writeBindings,
+  ));
+  await input.assertWriteAccess?.();
+  const results = await db.batch(writes);
+  if (!results.at(-1)?.meta.changes) { await input.assertWriteAccess?.(); throw new ProjectMemoryAttemptChangedError(); }
   return summaries;
 }

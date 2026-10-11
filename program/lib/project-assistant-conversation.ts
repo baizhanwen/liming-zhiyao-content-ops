@@ -7,6 +7,7 @@ import { readProjectAssistantBenchmarksWithDb } from "./project-assistant-benchm
 import type { ProjectAssistantDatabase } from "./project-memory-events.ts";
 import { CORE_STRATEGY_GUIDANCE, readCoreContentStrategy } from "./content-strategy-policy.ts";
 import { readInspirationMemories } from "./inspiration-memory.ts";
+import { assertProjectWriteAccess, projectWriteAccessBindings, projectWriteAccessCondition, ProjectWriteAccessChangedError } from "./project-write-access.ts";
 
 export class ProjectAssistantChatInterruptedError extends Error {
   readonly code = "PROJECT_ASSISTANT_CHAT_INTERRUPTED";
@@ -164,9 +165,11 @@ export async function runProjectAssistantConversationWithDb(
     userId: string;
     question: string;
     invoke: InvocationFunction;
+    assertWriteAccess?: () => Promise<void>;
   },
 ) {
   const question = clip(input.question, 12_000);
+  await input.assertWriteAccess?.();
   if (question.length < 2) throw new Error("请输入至少 2 个字符的问题。");
   const conversation = await db.prepare(
     "SELECT id, title FROM project_assistant_conversations WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'active' LIMIT 1",
@@ -176,14 +179,15 @@ export async function runProjectAssistantConversationWithDb(
   const now = new Date().toISOString();
   const userMessageId = crypto.randomUUID();
   const assistantMessageId = crypto.randomUUID();
-  await db.batch([db.prepare(
-    "INSERT INTO project_assistant_messages (id, organization_id, project_id, conversation_id, role, status, content, suggestions_json, citations_json, memory_operations_json, created_by, created_at) VALUES (?, ?, ?, ?, 'user', 'completed', ?, '[]', '[]', '[]', ?, ?)",
-  ).bind(userMessageId, input.organizationId, input.projectId, input.conversationId, question, input.userId, now),
-  db.prepare("INSERT INTO project_assistant_messages (id, organization_id, project_id, conversation_id, role, status, content, suggestions_json, citations_json, memory_operations_json, created_by, created_at) VALUES (?, ?, ?, ?, 'assistant', 'processing', '项目助理正在生成回复…', '[]', '[]', '[]', ?, ?)")
-    .bind(assistantMessageId, input.organizationId, input.projectId, input.conversationId, input.userId, now),
-  db.prepare("UPDATE project_assistant_conversations SET updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ?")
-    .bind(now, input.conversationId, input.organizationId, input.projectId),
+  const initial = await db.batch([db.prepare(
+    `INSERT INTO project_assistant_messages (id, organization_id, project_id, conversation_id, role, status, content, suggestions_json, citations_json, memory_operations_json, created_by, created_at) SELECT ?, ?, ?, ?, 'user', 'completed', ?, '[]', '[]', '[]', ?, ? WHERE ${projectWriteAccessCondition} AND EXISTS (SELECT 1 FROM project_assistant_conversations WHERE id=? AND organization_id=? AND project_id=? AND status='active')`,
+  ).bind(userMessageId, input.organizationId, input.projectId, input.conversationId, question, input.userId, now, ...projectWriteAccessBindings(input), input.conversationId, input.organizationId, input.projectId),
+  db.prepare("INSERT INTO project_assistant_messages (id, organization_id, project_id, conversation_id, role, status, content, suggestions_json, citations_json, memory_operations_json, created_by, created_at) SELECT ?, ?, ?, ?, 'assistant', 'processing', '项目助理正在生成回复…', '[]', '[]', '[]', ?, ? WHERE EXISTS (SELECT 1 FROM project_assistant_messages WHERE id=?)")
+    .bind(assistantMessageId, input.organizationId, input.projectId, input.conversationId, input.userId, now, userMessageId),
+  db.prepare("UPDATE project_assistant_conversations SET updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND EXISTS (SELECT 1 FROM project_assistant_messages WHERE id=?)")
+    .bind(now, input.conversationId, input.organizationId, input.projectId, userMessageId),
   ]);
+  if (!initial[0].meta.changes) { await input.assertWriteAccess?.(); await assertProjectWriteAccess(db, input); throw new ProjectAssistantChatInterruptedError("会话状态已改变，本次没有开始回复，请刷新后再操作。"); }
 
   try {
   const [benchmarks, history, coreStrategy, memoryLibrary] = await Promise.all([
@@ -243,7 +247,8 @@ export async function runProjectAssistantConversationWithDb(
         invocation = repairedInvocation;
         parsed = repaired;
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof ProjectWriteAccessChangedError || (error && typeof error === "object" && "code" in error && ["MODEL_REQUEST_INTERRUPTED", "PROJECT_ASSISTANT_RECORD_CHANGED"].includes(String(error.code)))) throw error;
       // The first reply remains usable and can still be saved as one fallback card.
     }
   }
@@ -265,9 +270,10 @@ export async function runProjectAssistantConversationWithDb(
     memorySources: memoryLibrary.filter(memory => (recommendation.memoryIds || []).includes(memory.id) && citedMemoryIds.has(memory.id)),
   }));
   const completedAt = new Date().toISOString();
+  await input.assertWriteAccess?.();
   const saved = await db.batch([
     db.prepare(
-      "UPDATE project_assistant_messages SET status='completed', content=?, suggestions_json=?, citations_json=?, memory_operations_json=?, model_provider=?, model_name=?, prompt_version=?, error_code=NULL WHERE id=? AND organization_id=? AND project_id=? AND conversation_id=? AND status='processing'",
+      `UPDATE project_assistant_messages SET status='completed', content=?, suggestions_json=?, citations_json=?, memory_operations_json=?, model_provider=?, model_name=?, prompt_version=?, error_code=NULL WHERE id=? AND organization_id=? AND project_id=? AND conversation_id=? AND status='processing' AND ${projectWriteAccessCondition} AND EXISTS (SELECT 1 FROM project_assistant_conversations WHERE id=? AND organization_id=? AND project_id=? AND status='active')`,
     ).bind(
       parsed.reply,
       JSON.stringify(recommendations),
@@ -280,12 +286,14 @@ export async function runProjectAssistantConversationWithDb(
       input.organizationId,
       input.projectId,
       input.conversationId,
+      ...projectWriteAccessBindings(input), input.conversationId, input.organizationId, input.projectId,
     ),
     db.prepare(
       "UPDATE project_assistant_conversations SET title = CASE WHEN title = '新的灵感对话' THEN ? ELSE title END, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND EXISTS (SELECT 1 FROM project_assistant_messages WHERE id=? AND status='completed')",
     ).bind(question.slice(0, 36), completedAt, input.conversationId, input.organizationId, input.projectId, assistantMessageId),
   ]);
-  if (!saved[0].meta.changes) throw new ProjectAssistantChatInterruptedError("该助理回复已因中断或恢复而结束，晚到结果没有继续保存；请刷新对话后再操作。");
+  if (!saved[0].meta.changes) { await input.assertWriteAccess?.(); await assertProjectWriteAccess(db, input); throw new ProjectAssistantChatInterruptedError("该助理回复已因中断或恢复而结束，晚到结果没有继续保存；请刷新对话后再操作。"); }
+  await input.assertWriteAccess?.();
 
   return {
     userMessageId,

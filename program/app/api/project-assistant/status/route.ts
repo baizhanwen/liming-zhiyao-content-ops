@@ -11,6 +11,7 @@ import { readProjectAssistantBenchmarkStatusWithDb } from "../../../../lib/proje
 import type { ProjectAssistantDatabase } from "../../../../lib/project-memory-events";
 import { readRequestIdentity } from "../../../../lib/request-auth";
 import { readCoreContentStrategy } from "../../../../lib/content-strategy-policy";
+import { createProjectWriteAssertion } from "../../../../lib/project-write-access";
 
 const text = (value: unknown, maximum: number) => typeof value === "string" ? value.trim().slice(0, maximum) : "";
 
@@ -48,7 +49,9 @@ export async function POST(request: Request) {
   try {
     if (!canWriteProjectAccess(current.access)) return apiError("WRITE_ACCESS_REQUIRED", "当前角色不能发起收费的模型连接检查。", 403);
     const user = await ensureUser(current.identity);
-    const health = await probeProjectAssistantModel(createRecordedProjectAssistantInvoker({ organizationId: current.organizationId, projectId: current.projectId, userId: user.id, taskType: "project_assistant.probe", promptVersion: "project-assistant.probe.v1" }));
+    const assertWriteAccess = createProjectWriteAssertion(getD1(), { organizationId: current.organizationId, projectId: current.projectId, userId: user.id }, async () => (await readRequestIdentity(request))?.authSubject === current.identity.authSubject);
+    const health = await probeProjectAssistantModel(createRecordedProjectAssistantInvoker({ organizationId: current.organizationId, projectId: current.projectId, userId: user.id, taskType: "project_assistant.probe", promptVersion: "project-assistant.probe.v1", assertWriteAccess }));
+    await assertWriteAccess();
     return Response.json({ configuration: projectAssistantConfigurationStatus(), health: { checked: true, ...health } });
   } catch (error) {
     if (error instanceof ProjectAssistantConfigurationError) return apiError(error.code, error.message, 503);
