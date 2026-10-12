@@ -1,4 +1,5 @@
 import { MATERIAL_MAX_ENTRIES as MAX_ENTRIES, MATERIAL_MAX_ASSETS_PER_ENTRY as MAX_ASSETS_PER_ENTRY, MATERIAL_MAX_MEDIA_BYTES as MAX_IMPORT_BYTES, MATERIAL_MAX_MANIFEST_BYTES } from "../../../../lib/material-transfer-limits";
+import { assertJsonByteBudget, JsonByteBudgetExceededError } from "../../../../lib/json-byte-budget";
 import { canManageOrganizationVideoLibrary, canWriteProjectAccess, ensureUser, getD1, getMediaBucket, getOrganizationAccess, getProjectAccess, sha256Hex } from "../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../lib/api-response";
 import { readRequestIdentity } from "../../../../lib/request-auth";
@@ -121,8 +122,12 @@ export async function GET(request: Request) {
       }),
     };
     validateManifest(payload);
+    try { assertJsonByteBudget(payload, MATERIAL_MAX_MANIFEST_BYTES); }
+    catch (error) {
+      if (error instanceof JsonByteBudgetExceededError) throw new RequestBodyError("MATERIAL_MANIFEST_TOO_LARGE", "所选清单超过 20000000 字节，未导出；请减少选择或使用完整备份。", 413);
+      throw error;
+    }
     const serialized = JSON.stringify(payload);
-    if (new TextEncoder().encode(serialized).byteLength > MATERIAL_MAX_MANIFEST_BYTES) throw new RequestBodyError("MATERIAL_MANIFEST_TOO_LARGE", "所选清单超过 20000000 字节，未导出；请减少选择或使用完整备份。", 413);
     return new Response(serialized, { headers: { "content-type": "application/json", "cache-control": "private, no-store" } });
   } catch (error) { return error instanceof RequestBodyError ? apiError(error.code, error.message, error.status) : errorResponse(error); }
 }

@@ -119,3 +119,17 @@ test('over-limit report count is refused before loading any report body',async t
   let readBodies=false;const prepare=f.db.prepare;f.db.prepare=sql=>{if(sql.includes('SELECT video_id, schema_version, report_json'))readBodies=true;return prepare(sql);};
   assert.equal((await f.exportEntries([f.entry])).status,400);assert.equal(readBodies,false);
 });
+
+
+test('oversize escaped manifest is rejected before building the full JSON response',async t=>{
+  const f=await fixture(t),report=JSON.stringify({payload:'\\'.repeat(650000)});for(let i=0;i<8;i++)f.seed('video_analyses',{video_id:f.video,schema_version:'analysis.v1',report_json:report});
+  const stringify=JSON.stringify;let built=false;
+  try {
+    JSON.stringify=(value,...rest)=>{if(value?.format==='liming-video-library-package'){built=true;throw Error('synthetic full-response allocation forbidden');}return stringify(value,...rest);};
+    const response=await f.exportEntries([f.entry]);assert.equal(response.status,413);assert.equal((await response.json()).error.code,'MATERIAL_MANIFEST_TOO_LARGE');assert.equal(built,false);
+  }finally{JSON.stringify=stringify;}
+});
+test('accepted manifest preserves escaped control text and byte accounting',async t=>{
+  const f=await fixture(t);f.sqlite.prepare('UPDATE video_transcripts SET full_text=? WHERE video_id=?').run('原文\0\n😀\ud800',f.video);
+  const stored=f.sqlite.prepare('SELECT full_text FROM video_transcripts WHERE video_id=?').get(f.video).full_text;const response=await f.exportEntries([f.entry]);assert.equal(response.status,200);const text=await response.text(),payload=JSON.parse(text);assert.equal(payload.entries[0].transcripts[0].full_text,stored);assert.ok(new TextEncoder().encode(text).length<=20000000);
+});

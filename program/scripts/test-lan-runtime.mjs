@@ -409,6 +409,22 @@ try {
     writeFileSync(path.join(runDir,"material-export-budget.json"),JSON.stringify({passed:true,synthetic:true,oversizeStatus:413,exactBoundaryStatus:200,recordsStatus:400,restoredStatus:200,mediaAllocation:false,boundary:"Actual compiled HTTP/D1, synthetic size metadata; no 750 MiB media allocation, real codec or field capacity measurement"},null,2));
   });
 
+  await scenario("escaped material manifest budget: actual HTTP/D1",async()=>{
+    const user=users[0],row=await db.prepare("SELECT id FROM video_library_entries WHERE organization_id=? AND source_video_id=?").bind(user.org,uploadFixture.videoId).first();assert.ok(row);
+    const route=`/api/video-library/transfer?organizationId=${user.org}&entryIds=${row.id}`,temporary=[];
+    try {
+      for(let i=0;i<8;i++){
+        const id=crypto.randomUUID();temporary.push(id);
+        await db.prepare(`INSERT INTO video_analyses(id,organization_id,project_id,video_id,schema_version,report_json,created_by,created_at,updated_at)
+          VALUES(?,?,?,?,'analysis.v1','{"payload":"' || replace(hex(zeroblob(650000)),'00',char(92)||char(92)) || '"}',?,?,?)`)
+          .bind(id,user.org,user.project,uploadFixture.videoId,user.id,new Date().toISOString(),new Date().toISOString()).run();
+      }
+      const response=await http(route,{user});expect(response,413);assert.equal(response.data.error.code,"MATERIAL_MANIFEST_TOO_LARGE");
+    }finally{if(temporary.length)await db.prepare("DELETE FROM video_analyses WHERE id IN (SELECT value FROM json_each(?))").bind(JSON.stringify(temporary)).run();}
+    expect(await http(route,{user}),200);
+    writeFileSync(path.join(runDir,"material-json-budget.json"),JSON.stringify({passed:true,synthetic:true,escapedOverBudgetStatus:413,restoredStatus:200,records:8,recordedModelCalls:0,boundary:"Actual compiled Worker/HTTP/D1 with synthetic escape-heavy report strings; no real business or host-capacity proof"},null,2));
+  });
+
   await scenario("analysis retry/cancel atomic audit and event failures", async () => {
     const user=users[0],created=expect(await submit(user),202),jobId=created.job.id;
     const snapshot=async()=>Object.fromEntries(await Promise.all(["analysis_jobs","analysis_job_events","audit_logs"].map(async table=>{
