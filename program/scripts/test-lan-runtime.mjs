@@ -439,6 +439,25 @@ try {
     writeFileSync(path.join(runDir,"knowledge-import.json"),JSON.stringify({passed:true,synthetic:true,auditFailureRollback:true,concurrentStatuses:[201,409],unicodeRepeatStatus:409,foreignActorStatus:403,acceptedRows:101,recordedModelCalls:0,boundary:"Actual compiled Worker/HTTP/D1, synthetic accounts and knowledge; audit SQL fault injection, no real spreadsheet/business/model"},null,2));
   });
 
+  await scenario("performance import atomic failure, 500 rows and accurate dedup: actual HTTP/D1",async()=>{
+    const user=users[0],publication=await db.prepare("SELECT id FROM publication_records WHERE organization_id=? AND project_id=? AND status='published' LIMIT 1").bind(user.org,user.project).first();assert.ok(publication);
+    const standard={organizationId:user.org,projectId:user.project,source:"csv",filename:"synthetic-standard.csv",rows:Array.from({length:500},(_,i)=>({publicationId:publication.id,observedAt:new Date(Date.UTC(2026,9,11,0,i)).toISOString(),views:i}))};
+    const douyin={organizationId:user.org,projectId:user.project,source:"csv",format:"douyin_16",asOfAt:"2026-10-12T00:00:00.000Z",filename:"synthetic-douyin.csv",rows:Array.from({length:500},(_,i)=>({platformWorkId:"synthetic-runtime-"+i,title:"合成作品"+i,publishedAt:"2026-10-01T00:00:00.000Z",views:i}))};
+    const tables=["performance_import_batches","publication_metric_snapshots","platform_works","platform_metric_import_batches","platform_metric_snapshots","platform_metric_import_errors","audit_logs"];
+    const snapshot=async()=>Object.fromEntries(await Promise.all(tables.map(async table=>[table,JSON.stringify((await db.prepare(`SELECT * FROM ${table} ORDER BY id`).all()).results)])));
+    for(const [kind,body,table]of [["standard",standard,"publication_metric_snapshots"],["douyin",douyin,"platform_metric_snapshots"]]){
+      const before=await snapshot(),name="synthetic_performance_"+kind;
+      await db.prepare(`CREATE TRIGGER ${name} BEFORE INSERT ON ${table} WHEN NEW.views=99 BEGIN SELECT RAISE(ABORT,'synthetic late metric failure'); END`).run();
+      try{expect(await http("/api/performance",{user,method:"POST",body}),500);assert.deepEqual(await snapshot(),before);}finally{await db.prepare(`DROP TRIGGER ${name}`).run();}
+      const saved=expect(await http("/api/performance",{user,method:"POST",body}),201).import;assert.equal(kind==="standard"?saved.accepted_count:saved.acceptedCount,500);
+      expect(await http("/api/performance",{user,method:"POST",body}),409);
+    }
+    const repeated={...douyin,rows:[{...douyin.rows[0],views:999}]};const result=expect(await http("/api/performance",{user,method:"POST",body:repeated}),201).import;assert.equal(result.acceptedCount,0);assert.equal(result.rejectedCount,1);
+    expect(await http("/api/performance",{user:users[10],method:"POST",body:standard}),403);
+    const modelCalls=await count("SELECT COUNT(*) AS n FROM model_calls")+await count("SELECT COUNT(*) AS n FROM analysis_model_calls");
+    writeFileSync(path.join(runDir,"performance-import.json"),JSON.stringify({passed:true,synthetic:true,lateFaultRollback:true,standardRows:500,douyinRows:500,duplicateAccepted:0,duplicateRejected:1,foreignActorStatus:403,recordedModelCalls:modelCalls,boundary:"Actual compiled Worker/HTTP/D1 with synthetic accounts/rows and SQL faults; no real source files, provider calls, devices or field capacity"},null,2));
+  });
+
   await scenario("analysis retry/cancel atomic audit and event failures", async () => {
     const user=users[0],created=expect(await submit(user),202),jobId=created.job.id;
     const snapshot=async()=>Object.fromEntries(await Promise.all(["analysis_jobs","analysis_job_events","audit_logs"].map(async table=>{
@@ -474,7 +493,7 @@ try {
     for (const filename of ["backup-local.ps1", "restore-local.ps1", "local-state-maintenance.ps1", "analyzer-instance-lock.ps1", "verify-state-databases.mjs"]) {
       cpSync(path.join(root, "scripts", filename), path.join(scripts, filename));
     }
-    const tables = ["users", "local_credentials", "projects", "videos", "media_assets", "analysis_jobs", "video_analyses", "content_items", "content_versions", "content_reviews", "publication_records", "published_copy_records", "video_library_entries", "project_video_references", "project_memory_events", "audit_logs", "video_transcripts", "video_metric_snapshots", "analysis_job_events", "knowledge_items", "knowledge_item_versions"];
+    const tables = ["users", "local_credentials", "projects", "videos", "media_assets", "analysis_jobs", "video_analyses", "content_items", "content_versions", "content_reviews", "publication_records", "published_copy_records", "video_library_entries", "project_video_references", "project_memory_events", "audit_logs", "video_transcripts", "video_metric_snapshots", "analysis_job_events", "knowledge_items", "knowledge_item_versions", "performance_import_batches", "publication_metric_snapshots", "platform_works", "platform_metric_import_batches", "platform_metric_snapshots", "platform_metric_import_errors"];
     const snapshot = async () => Object.fromEntries(await Promise.all(tables.map(async name => {
       const rows = (await db.prepare(`SELECT * FROM ${name}`).all()).results.map(row => JSON.stringify(row)).sort();
       return [name, { rows: rows.length, sha256: createHash("sha256").update(JSON.stringify(rows)).digest("hex") }];
