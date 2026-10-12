@@ -61,5 +61,14 @@ try{
    files['xl/worksheets/sheet1.xml']=strToU8(xml);const result=await read(zipSync(files),{maximumBytes:5*1024*1024,maximumRows:100});assert.equal(result.error,undefined,result.error);assert.equal(result.rows.length,1);
    const validation=await page.evaluate(rows=>window.validateKnowledge(rows),result.rows);assert.equal(validation.rows.length,1);assert.deepEqual(validation.issues,[]);
  });
+ const dateData=value=>row(1,inline('A1','发布时间')+inline('B1','数值'))+row(2,`<c r="A2"><v>${value}</v></c><c r="B2"><v>7</v></c>`);
+ const dateWorkbook=flag=>`<workbook xmlns="${namespace}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><workbookPr date1904="${flag}"/><sheets><sheet r:id="first"/></sheets></workbook>`;
+ await check('1900-numeric-publish-date-normalized-only-in-requested-column',async()=>{assert.deepEqual((await read(pack(dateData(46308)),{dateHeaders:['发布时间']})).rows,[{'发布时间':'2026-10-13T00:00:00.000Z','数值':7}]);});
+ await check('1904-numeric-publish-date-uses-workbook-calendar',async()=>{for(const flag of ['1','true',' true '])assert.deepEqual((await read(pack(dateData(44846),{workbook:dateWorkbook(flag)}),{dateHeaders:['发布时间']})).rows,[{'发布时间':'2026-10-13T00:00:00.000Z','数值':7}]);});
+ await check('1904-fractional-date-honors-explicit-offset',async()=>{assert.equal((await read(pack(dateData(44846.5),{workbook:dateWorkbook('1')}),{dateHeaders:['发布时间'],offsetMinutes:480})).rows[0]['发布时间'],'2026-10-13T04:00:00.000Z');});
+ await check('1904-generic-knowledge-numbers-are-not-reinterpreted',async()=>{assert.equal((await read(pack(dateData(44846),{workbook:dateWorkbook('true')}))).rows[0]['发布时间'],44846);});
+ await refuses('invalid-workbook-date-flag-refuses-ambiguous-calendar',pack(dateData(44846),{workbook:dateWorkbook('yes')}),/日期系统属性无效/,{dateHeaders:['发布时间']});
+ await refuses('fake-excel-leap-day-refuses',pack(dateData(60)),/不存在的 1900-02-29/,{dateHeaders:['发布时间']});
+ await refuses('duplicate-workbook-properties-refuse',pack(dateData(44846),{workbook:dateWorkbook('1').replace('<sheets>','<workbookPr date1904="0"/><sheets>')}),/日期属性重复/,{dateHeaders:['发布时间']});
  assert.deepEqual(errors,[]);
 }catch(error){process.exitCode=1;console.error(error.stack);}finally{if(browser)await browser.close();await server.close();await writeFile(path.join(fixture,'report.json'),JSON.stringify({passed:!process.exitCode,checks,synthetic:true,boundary:'Actual Edge DOMParser/fflate and repository XLSX reader; synthetic archives and shipped template, no production UI, HTTP writes, real accounts or models'},null,2));console.log(`Evidence: ${fixture}`);}

@@ -7,15 +7,15 @@ export function isMissingMetricCell(value: unknown) {
 export function metricNumberCell(value: unknown) {
   if (isMissingMetricCell(value)) return 0;
   const result = Number(String(value).replaceAll(",", "").trim());
-  if (!Number.isFinite(result) || result < 0) throw new Error(`无效数字：${String(value)}`);
-  return Math.round(result);
+  if (!Number.isSafeInteger(result) || result < 0) throw new Error(`无效数字，计数必须为非负整数：${String(value)}`);
+  return result;
 }
 
 export function signedMetricNumberCell(value: unknown) {
   if (isMissingMetricCell(value)) return 0;
   const result = Number(String(value).replaceAll(",", "").trim());
-  if (!Number.isFinite(result)) throw new Error(`无效有符号数字：${String(value)}`);
-  return Math.round(result);
+  if (!Number.isSafeInteger(result)) throw new Error(`无效有符号数字，计数必须为整数：${String(value)}`);
+  return result;
 }
 
 export function percentMetricCell(value: unknown) {

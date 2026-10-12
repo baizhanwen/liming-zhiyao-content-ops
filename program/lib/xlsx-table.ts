@@ -1,4 +1,5 @@
 import { openBoundedZip } from "./bounded-zip";
+import { excelSerialDate } from "./import-date";
 
 const MAX_XML_BYTES = 16 * 1024 * 1024;
 const MAX_METADATA_BYTES = 1024 * 1024;
@@ -54,13 +55,18 @@ function sheetPath(target: string) {
   return resolved.join("/");
 }
 
-export async function readFirstWorksheet(file: File, options: { maximumBytes?: number; maximumRows?: number; signal?: AbortSignal } = {}) {
+export async function readFirstWorksheet(file: File, options: { maximumBytes?: number; maximumRows?: number; signal?: AbortSignal; dateHeaders?: string[]; offsetMinutes?: number } = {}) {
   const maximumRows = options.maximumRows ?? 500, maximumBytes = options.maximumBytes ?? 20 * 1024 * 1024;
   if (!Number.isSafeInteger(maximumRows) || maximumRows < 1 || maximumRows > 500 || !Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > 20 * 1024 * 1024) throw new Error("Excel 读取范围无效。");
   if (file.size > maximumBytes) throw new Error(`Excel 文件不能超过 ${maximumBytes / 1024 / 1024} MiB，请拆分文件后重试。`);
   const archive = await openBoundedZip(file, { maximumBytes, maximumFiles: 4096, label: "Excel", signal: options.signal });
   const metadata = await archive.read(new Map([["xl/workbook.xml", MAX_METADATA_BYTES], ["xl/_rels/workbook.xml.rels", MAX_METADATA_BYTES]]), 2 * MAX_METADATA_BYTES);
   const workbook = await xml(metadata.get("xl/workbook.xml"), "工作簿", options.signal), relationships = await xml(metadata.get("xl/_rels/workbook.xml.rels"), "工作表关系", options.signal);
+  const properties = elements(workbook, "workbookPr");
+  if (properties.length > 1) throw new Error("Excel 工作簿日期属性重复，请重新导出。");
+  const dateFlag = properties[0]?.getAttribute("date1904")?.trim();
+  if (dateFlag != null && !["0", "1", "false", "true"].includes(dateFlag)) throw new Error("Excel 日期系统属性无效，请重新导出。");
+  const date1904 = dateFlag === "1" || dateFlag === "true";
   const sheet = elements(workbook, "sheet")[0];
   const id = sheet?.getAttribute("r:id") || sheet?.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id");
   const matches = elements(relationships, "Relationship").filter(item => item.getAttribute("Id") === id);
@@ -120,6 +126,9 @@ export async function readFirstWorksheet(file: File, options: { maximumBytes?: n
   }
   return rows.slice(1).map(row => {
     for (const [column, value] of row) if (!headers.has(column) && String(value ?? "").trim()) throw new Error("Excel 数据列没有对应表头，未忽略这些数据。请补全首行表头。");
-    return Object.fromEntries(Array.from(headers, ([column, header]) => [header, row.get(column) ?? ""]));
+    return Object.fromEntries(Array.from(headers, ([column, header]) => {
+      const value = row.get(column) ?? "";
+      return [header, options.dateHeaders?.includes(header) && typeof value === "number" ? excelSerialDate(value, date1904, options.offsetMinutes ?? 0) : value];
+    }));
   });
 }
