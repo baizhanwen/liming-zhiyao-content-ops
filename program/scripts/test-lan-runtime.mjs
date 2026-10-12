@@ -425,6 +425,20 @@ try {
     writeFileSync(path.join(runDir,"material-json-budget.json"),JSON.stringify({passed:true,synthetic:true,escapedOverBudgetStatus:413,restoredStatus:200,records:8,recordedModelCalls:0,boundary:"Actual compiled Worker/HTTP/D1 with synthetic escape-heavy report strings; no real business or host-capacity proof"},null,2));
   });
 
+  await scenario("knowledge import atomic rollback, duplicate competition and Unicode: actual HTTP/D1",async()=>{
+    const user=users[0],title="ΑΒΓ合成知识",body={organizationId:user.org,projectId:user.project,filename:"synthetic-knowledge.xlsx",rows:[{"标题":title,"分类":"其他","知识正文":"这是一段隔离测试使用的合成品牌知识。","来源类型":"人工录入"}]};
+    const beforeItems=await count("SELECT COUNT(*) AS n FROM knowledge_items"),beforeVersions=await count("SELECT COUNT(*) AS n FROM knowledge_item_versions"),beforeAudits=await count("SELECT COUNT(*) AS n FROM audit_logs");
+    await db.prepare("CREATE TRIGGER synthetic_knowledge_audit_failure BEFORE INSERT ON audit_logs WHEN NEW.action='knowledge.imported' BEGIN SELECT RAISE(ABORT,'synthetic knowledge audit failure'); END").run();
+    try{expect(await http("/api/knowledge/import",{user,method:"POST",body}),500);assert.equal(await count("SELECT COUNT(*) AS n FROM knowledge_items"),beforeItems);assert.equal(await count("SELECT COUNT(*) AS n FROM knowledge_item_versions"),beforeVersions);assert.equal(await count("SELECT COUNT(*) AS n FROM audit_logs"),beforeAudits);}finally{await db.prepare("DROP TRIGGER synthetic_knowledge_audit_failure").run();}
+    const competition=await Promise.all([http("/api/knowledge/import",{user,method:"POST",body}),http("/api/knowledge/import",{user,method:"POST",body})]);assert.deepEqual(competition.map(r=>r.status).sort(),[201,409]);
+    expect(await http("/api/knowledge/import",{user,method:"POST",body}),409);
+    assert.equal(await count("SELECT COUNT(*) AS n FROM knowledge_items WHERE organization_id=? AND project_id=? AND title=?",user.org,user.project,title),1);
+    expect(await http("/api/knowledge/import",{user:users[10],method:"POST",body}),403);
+    const hundred={...body,rows:Array.from({length:100},(_,i)=>({...body.rows[0],"标题":"合成批量知识"+i}))};assert.equal(expect(await http("/api/knowledge/import",{user,method:"POST",body:hundred}),201).importedCount,100);
+    assert.equal(await count("SELECT COUNT(*) AS n FROM knowledge_items"),beforeItems+101);assert.equal(await count("SELECT COUNT(*) AS n FROM knowledge_item_versions"),beforeVersions+101);
+    writeFileSync(path.join(runDir,"knowledge-import.json"),JSON.stringify({passed:true,synthetic:true,auditFailureRollback:true,concurrentStatuses:[201,409],unicodeRepeatStatus:409,foreignActorStatus:403,acceptedRows:101,recordedModelCalls:0,boundary:"Actual compiled Worker/HTTP/D1, synthetic accounts and knowledge; audit SQL fault injection, no real spreadsheet/business/model"},null,2));
+  });
+
   await scenario("analysis retry/cancel atomic audit and event failures", async () => {
     const user=users[0],created=expect(await submit(user),202),jobId=created.job.id;
     const snapshot=async()=>Object.fromEntries(await Promise.all(["analysis_jobs","analysis_job_events","audit_logs"].map(async table=>{
@@ -460,7 +474,7 @@ try {
     for (const filename of ["backup-local.ps1", "restore-local.ps1", "local-state-maintenance.ps1", "analyzer-instance-lock.ps1", "verify-state-databases.mjs"]) {
       cpSync(path.join(root, "scripts", filename), path.join(scripts, filename));
     }
-    const tables = ["users", "local_credentials", "projects", "videos", "media_assets", "analysis_jobs", "video_analyses", "content_items", "content_versions", "content_reviews", "publication_records", "published_copy_records", "video_library_entries", "project_video_references", "project_memory_events", "audit_logs", "video_transcripts", "video_metric_snapshots", "analysis_job_events"];
+    const tables = ["users", "local_credentials", "projects", "videos", "media_assets", "analysis_jobs", "video_analyses", "content_items", "content_versions", "content_reviews", "publication_records", "published_copy_records", "video_library_entries", "project_video_references", "project_memory_events", "audit_logs", "video_transcripts", "video_metric_snapshots", "analysis_job_events", "knowledge_items", "knowledge_item_versions"];
     const snapshot = async () => Object.fromEntries(await Promise.all(tables.map(async name => {
       const rows = (await db.prepare(`SELECT * FROM ${name}`).all()).results.map(row => JSON.stringify(row)).sort();
       return [name, { rows: rows.length, sha256: createHash("sha256").update(JSON.stringify(rows)).digest("hex") }];

@@ -215,10 +215,10 @@ export function KnowledgeWorkspace({ initialOrganizationId = "", initialProjectI
     try {
       const response = await scopedFetch("/api/knowledge/import", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, filename: knowledgeImportPreview.filename, rows: knowledgeImportPreview.rawRows }) });
       if (!operation.isCurrent()) return;
-      const body = await response.json().catch(() => null) as { importedCount?: number; rejectedCount?: number; issues?: KnowledgeImportIssue[]; error?: { message?: string } } | null;
+      const body = await response.json().catch(() => null) as { importedCount?: number; rejectedCount?: number; issues?: KnowledgeImportIssue[]; error?: { code?: string; message?: string } } | null;
       if (!operation.isCurrent()) return;
       if (!response.ok) {
-        operation.update({ phase: "ready", data: body?.issues ? { ...knowledgeImportPreview, issues: body.issues } : knowledgeImportPreview });
+        operation.update({ phase: "ready", data: body?.issues ? { ...knowledgeImportPreview, issues: body.issues, validCount: ["NO_NEW_KNOWLEDGE_ROWS", "NO_VALID_KNOWLEDGE_ROWS"].includes(body.error?.code ?? "") ? 0 : knowledgeImportPreview.validCount } : knowledgeImportPreview });
         setError(body?.error?.message ?? "品牌知识批量导入失败。"); return;
       }
       if (!body || !Number.isSafeInteger(body.importedCount) || body.importedCount! < 0) throw new Error("Import acknowledgement unreadable");
