@@ -8,6 +8,7 @@ import { ChangeEvent, FormEvent, useCallback, useState } from "react";
 import { AlertTriangle, Archive, Check, Database, Download, FileSearch, FileSpreadsheet, History, Lightbulb, PencilLine, Save, Search, UploadCloud, Video, Workflow } from "lucide-react";
 import { preferredProjectId, rememberCurrentScope, scopedFetch } from "../lib/client-scope";
 import { validateKnowledgeImportRows, type KnowledgeImportIssue } from "../lib/knowledge-import";
+import { useImportPreview } from "./useImportPreview";
 import { readFirstWorksheet } from "../lib/xlsx-table";
 
 type Organization = { id: string; name: string };
@@ -112,17 +113,9 @@ export function KnowledgeWorkspace({ initialOrganizationId = "", initialProjectI
   const [items, setItems] = useState<KnowledgeItem[]>([]); const [strategies, setStrategies] = useState<Strategy[]>([]); const [canWrite, setCanWrite] = useState(false); const [canManage, setCanManage] = useState(false); const [knowledgeHistory, setKnowledgeHistory] = useState<KnowledgeVersion[] | null>(null);
   const [organizationRole, setOrganizationRole] = useState<"admin" | "member">("member"); const [strategyScope, setStrategyScope] = useState<"organization" | "project">("project"); const [strategySpaces, setStrategySpaces] = useState<StrategySpace[]>([]); const [strategyOverviewLoading, setStrategyOverviewLoading] = useState(false);
   const [knowledgeAction, setKnowledgeAction] = useState("");
-  const importScope = `${organizationId}:${projectId}`;
-  const [importState, setImportState] = useState<{ scope: string; preview: KnowledgeImportPreview | null; message: string }>({ scope: "", preview: null, message: "" });
-  const knowledgeImportPreview = importState.scope === importScope ? importState.preview : null;
-  const knowledgeImportMessage = importState.scope === importScope ? importState.message : "";
-  const [knowledgeImportBusy, setKnowledgeImportBusy] = useState<"" | "reading" | "importing">("");
-  function setKnowledgeImportPreview(value: KnowledgeImportPreview | null | ((current: KnowledgeImportPreview | null) => KnowledgeImportPreview | null)) {
-    setImportState((current) => ({ scope: importScope, preview: typeof value === "function" ? value(current.scope === importScope ? current.preview : null) : value, message: current.scope === importScope ? current.message : "" }));
-  }
-  function setKnowledgeImportMessage(message: string) {
-    setImportState((current) => ({ scope: importScope, preview: current.scope === importScope ? current.preview : null, message }));
-  }
+  const importPreview = useImportPreview<KnowledgeImportPreview>(`${organizationId}:${projectId}`);
+  const knowledgeImportPreview = importPreview.preview.data, knowledgeImportMessage = importPreview.preview.message;
+  const knowledgeImportBusy = importPreview.preview.phase === "reading" || importPreview.preview.phase === "importing" ? importPreview.preview.phase : "";
   const [methodSource, setMethodSource] = useState<MethodSource | null>(null); const [methodAtoms, setMethodAtoms] = useState<MethodAtom[]>([]); const [methodQuery, setMethodQuery] = useState(""); const [methodSearching, setMethodSearching] = useState(false); const [canTransferMethods, setCanTransferMethods] = useState(false); const [methodTransferring, setMethodTransferring] = useState(false);
   const [methodologyCatalog, setMethodologyCatalog] = useState<MethodologyCatalogResponse | null>(null); const [methodologyTask, setMethodologyTask] = useState<"all" | MethodologyTask>("all"); const [methodologyQuery, setMethodologyQuery] = useState("");
   const [loading, setLoading] = useState(true); const [saving, setSaving] = useState(false); const [error, setError] = useState("");
@@ -202,30 +195,42 @@ export function KnowledgeWorkspace({ initialOrganizationId = "", initialProjectI
   }
 
   async function selectKnowledgeImport(event: ChangeEvent<HTMLInputElement>) {
+    if (knowledgeImportBusy === "importing") return;
     const file = event.target.files?.[0]; event.target.value = ""; if (!file) return;
-    setKnowledgeImportBusy("reading"); setKnowledgeImportMessage(""); setError("");
+    const operation = importPreview.begin(file.name); setError("");
     try {
       if (!file.name.toLowerCase().endsWith(".xlsx")) throw new Error("请选择 .xlsx 格式的品牌知识模板。");
       if (file.size > 5 * 1024 * 1024) throw new Error("品牌知识导入文件不能超过 5 MiB。");
-      const rawRows = await readFirstWorksheet(file, { maximumBytes: 5 * 1024 * 1024, maximumRows: 100 }) as Record<string, unknown>[];
+      const rawRows = await readFirstWorksheet(file, { maximumBytes: 5 * 1024 * 1024, maximumRows: 100, signal: operation.signal });
+      if (!operation.isCurrent()) return;
       const validation = validateKnowledgeImportRows(rawRows);
-      setKnowledgeImportPreview({ filename: file.name, rawRows, validCount: validation.rows.length, issues: validation.issues });
-      setKnowledgeImportMessage(validation.rows.length ? `预检完成：${validation.rows.length} 条可以导入${validation.issues.length ? `，${validation.issues.length} 条需要修改` : ""}。` : "没有发现可导入的有效知识，请按问题提示修改 Excel。" );
-    } catch (reason) { setKnowledgeImportPreview(null); setError(reason instanceof Error ? reason.message : "Excel 文件读取失败。"); }
-    finally { setKnowledgeImportBusy(""); }
+      operation.update({ phase: "ready", data: { filename: file.name, rawRows, validCount: validation.rows.length, issues: validation.issues }, message: validation.rows.length ? `预检完成：${validation.rows.length} 条可以导入${validation.issues.length ? `，${validation.issues.length} 条需要修改` : ""}。` : "没有发现可导入的有效知识，请按问题提示修改 Excel。" });
+    } catch (reason) { if (operation.isCurrent()) { operation.update({ phase: "error", data: null, message: "" }); setError(reason instanceof Error ? reason.message : "Excel 文件读取失败。"); } }
   }
-
   async function importKnowledgeWorkbook() {
-    if (!knowledgeImportPreview?.validCount) return;
-    setKnowledgeImportBusy("importing"); setKnowledgeImportMessage(""); setError("");
+    const operation = importPreview.current();
+    if (!operation || !operation.isCurrent() || !canWrite || !knowledgeImportPreview?.validCount || importPreview.preview.phase !== "ready") return;
+    operation.update({ phase: "importing", message: "" }); setError("");
+    let acknowledged = false;
     try {
       const response = await scopedFetch("/api/knowledge/import", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, filename: knowledgeImportPreview.filename, rows: knowledgeImportPreview.rawRows }) });
+      if (!operation.isCurrent()) return;
       const body = await response.json().catch(() => null) as { importedCount?: number; rejectedCount?: number; issues?: KnowledgeImportIssue[]; error?: { message?: string } } | null;
-      if (!response.ok) { if (body?.issues) setKnowledgeImportPreview((current) => current ? { ...current, issues: body.issues ?? current.issues } : current); throw new Error(body?.error?.message ?? "品牌知识批量导入失败。"); }
-      setKnowledgeImportMessage(`已导入 ${body?.importedCount ?? 0} 条待确认知识${body?.rejectedCount ? `，跳过 ${body.rejectedCount} 条` : ""}。负责人确认后才会参与内容生成。`);
-      setKnowledgeImportPreview(null); await loadWorkspace(organizationId, projectId);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "品牌知识批量导入失败。"); }
-    finally { setKnowledgeImportBusy(""); }
+      if (!operation.isCurrent()) return;
+      if (!response.ok) {
+        operation.update({ phase: "ready", data: body?.issues ? { ...knowledgeImportPreview, issues: body.issues } : knowledgeImportPreview });
+        setError(body?.error?.message ?? "品牌知识批量导入失败。"); return;
+      }
+      if (!body || !Number.isSafeInteger(body.importedCount) || body.importedCount! < 0) throw new Error("Import acknowledgement unreadable");
+      acknowledged = true;
+      operation.update({ phase: "done", data: null, message: `已导入 ${body.importedCount} 条待确认知识${body.rejectedCount ? `，跳过 ${body.rejectedCount} 条` : ""}。负责人确认后才会参与内容生成。` });
+      await loadWorkspace(organizationId, projectId);
+    } catch {
+      if (operation.isCurrent()) {
+        setError(acknowledged ? "知识已导入，但列表刷新失败，请刷新页面核对。" : "暂时无法确认知识导入结果，请刷新列表核对后再决定重试，勿立即重复提交。");
+        if (!acknowledged) operation.update({ phase: "ready" });
+      }
+    }
   }
   async function createStrategy(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setSaving(true); setError(""); const formElement = event.currentTarget; const form = new FormData(formElement);
@@ -290,7 +295,7 @@ export function KnowledgeWorkspace({ initialOrganizationId = "", initialProjectI
   const activeStrategySpaceCount = strategySpaces.filter((space) => space.strategies.some((strategy) => strategy.status === "active")).length;
 
   return <div className="knowledge-workspace">
-    <div className="management-toolbar knowledge-toolbar"><label>公司<select value={organizationId} onChange={(event) => runScopedAction(async () => { const id = event.target.value; setOrganizationId(id); await loadProjects(id); }, setError)}>{organizations.map((organization) => <option key={organization.id} value={organization.id}>{organization.name}</option>)}</select></label><label>企业空间<select value={projectId} onChange={(event) => runScopedAction(async () => { const id = event.target.value; setProjectId(id); rememberCurrentScope(organizationId, id); await loadWorkspace(organizationId, id); if (tab === "strategy") setStrategyScope("project"); }, setError)}>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><div className="segmented-control" aria-label="知识库视图"><button className={tab === "knowledge" ? "active" : ""} type="button" onClick={() => setTab("knowledge")}>品牌知识</button><button className={tab === "strategy" ? "active" : ""} type="button" onClick={() => { setTab("strategy"); if (isOrganizationAdmin) setStrategyScope("organization"); }}>内容策略</button>{AUTHORIZED_METHOD_LIBRARY_VISIBLE && <button className={tab === "method" ? "active" : ""} type="button" onClick={() => setTab("method")}>授权方法论</button>}</div></div>
+    <div className="management-toolbar knowledge-toolbar"><label>公司<select value={organizationId} disabled={knowledgeImportBusy === "importing"} onChange={(event) => runScopedAction(async () => { const id = event.target.value; setOrganizationId(id); await loadProjects(id); }, setError)}>{organizations.map((organization) => <option key={organization.id} value={organization.id}>{organization.name}</option>)}</select></label><label>企业空间<select value={projectId} disabled={knowledgeImportBusy === "importing"} onChange={(event) => runScopedAction(async () => { const id = event.target.value; setProjectId(id); rememberCurrentScope(organizationId, id); await loadWorkspace(organizationId, id); if (tab === "strategy") setStrategyScope("project"); }, setError)}>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><div className="segmented-control" aria-label="知识库视图"><button className={tab === "knowledge" ? "active" : ""} type="button" onClick={() => setTab("knowledge")}>品牌知识</button><button className={tab === "strategy" ? "active" : ""} type="button" onClick={() => { setTab("strategy"); if (isOrganizationAdmin) setStrategyScope("organization"); }}>内容策略</button>{AUTHORIZED_METHOD_LIBRARY_VISIBLE && <button className={tab === "method" ? "active" : ""} type="button" onClick={() => setTab("method")}>授权方法论</button>}</div></div>
     {error && <div className="inline-alert" role="alert">{error}</div>}
     {AUTHORIZED_METHOD_LIBRARY_VISIBLE && tab === "method" && methodologyCatalog && <section className="methodology-view">
       <header className="panel methodology-hero">
@@ -316,7 +321,7 @@ export function KnowledgeWorkspace({ initialOrganizationId = "", initialProjectI
       <section className="panel knowledge-list-panel"><div className="panel-heading"><div><p className="section-kicker">已确认知识才参与生成</p><h2>{items.filter((item) => item.status === "confirmed").length} 条正式知识 · {items.filter((item) => item.status === "draft").length} 条待确认</h2></div></div>{items.length ? <div className="knowledge-list">{items.map((item) => <KnowledgeCard key={item.id} item={item} canManage={canManage} saving={saving} action={knowledgeAction.endsWith(item.id) ? knowledgeAction : ""} onConfirm={() => void confirmKnowledge(item.id)} onEdit={(event) => void editKnowledge(item.id, event)} onArchive={() => void archiveKnowledge(item.id)} onHistory={() => void showKnowledgeHistory(item.id)} />)}</div> : <div className="list-empty">先录入品牌故事、案例、客户问题、语气或合规要求。</div>}</section>
       {canWrite && <aside className="create-panel knowledge-create">
         <section className="knowledge-bulk-import"><header><div><p className="section-kicker">Excel 批量导入</p><h2>一次录入多条品牌知识</h2></div><a href="/templates/品牌知识库导入模板.xlsx" download><Download aria-hidden="true" />下载模板</a></header>
-          <label className={`knowledge-import-drop${knowledgeImportPreview ? " has-file" : ""}`}><input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" disabled={Boolean(knowledgeImportBusy)} onChange={(event) => void selectKnowledgeImport(event)} />{knowledgeImportPreview ? <FileSpreadsheet aria-hidden="true" /> : <UploadCloud aria-hidden="true" />}<span><strong>{knowledgeImportBusy === "reading" ? "正在读取 Excel…" : knowledgeImportPreview?.filename || "选择填写好的 Excel"}</strong><small>{knowledgeImportPreview ? `${knowledgeImportPreview.validCount} 条有效 · ${knowledgeImportPreview.issues.length} 条需修改` : "Excel 最多 5 MiB、100 条，导入后统一进入待确认"}</small></span></label>
+          <label className={`knowledge-import-drop${knowledgeImportPreview ? " has-file" : ""}`}><input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" disabled={knowledgeImportBusy === "importing"} onChange={(event) => void selectKnowledgeImport(event)} />{knowledgeImportPreview ? <FileSpreadsheet aria-hidden="true" /> : <UploadCloud aria-hidden="true" />}<span><strong>{knowledgeImportBusy === "reading" ? "正在读取 Excel…" : knowledgeImportPreview?.filename || "选择填写好的 Excel"}</strong><small>{knowledgeImportPreview ? `${knowledgeImportPreview.validCount} 条有效 · ${knowledgeImportPreview.issues.length} 条需修改` : "Excel 最多 5 MiB、100 条，导入后统一进入待确认"}</small></span></label>
           {knowledgeImportPreview?.issues.length ? <details className="knowledge-import-issues"><summary><AlertTriangle aria-hidden="true" />查看 {knowledgeImportPreview.issues.length} 个问题</summary><ul>{knowledgeImportPreview.issues.slice(0, 8).map((issue, index) => <li key={`${issue.rowNumber}-${index}`}>{issue.rowNumber ? `第 ${issue.rowNumber} 行：` : ""}{issue.message}</li>)}</ul>{knowledgeImportPreview.issues.length > 8 && <small>其余问题请修改后重新上传预检。</small>}</details> : null}
           {knowledgeImportMessage && <p className="knowledge-import-message" role="status">{knowledgeImportMessage}</p>}
           {knowledgeImportPreview && <button className="knowledge-import-submit" type="button" disabled={!knowledgeImportPreview.validCount || Boolean(knowledgeImportBusy)} onClick={() => void importKnowledgeWorkbook()}><UploadCloud aria-hidden="true" />{knowledgeImportBusy === "importing" ? "正在导入…" : `导入 ${knowledgeImportPreview.validCount} 条有效知识`}</button>}

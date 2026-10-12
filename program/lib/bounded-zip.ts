@@ -1,9 +1,11 @@
 import { Unzip, UnzipInflate, unzipSync, type UnzipFileInfo } from "fflate";
 
-export async function openBoundedZip(file: Blob, options: { maximumBytes: number; maximumFiles: number; label: string }) {
+export async function openBoundedZip(file: Blob, options: { maximumBytes: number; maximumFiles: number; label: string; signal?: AbortSignal }) {
   const fail = (message: string): never => { throw new Error(`${options.label}${message}，未读取数据；请重新导出或分批整理。`); };
+  options.signal?.throwIfAborted();
   if (file.size > options.maximumBytes) fail("压缩文件大小超限");
   const bytes = new Uint8Array(await file.arrayBuffer());
+  options.signal?.throwIfAborted();
   if (bytes.length > options.maximumBytes) fail("压缩文件大小超限");
   const directory = new Map<string, UnzipFileInfo>();
   try {
@@ -18,6 +20,7 @@ export async function openBoundedZip(file: Blob, options: { maximumBytes: number
   } catch (error) { if (error instanceof Error && error.message.startsWith(options.label)) throw error; fail(" ZIP 损坏或格式不支持"); }
 
   async function read(names: Map<string, number>, maximumTotal: number) {
+    options.signal?.throwIfAborted();
     let total = 0;
     for (const [name, maximum] of names) {
       const info = directory.get(name);
@@ -53,11 +56,13 @@ export async function openBoundedZip(file: Blob, options: { maximumBytes: number
     unzip.register(UnzipInflate);
     try {
       for (let offset = 0; offset < bytes.length; offset += 4096) {
+        options.signal?.throwIfAborted();
         unzip.push(bytes.subarray(offset, offset + 4096), offset + 4096 >= bytes.length);
         if (streamError) throw streamError;
         if (Date.now() - lastYield >= 16) { await new Promise(resolve => setTimeout(resolve, 0)); lastYield = Date.now(); }
       }
-    } catch (error) { if (error instanceof Error && error.message.startsWith(options.label)) throw error; fail(" ZIP 损坏或格式不支持"); }
+    } catch (error) { if (options.signal?.aborted || error instanceof Error && error.message.startsWith(options.label)) throw error; fail(" ZIP 损坏或格式不支持"); }
+    options.signal?.throwIfAborted();
     if (result.size !== names.size) fail("所需文件不完整");
     return result;
   }

@@ -11,6 +11,7 @@ import Papa from "papaparse";
 import type { EChartsCoreOption } from "echarts/core";
 import { EChart } from "./EChart";
 import { OwnedWorkMatchingView } from "./OwnedWorkMatchingView";
+import { useImportPreview } from "./useImportPreview";
 import { readFirstWorksheet } from "../lib/xlsx-table";
 import { isMissingMetricCell, metricNumberCell, percentMetricCell, signedMetricNumberCell, watchMetricMilliseconds } from "../lib/performance-import";
 import { rememberCurrentScope, scopedFetch } from "../lib/client-scope";
@@ -142,7 +143,10 @@ function formatImportErrors(value: string) { try { return JSON.stringify(JSON.pa
 export function InsightsWorkspace({ initialView, initialOrganizationId = "", initialProjectId = "" }: { initialView: View; initialOrganizationId?: string; initialProjectId?: string }) {
   const [organizations, setOrganizations] = useState<Organization[]>([]); const [organizationId, setOrganizationId] = useState(""); const [projects, setProjects] = useState<Project[]>([]); const [projectId, setProjectId] = useState("");
   const [analytics, setAnalytics] = useState<Analytics>(emptyAnalytics); const [imports, setImports] = useState<ImportBatch[]>([]); const [platformImports, setPlatformImports] = useState<ImportBatch[]>([]); const [publications, setPublications] = useState<Publication[]>([]); const [reports, setReports] = useState<Report[]>([]); const [canImport, setCanImport] = useState(false); const [canGenerate, setCanGenerate] = useState(false);
-  const [days, setDays] = useState(30); const [loading, setLoading] = useState(true); const [busy, setBusy] = useState(""); const [error, setError] = useState(""); const [rows, setRows] = useState<ParsedImportRow[]>([]); const [filename, setFilename] = useState(""); const [importFormat, setImportFormat] = useState<"standard" | "douyin_16">("douyin_16"); const [asOfAt, setAsOfAt] = useState(new Date().toISOString()); const [parseMessage, setParseMessage] = useState(""); const [selectedReportId, setSelectedReportId] = useState("");
+  const [days, setDays] = useState(30); const [loading, setLoading] = useState(true); const [busy, setBusy] = useState(""); const [error, setError] = useState(""); const [importFormat, setImportFormat] = useState<"standard" | "douyin_16">("douyin_16"); const [asOfAt, setAsOfAt] = useState(new Date().toISOString()); const [selectedReportId, setSelectedReportId] = useState("");
+
+  const importPreview = useImportPreview<ParsedImportRow[]>(`${organizationId}:${projectId}:${importFormat}`);
+  const rows = importPreview.preview.data ?? [], filename = importPreview.preview.filename, parseMessage = importPreview.preview.message;
 
   const loadWorkspace = useCallback(async (orgId: string, projId: string, period = 30) => {
     if (!orgId || !projId) return; const scope = `organizationId=${encodeURIComponent(orgId)}&projectId=${encodeURIComponent(projId)}`;
@@ -214,33 +218,60 @@ export function InsightsWorkspace({ initialView, initialOrganizationId = "", ini
     });
     if (!parsed.length) throw new Error("文件没有可导入的数据行");
     const missingMetricCount = importFormat === "douyin_16" ? data.reduce((count, row) => count + ["完播率", "5s完播率", "封面点击率", "2s跳出率", "平均播放时长", "播放量", "点赞量", "分享量", "评论量", "收藏量", "主页访问量", "粉丝增量"].filter((key) => isMissingMetricCell(row[key])).length, 0) : 0;
-    setRows(parsed); setParseMessage("已解析 " + parsed.length + " 行" + (missingMetricCount ? "；识别 " + missingMetricCount + " 处平台暂无数据，比例和时长留空、计数项按 0 处理。" : "；提交时由服务器再次校验。"));
+    return { data: parsed, message: "已解析 " + parsed.length + " 行" + (missingMetricCount ? "；识别 " + missingMetricCount + " 处平台暂无数据，比例和时长留空、计数项按 0 处理。" : "；提交时由服务器再次校验。"), phase: "ready" as const };
   }
   async function parseImportFile(file: File) {
-    setFilename(file.name); setRows([]); setParseMessage("正在解析…");
+    if (busy === "import") return;
+    const operation = importPreview.begin(file.name);
+    setError("");
     try {
       if (file.name.toLowerCase().endsWith(".xlsx")) {
         if (importFormat !== "douyin_16") throw new Error("XLSX 当前用于抖音 16 字段导入，请切换导入格式。");
-        parseRows(await readFirstWorksheet(file));
+        const data = await readFirstWorksheet(file, { signal: operation.signal });
+        if (operation.isCurrent()) operation.update(parseRows(data));
         return;
       }
-      Papa.parse<Record<string, string>>(file, { header: true, skipEmptyLines: "greedy", transformHeader: (header) => header.replace(/^\uFEFF/, "").trim(), complete: (result) => {
+      Papa.parse<Record<string, string>>(file, { header: true, skipEmptyLines: "greedy", transformHeader: header => header.replace(/^\uFEFF/, "").trim(), complete: result => {
+        if (!operation.isCurrent()) return;
         try {
           const firstError = result.errors[0]; if (firstError) throw new Error("CSV 第 " + ((firstError.row ?? 0) + 2) + " 行：" + firstError.message);
-          parseRows(result.data);
-        } catch (reason) { setParseMessage(reason instanceof Error ? reason.message : "CSV 解析失败"); }
-      } });
-    } catch (reason) { setParseMessage(reason instanceof Error ? reason.message : "文件解析失败"); }
+          operation.update(parseRows(result.data));
+        } catch (reason) { operation.update({ phase: "error", message: reason instanceof Error ? reason.message : "CSV 解析失败" }); }
+      }, error: reason => { operation.update({ phase: "error", message: reason.message || "CSV 文件读取失败，请重新选择。" }); } });
+    } catch (reason) { operation.update({ phase: "error", message: reason instanceof Error ? reason.message : "文件解析失败" }); }
   }
-  async function submitImport() { if (!rows.length) return; setBusy("import"); setError(""); const source = filename.toLowerCase().endsWith(".xlsx") ? "xlsx" : "csv"; const payload = importFormat === "douyin_16" ? { organizationId, projectId, source, format: "douyin_16", asOfAt, filename, rows } : { organizationId, projectId, source: "csv", filename, rows }; const response = await scopedFetch("/api/performance", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) }); if (!response.ok) setError(await readError(response)); else { setRows([]); setFilename(""); setParseMessage(importFormat === "douyin_16" ? "抖音快照导入完成；歧义作品已保留待人工映射。" : "标准快照导入完成，复盘指标已经更新。"); await loadWorkspace(organizationId, projectId, days); } setBusy(""); }
+  async function submitImport() {
+    const operation = importPreview.current();
+    if (!operation || !operation.isCurrent() || !canImport || !rows.length || importPreview.preview.phase !== "ready") return;
+    operation.update({ phase: "importing" }); setBusy("import"); setError("");
+    let acknowledged = false;
+    try {
+      const source = filename.toLowerCase().endsWith(".xlsx") ? "xlsx" : "csv";
+      const payload = importFormat === "douyin_16" ? { organizationId, projectId, source, format: "douyin_16", asOfAt, filename, rows } : { organizationId, projectId, source: "csv", filename, rows };
+      const response = await scopedFetch("/api/performance", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
+      if (!operation.isCurrent()) return;
+      if (!response.ok) { const message = await readError(response); if (operation.isCurrent()) { setError(message); operation.update({ phase: "ready" }); } return; }
+      const receipt = await response.json().catch(() => null) as { import?: { id?: unknown } } | null;
+      if (!operation.isCurrent()) return;
+      if (typeof receipt?.import?.id !== "string" || !receipt.import.id) throw new Error("Import acknowledgement unreadable");
+      acknowledged = true;
+      operation.update({ data: null, filename: "", phase: "done", message: importFormat === "douyin_16" ? "抖音快照导入完成；歧义作品已保留待人工映射。" : "标准快照导入完成，复盘指标已经更新。" });
+      await loadWorkspace(organizationId, projectId, days);
+    } catch {
+      if (operation.isCurrent()) {
+        setError(acknowledged ? "数据已导入，但历史刷新失败，请刷新页面核对。" : "暂时无法确认导入结果，请刷新导入历史核对后再决定重试，勿立即重复提交。");
+        if (!acknowledged) operation.update({ phase: "ready" });
+      }
+    } finally { setBusy(""); }
+  }
   async function generateReport(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setBusy("report"); setError(""); const form = new FormData(event.currentTarget); const response = await scopedFetch("/api/reports", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, reportType: form.get("reportType"), periodStart: form.get("periodStart"), periodEnd: form.get("periodEnd"), title: form.get("title") || undefined }) }); if (!response.ok) setError(await readError(response)); else { const body = await response.json() as { report: Report }; await loadWorkspace(organizationId, projectId, days); setSelectedReportId(body.report.id); } setBusy(""); }
   async function finalizeReport() { if (!selectedReport) return; setBusy("finalize"); const response = await scopedFetch(`/api/reports/${selectedReport.id}/finalize`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId }) }); if (!response.ok) setError(await readError(response)); else await loadWorkspace(organizationId, projectId, days); setBusy(""); }
 
   if (loading) return <div className="management-state" role="status">正在载入运营数据…</div>;
   if (!organizationId || !projectId) return <div className="empty-panel"><h2>请先创建企业空间</h2><p>运营数据和报告必须归属于明确的企业空间。</p></div>;
-  return <div className="insights-workspace"><div className="management-toolbar insights-toolbar"><label>公司<select value={organizationId} onChange={(event) => runScopedAction(async () => { setOrganizationId(event.target.value); await loadProjects(event.target.value); }, setError)}>{organizations.map((organization) => <option value={organization.id} key={organization.id}>{organization.name}</option>)}</select></label><label>企业空间<select value={projectId} onChange={(event) => runScopedAction(async () => { setProjectId(event.target.value); rememberCurrentScope(organizationId, event.target.value); await loadWorkspace(organizationId, event.target.value, days); }, setError)}>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select></label><nav><a className={initialView === "overview" ? "active" : ""} href={`/insights?view=overview&organizationId=${organizationId}&projectId=${projectId}`}>复盘</a><a className={initialView === "imports" ? "active" : ""} href={`/insights?view=imports&organizationId=${organizationId}&projectId=${projectId}`}>导入</a><a className={initialView === "matches" ? "active" : ""} href={`/insights?view=matches&organizationId=${organizationId}&projectId=${projectId}`}>作品匹配</a><a className={initialView === "reports" ? "active" : ""} href={`/insights?view=reports&organizationId=${organizationId}&projectId=${projectId}`}>报告</a></nav></div>{error && <div className="inline-alert" role="alert">{error}</div>}
+  return <div className="insights-workspace"><div className="management-toolbar insights-toolbar"><label>公司<select value={organizationId} disabled={busy === "import"} onChange={(event) => runScopedAction(async () => { setOrganizationId(event.target.value); await loadProjects(event.target.value); }, setError)}>{organizations.map((organization) => <option value={organization.id} key={organization.id}>{organization.name}</option>)}</select></label><label>企业空间<select value={projectId} disabled={busy === "import"} onChange={(event) => runScopedAction(async () => { setProjectId(event.target.value); rememberCurrentScope(organizationId, event.target.value); await loadWorkspace(organizationId, event.target.value, days); }, setError)}>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select></label><nav><a className={initialView === "overview" ? "active" : ""} href={`/insights?view=overview&organizationId=${organizationId}&projectId=${projectId}`}>复盘</a><a className={initialView === "imports" ? "active" : ""} href={`/insights?view=imports&organizationId=${organizationId}&projectId=${projectId}`}>导入</a><a className={initialView === "matches" ? "active" : ""} href={`/insights?view=matches&organizationId=${organizationId}&projectId=${projectId}`}>作品匹配</a><a className={initialView === "reports" ? "active" : ""} href={`/insights?view=reports&organizationId=${organizationId}&projectId=${projectId}`}>报告</a></nav></div>{error && <div className="inline-alert" role="alert">{error}</div>}
     {initialView === "overview" && <Overview analytics={analytics} trendOption={trendOption} performanceMapOption={performanceMapOption} days={days} onDays={async (value) => { setDays(value); await loadWorkspace(organizationId, projectId, value); }} />}
-    {initialView === "imports" && <ImportView canImport={canImport} imports={[...platformImports, ...imports]} rows={rows} filename={filename} format={importFormat} asOfAt={asOfAt} message={parseMessage} busy={busy} onFormat={(value) => { setImportFormat(value); setRows([]); setFilename(""); setParseMessage(""); }} onAsOfAt={setAsOfAt} onTemplate={downloadTemplate} onFile={parseImportFile} onSubmit={submitImport} matchHref={`/insights?view=matches&organizationId=${organizationId}&projectId=${projectId}`} />}
+    {initialView === "imports" && <ImportView canImport={canImport} imports={[...platformImports, ...imports]} rows={rows} filename={filename} format={importFormat} asOfAt={asOfAt} message={parseMessage} busy={busy} onFormat={(value) => { setImportFormat(value); importPreview.clear(); }} onAsOfAt={setAsOfAt} onTemplate={downloadTemplate} onFile={parseImportFile} onSubmit={submitImport} matchHref={`/insights?view=matches&organizationId=${organizationId}&projectId=${projectId}`} />}
     {initialView === "matches" && <OwnedWorkMatchingView organizationId={organizationId} projectId={projectId} />}
     {initialView === "reports" && <ReportsView reports={reports} selected={selectedReport} organizationId={organizationId} projectId={projectId} canGenerate={canGenerate} busy={busy} onSelect={setSelectedReportId} onGenerate={generateReport} onFinalize={finalizeReport} />}
   </div>;
@@ -268,11 +299,11 @@ function ImportView({ canImport, imports, rows, filename, format, asOfAt, messag
       <section className="panel import-panel import-panel-refined">
         <header><div><span className="import-step-label">当前步骤</span><h2>导入作品数据</h2><p>{douyin ? "直接使用抖音创作者中心导出的 XLSX，无需转换CSV。" : "用于已经带有发布记录ID或作品链接的标准快照。"}</p></div><button type="button" onClick={onTemplate}><FileSpreadsheet aria-hidden="true" />下载 CSV 模板</button></header>
         <div className="import-composer">
-          <fieldset className="import-format-field"><legend>文件类型</legend><div className="import-format-switch"><button type="button" className={douyin ? "active" : ""} onClick={() => onFormat("douyin_16")}><strong>抖音作品列表</strong><span>XLSX / CSV · 16字段</span></button><button type="button" className={!douyin ? "active" : ""} onClick={() => onFormat("standard")}><strong>标准发布快照</strong><span>CSV · 按发布记录匹配</span></button></div></fieldset>
+          <fieldset className="import-format-field"><legend>文件类型</legend><div className="import-format-switch"><button type="button" disabled={busy === "import"} className={douyin ? "active" : ""} onClick={() => onFormat("douyin_16")}><strong>抖音作品列表</strong><span>XLSX / CSV · 16字段</span></button><button type="button" disabled={busy === "import"} className={!douyin ? "active" : ""} onClick={() => onFormat("standard")}><strong>标准发布快照</strong><span>CSV · 按发布记录匹配</span></button></div></fieldset>
           {douyin && <div className="import-data-contract"><header><div><strong>系统会读取这些数据</strong><span>缺失值保留为空，0值不会被当作缺失值。</span></div><em>16 字段</em></header><div>{fieldGroups.map((group) => <section key={group.label}><strong>{group.label}</strong><p>{group.fields.map((field) => <span key={field}>{field}</span>)}</p></section>)}</div></div>}
           {canImport ? <div className="import-inputs">
-            {douyin && <label className="import-asof"><span><Clock3 aria-hidden="true" /><strong>数据截至时间</strong><small>用于区分每次累计快照，之后才能计算周期增量。</small></span><input type="datetime-local" value={asOfAt.slice(0, 16)} onChange={(event) => onAsOfAt(new Date(event.target.value).toISOString())} /></label>}
-            <label className={"file-drop import-file-drop" + (filename ? " has-file" : "")}><input type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => { const file = event.target.files?.[0]; if (file) onFile(file); }} />{filename ? <CheckCircle2 aria-hidden="true" /> : <UploadCloud aria-hidden="true" />}<strong>{filename || "选择或拖入作品列表"}</strong><span>{filename ? "文件已读取，可以核对解析结果。" : douyin ? "支持 .xlsx（最多 20 MiB）和 .csv，单次最多500条作品" : "支持 .csv，单次最多500条作品"}</span><em>{filename ? "重新选择" : "浏览文件"}</em></label>
+            {douyin && <label className="import-asof"><span><Clock3 aria-hidden="true" /><strong>数据截至时间</strong><small>用于区分每次累计快照，之后才能计算周期增量。</small></span><input type="datetime-local" disabled={busy === "import"} value={asOfAt.slice(0, 16)} onChange={(event) => onAsOfAt(new Date(event.target.value).toISOString())} /></label>}
+            <label className={"file-drop import-file-drop" + (filename ? " has-file" : "")}><input type="file" disabled={busy === "import"} accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) onFile(file); }} />{filename ? <CheckCircle2 aria-hidden="true" /> : <UploadCloud aria-hidden="true" />}<strong>{filename || "选择或拖入作品列表"}</strong><span>{filename ? "文件已读取，可以核对解析结果。" : douyin ? "支持 .xlsx（最多 20 MiB）和 .csv，单次最多500条作品" : "支持 .csv，单次最多500条作品"}</span><em>{filename ? "重新选择" : "浏览文件"}</em></label>
           </div> : <div className="import-permission-note"><AlertTriangle aria-hidden="true" /><div><strong>当前账号只能查看</strong><span>请联系企业空间管理员或可编辑成员完成导入。</span></div></div>}
           {message && <div className={"import-message " + messageState}>{messageState === "success" ? <CheckCircle2 aria-hidden="true" /> : messageState === "error" ? <AlertTriangle aria-hidden="true" /> : <Clock3 aria-hidden="true" />}<span>{message}</span></div>}
         </div>

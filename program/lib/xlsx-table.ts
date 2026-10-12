@@ -11,9 +11,10 @@ const MAX_CELL_TEXT = 32_767;
 function elements(root: Document | Element, name: string) {
   return Array.from(root.getElementsByTagNameNS("*", name));
 }
-async function xml(blob: Blob | undefined, name: string) {
+async function xml(blob: Blob | undefined, name: string, signal?: AbortSignal) {
   if (!blob) throw new Error("Excel 文件缺少" + name);
   const text = await blob.text();
+  signal?.throwIfAborted();
   let count = 0;
   for (let index = 0; index < text.length; index++) {
     if (text[index] !== "<") continue;
@@ -53,13 +54,13 @@ function sheetPath(target: string) {
   return resolved.join("/");
 }
 
-export async function readFirstWorksheet(file: File, options: { maximumBytes?: number; maximumRows?: number } = {}) {
+export async function readFirstWorksheet(file: File, options: { maximumBytes?: number; maximumRows?: number; signal?: AbortSignal } = {}) {
   const maximumRows = options.maximumRows ?? 500, maximumBytes = options.maximumBytes ?? 20 * 1024 * 1024;
   if (!Number.isSafeInteger(maximumRows) || maximumRows < 1 || maximumRows > 500 || !Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > 20 * 1024 * 1024) throw new Error("Excel 读取范围无效。");
   if (file.size > maximumBytes) throw new Error(`Excel 文件不能超过 ${maximumBytes / 1024 / 1024} MiB，请拆分文件后重试。`);
-  const archive = await openBoundedZip(file, { maximumBytes, maximumFiles: 4096, label: "Excel" });
+  const archive = await openBoundedZip(file, { maximumBytes, maximumFiles: 4096, label: "Excel", signal: options.signal });
   const metadata = await archive.read(new Map([["xl/workbook.xml", MAX_METADATA_BYTES], ["xl/_rels/workbook.xml.rels", MAX_METADATA_BYTES]]), 2 * MAX_METADATA_BYTES);
-  const workbook = await xml(metadata.get("xl/workbook.xml"), "工作簿"), relationships = await xml(metadata.get("xl/_rels/workbook.xml.rels"), "工作表关系");
+  const workbook = await xml(metadata.get("xl/workbook.xml"), "工作簿", options.signal), relationships = await xml(metadata.get("xl/_rels/workbook.xml.rels"), "工作表关系", options.signal);
   const sheet = elements(workbook, "sheet")[0];
   const id = sheet?.getAttribute("r:id") || sheet?.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id");
   const matches = elements(relationships, "Relationship").filter(item => item.getAttribute("Id") === id);
@@ -68,10 +69,10 @@ export async function readFirstWorksheet(file: File, options: { maximumBytes?: n
   const needed = new Map([[path, MAX_XML_BYTES]]);
   if (archive.directory.has("xl/sharedStrings.xml")) needed.set("xl/sharedStrings.xml", MAX_XML_BYTES);
   const content = await archive.read(needed, 2 * MAX_XML_BYTES);
-  const sharedDocument = content.has("xl/sharedStrings.xml") ? await xml(content.get("xl/sharedStrings.xml"), "共享文本") : null;
+  const sharedDocument = content.has("xl/sharedStrings.xml") ? await xml(content.get("xl/sharedStrings.xml"), "共享文本", options.signal) : null;
   const sharedStrings = sharedDocument ? elements(sharedDocument, "si").map(cellText) : [];
   if (sharedStrings.length > MAX_CELLS) throw new Error("Excel 共享文本数量过多，请分批整理。");
-  const document = await xml(content.get(path), "首个工作表"), rawRows = elements(document, "row");
+  const document = await xml(content.get(path), "首个工作表", options.signal), rawRows = elements(document, "row");
   if (rawRows.length > MAX_PHYSICAL_ROWS) throw new Error("Excel 格式行过多，请清除空行格式或拆分文件。");
   let cells = 0, previousRow = 0;
   const rows: Map<number, unknown>[] = [];
