@@ -279,6 +279,12 @@ try {
     manifest.entries.sort((a,b)=>b.assets.length-a.assets.length); assert.equal(manifest.entries[0].assets.length,1);
     const files = new Map();
     for (const entry of manifest.entries) for (const asset of entry.assets) { const response=await http(asset.downloadUrl,{user}); expect(response,200); files.set(asset.blobName,response.bytes); }
+    const first=manifest.entries[0], originalAsset=first.assets[0];
+    first.video.durationSec=null; first.library.notes="\n  preserved note  \n"; first.library.tags=["  preserved tag  "];
+    first.transcripts=[{version:1,language:"zh-CN",source:"asr",full_text:"\n  preserved text\u0000tail  \n",segments_json:"[]",confidence:null,created_at:"2020-01-01T00:00:00.000Z",updated_at:"2020-02-01T00:00:00.000Z"}];
+    first.metrics=[{source:"manual",plays:null,likes:0,collected_at:"2024-01-02T00:00:00.000Z",created_at:"2024-01-03T00:00:00.000Z"}];
+    first.analyses=[1,2].map(index=>({schema_version:"analysis.v1",report_json:JSON.stringify({sentinel:index}),confidence:null,created_at:index===1?"2020-01-01T00:00:00.000Z":"2024-01-01T00:00:00.000Z",updated_at:"2024-01-01T00:00:00.000Z"}));
+    first.assets.push({...originalAsset,id:"synthetic-frame",blobName:"synthetic-frame",kind:"keyframe",filename:"frame.jpg",contentType:"image/jpeg",isCover:1,qualityScore:0.9}); files.set("synthetic-frame",files.get(originalAsset.blobName));
     manifest.entries[1].video.title="Synthetic transfer HTTP failing item";
     const submitPackage = () => {
       const form = new FormData(); form.set("organizationId",user.org); form.set("projectId",user.project); form.set("manifest",JSON.stringify(manifest));
@@ -294,17 +300,22 @@ try {
     const replay=expect(await submitPackage(),200); assert.deepEqual(replay,{imported:1,skipped:1});
     assert.equal(await count("SELECT COUNT(*) AS n FROM videos WHERE organization_id=? AND project_id=?",user.org,user.project),beforeVideos+2);
     const imported=await db.prepare("SELECT id FROM videos WHERE organization_id=? AND project_id=? AND source_hash=?").bind(user.org,user.project,manifest.entries[0].video.sourceHash).first();
+    const videoState=await db.prepare("SELECT duration_sec FROM videos WHERE id=?").bind(imported.id).first(); assert.equal(videoState.duration_sec,null);
+    const transcriptState=await db.prepare("SELECT full_text,confidence,created_at FROM video_transcripts WHERE video_id=?").bind(imported.id).first(); assert.equal(transcriptState.full_text,first.transcripts[0].full_text); assert.equal(transcriptState.confidence,null); assert.equal(transcriptState.created_at,first.transcripts[0].created_at);
+    const metricState=await db.prepare("SELECT plays,likes,created_at FROM video_metric_snapshots WHERE video_id=?").bind(imported.id).first(); assert.equal(metricState.plays,null); assert.equal(metricState.likes,0); assert.equal(metricState.created_at,first.metrics[0].created_at);
+    const latest=await db.prepare("SELECT created_at,report_json FROM video_analyses WHERE video_id=? ORDER BY created_at DESC LIMIT 1").bind(imported.id).first(); assert.equal(latest.created_at,"2024-01-01T00:00:00.000Z"); assert.equal(JSON.parse(latest.report_json).sentinel,2);
+    const cover=await db.prepare("SELECT is_cover,quality_score FROM media_assets WHERE video_id=? AND kind='keyframe'").bind(imported.id).first(); assert.equal(cover.is_cover,1); assert.equal(cover.quality_score,0.9);
     const media=await http(`/api/videos/${imported.id}/media?${scope(user)}`,{user}); expect(media,200);
     assert.equal(createHash("sha256").update(media.bytes).digest("hex"),uploadFixture.hash);
     expect(await http(`/api/videos/${imported.id}/media?${scope(user)}`,{user:users[10]}),403);
     const job=await db.prepare("SELECT status,idempotency_key FROM analysis_jobs WHERE video_id=?").bind(imported.id).first(); assert.equal(job.status,"completed"); assert.ok(job.idempotency_key.startsWith("material-import:"));
     expect(await http("/api/video-library/transfer",{user,method:"POST",body:{malformed:true}}),400);
-    writeFileSync(path.join(runDir,"material-transfer.json"),JSON.stringify({passed:true,synthetic:true,partial:partial.data.progress,replay,mediaSha256:uploadFixture.hash,unauthorizedStatus:403,boundary:"Actual compiled HTTP/D1/R2; synthetic report and opaque bytes, no codecs, external models or business accounts"},null,2));
+    writeFileSync(path.join(runDir,"material-transfer.json"),JSON.stringify({passed:true,synthetic:true,partial:partial.data.progress,replay,exactTranscript:true,unknownConfidence:null,newestAnalysis:2,coverPreserved:true,mediaSha256:uploadFixture.hash,unauthorizedStatus:403,boundary:"Actual compiled HTTP/D1/R2; synthetic report and opaque bytes, no codecs, external models or business accounts"},null,2));
   });
   await scenario("素材导入、移出、审计回退与旧页面冲突：真实HTTP/D1", async () => {
     const user = users[0], library = await db.prepare(`SELECT library.id,library.updated_at,v.id AS video_id,analysis.id AS analysis_id
       FROM video_library_entries library JOIN videos v ON v.id=library.source_video_id AND v.deleted_at IS NULL
-      JOIN video_analyses analysis ON analysis.video_id=v.id AND analysis.organization_id=v.organization_id
+      JOIN video_analyses analysis ON analysis.id=(SELECT latest.id FROM video_analyses latest WHERE latest.video_id=v.id AND latest.organization_id=v.organization_id ORDER BY latest.created_at DESC LIMIT 1)
       WHERE library.organization_id=? AND NOT EXISTS(SELECT 1 FROM project_video_references refs WHERE refs.library_entry_id=library.id AND refs.project_id=? AND refs.purpose='benchmark') LIMIT 1`).bind(user.org, user.project).first();
     assert.ok(library, "Need an analyzed synthetic fixture without the target benchmark reference");
     const body = { organizationId: user.org, projectId: user.project, entryIds: [library.id] };
@@ -333,6 +344,21 @@ try {
     assert.equal(await count("SELECT COUNT(*) AS n FROM project_memory_events WHERE organization_id=? AND project_id=? AND source_id=? AND json_extract(payload_json,'$.benchmarkReferenceId')=?",user.org,user.project,library.analysis_id,reference.id),1);
     writeFileSync(path.join(runDir,"library-write.json"),JSON.stringify({ passed:true, synthetic:true, importStatuses:imports.map(r=>r.status), editStatuses:edits.map(r=>r.status), referenceId:reference.id, memoryEvents:1, intentionalAuditFailureStatus:500, boundary:"Actual compiled HTTP and D1; synthetic identities and reports, no real business or model calls" },null,2));
   });
+  await scenario("100条素材导出与失效选择拒绝：真实HTTP/D1", async () => {
+    const user=users[0], ids=[], now=new Date().toISOString(), statements=[];
+    for(let index=0;index<100;index++) {
+      const video=crypto.randomUUID(), entry=crypto.randomUUID(); ids.push(entry);
+      statements.push(db.prepare("INSERT INTO videos(id,organization_id,project_id,platform,source_type,source_hash,source_url,status,created_by,updated_by,created_at,updated_at) VALUES(?,?,?,'douyin','url',?,?,'ready',?,?,?,?)").bind(video,user.org,user.project,`synthetic-100-${index}`,`https://example.invalid/export-${index}`,user.id,user.id,now,now));
+      statements.push(db.prepare("INSERT INTO video_library_entries(id,organization_id,source_video_id,category,tags_json,created_by,updated_by,created_at,updated_at) VALUES(?,?,?,'other','[]',?,?,?,?)").bind(entry,user.org,video,user.id,user.id,now,now));
+    }
+    await db.batch(statements);
+    const exportIds=async values=>http(`/api/video-library/transfer?organizationId=${user.org}&entryIds=${values.join(',')}`,{user});
+    const manifest=expect(await exportIds(ids),200); assert.equal(manifest.entries.length,100);
+    const over=await exportIds([...ids,crypto.randomUUID()]);expect(over,400);
+    const missing=await exportIds([ids[0],crypto.randomUUID()]);expect(missing,409);
+    const overAll=await http(`/api/video-library/transfer?organizationId=${user.org}`,{user});expect(overAll,400);
+    writeFileSync(path.join(runDir,"material-export-selection.json"),JSON.stringify({passed:true,synthetic:true,exported:100,oversizedStatus:400,missingStatus:409,allOverLimitStatus:400,boundary:"Actual compiled Worker and D1; directly seeded synthetic rows, no model or field data"},null,2));
+  });
   if (process.env.LAN_TEST_BACKUP === "1") await scenario("实际备份脚本恢复数据库与 R2：重新登录、版本关联、附件权限与继续审核发布", async () => {
     assert.equal(process.platform, "win32", "Shipped maintenance scripts require Windows");
     // Native Windows SQLite cannot use the long evidence-directory prefix.
@@ -341,7 +367,7 @@ try {
     for (const filename of ["backup-local.ps1", "restore-local.ps1", "local-state-maintenance.ps1", "analyzer-instance-lock.ps1", "verify-state-databases.mjs"]) {
       cpSync(path.join(root, "scripts", filename), path.join(scripts, filename));
     }
-    const tables = ["users", "local_credentials", "projects", "videos", "media_assets", "analysis_jobs", "video_analyses", "content_items", "content_versions", "content_reviews", "publication_records", "published_copy_records", "video_library_entries", "project_video_references", "project_memory_events", "audit_logs"];
+    const tables = ["users", "local_credentials", "projects", "videos", "media_assets", "analysis_jobs", "video_analyses", "content_items", "content_versions", "content_reviews", "publication_records", "published_copy_records", "video_library_entries", "project_video_references", "project_memory_events", "audit_logs", "video_transcripts", "video_metric_snapshots"];
     const snapshot = async () => Object.fromEntries(await Promise.all(tables.map(async name => {
       const rows = (await db.prepare(`SELECT * FROM ${name}`).all()).results.map(row => JSON.stringify(row)).sort();
       return [name, { rows: rows.length, sha256: createHash("sha256").update(JSON.stringify(rows)).digest("hex") }];
