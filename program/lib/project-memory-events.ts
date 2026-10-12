@@ -205,9 +205,10 @@ export async function requeueProjectMemoryConfidenceRepairCandidatesWithDb(
   };
 }
 
-export async function enqueueProjectMemoryEventWithDb(
+export async function prepareProjectMemoryEventWithDb(
   db: ProjectAssistantDatabase,
   input: ProjectMemoryEventInput,
+  guard?: { sql: string; bindings: unknown[] },
 ) {
   const payloadJson = stableProjectAssistantJson(input.payload);
   if (payloadJson.length > 200_000) throw new Error("项目记忆事件内容超过 200000 字符上限。");
@@ -221,8 +222,8 @@ export async function enqueueProjectMemoryEventWithDb(
   const dedupeKey = await sha256ProjectAssistantText(identity);
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
-  const result = await db.prepare(
-    "INSERT OR IGNORE INTO project_memory_events (id, organization_id, project_id, event_type, source_type, source_id, dedupe_key, payload_json, payload_hash, status, operation_summary_json, attempt_count, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', '[]', 0, ?, ?, ?)",
+  const statement = db.prepare(
+    `INSERT OR IGNORE INTO project_memory_events (id, organization_id, project_id, event_type, source_type, source_id, dedupe_key, payload_json, payload_hash, status, operation_summary_json, attempt_count, created_by, created_at, updated_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', '[]', 0, ?, ?, ? ${guard ? `WHERE ${guard.sql}` : ""}`,
   ).bind(
     id,
     input.organizationId,
@@ -236,7 +237,14 @@ export async function enqueueProjectMemoryEventWithDb(
     input.userId,
     now,
     now,
-  ).run();
+    ...(guard?.bindings ?? []),
+  );
+  return { statement, dedupeKey, id };
+}
+
+export async function enqueueProjectMemoryEventWithDb(db: ProjectAssistantDatabase, input: ProjectMemoryEventInput) {
+  const { statement, dedupeKey } = await prepareProjectMemoryEventWithDb(db, input);
+  const result = await statement.run();
   const row = await db.prepare(
     "SELECT * FROM project_memory_events WHERE organization_id = ? AND project_id = ? AND dedupe_key = ? LIMIT 1",
   ).bind(input.organizationId, input.projectId, dedupeKey).first<ProjectMemoryEventRow>();

@@ -269,6 +269,38 @@ try {
     const job = expect(await claim("runtime-after-restart"), 200).job; assert.equal(job.id, persistentJob);
     expect(await complete(await analyzing(job)), 200);
   });
+  await scenario("素材导入、移出、审计回退与旧页面冲突：真实HTTP/D1", async () => {
+    const user = users[0], library = await db.prepare(`SELECT library.id,library.updated_at,v.id AS video_id,analysis.id AS analysis_id
+      FROM video_library_entries library JOIN videos v ON v.id=library.source_video_id AND v.deleted_at IS NULL
+      JOIN video_analyses analysis ON analysis.video_id=v.id AND analysis.organization_id=v.organization_id
+      WHERE library.organization_id=? AND NOT EXISTS(SELECT 1 FROM project_video_references refs WHERE refs.library_entry_id=library.id AND refs.project_id=? AND refs.purpose='benchmark') LIMIT 1`).bind(user.org, user.project).first();
+    assert.ok(library, "Need an analyzed synthetic fixture without the target benchmark reference");
+    const body = { organizationId: user.org, projectId: user.project, entryIds: [library.id] };
+    const imports = await Promise.all([1, 2].map(() => http("/api/video-library/references", { user, method: "POST", body })));
+    assert.ok(imports.every(r => [201,409].includes(r.status))); assert.ok(imports.some(r => r.status === 201));
+    const refs = (await db.prepare("SELECT * FROM project_video_references WHERE library_entry_id=? AND project_id=? AND purpose='benchmark'").bind(library.id,user.project).all()).results;
+    assert.equal(refs.length, 1); assert.equal(refs[0].status, "active");
+    const reference = refs[0], memory = (await db.prepare("SELECT * FROM project_memory_events WHERE organization_id=? AND project_id=? AND source_id=? AND json_extract(payload_json,'$.benchmarkReferenceId')=?").bind(user.org,user.project,library.analysis_id,reference.id).all()).results;
+    assert.equal(memory.length,1);
+    const metadata = { organizationId: user.org, entryId: library.id, expectedUpdatedAt: library.updated_at, category: "case", tags: ["synthetic-shared-edit"], notes: null };
+    const edits = await Promise.all([1,2].map(() => http("/api/video-library", { user, method: "PATCH", body: metadata })));
+    assert.deepEqual(edits.map(r => r.status).sort(), [200,409]);
+    assert.equal(edits.find(r => r.status === 409).data.error.code, "LIBRARY_VERSION_CONFLICT");
+    expect(await http("/api/video-library/references", { user: users[10], method: "POST", body }), 403);
+    const missing = await http("/api/video-library/references", { user, method: "POST", body: { ...body, entryIds: [library.id,"synthetic-missing-entry"] } }); expect(missing,404);
+    const removal = { organizationId: user.org, projectId: user.project, referenceId: reference.id };
+    await db.exec("CREATE TRIGGER synthetic_library_remove_failure BEFORE INSERT ON audit_logs WHEN NEW.action='video_library.removed' BEGIN SELECT RAISE(ABORT,'synthetic removal failure'); END");
+    try {
+      expect(await http("/api/video-library/references", { user, method: "DELETE", body: removal }),500);
+      assert.equal((await db.prepare("SELECT status FROM project_video_references WHERE id=?").bind(reference.id).first()).status,"active");
+    } finally { await db.exec("DROP TRIGGER synthetic_library_remove_failure"); }
+    expect(await http("/api/video-library/references", { user, method: "DELETE", body: removal }),200);
+    assert.ok(await db.prepare("SELECT id FROM videos WHERE id=? AND deleted_at IS NULL").bind(library.video_id).first());
+    const replay = expect(await http("/api/video-library/references", { user, method: "POST", body }),201);
+    assert.equal(replay.actions[0].id,reference.id); assert.equal(replay.actions[0].action,"reactivated");
+    assert.equal(await count("SELECT COUNT(*) AS n FROM project_memory_events WHERE organization_id=? AND project_id=? AND source_id=? AND json_extract(payload_json,'$.benchmarkReferenceId')=?",user.org,user.project,library.analysis_id,reference.id),1);
+    writeFileSync(path.join(runDir,"library-write.json"),JSON.stringify({ passed:true, synthetic:true, importStatuses:imports.map(r=>r.status), editStatuses:edits.map(r=>r.status), referenceId:reference.id, memoryEvents:1, intentionalAuditFailureStatus:500, boundary:"Actual compiled HTTP and D1; synthetic identities and reports, no real business or model calls" },null,2));
+  });
   if (process.env.LAN_TEST_BACKUP === "1") await scenario("实际备份脚本恢复数据库与 R2：重新登录、版本关联、附件权限与继续审核发布", async () => {
     assert.equal(process.platform, "win32", "Shipped maintenance scripts require Windows");
     // Native Windows SQLite cannot use the long evidence-directory prefix.
@@ -277,7 +309,7 @@ try {
     for (const filename of ["backup-local.ps1", "restore-local.ps1", "local-state-maintenance.ps1", "analyzer-instance-lock.ps1", "verify-state-databases.mjs"]) {
       cpSync(path.join(root, "scripts", filename), path.join(scripts, filename));
     }
-    const tables = ["users", "local_credentials", "projects", "videos", "media_assets", "analysis_jobs", "video_analyses", "content_items", "content_versions", "content_reviews", "publication_records", "published_copy_records"];
+    const tables = ["users", "local_credentials", "projects", "videos", "media_assets", "analysis_jobs", "video_analyses", "content_items", "content_versions", "content_reviews", "publication_records", "published_copy_records", "video_library_entries", "project_video_references", "project_memory_events", "audit_logs"];
     const snapshot = async () => Object.fromEntries(await Promise.all(tables.map(async name => {
       const rows = (await db.prepare(`SELECT * FROM ${name}`).all()).results.map(row => JSON.stringify(row)).sort();
       return [name, { rows: rows.length, sha256: createHash("sha256").update(JSON.stringify(rows)).digest("hex") }];

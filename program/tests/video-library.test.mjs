@@ -24,8 +24,8 @@ test("library access is available to every employee assigned to a space", async 
   assert.match(helper, /project_video_references/);
   assert.match(references, /canWriteProjectAccess/);
   assert.match(references, /purpose = 'benchmark'/);
-  assert.match(references, /enqueueBenchmarkVideoAnalysisMemoryEventsWithDb/);
-  assert.match(references, /targetProjectId: projectId/);
+  assert.match(references, /importBenchmarkReferences/);
+  assert.match(references, /createProjectWriteAssertion/);
 });
 
 test("material center supports search, classification, tags, import and removal", async () => {
@@ -41,8 +41,11 @@ test("material center supports search, classification, tags, import and removal"
   assert.match(component, /cover_url/);
   assert.match(libraryRoute, /tags_json/);
   assert.match(libraryRoute, /video_library\.updated/);
-  assert.match(referencesRoute, /video_library\.imported/);
-  assert.match(referencesRoute, /video_library\.removed/);
+  const writes = await read("../lib/library-reference-write.ts");
+  assert.match(referencesRoute, /importBenchmarkReferences/);
+  assert.match(writes, /video_library\.imported/);
+  assert.match(writes, /video_library\.removed/);
+  assert.match(writes, /prepareProjectMemoryEventWithDb/);
   assert.match(component, /封面读取失败/);
   assert.match(libraryRoute, /frame\.is_cover DESC/);
 });

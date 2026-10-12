@@ -1,9 +1,14 @@
 import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess } from "../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../lib/api-response";
 import { readRequestIdentity } from "../../../../lib/request-auth";
-import { upsertProjectVideoReference } from "../../../../lib/video-library";
-import { enqueueBenchmarkVideoAnalysisMemoryEventsWithDb } from "../../../../lib/benchmark-memory-events";
-import type { ProjectAssistantDatabase } from "../../../../lib/project-memory-events";
+import { importBenchmarkReferences, removeBenchmarkReference } from "../../../../lib/library-reference-write";
+import { createProjectWriteAssertion, ProjectWriteAccessChangedError } from "../../../../lib/project-write-access";
+
+function writeError(error: unknown) {
+  return error instanceof ProjectWriteAccessChangedError
+    ? apiError(error.code, "登录状态或项目权限已改变，本次素材操作未保存。请刷新确认权限后重试。", 403)
+    : errorResponse(error);
+}
 
 export async function GET(request: Request) {
   const identity = await readRequestIdentity(request);
@@ -52,32 +57,15 @@ export async function POST(request: Request) {
   try {
     const payload = await request.json() as { organizationId?: string; projectId?: string; entryIds?: unknown };
     const organizationId = payload.organizationId?.trim() ?? ""; const projectId = payload.projectId?.trim() ?? "";
-    const entryIds = Array.isArray(payload.entryIds) ? [...new Set(payload.entryIds.filter((id): id is string => typeof id === "string" && Boolean(id.trim())).map((id) => id.trim()))].slice(0, 100) : [];
+    const entryIds = Array.isArray(payload.entryIds) ? [...new Set(payload.entryIds.filter((id): id is string => typeof id === "string" && Boolean(id.trim())).map((id) => id.trim()))] : [];
     if (!organizationId || !projectId || !entryIds.length) return apiError("LIBRARY_IMPORT_REQUIRED", "请选择要导入的素材和目标项目。", 400);
+    if (entryIds.length > 100) return apiError("LIBRARY_IMPORT_LIMIT", "每批最多导入 100 条素材，请减少选择后再操作。本批未导入。", 400);
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
     if (!access || !canWriteProjectAccess(access)) return apiError("WRITE_ACCESS_REQUIRED", "当前角色不能向项目导入对标素材。", 403);
-    const user = await ensureUser(identity); const db = getD1(); const now = new Date().toISOString();
-    const placeholders = entryIds.map(() => "?").join(",");
-    const existing = await db.prepare(`SELECT id FROM video_library_entries WHERE organization_id = ? AND id IN (${placeholders})`).bind(organizationId, ...entryIds).all<{ id: string }>();
-    const validIds = existing.results.map((row) => row.id);
-    if (!validIds.length) return apiError("LIBRARY_ENTRY_NOT_FOUND", "所选素材不存在或不属于当前公司。", 404);
-    const actions = [];
-    for (const entryId of validIds) {
-      const action = await upsertProjectVideoReference({ db, organizationId, projectId, libraryEntryId: entryId, purpose: "benchmark", userId: user.id, now });
-      actions.push(action);
-      try {
-        await enqueueBenchmarkVideoAnalysisMemoryEventsWithDb(db as unknown as ProjectAssistantDatabase, {
-          organizationId,
-          libraryEntryId: entryId,
-          targetProjectId: projectId,
-        });
-      } catch (eventError) {
-        console.error("benchmark_memory_event_enqueue_failed", { entryId, projectId, message: eventError instanceof Error ? eventError.message : "unknown" });
-      }
-    }
-    await db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'video_library.imported', 'project', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, projectId, JSON.stringify({ entryIds: validIds, actions }), now).run();
-    return Response.json({ imported: validIds.length, entryIds: validIds, actions }, { status: 201 });
-  } catch (error) { return errorResponse(error); }
+    const user = await ensureUser(identity); const db = getD1();
+    const scope = { organizationId, projectId, userId: user.id };
+    return await importBenchmarkReferences(db, scope, entryIds, createProjectWriteAssertion(db, scope, async () => (await readRequestIdentity(request))?.authSubject === identity.authSubject));
+  } catch (error) { return writeError(error); }
 }
 
 export async function DELETE(request: Request) {
@@ -89,10 +77,8 @@ export async function DELETE(request: Request) {
     if (!organizationId || !projectId || !referenceId) return apiError("LIBRARY_REFERENCE_REQUIRED", "缺少对标素材范围。", 400);
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
     if (!access || !canWriteProjectAccess(access)) return apiError("WRITE_ACCESS_REQUIRED", "当前角色不能移出项目对标素材。", 403);
-    const user = await ensureUser(identity); const db = getD1(); const now = new Date().toISOString();
-    const result = await db.prepare("UPDATE project_video_references SET status = 'revoked', revoked_by = ?, revoked_at = ?, revoke_reason = 'manual' WHERE id = ? AND organization_id = ? AND project_id = ? AND purpose = 'benchmark' AND status = 'active'").bind(user.id, now, referenceId, organizationId, projectId).run();
-    if (!result.meta.changes) return apiError("LIBRARY_REFERENCE_NOT_FOUND", "该对标素材已经不在当前项目中。", 404);
-    await db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'video_library.removed', 'project_video_reference', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, referenceId, JSON.stringify({ projectId }), now).run();
-    return Response.json({ removed: referenceId });
-  } catch (error) { return errorResponse(error); }
+    const user = await ensureUser(identity); const db = getD1();
+    const scope = { organizationId, projectId, userId: user.id };
+    return await removeBenchmarkReference(db, scope, referenceId, createProjectWriteAssertion(db, scope, async () => (await readRequestIdentity(request))?.authSubject === identity.authSubject));
+  } catch (error) { return writeError(error); }
 }

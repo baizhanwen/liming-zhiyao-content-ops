@@ -2,6 +2,14 @@ import { canAccessOrganizationVideoLibrary, canManageOrganizationVideoLibrary, e
 import { apiError, errorResponse } from "../../../lib/api-response";
 import { readRequestIdentity } from "../../../lib/request-auth";
 
+// Same company-library policy as canManageOrganizationVideoLibrary, evaluated
+// in the transaction so a revoked membership cannot authorize a stale request.
+const libraryWriteAccess = `EXISTS(SELECT 1 FROM users u JOIN organization_members om ON om.user_id=u.id
+  JOIN organizations o ON o.id=om.organization_id WHERE u.id=? AND o.id=? AND u.status='active'
+  AND o.status='active' AND om.status='active' AND (om.role='admin' OR EXISTS(
+    SELECT 1 FROM project_members pm JOIN projects p ON p.id=pm.project_id AND p.organization_id=pm.organization_id
+    WHERE pm.organization_id=o.id AND pm.user_id=u.id AND pm.status='active' AND p.deleted_at IS NULL AND p.status<>'archived')))`;
+
 const categories = ["published", "benchmark", "industry", "case", "trend", "creative", "other"] as const;
 type Category = typeof categories[number];
 
@@ -84,17 +92,35 @@ export async function PATCH(request: Request) {
     const payload = await request.json() as Record<string, unknown>;
     const organizationId = typeof payload.organizationId === "string" ? payload.organizationId.trim() : "";
     const entryId = typeof payload.entryId === "string" ? payload.entryId.trim() : "";
+    const expectedUpdatedAt = typeof payload.expectedUpdatedAt === "string" ? payload.expectedUpdatedAt : "";
     const category = payload.category;
     const tags = parseTags(payload.tags);
     const notes = typeof payload.notes === "string" ? payload.notes.trim().slice(0, 1000) || null : null;
     if (!organizationId || !entryId) return apiError("LIBRARY_SCOPE_REQUIRED", "缺少公司或素材范围。", 400);
     if (!isCategory(category) || !tags) return apiError("INVALID_LIBRARY_METADATA", "素材分类或标签无效。", 400);
+    if (!expectedUpdatedAt) return apiError("LIBRARY_VERSION_REQUIRED", "请刷新素材列表后再保存分类和标签。", 400);
     const access = await getOrganizationAccess(identity.authSubject, organizationId);
     if (!access || !await canManageOrganizationVideoLibrary(access)) return apiError("WRITE_ACCESS_REQUIRED", "当前角色不能整理公司素材库。", 403);
     const user = await ensureUser(identity); const db = getD1(); const now = new Date().toISOString();
-    const result = await db.prepare("UPDATE video_library_entries SET category = ?, tags_json = ?, notes = ?, updated_by = ?, updated_at = ? WHERE id = ? AND organization_id = ?").bind(category, JSON.stringify(tags), notes, user.id, now, entryId, organizationId).run();
-    if (!result.meta.changes) return apiError("LIBRARY_ENTRY_NOT_FOUND", "素材不存在。", 404);
-    await db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, NULL, ?, 'video_library.updated', 'video_library_entry', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, user.id, entryId, JSON.stringify({ category, tags }), now).run();
-    return Response.json({ entry: { id: entryId, category, tags, notes, updated_at: now } });
+    if ((await readRequestIdentity(request))?.authSubject !== identity.authSubject) return apiError("WRITE_ACCESS_REQUIRED", "登录状态已改变，本次素材修改未保存。请刷新后重试。", 403);
+    const marker = crypto.randomUUID();
+    const result = await db.batch<{ updated_at: string }>([
+      db.prepare(`INSERT INTO audit_logs(id,organization_id,project_id,actor_user_id,action,target_type,target_id,metadata_json,created_at)
+        SELECT ?,?,NULL,?,'video_library.updated','video_library_entry',?,?,? WHERE ${libraryWriteAccess}
+        AND EXISTS(SELECT 1 FROM video_library_entries library JOIN videos v ON v.id=library.source_video_id AND v.organization_id=library.organization_id
+          WHERE library.id=? AND library.organization_id=? AND library.updated_at=? AND v.deleted_at IS NULL)`)
+        .bind(marker, organizationId, user.id, entryId, JSON.stringify({ category, tags }), now, user.id, organizationId, entryId, organizationId, expectedUpdatedAt),
+      db.prepare(`UPDATE video_library_entries SET category=?,tags_json=?,notes=?,updated_by=?,updated_at=CASE WHEN updated_at>=? THEN strftime('%Y-%m-%dT%H:%M:%fZ',julianday(updated_at)+1.0/86400000) ELSE ? END
+        WHERE id=? AND organization_id=? AND EXISTS(SELECT 1 FROM audit_logs WHERE id=?)`)
+        .bind(category, JSON.stringify(tags), notes, user.id, now, now, entryId, organizationId, marker),
+      db.prepare("SELECT updated_at FROM video_library_entries WHERE id=? AND organization_id=?").bind(entryId, organizationId),
+    ]);
+    if (!result[0].meta.changes) {
+      if (!await db.prepare(`SELECT 1 WHERE ${libraryWriteAccess}`).bind(user.id, organizationId).first()) return apiError("WRITE_ACCESS_REQUIRED", "公司或项目权限已改变，本次素材修改未保存。请刷新后重试。", 403);
+      if (await db.prepare(`SELECT 1 FROM video_library_entries library JOIN videos v ON v.id=library.source_video_id AND v.organization_id=library.organization_id
+        WHERE library.id=? AND library.organization_id=? AND v.deleted_at IS NULL`).bind(entryId, organizationId).first()) return apiError("LIBRARY_VERSION_CONFLICT", "其他成员已修改这条素材，本次未覆盖。请先复制当前标签，再刷新核对后保存。", 409);
+      return apiError("LIBRARY_ENTRY_NOT_FOUND", "素材或源视频已删除，请刷新素材列表。", 404);
+    }
+    return Response.json({ entry: { id: entryId, category, tags, notes, updated_at: result[2].results[0]?.updated_at } });
   } catch (error) { return errorResponse(error); }
 }

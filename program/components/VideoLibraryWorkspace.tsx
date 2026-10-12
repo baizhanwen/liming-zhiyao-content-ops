@@ -13,7 +13,7 @@ import { preferredOrganizationId, rememberCurrentScope, scopedFetch } from "../l
 type Organization = { id: string; name: string };
 type Project = { id: string; name: string };
 type LibraryEntry = {
-  id: string; reference_id?: string; video_id: string; category: string; tags: string[]; notes: string | null;
+  id: string; reference_id?: string; video_id: string; category: string; tags: string[]; notes: string | null; updated_at: string;
   platform: string; source_type: string; source_url: string | null; title: string | null; author_name: string | null;
   duration_sec: number | null; status: string; job_status: string | null; job_progress: number | null; current_stage: string | null;
   source_project_name: string; account_name: string | null; cover_url: string | null; reference_count?: number; imported_to_project?: number;
@@ -87,7 +87,7 @@ export function VideoLibraryWorkspace({ mode }: { mode: "benchmark" | "assets" }
     setWorking(true); setError(""); setNotice("");
     const tags = (tagDrafts[entry.id] ?? "").split(/[、,，]/).map((tag) => tag.trim()).filter(Boolean);
     try {
-      const response = await scopedFetch("/api/video-library", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, entryId: entry.id, category: nextCategory, tags, notes: entry.notes }) });
+      const response = await scopedFetch("/api/video-library", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, entryId: entry.id, expectedUpdatedAt: entry.updated_at, category: nextCategory, tags, notes: entry.notes }) });
       if (!response.ok) throw new Error(await readError(response)); setNotice("素材分类与标签已保存。"); await loadEntries(organizationId, projectId, query, category);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "素材整理结果没有保存。"); } finally { setWorking(false); }
   }
@@ -183,7 +183,7 @@ export function VideoLibraryWorkspace({ mode }: { mode: "benchmark" | "assets" }
             {mode === "assets" && <label className="library-select"><input type="checkbox" checked={checked} disabled={Boolean(entry.imported_to_project)} onChange={() => setSelected((current) => current.includes(entry.id) ? current.filter((id) => id !== entry.id) : [...current, entry.id])} /><span>{entry.imported_to_project ? "已导入" : "选择"}</span></label>}
           </div>
           <div className="library-card-body"><div className="library-card-tags"><span>{categoryNames[entry.category] ?? "未分类"}</span><small>{entry.platform === "douyin" ? "抖音" : "本地上传"}</small></div><h3>{entry.title || "待提取视频标题"}</h3><p>{entry.account_name || entry.author_name || "未关联账号"} · 来源：{entry.source_project_name}</p><div className="plain-chips">{entry.tags.length ? entry.tags.map((tag) => <span key={tag}>{tag}</span>) : <span>暂无标签</span>}</div>
-            {mode === "assets" && canManage && <div className="library-edit"><select value={entry.category} aria-label="素材分类" onChange={(event) => saveMetadata(entry, event.target.value)}>{categories.filter(([value]) => value).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><input value={tagDrafts[entry.id] ?? ""} onChange={(event) => setTagDrafts((current) => ({ ...current, [entry.id]: event.target.value }))} placeholder="标签用逗号分隔" aria-label="素材标签" /><button type="button" onClick={() => saveMetadata(entry)} disabled={working}>保存</button></div>}
+            {mode === "assets" && canManage && <div className="library-edit"><select value={entry.category} disabled={working || loading} aria-label="素材分类" onChange={(event) => saveMetadata(entry, event.target.value)}>{categories.filter(([value]) => value).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><input disabled={working || loading} value={tagDrafts[entry.id] ?? ""} onChange={(event) => setTagDrafts((current) => ({ ...current, [entry.id]: event.target.value }))} placeholder="标签用逗号分隔" aria-label="素材标签" /><button type="button" onClick={() => saveMetadata(entry)} disabled={working}>保存</button></div>}
           </div>
           <footer><span>{mode === "assets" ? `已被 ${entry.reference_count ?? 0} 个项目引用` : `来自 ${entry.source_project_name}`}</span><div><Link href={`/analysis/${entry.video_id}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}&libraryEntryId=${encodeURIComponent(entry.id)}`}>查看分析</Link>{mode === "benchmark" && canWrite && <button type="button" disabled={working} onClick={() => removeReference(entry)}>移出项目</button>}</div></footer>
         </article>;
