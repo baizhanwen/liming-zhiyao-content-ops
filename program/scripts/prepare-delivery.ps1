@@ -31,6 +31,17 @@ $plans = @{
 }
 $selectedPlan = $plans[$PlanCode]
 $includeAuthorizedKnowledge = $AuthorizedKnowledge -eq "include"
+$scriptPolicyPath = Join-Path $projectRoot 'resources\delivery\runtime-scripts.json'
+$scriptPolicy = Get-Content -Raw -Encoding UTF8 -LiteralPath $scriptPolicyPath | ConvertFrom-Json
+if ($scriptPolicy.version -ne 1) { throw 'Unsupported runtime script policy.' }
+$approvedScriptNames = @($scriptPolicy.common) + @($scriptPolicy.videoAnalysis)
+if (($approvedScriptNames | Sort-Object -Unique).Count -ne $approvedScriptNames.Count -or
+    @($approvedScriptNames | Where-Object { $_ -cnotmatch '^[a-z0-9][a-z0-9-]*\.(ps1|mjs|py)$' }).Count) { throw 'Invalid or duplicate runtime script policy entry.' }
+$allowedScriptNames = @($scriptPolicy.common)
+if ($selectedPlan.videoAnalysis) { $allowedScriptNames += @($scriptPolicy.videoAnalysis) }
+foreach ($scriptName in $allowedScriptNames) {
+    if (-not (Test-Path -LiteralPath (Join-Path $projectRoot ('scripts\' + $scriptName)) -PathType Leaf)) { throw "Required runtime script is missing: $scriptName" }
+}
 
 $portPath = Join-Path $projectRoot ".local\app.port"
 $appPort = 3000
@@ -51,9 +62,8 @@ $destination = Join-Path $deliveryRoot "$safeName-$timestamp"
 $packageRoot = Join-Path $destination "LimingZhiyao"
 New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
 
-# Delivery packages are assembled from a runtime allowlist. This keeps future
-# developer notes, tests, caches, and internal tooling out of customer ZIPs by
-# default instead of relying on somebody remembering to add a new exclusion.
+# Runtime directories are copied with explicit exclusions; scripts additionally
+# require individual approval so new development tools cannot ship by default.
 $allowedTopLevelDirectories = @(
     "app", "components", "db", "drizzle", "lib", "public", "resources", "scripts",
     "services", "tools", "worker"
@@ -71,6 +81,7 @@ $excludedDirectories = @(
 $excludedFiles = @(
     "db\schema.ts",
     "resources\authorized\dbskill\SOURCE.md", "resources\delivery\DELIVERY-GUIDE.txt",
+    "resources\delivery\runtime-scripts.json",
     "scripts\verify-delivery.mjs", "scripts\test-lan-runtime.mjs", "scripts\lan-browser-checks.mjs", "scripts\lan-worker-check.py",
     "scripts\test-lan-identity-runtime.mjs", "scripts\test-runtime-resources.ps1",
     "scripts\test-model-budget-runtime.mjs",
@@ -131,6 +142,7 @@ try {
         } elseif ($allowedTopLevelDirectories -notcontains $topLevelName) {
             return
         }
+        if ($topLevelName -eq 'scripts' -and ($segments.Length -ne 2 -or $allowedScriptNames -cnotcontains $segments[1])) { return }
         if ($excludedFiles -contains $relative -or $relative -eq "scripts\prepare-delivery.ps1" -or $relative -eq "scripts\prune-delivery-dependencies.mjs") { return }
         if ($relative -match '(^|\\)(__pycache__|\.pytest_cache)(\\|$)' -or $relative.EndsWith('.pyc', [StringComparison]::OrdinalIgnoreCase)) { return }
         foreach ($excluded in $excludedDirectories) {
@@ -198,6 +210,7 @@ export function deliveryFeatureEnabled(feature: DeliveryFeature) {
         Replace-PackageText "app\api\dashboard\route.ts" '(?m)^import \{ ACTIVE_ANALYSIS_STATUSES_SQL \} from "\.\./\.\./\.\./lib/analysis-jobs";\r?\n' "const ACTIVE_ANALYSIS_STATUSES_SQL = `"NULL`";`r`n"
         Replace-PackageText "scripts\open-local.ps1" '(?m)^\s*& "\$PSScriptRoot\\start-analyzer-background\.ps1" -BaseUrl \$Url\r?\n' ''
         Replace-PackageText "scripts\open-lan.ps1" '(?m)^\s*& "\$PSScriptRoot\\start-analyzer-background\.ps1" -BaseUrl \$HealthUrl\r?\n' ''
+        Replace-PackageText "scripts\open-web.ps1" '(?m)^\s*& "\$PSScriptRoot\\start-analyzer-background\.ps1" -BaseUrl \$HealthUrl\r?\n' ''
         Replace-PackageText "start-local.bat" 'The browser and video analyzer will start automatically when ready\.' 'The browser will open automatically when ready.'
         Replace-PackageText "scripts\start-lan.ps1" 'The browser and video analyzer will start automatically\.' 'The browser will open automatically.'
         Replace-PackageText "setup-local.bat" ' Video analysis is installed separately with tools\\setup-analyzer\.bat\.' ''

@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { DatabaseSync } from "node:sqlite";
 import { verifyDeliveryDocumentation } from "./delivery-documentation.mjs";
+import { verifyDeliveryScripts } from "./delivery-script-policy.mjs";
 
 // Validate the final, pruned customer files in a separate installation. Never
 // load the development .dev.vars or touch the customer's persistent storage.
@@ -87,6 +88,8 @@ try {
     assert.match(variables, /^DELIVERY_MODE=1$/m); assert.match(variables, /^LOCAL_DEV_AUTH=0$/m); assert.match(variables, /^TRUST_FORWARDED_IDENTITY=0$/m);
     assert.ok(!/^[A-Z_]+API_KEY[ \t]*=[ \t]*\S/m.test(variables), "Delivery contains a configured API key");
     const features = manifest.license.features;
+    verifyDeliveryScripts(Object.keys(initialHashes), features);
+    if (!features.videoAnalysis) assert.doesNotMatch(readFileSync(path.join(packageRoot, "scripts/open-web.ps1"), "utf8"), /start-analyzer-background\.ps1/, "Starter opener refers to a removed video service");
     for (const [enabled, folder] of [[features.videoAnalysis, "app/api/videos"], [features.wechatImages, "app/api/wechat-images"], [features.insights, "app/api/reports"]]) assert.equal(existsSync(path.join(packageRoot, folder)), enabled, folder);
     for (const file of ["scripts/test-ecommerce-browser.mjs", "scripts/test-ecommerce-model.mjs", "scripts/ecommerce-test-model.mjs"]) assert.equal(existsSync(path.join(packageRoot, file)), false, `Test helper in delivery: ${file}`);
     if (!manifest.authorizedKnowledge.included) {
