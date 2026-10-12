@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createServer } from "vite";
 import react from "@vitejs/plugin-react";
-import { zipSync, strToU8 } from "fflate";
+import { zipSync, strToU8, unzipSync } from "fflate";
 
 // Real browser/component, synthetic intercepted API only. No business state.
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -16,13 +16,14 @@ await writeFile(path.join(fixtureRoot, "link.tsx"), 'import React from "react";e
 const { chromium } = await import(pathToFileURL(process.env.LAN_TEST_PLAYWRIGHT_MODULE || path.join(root, ".local/ecommerce-browser/node_modules/playwright/index.mjs")).href);
 const server = await createServer({ configFile: false, root: fixtureRoot, plugins: [react()], resolve: { alias: { "next/link": path.join(fixtureRoot, "link.tsx") } }, server: { host: "127.0.0.1", port: 0, fs: { allow: [root] } } });
 let browser, releaseSave;
-const checks = [], requests = [];
+const checks = [], requests = [], transferAttempts = [];
 const check = async (name, action) => { await action(); checks.push(name); console.log(`PASS ${name}`); };
 try {
   await server.listen();
   browser = await chromium.launch({ headless: true, executablePath: "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe" });
   const page = await browser.newPage(); const errors = []; page.on("pageerror", error => errors.push(error.message));
   let canManage = true, conflict = true, transfers = 0, partialReport = false, writableDetail = true, historicalCompleted = false;
+  let successfulTransfer = false, assetDownloads = 0, receivedMedia = null, exportManifest = null;
   let entry = { id: "entry", video_id: "video", category: "other", tags: ["existing"], notes: null, updated_at: "2026-10-12T01:00:00.000Z", title: "合成素材", platform: "douyin", source_type: "url", status: "ready", source_project_name: "合成项目", reference_count: 0 };
   await page.route("**/api/**", async route => {
     const url = new URL(route.request().url()), method = route.request().method(); let body, status = 200;
@@ -42,7 +43,15 @@ try {
       if (conflict) { await new Promise(resolve => { releaseSave = resolve; }); status = 409; body = { error: { code: "LIBRARY_VERSION_CONFLICT", message: "其他成员已修改这条素材，本次未覆盖。请先复制当前标签，再刷新核对后保存。" } }; }
       else { assert.equal(input.expectedUpdatedAt, entry.updated_at); entry = { ...entry, tags: input.tags, category: input.category, updated_at: "2026-10-12T01:00:00.002Z" }; body = { entry }; }
     } else if (url.pathname === "/api/video-library/references" && method === "POST") { status = 404; body = { error: { code: "LIBRARY_ENTRY_NOT_FOUND", message: "所选素材已删除，本批未导入。请刷新后重新选择。" } }; }
+    else if (url.pathname === "/api/video-library/transfer" && method === "GET") body = exportManifest;
+    else if (url.pathname === "/api/video-library/entry/assets/asset") { assetDownloads += 1;await route.fulfill({status:200,body:Buffer.from([0,255,42]),contentType:"application/octet-stream"});return; }
     else if (url.pathname === "/api/video-library/transfer" && method === "POST") {
+      transferAttempts.push({bytes:route.request().postDataBuffer()?.length ?? 0});
+      if (successfulTransfer) {
+        transfers += 1;const form=await new Request("http://fixture",{method:"POST",headers:{"content-type":route.request().headers()["content-type"]},body:route.request().postDataBuffer()}).formData();
+        receivedMedia=await Promise.all(form.getAll("media").map(async file=>({name:file.name,bytes:Array.from(new Uint8Array(await file.arrayBuffer()))})));
+        await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({imported:1,skipped:0})});return;
+      }
       transfers += 1;
       status = transfers === 1 ? 500 : 503;
       body = { error: { code: transfers === 1 ? "INTERNAL_ERROR" : "MATERIAL_IMPORT_STATUS_UNKNOWN", message: transfers === 1 ? "合成第二条保存失败" : "素材保存结果暂时无法核对，文件已保留。请恢复数据服务并刷新核对后再决定重试。" }, progress: { imported: transfers === 1 ? 1 : 0, skipped: 0, failedEntry: transfers === 1 ? 2 : 1, remaining: transfers === 1 ? 1 : 2 } };
@@ -92,6 +101,38 @@ try {
     await page.getByRole("alert").filter({ hasText: "文件已保留" }).waitFor();
     assert.match(await page.getByRole("status").innerText(), /本次已导入 0 条/); assert.equal(transfers, 2); assert.deepEqual(errors, []);
   });
+  function forgedSize(bytes,name,size) {
+    const copy=bytes.slice(),view=new DataView(copy.buffer);for(let i=0;i<copy.length-46;i++){
+      const signature=view.getUint32(i,true);if(![0x02014b50,0x04034b50].includes(signature))continue;
+      const length=view.getUint16(i+(signature===0x02014b50?28:26),true),offset=signature===0x02014b50?46:30;
+      if(new TextDecoder().decode(copy.subarray(i+offset,i+offset+length))===name)view.setUint32(i+(signature===0x02014b50?24:22),size,true);
+    }return copy;
+  }
+  const archiveManifest={format:"liming-video-library-package",version:1,entries:[{assets:[{blobName:"a"}]}]};
+  const archive=zipSync({"manifest.json":strToU8(JSON.stringify(archiveManifest)),"media/a":new Uint8Array(2*1024*1024)});
+  for(const [name,bytes,message] of [
+    ["oversized-manifest-refused-before-decompression",forgedSize(importZip,"manifest.json",20000001),"清单超过"],
+    ["oversized-declared-media-refused-without-output-allocation",forgedSize(archive,"media/a",750*1024*1024+1),"媒体超过 750 MiB"],
+    ["forged-small-output-size-refused-before-upload",forgedSize(archive,"media/a",1),"实际展开量超过声明大小"],
+    ["invalid-manifest-count-refused-without-upload",zipSync({"manifest.json":strToU8(JSON.stringify({format:"liming-video-library-package",version:1,entries:Array.from({length:101},()=>({assets:[]}))}))}),"1 到 100"],
+    ["unlisted-media-refused-without-upload",zipSync({"manifest.json":strToU8(JSON.stringify({format:"liming-video-library-package",version:1,entries:[{assets:[]}]})),"media/unlisted":new Uint8Array(1)}),"清单以外"],
+  ]) await check(name,async()=>{
+    await page.locator('input[type="file"]').setInputFiles({name:"synthetic-budget.zip",mimeType:"application/zip",buffer:Buffer.from(bytes)});
+    await page.getByRole("alert").filter({hasText:message}).waitFor({timeout:2000});assert.equal(transfers,2);assert.equal(await page.getByRole("status").count(),0);assert.deepEqual(errors,[]);
+  });
+  await check("bounded-valid-archive-uploads-exact-binary-once",async()=>{
+    successfulTransfer=true;const valid=zipSync({"manifest.json":strToU8(JSON.stringify(archiveManifest)),"media/a":Uint8Array.from([0,255,42])});
+    await page.locator('input[type="file"]').setInputFiles({name:"synthetic-valid.zip",mimeType:"application/zip",buffer:Buffer.from(valid)});
+    await page.getByRole("status").filter({hasText:"已导入 1 条素材"}).waitFor();assert.equal(transfers,3);assert.deepEqual(receivedMedia,[{name:"a",bytes:[0,255,42]}]);successfulTransfer=false;
+  });
+  await check("oversized-export-selection-stops-before-media-download",async()=>{
+    exportManifest={...archiveManifest,entries:[{assets:[{blobName:"a",sizeBytes:750*1024*1024+1,downloadUrl:"/api/video-library/entry/assets/asset",filename:"synthetic.bin"}]}]};
+    await page.getByRole("button",{name:"导出全部",exact:true}).click();await page.getByRole("alert").filter({hasText:"750 MiB"}).waitFor();assert.equal(assetDownloads,0);
+  });
+  await check("bounded-export-downloads-a-portable-archive",async()=>{
+    exportManifest={...archiveManifest,entries:[{assets:[{blobName:"a",sizeBytes:3,downloadUrl:"/api/video-library/entry/assets/asset",filename:"synthetic.bin"}]}]};
+    const downloaded=page.waitForEvent("download");await page.getByRole("button",{name:"导出全部",exact:true}).click();const download=await downloaded;assert.match(download.suggestedFilename(),/素材中心.*\.zip$/);assert.equal(assetDownloads,1);const exported=unzipSync(await readFile(await download.path()));assert.deepEqual(Array.from(exported["media/a"]),[0,255,42]);assert.equal(JSON.parse(new TextDecoder().decode(exported["manifest.json"])).format,"liming-video-library-package");await page.getByRole("status").filter({hasText:"已导出 1 条素材"}).waitFor();assert.deepEqual(errors,[]);
+  });
   await check("material-without-report-shows-unanalysed-and-owned-source-link", async () => {
     entry={...entry,analysis_id:null,job_status:null,current_stage:null,source_project_id:"project"};
     await page.goto(server.resolvedUrls.local[0]); await page.locator(".library-cover em").filter({hasText:"尚未分析"}).waitFor();
@@ -120,6 +161,6 @@ try {
 } catch (error) { process.exitCode = 1; console.error(error.stack); }
 finally {
   releaseSave?.(); if (browser) await browser.close(); await server.close();
-  await writeFile(path.join(fixtureRoot, "report.json"), JSON.stringify({ passed: !process.exitCode, checks, submittedVersions: requests.map(r => r.expectedUpdatedAt), synthetic: true, boundary: "Actual Edge and component; intercepted APIs, no real database, accounts or model calls" }, null, 2));
+  await writeFile(path.join(fixtureRoot, "report.json"), JSON.stringify({ passed: !process.exitCode, checks, transferAttempts, submittedVersions: requests.map(r => r.expectedUpdatedAt), synthetic: true, boundary: "Actual Edge and component; intercepted APIs, no real database, accounts or model calls" }, null, 2));
   console.log(`Evidence: ${fixtureRoot}`);
 }

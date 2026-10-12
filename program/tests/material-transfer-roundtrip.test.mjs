@@ -96,3 +96,26 @@ test('old v1 package without cover extensions remains importable',async t=>{
   const f=await fixture(t),manifest=await (await f.exportEntries([f.entry])).json();for(const asset of manifest.entries[0].assets){delete asset.isCover;delete asset.qualityScore;}
   assert.equal((await f.submit(manifest)).status,200);const frame=f.sqlite.prepare("SELECT * FROM media_assets WHERE video_id=? AND kind='keyframe'").get(f.imported().id);assert.equal(frame.is_cover,0);assert.equal(frame.quality_score,null);
 });
+
+
+test('export refuses media aggregate above 750 MiB before publishing download links',async t=>{
+  const f=await fixture(t);f.sqlite.prepare('UPDATE media_assets SET size_bytes=? WHERE id=?').run(750*1024*1024,f.asset);
+  const before=f.sqlite.prepare('SELECT COUNT(*) AS n FROM audit_logs').get().n,response=await f.exportEntries([f.entry]);assert.equal(response.status,413);assert.equal((await response.json()).error.code,'MATERIAL_PACKAGE_TOO_LARGE');assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM audit_logs').get().n,before);
+});
+test('export accepts exactly 750 MiB media metadata without downloading or allocating the media',async t=>{
+  const f=await fixture(t);f.sqlite.prepare('UPDATE media_assets SET size_bytes=? WHERE id=?').run(750*1024*1024-f.objects.get('synthetic/frame').length,f.asset);assert.equal((await f.exportEntries([f.entry])).status,200);
+});
+test('UTF-8 report aggregate over 20 million bytes refuses before reading report bodies',async t=>{
+  const f=await fixture(t),report=JSON.stringify({payload:'汉'.repeat(1500000)});for(let i=0;i<5;i++)f.seed('video_analyses',{video_id:f.video,schema_version:'analysis.v1',report_json:report,created_at:`2024-02-0${i+1}T00:00:00.000Z`});
+  let readBodies=false;const prepare=f.db.prepare;f.db.prepare=sql=>{if(sql.includes('SELECT video_id, schema_version, report_json'))readBodies=true;return prepare(sql);};
+  const response=await f.exportEntries([f.entry]);assert.equal(response.status,413);assert.equal((await response.json()).error.code,'MATERIAL_MANIFEST_TOO_LARGE');assert.equal(readBodies,false);
+});
+test('serialized manifest escaping is included in the UTF-8 byte cap',async t=>{
+  const f=await fixture(t),report=JSON.stringify({payload:'\\'.repeat(650000)});for(let i=0;i<8;i++)f.seed('video_analyses',{video_id:f.video,schema_version:'analysis.v1',report_json:report});
+  const response=await f.exportEntries([f.entry]);assert.equal(response.status,413);assert.equal((await response.json()).error.code,'MATERIAL_MANIFEST_TOO_LARGE');
+});
+test('over-limit report count is refused before loading any report body',async t=>{
+  const f=await fixture(t);for(let i=0;i<19;i++)f.seed('video_analyses',{video_id:f.video,schema_version:'analysis.v1',report_json:'{}'});
+  let readBodies=false;const prepare=f.db.prepare;f.db.prepare=sql=>{if(sql.includes('SELECT video_id, schema_version, report_json'))readBodies=true;return prepare(sql);};
+  assert.equal((await f.exportEntries([f.entry])).status,400);assert.equal(readBodies,false);
+});

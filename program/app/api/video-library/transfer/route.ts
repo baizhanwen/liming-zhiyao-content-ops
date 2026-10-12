@@ -1,3 +1,4 @@
+import { MATERIAL_MAX_ENTRIES as MAX_ENTRIES, MATERIAL_MAX_ASSETS_PER_ENTRY as MAX_ASSETS_PER_ENTRY, MATERIAL_MAX_MEDIA_BYTES as MAX_IMPORT_BYTES, MATERIAL_MAX_MANIFEST_BYTES } from "../../../../lib/material-transfer-limits";
 import { canManageOrganizationVideoLibrary, canWriteProjectAccess, ensureUser, getD1, getMediaBucket, getOrganizationAccess, getProjectAccess, sha256Hex } from "../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../lib/api-response";
 import { readRequestIdentity } from "../../../../lib/request-auth";
@@ -7,9 +8,6 @@ import { readBoundedFormData, RequestBodyError } from "../../../../lib/bounded-r
 import { importedAnalysisState } from "../../../../lib/material-analysis-state";
 
 const FORMAT = "liming-video-library-package";
-const MAX_ENTRIES = 100;
-const MAX_ASSETS_PER_ENTRY = 120;
-const MAX_IMPORT_BYTES = 750 * 1024 * 1024;
 
 type Row = Record<string, unknown>;
 type ManifestAsset = { blobName: string; id: string; kind: string; filename: string; contentType: string; sizeBytes: number; sha256: string; isCover?: number; qualityScore?: number | null; downloadUrl?: string };
@@ -83,6 +81,22 @@ export async function GET(request: Request) {
     if (requestedIds.length && entries.results.length !== requestedIds.length) return apiError("LIBRARY_EXPORT_CHANGED", "所选素材已删除、不存在或不属于当前公司，本次未导出。请刷新后重新选择。", 409);
     if (!entries.results.length) return apiError("LIBRARY_EMPTY", "没有可导出的素材。", 404);
     const videoIds = entries.results.map((row) => String(row.video_id)); const videoFilter = "SELECT value FROM json_each(?)";
+    // Aggregate before loading report bodies or handing download links to a
+    // browser: oversized selections must be split, never silently truncated.
+    const budgetRows = await db.prepare(`
+      SELECT 'assets' AS kind, video_id, COUNT(*) AS n, SUM(MAX(size_bytes,0)) AS bytes FROM media_assets WHERE organization_id=? AND video_id IN (${videoFilter}) AND status='active' GROUP BY video_id
+      UNION ALL SELECT 'transcripts', video_id, COUNT(*), SUM(length(CAST(COALESCE(full_text,'') AS BLOB))+length(CAST(COALESCE(segments_json,'') AS BLOB))) FROM video_transcripts WHERE organization_id=? AND video_id IN (${videoFilter}) GROUP BY video_id
+      UNION ALL SELECT 'analyses', video_id, COUNT(*), SUM(length(CAST(COALESCE(report_json,'') AS BLOB))) FROM video_analyses WHERE organization_id=? AND video_id IN (${videoFilter}) GROUP BY video_id
+      UNION ALL SELECT 'metrics', video_id, COUNT(*), 0 FROM video_metric_snapshots WHERE organization_id=? AND video_id IN (${videoFilter}) GROUP BY video_id
+    `).bind(...Array.from({length:4},()=>[organizationId,JSON.stringify(videoIds)]).flat()).all<{kind:string;video_id:string;n:number;bytes:number}>();
+    let mediaBytes = 0, textBytes = 0;
+    for (const row of budgetRows.results) {
+      const limit = row.kind === "assets" ? MAX_ASSETS_PER_ENTRY : row.kind === "metrics" ? 100 : 20;
+      if (row.n > limit) throw new RequestBodyError("MATERIAL_RECORD_LIMIT", "所选素材的子记录超过迁移格式上限，未导出；请分批整理或使用完整备份。", 400);
+      if (row.kind === "assets") mediaBytes += row.bytes; else textBytes += row.bytes;
+    }
+    if (mediaBytes > MAX_IMPORT_BYTES) throw new RequestBodyError("MATERIAL_PACKAGE_TOO_LARGE", "所选媒体合计超过 750 MiB，未导出；请减少选择后分批迁移。", 413);
+    if (textBytes > MATERIAL_MAX_MANIFEST_BYTES) throw new RequestBodyError("MATERIAL_MANIFEST_TOO_LARGE", "所选清单超过 20000000 字节，未导出；请减少选择或使用完整备份。", 413);
     const [assets, transcripts, analyses, metrics] = await Promise.all([
       db.prepare(`SELECT id, video_id, kind, filename, content_type, size_bytes, sha256, is_cover, quality_score FROM media_assets WHERE organization_id = ? AND video_id IN (${videoFilter}) AND status = 'active' ORDER BY created_at`).bind(organizationId, JSON.stringify(videoIds)).all<Row>(),
       db.prepare(`SELECT video_id, version, language, source, full_text, segments_json, confidence, created_at, updated_at FROM video_transcripts WHERE organization_id = ? AND video_id IN (${videoFilter}) ORDER BY version`).bind(organizationId, JSON.stringify(videoIds)).all<Row>(),
@@ -107,7 +121,9 @@ export async function GET(request: Request) {
       }),
     };
     validateManifest(payload);
-    return Response.json(payload, { headers: { "cache-control": "private, no-store" } });
+    const serialized = JSON.stringify(payload);
+    if (new TextEncoder().encode(serialized).byteLength > MATERIAL_MAX_MANIFEST_BYTES) throw new RequestBodyError("MATERIAL_MANIFEST_TOO_LARGE", "所选清单超过 20000000 字节，未导出；请减少选择或使用完整备份。", 413);
+    return new Response(serialized, { headers: { "content-type": "application/json", "cache-control": "private, no-store" } });
   } catch (error) { return error instanceof RequestBodyError ? apiError(error.code, error.message, error.status) : errorResponse(error); }
 }
 
@@ -169,14 +185,15 @@ export async function POST(request: Request) {
   };
   try {
     if (!await readRequestIdentity(request)) return apiError("AUTH_REQUIRED", "请先登录后再迁移素材中心。", 401);
-    const form = await readBoundedFormData(request, MAX_IMPORT_BYTES + 20_000_000 + 1024 * 1024, "迁移请求过大，请分批导入；媒体合计最多 750 MiB，清单最多 20000000 字符。"); const organizationId = cleanText(form.get("organizationId"), 100, true)?.trim(); const projectId = cleanText(form.get("projectId"), 100, true)?.trim(); const manifestText = cleanText(form.get("manifest"), 20_000_000, true);
+    const form = await readBoundedFormData(request, MAX_IMPORT_BYTES + MATERIAL_MAX_MANIFEST_BYTES + 1024 * 1024, "迁移请求过大，请分批导入；媒体合计最多 750 MiB，清单最多 20000000 字节。"); const organizationId = cleanText(form.get("organizationId"), 100, true)?.trim(); const projectId = cleanText(form.get("projectId"), 100, true)?.trim(); const manifestText = cleanText(form.get("manifest"), 20_000_000, true);
     if (!organizationId || !projectId || !manifestText) return apiError("IMPORT_SCOPE_REQUIRED", "缺少公司、目标项目或素材包清单。", 400);
     const authorization = await requireLibraryManager(request, organizationId); if (authorization.response) return authorization.response;
     const projectAccess = await getProjectAccess(authorization.identity!.authSubject, organizationId, projectId);
     if (!projectAccess || !canWriteProjectAccess(projectAccess)) return apiError("PROJECT_WRITE_REQUIRED", "你不能把素材导入这个目标项目。", 403);
+    if (new TextEncoder().encode(manifestText).byteLength > MATERIAL_MAX_MANIFEST_BYTES) return apiError("MATERIAL_MANIFEST_TOO_LARGE", "迁移清单最多 20000000 字节，请分批迁移。", 413);
     const entries = validateManifest(JSON.parse(manifestText)); entryCount = entries.length; const files = new Map<string, File>(); let totalBytes = 0;
     for (const value of form.getAll("media")) if (value instanceof File) { totalBytes += value.size; files.set(value.name, value); }
-    if (totalBytes > MAX_IMPORT_BYTES) return apiError("MATERIAL_PACKAGE_TOO_LARGE", "单次导入包解压后不能超过 750 MB，请分批迁移。", 413);
+    if (totalBytes > MAX_IMPORT_BYTES) return apiError("MATERIAL_PACKAGE_TOO_LARGE", "单次导入包解压后不能超过 750 MiB，请分批迁移。", 413);
     const user = await ensureUser(authorization.identity!); const db = getD1(); const bucket = getMediaBucket();
     const scope = { organizationId, projectId, userId: user.id };
     const assertAccess = createProjectWriteAssertion(db, scope, async () => (await readRequestIdentity(request))?.authSubject === authorization.identity!.authSubject);

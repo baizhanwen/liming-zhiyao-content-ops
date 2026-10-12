@@ -38,7 +38,7 @@ test("material center exports and imports portable archives with media integrity
   assert.match(route, /getMediaBucket/);
   assert.match(route, /video_library\.imported/);
   assert.match(workspace, /zipSync/);
-  assert.match(workspace, /unzipSync/);
+  assert.match(workspace, /readMaterialArchive/);
   assert.match(workspace, /导入迁移包/);
   assert.match(workspace, /导出所选/);
   assert.equal(JSON.parse(pkg).dependencies.fflate, "^0.7.4");

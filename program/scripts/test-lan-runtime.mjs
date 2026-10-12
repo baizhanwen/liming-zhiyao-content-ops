@@ -389,6 +389,26 @@ try {
     assert.equal(await count("SELECT COUNT(*) AS n FROM analysis_model_calls")+await count("SELECT COUNT(*) AS n FROM model_calls"),beforeModels);
     writeFileSync(path.join(runDir,"material-analysis-readiness.json"),JSON.stringify({passed:true,synthetic:true,imported:3,unanalysedJobsBeforeAction:0,partialPreserved:true,retryImportStatus:409,sharedCanWrite:false,foreignActorStatus:403,quotaDeniedStatus:429,explicitAnalysisStatus:201,recordedModelCalls:0,boundary:"Actual local HTTP/D1/R2; opaque synthetic files and report metadata, no real processor or model invocation"},null,2));
   });
+  await scenario("material export media budget and record preflight: actual HTTP/D1",async()=>{
+    const user=users[0],row=await db.prepare("SELECT library.id AS entry_id, v.media_asset_id AS asset_id, a.size_bytes FROM video_library_entries library JOIN videos v ON v.id=library.source_video_id JOIN media_assets a ON a.id=v.media_asset_id WHERE v.id=? AND v.organization_id=?").bind(uploadFixture.videoId,user.org).first();assert.ok(row);
+    const route=`/api/video-library/transfer?organizationId=${user.org}&entryIds=${row.entry_id}`,temporary=[];
+    try {
+      await db.prepare("UPDATE media_assets SET size_bytes=? WHERE id=?").bind(750*1024*1024+1,row.asset_id).run();
+      const over=await http(route,{user});expect(over,413);assert.equal(over.data.error.code,"MATERIAL_PACKAGE_TOO_LARGE");
+      await db.prepare("UPDATE media_assets SET size_bytes=? WHERE id=?").bind(750*1024*1024,row.asset_id).run();expect(await http(route,{user}),200);
+      await db.prepare("UPDATE media_assets SET size_bytes=? WHERE id=?").bind(row.size_bytes,row.asset_id).run();
+      for(let i=0;i<21;i++){
+        const id=crypto.randomUUID();temporary.push(id);await db.prepare("INSERT INTO video_analyses(id,organization_id,project_id,video_id,schema_version,report_json,created_by,created_at,updated_at) VALUES(?,?,?,?, 'analysis.v1','{}',?,?,?)").bind(id,user.org,user.project,uploadFixture.videoId,user.id,new Date().toISOString(),new Date().toISOString()).run();
+      }
+      const records=await http(route,{user});expect(records,400);assert.equal(records.data.error.code,"MATERIAL_RECORD_LIMIT");
+    }finally{
+      await db.prepare("UPDATE media_assets SET size_bytes=? WHERE id=?").bind(row.size_bytes,row.asset_id).run();
+      if(temporary.length)await db.prepare("DELETE FROM video_analyses WHERE id IN (SELECT value FROM json_each(?))").bind(JSON.stringify(temporary)).run();
+    }
+    expect(await http(route,{user}),200);
+    writeFileSync(path.join(runDir,"material-export-budget.json"),JSON.stringify({passed:true,synthetic:true,oversizeStatus:413,exactBoundaryStatus:200,recordsStatus:400,restoredStatus:200,mediaAllocation:false,boundary:"Actual compiled HTTP/D1, synthetic size metadata; no 750 MiB media allocation, real codec or field capacity measurement"},null,2));
+  });
+
   await scenario("analysis retry/cancel atomic audit and event failures", async () => {
     const user=users[0],created=expect(await submit(user),202),jobId=created.job.id;
     const snapshot=async()=>Object.fromEntries(await Promise.all(["analysis_jobs","analysis_job_events","audit_logs"].map(async table=>{

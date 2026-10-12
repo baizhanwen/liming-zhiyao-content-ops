@@ -7,7 +7,9 @@ import { readApiError as readError } from "../lib/client-format";
 import Link from "next/link";
 import { materialCardState } from "../lib/material-analysis-state";
 import { ChangeEvent, FormEvent, useCallback, useEffect, useState } from "react";
-import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
+import { readMaterialArchive, readMaterialResponse, materialManifestFiles } from "../lib/material-archive";
+import { MATERIAL_MAX_ARCHIVE_BYTES, MATERIAL_MAX_MANIFEST_BYTES, MATERIAL_MAX_MEDIA_BYTES } from "../lib/material-transfer-limits";
+import { strFromU8, strToU8, zipSync } from "fflate";
 import { Download, FolderInput, Upload } from "lucide-react";
 import { preferredOrganizationId, rememberCurrentScope, scopedFetch } from "../lib/client-scope";
 
@@ -104,13 +106,19 @@ export function VideoLibraryWorkspace({ mode }: { mode: "benchmark" | "assets" }
     try {
       const params = new URLSearchParams({ organizationId }); if (selected.length) params.set("entryIds", selected.join(","));
       const response = await scopedFetch(`/api/video-library/transfer?${params}`); if (!response.ok) throw new Error(await readError(response));
-      const manifest = await response.json() as { entries: Array<{ assets: Array<{ blobName: string; downloadUrl: string; filename: string }> }> };
+      const manifestBytes = await readMaterialResponse(response, MATERIAL_MAX_MANIFEST_BYTES, "导出清单超过 20000000 字节，请减少选择或使用完整备份。");
+      const manifest = JSON.parse(strFromU8(manifestBytes)) as { entries: Array<{ assets: Array<{ blobName: string; downloadUrl: string; filename: string; sizeBytes: number }> }> };
+      materialManifestFiles(manifest);
+      let totalBytes = 0;
+      const declaredBytes = manifest.entries.flatMap(entry => entry.assets).reduce((total, asset) => total + asset.sizeBytes, 0);
+      if (!Number.isSafeInteger(declaredBytes) || declaredBytes < 0 || declaredBytes > MATERIAL_MAX_MEDIA_BYTES) throw new Error("所选媒体超过 750 MiB 或大小无效，请减少选择后分批导出。");
       const files: Record<string, Uint8Array> = { "manifest.json": strToU8(JSON.stringify(manifest)) };
       for (const entry of manifest.entries) for (const asset of entry.assets) {
         const assetResponse = await scopedFetch(asset.downloadUrl); if (!assetResponse.ok) throw new Error(`下载素材文件“${asset.filename}”失败。`);
-        files[`media/${asset.blobName}`] = new Uint8Array(await assetResponse.arrayBuffer());
+        const bytes = await readMaterialResponse(assetResponse, MATERIAL_MAX_MEDIA_BYTES - totalBytes, "所选媒体实际大小超过 750 MiB，未生成迁移包；请减少选择。");
+        totalBytes += bytes.length; files[`media/${asset.blobName}`] = bytes;
       }
-      const archive = zipSync(files, { level: 0 }); downloadBlob(new Blob([ownedBuffer(archive)], { type: "application/zip" }), `利明智耀素材中心-${new Date().toISOString().slice(0, 10)}.zip`);
+      const archive = zipSync(files, { level: 0 }); if (archive.length > MATERIAL_MAX_ARCHIVE_BYTES) throw new Error("迁移 ZIP 过大，请减少选择后分批导出。"); downloadBlob(new Blob([ownedBuffer(archive)], { type: "application/zip" }), `利明智耀素材中心-${new Date().toISOString().slice(0, 10)}.zip`);
       setNotice(`已导出 ${manifest.entries.length} 条素材及其媒体文件。`);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "素材迁移包导出失败。"); }
     finally { setTransferring(false); }
@@ -120,12 +128,11 @@ export function VideoLibraryWorkspace({ mode }: { mode: "benchmark" | "assets" }
     const file = event.target.files?.[0]; event.target.value = ""; if (!file || !organizationId || !projectId || !canManage) return;
     setTransferring(true); setError(""); setNotice("");
     try {
-      const archive = unzipSync(new Uint8Array(await file.arrayBuffer())); const manifestBytes = archive["manifest.json"]; if (!manifestBytes) throw new Error("迁移包缺少 manifest.json。");
-      const manifest = JSON.parse(strFromU8(manifestBytes)) as { entries?: Array<{ assets?: Array<{ blobName?: string }> }> }; if (!Array.isArray(manifest.entries)) throw new Error("迁移包清单格式不正确。");
+      const { manifest, files } = await readMaterialArchive(file);
       const form = new FormData(); form.set("organizationId", organizationId); form.set("projectId", projectId); form.set("manifest", JSON.stringify(manifest));
+      const appended = new Set<string>();
       for (const entry of manifest.entries) for (const asset of entry.assets || []) {
-        if (!asset.blobName) throw new Error("迁移包含有未命名的媒体文件。"); const bytes = archive[`media/${asset.blobName}`]; if (!bytes) throw new Error(`迁移包缺少媒体文件 ${asset.blobName}。`);
-        form.append("media", new Blob([ownedBuffer(bytes)]), asset.blobName);
+        if (!appended.has(asset.blobName)) { form.append("media", files.get(`media/${asset.blobName}`)!, asset.blobName); appended.add(asset.blobName); }
       }
       const response = await scopedFetch("/api/video-library/transfer", { method: "POST", body: form });
       if (!response.ok) {
