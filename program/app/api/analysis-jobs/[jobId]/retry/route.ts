@@ -1,3 +1,5 @@
+import { executeAnalysisJobAction, AnalysisJobActionStatusUnknownError } from "../../../../../lib/analysis-job-action";
+import { createProjectWriteAssertion, ProjectWriteAccessChangedError } from "../../../../../lib/project-write-access";
 import { ACTIVE_ANALYSIS_STATUSES_SQL } from "../../../../../lib/analysis-jobs";
 import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess } from "../../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../../lib/api-response";
@@ -5,7 +7,7 @@ import { resetSegmentForRetry, type SegmentRetryTarget } from "../../../../../li
 import { readRequestIdentity } from "../../../../../lib/request-auth";
 import { isPlainRecord } from "../../../../../lib/service-auth";
 
-type JobRow = { id: string; idempotency_key?: string; organization_id: string; project_id: string; status: string; version: number; retry_count: number; lease_expires_at: string | null; checkpoint_stage: string | null; checkpoint_json: string | null; resume_count: number };
+type JobRow = { id: string; video_id: string; idempotency_key?: string; organization_id: string; project_id: string; status: string; version: number; retry_count: number; lease_expires_at: string | null; checkpoint_stage: string | null; checkpoint_json: string | null; resume_count: number };
 type ScriptVersion = "light_rewrite" | "restructured";
 
 const scriptVersionLabels: Record<ScriptVersion, string> = {
@@ -25,7 +27,7 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     if (requestedScriptVersion && !(requestedScriptVersion in scriptVersionLabels)) return apiError("SCRIPT_VERSION_INVALID", "口播版本参数无效。", 400);
 
     const db = getD1();
-    const job = await db.prepare("SELECT id, organization_id, project_id, status, version, retry_count, lease_expires_at, checkpoint_stage, checkpoint_json, resume_count, idempotency_key FROM analysis_jobs WHERE id = ?").bind(jobId).first<JobRow>();
+    const job = await db.prepare("SELECT id, video_id, organization_id, project_id, status, version, retry_count, lease_expires_at, checkpoint_stage, checkpoint_json, resume_count, idempotency_key FROM analysis_jobs WHERE id = ?").bind(jobId).first<JobRow>();
     if (!job) return apiError("JOB_NOT_FOUND", "分析任务不存在。", 404);
     const access = await getProjectAccess(identity.authSubject, job.organization_id, job.project_id);
     if (!access || !canWriteProjectAccess(access)) return apiError("WRITE_ACCESS_REQUIRED", "当前角色不能重试分析任务。", 403);
@@ -82,32 +84,35 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
       : canResume
         ? "等待从证据检查点继续结构分析"
         : "等待重新进入分析队列";
-    const result = await db.prepare(`UPDATE analysis_jobs SET status = 'pending', progress = CASE WHEN checkpoint_stage IN ('evidence_ready', 'segment_progress') THEN 82 ELSE 0 END, checkpoint_json = COALESCE(?, checkpoint_json), checkpoint_updated_at = COALESCE(?, checkpoint_updated_at), current_stage = ?, error_code = NULL, error_message = NULL, completed_at = NULL, retry_count = retry_count + 1, recovery_attempt_count = 0, queue_user_id = ?, enqueued_at = ?, lease_owner = NULL, lease_expires_at = NULL, last_heartbeat_at = NULL, result_key = NULL, version = version + 1, updated_by = ?, updated_at = ?
-      WHERE id = ? AND version = ? AND (status IN ('partial', 'failed', 'cancelled') OR (status NOT IN ('pending', 'completed', 'partial', 'failed', 'cancelled') AND lease_expires_at <= ?))
-        AND NOT EXISTS (
-          SELECT 1 FROM analysis_jobs other WHERE other.organization_id = analysis_jobs.organization_id
-            AND other.project_id = analysis_jobs.project_id AND other.video_id = analysis_jobs.video_id AND other.id != analysis_jobs.id
-            AND other.status IN (${ACTIVE_ANALYSIS_STATUSES_SQL})
-        )`)
-      .bind(retryCheckpointJson, retryCheckpointJson ? now : null, stage, user.id, now, user.id, now, jobId, job.version, now).run();
-    if (!result.meta.changes) return apiError("JOB_STATE_CHANGED", "任务状态已经变化，或该视频已有其他分析任务，请刷新后重试。", 409);
-    await db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'analysis_job.retried', 'analysis_job', ?, ?, ?)")
-      .bind(crypto.randomUUID(), job.organization_id, job.project_id, user.id, jobId, JSON.stringify({ previousStatus: job.status, retryCount: job.retry_count + 1, staleLease, checkpointStage: job.checkpoint_stage, canResume, segmentKey: requestedSegmentKey || null, segmentRetryTarget: retryTarget, scriptVersion: scriptVersion || null }), now).run();
-    return Response.json({
-      job: {
-        id: jobId,
-        status: "pending",
-        progress: canResume ? 82 : 0,
-        current_stage: stage,
-        retry_count: job.retry_count + 1,
-        checkpoint_stage: job.checkpoint_stage,
-        resume_count: job.resume_count,
-        segmentKey: requestedSegmentKey || null,
-        scriptVersion: scriptVersion || null,
-        updated_at: now,
-      },
+    const scope = { organizationId: job.organization_id, projectId: job.project_id, userId: user.id };
+    const assertAccess = createProjectWriteAssertion(db, scope, async () => (await readRequestIdentity(request))?.authSubject === identity.authSubject);
+    await assertAccess();
+    const progress = canResume ? 82 : 0;
+    const state = await executeAnalysisJobAction(db, {
+      scope, job, action: "retried", now, toStatus: "pending", progress,
+      metadata: { previousStatus: job.status, retryCount: job.retry_count + 1, staleLease, checkpointStage: job.checkpoint_stage, canResume, segmentKey: requestedSegmentKey || null, segmentRetryTarget: retryTarget, scriptVersion: scriptVersion || null },
+      guard: `(status IN ('partial', 'failed', 'cancelled') OR (status NOT IN ('pending', 'completed', 'partial', 'failed', 'cancelled') AND lease_expires_at <= ?))
+        AND EXISTS (SELECT 1 FROM videos v WHERE v.id = analysis_jobs.video_id AND v.organization_id = analysis_jobs.organization_id AND v.project_id = analysis_jobs.project_id AND v.deleted_at IS NULL)
+        AND NOT EXISTS (SELECT 1 FROM analysis_jobs other WHERE other.organization_id = analysis_jobs.organization_id
+          AND other.project_id = analysis_jobs.project_id AND other.video_id = analysis_jobs.video_id AND other.id != analysis_jobs.id
+          AND other.status IN (${ACTIVE_ANALYSIS_STATUSES_SQL}))`,
+      guardBindings: [now],
+      mutate: (marker, markerId) => db.prepare(`UPDATE analysis_jobs SET status = 'pending', progress = CASE WHEN checkpoint_stage IN ('evidence_ready', 'segment_progress') THEN 82 ELSE 0 END,
+        checkpoint_json = COALESCE(?, checkpoint_json), checkpoint_updated_at = COALESCE(?, checkpoint_updated_at), current_stage = ?, error_code = NULL, error_message = NULL,
+        completed_at = NULL, retry_count = retry_count + 1, recovery_attempt_count = 0, queue_user_id = ?, enqueued_at = ?, lease_owner = NULL, lease_expires_at = NULL,
+        last_heartbeat_at = NULL, result_key = NULL, version = version + 1, updated_by = ?, updated_at = ? WHERE id = ? AND ${marker}`)
+        .bind(retryCheckpointJson, retryCheckpointJson ? now : null, stage, user.id, now, user.id, now, jobId, markerId),
     });
+    if (!state) {
+      await assertAccess();
+      if (!await db.prepare("SELECT id FROM videos WHERE id = ? AND organization_id = ? AND project_id = ? AND deleted_at IS NULL")
+        .bind(job.video_id, job.organization_id, job.project_id).first()) return apiError("VIDEO_NOT_FOUND", "素材已删除，不能重试分析。", 404);
+      return apiError("JOB_STATE_CHANGED", "任务状态已经变化，或该视频已有其他分析任务，请刷新后重试。", 409);
+    }
+    return Response.json({ job: { ...state, segmentKey: requestedSegmentKey || null, scriptVersion: scriptVersion || null } });
   } catch (error) {
+    if (error instanceof ProjectWriteAccessChangedError) return apiError(error.code, "登录状态或项目权限已改变，本次任务操作未执行。请刷新确认权限后再操作。", 403);
+    if (error instanceof AnalysisJobActionStatusUnknownError) return apiError(error.code, error.message, 503);
     return errorResponse(error);
   }
 }

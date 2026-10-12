@@ -389,6 +389,33 @@ try {
     assert.equal(await count("SELECT COUNT(*) AS n FROM analysis_model_calls")+await count("SELECT COUNT(*) AS n FROM model_calls"),beforeModels);
     writeFileSync(path.join(runDir,"material-analysis-readiness.json"),JSON.stringify({passed:true,synthetic:true,imported:3,unanalysedJobsBeforeAction:0,partialPreserved:true,retryImportStatus:409,sharedCanWrite:false,foreignActorStatus:403,quotaDeniedStatus:429,explicitAnalysisStatus:201,recordedModelCalls:0,boundary:"Actual local HTTP/D1/R2; opaque synthetic files and report metadata, no real processor or model invocation"},null,2));
   });
+  await scenario("analysis retry/cancel atomic audit and event failures", async () => {
+    const user=users[0],created=expect(await submit(user),202),jobId=created.job.id;
+    const snapshot=async()=>Object.fromEntries(await Promise.all(["analysis_jobs","analysis_job_events","audit_logs"].map(async table=>{
+      const key=table==="analysis_jobs"?"id":table==="analysis_job_events"?"job_id":"target_id";
+      return [table,(await db.prepare(`SELECT * FROM ${table} WHERE ${key}=? ORDER BY id`).bind(jobId).all()).results];
+    })));
+    const outcomes=[];
+    for(const action of ["cancel","retry"]){
+      if(action==="retry") await db.prepare("UPDATE analysis_jobs SET status='failed',checkpoint_stage='evidence_ready',checkpoint_json=? WHERE id=?").bind(JSON.stringify({metadata:{sentinel:true}}),jobId).run();
+      for(const failure of ["audit","event"]){
+        const before=await snapshot(),name=`synthetic_job_action_${action}_${failure}`;
+        const table=failure==="audit"?"audit_logs":"analysis_job_events",key=failure==="audit"?"target_id":"job_id";
+        await db.prepare(`CREATE TRIGGER ${name} BEFORE INSERT ON ${table} WHEN NEW.${key}='${jobId}' BEGIN SELECT RAISE(ABORT,'synthetic action ${failure} failure'); END`).run();
+        try {expect(await (action==="retry"?retry:cancel)(user,jobId),500);assert.deepEqual(await snapshot(),before);} finally {await db.prepare(`DROP TRIGGER ${name}`).run();}
+        outcomes.push({action,failure,rolledBack:true});
+      }
+      const state=expect(await (action==="retry"?retry:cancel)(user,jobId),200).job;
+      assert.equal(state.status,action==="retry"?"pending":"cancelled");
+    }
+    assert.equal((await snapshot()).analysis_job_events.length,2);
+    await db.prepare("UPDATE videos SET deleted_at=? WHERE id=?").bind(new Date().toISOString(),created.video.id).run();
+    expect(await cancel(user,jobId),200);
+    expect(await retry(user,jobId),404);
+    assert.equal((await snapshot()).analysis_job_events.length,3);
+    writeFileSync(path.join(runDir,"analysis-job-actions.json"),JSON.stringify({passed:true,synthetic:true,outcomes,deletedSourceCancelStatus:200,deletedSourceRetryStatus:404,events:3,recordedModelCalls:0,boundary:"Actual compiled HTTP/D1; synthetic accounts/source, SQL faults, no model calls; lost acknowledgement covered separately by injected unit transport"},null,2));
+  });
+
   if (process.env.LAN_TEST_BACKUP === "1") await scenario("实际备份脚本恢复数据库与 R2：重新登录、版本关联、附件权限与继续审核发布", async () => {
     assert.equal(process.platform, "win32", "Shipped maintenance scripts require Windows");
     // Native Windows SQLite cannot use the long evidence-directory prefix.
@@ -397,7 +424,7 @@ try {
     for (const filename of ["backup-local.ps1", "restore-local.ps1", "local-state-maintenance.ps1", "analyzer-instance-lock.ps1", "verify-state-databases.mjs"]) {
       cpSync(path.join(root, "scripts", filename), path.join(scripts, filename));
     }
-    const tables = ["users", "local_credentials", "projects", "videos", "media_assets", "analysis_jobs", "video_analyses", "content_items", "content_versions", "content_reviews", "publication_records", "published_copy_records", "video_library_entries", "project_video_references", "project_memory_events", "audit_logs", "video_transcripts", "video_metric_snapshots"];
+    const tables = ["users", "local_credentials", "projects", "videos", "media_assets", "analysis_jobs", "video_analyses", "content_items", "content_versions", "content_reviews", "publication_records", "published_copy_records", "video_library_entries", "project_video_references", "project_memory_events", "audit_logs", "video_transcripts", "video_metric_snapshots", "analysis_job_events"];
     const snapshot = async () => Object.fromEntries(await Promise.all(tables.map(async name => {
       const rows = (await db.prepare(`SELECT * FROM ${name}`).all()).results.map(row => JSON.stringify(row)).sort();
       return [name, { rows: rows.length, sha256: createHash("sha256").update(JSON.stringify(rows)).digest("hex") }];
@@ -480,6 +507,7 @@ try {
     const { runBrowserChecks } = await import("./lan-browser-checks.mjs");
     browserResult = await runBrowserChecks({ origin, users, password, runDir, nextUrl, requests });
   });
+
   await scenario("媒体请求大小、畸形输入与50MB边界：真实HTTP", async () => {
     const before = await count("SELECT COUNT(*) AS n FROM videos");
     const beforeAssets = await count("SELECT COUNT(*) AS n FROM media_assets");
