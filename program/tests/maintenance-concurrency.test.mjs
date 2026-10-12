@@ -12,7 +12,7 @@ function fixture() {
   const parent = path.join(root, ".local/maintenance-tests"); mkdirSync(parent, { recursive: true });
   const installation = mkdtempSync(path.join(parent, "run-"));
   mkdirSync(path.join(installation, "scripts")); mkdirSync(path.join(installation, ".local"));
-  for (const name of ["run-web-guard.ps1", "local-web-identity.ps1", "run-migration-guard.ps1", "run-local-migrations.mjs", "analyzer-instance-lock.ps1", "local-state-maintenance.ps1", "backup-local.ps1", "restore-local.ps1", "factory-reset.ps1", "start-lan.ps1", "verify-state-databases.mjs"]) copyFileSync(path.join(root, "scripts", name), path.join(installation, "scripts", name));
+  for (const name of ["run-web-guard.ps1", "local-web-identity.ps1", "run-migration-guard.ps1", "run-local-migrations.mjs", "analyzer-instance-lock.ps1", "local-state-maintenance.ps1", "backup-local.ps1", "restore-local.ps1", "factory-reset.ps1", "start-lan.ps1", "verify-state-databases.mjs", "recover-performance-imports.ps1"]) copyFileSync(path.join(root, "scripts", name), path.join(installation, "scripts", name));
   for (const name of ["start-local.bat", "setup-local.bat"]) copyFileSync(path.join(root, name), path.join(installation, name));
   writeFileSync(path.join(installation, ".local/app.port"), "59998");
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "path"));
@@ -58,6 +58,7 @@ try {
       "& (Join-Path $env:MAINT_TEST_INSTALL 'scripts/backup-local.ps1')",
       "& (Join-Path $env:MAINT_TEST_INSTALL 'scripts/restore-local.ps1')",
       "& (Join-Path $env:MAINT_TEST_INSTALL 'scripts/factory-reset.ps1')",
+      "& (Join-Path $env:MAINT_TEST_INSTALL 'scripts/recover-performance-imports.ps1')",
     ]) {
       const result = f.run(command); assert.notEqual(result.status, 0, command); assert.match(result.stderr + result.stdout, /in progress|Stop the project first/);
       assert.ok(!existsSync(path.join(f.installation, ".dev.vars"))); assert.ok(!existsSync(path.join(f.installation, ".wrangler")), "Blocked command changed storage");
@@ -76,7 +77,7 @@ try {
   writeFileSync(path.join(f.installation, "start-local.bat"), '@echo off\r\nif not "%~1"=="--guarded" exit /b 9\r\necho launched>"%~dp0.local\\launched"\r\nexit /b 17\r\n');
   const result = f.run("& (Join-Path $env:MAINT_TEST_INSTALL 'scripts/run-web-guard.ps1') -Entry start-local; exit $LASTEXITCODE");
   assert.equal(result.status, 17, result.stderr); assert.ok(existsSync(path.join(f.installation, ".local/launched")));
-  writeFileSync(path.join(f.installation, ".local/report.json"), JSON.stringify({ passed: true, synthetic: true, blockedCommands: 13, abandonedOwnersRecovered: 2, childExitCodePreserved: 17 }, null, 2));
+  writeFileSync(path.join(f.installation, ".local/report.json"), JSON.stringify({ passed: true, synthetic: true, blockedCommands: 15, abandonedOwnersRecovered: 2, childExitCodePreserved: 17 }, null, 2));
 });
 
 test("failed factory reset preserves database, cookies, logs and the caller CI setting", { skip: process.platform !== "win32" }, () => {

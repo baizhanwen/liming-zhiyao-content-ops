@@ -311,8 +311,17 @@ function ImportView({ canImport, imports, rows, filename, format, asOfAt, messag
       </section>
       <aside className="panel import-history import-history-refined">
         <header><div><span className="import-step-label">最近记录</span><h2>导入历史</h2></div><strong>{imports.length} 个批次</strong></header>
-        {imports.length ? <div className="import-history-list">{imports.map((item) => { const complete = item.status === "completed"; const warning = Boolean(item.rejected_count || item.errors_json); return <article key={item.id}><div className={"import-history-icon " + (complete && !warning ? "success" : warning ? "warning" : "neutral")}>{complete && !warning ? <CheckCircle2 aria-hidden="true" /> : warning ? <AlertTriangle aria-hidden="true" /> : <Clock3 aria-hidden="true" />}</div><div className="import-history-copy"><strong title={item.original_filename || "手动导入"}>{item.original_filename || "手动导入"}</strong><small>{formatDate(item.created_at)} · {item.as_of_at ? "截至 " + formatDate(item.as_of_at) : "标准格式"}</small><span>{item.accepted_count} 条成功{item.rejected_count ? " · " + item.rejected_count + " 条未导入" : ""}</span></div>{item.errors_json && <details><summary>查看问题</summary><pre>{formatImportErrors(item.errors_json)}</pre></details>}</article>; })}</div> : <div className="import-history-empty"><FileSpreadsheet aria-hidden="true" /><strong>还没有导入记录</strong><span>首个文件导入后，批次和问题会保留在这里。</span></div>}
-        {imports.length > 0 && <footer><span>数据已经进入当前企业空间</span><a href={matchHref}>下一步：匹配视频分析 <ArrowRight aria-hidden="true" /></a></footer>}
+        {imports.length ? <div className="import-history-list">{imports.map((item) => {
+          const complete = item.status === "completed", interrupted = item.status === "failed", warning = !complete || Boolean(item.rejected_count || item.errors_json);
+          return <article key={item.id}>
+            <div className={"import-history-icon " + (!warning ? "success" : "warning")}>{!warning ? <CheckCircle2 aria-hidden="true" /> : <AlertTriangle aria-hidden="true" />}</div>
+            <div className="import-history-copy"><strong title={item.original_filename || "手动导入"}>{item.original_filename || "手动导入"}</strong><small>{formatDate(item.created_at)} · {item.as_of_at ? "截至 " + formatDate(item.as_of_at) : "标准格式"}</small>
+              <span>{complete ? `已完成 · ${item.accepted_count} 条成功${item.rejected_count ? " · " + item.rejected_count + " 条未导入" : ""}` : interrupted ? "未完成，请核对已保存数据后重试" : "未完成，需管理员停服核对"}</span>
+            </div>
+            {(item.errors_json || !complete) && <details><summary>查看问题与批次</summary><p>批次编号：{item.id}</p>{item.errors_json && <pre>{formatImportErrors(item.errors_json)}</pre>}{!complete && <p>{interrupted ? "保留原文件及数据截至时间；遇到关联不一致请先人工核对，勿删除已有记录。" : "请管理员按备份恢复说明核对旧导入批次，处理前不要反复提交或删除记录。"}</p>}</details>}
+          </article>;
+        })}</div> : <div className="import-history-empty"><FileSpreadsheet aria-hidden="true" /><strong>还没有导入记录</strong><span>首个文件导入后，批次和问题会保留在这里。</span></div>}
+        {imports.some(item => item.status === "completed" && item.accepted_count > 0) && <footer><span>已完成批次的数据已经进入当前企业空间</span><a href={matchHref}>下一步：匹配视频分析 <ArrowRight aria-hidden="true" /></a></footer>}
       </aside>
     </div>
   </div>;
