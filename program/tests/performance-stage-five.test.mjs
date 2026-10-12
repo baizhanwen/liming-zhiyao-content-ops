@@ -123,7 +123,9 @@ test("insights routes use ECharts, Papa Parse, and real navigation entries", asy
   assert.match(shell, /\/insights\?view=overview/);
   assert.match(shell, /\/insights\?view=reports/);
   assert.match(page, /InsightsWorkspace/);
-  assert.match(workspace, /Papa\.parse/);
+  assert.match(workspace, /readCsvTable\(file, \{ signal: operation\.signal/);
+  assert.doesNotMatch(workspace, /Papa\.parse/);
+  assert.match(await readFile(new URL("../lib/csv-table.ts", import.meta.url), "utf8"), /Papa\.parse/);
   assert.match(workspace, /下载 CSV 模板/);
   assert.match(workspace, /report-narrative-grid/);
   assert.match(workspace, /diagnostic-detail-group/);

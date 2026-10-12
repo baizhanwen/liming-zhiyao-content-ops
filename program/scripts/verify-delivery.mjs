@@ -90,6 +90,7 @@ try {
     const features = manifest.license.features;
     verifyDeliveryScripts(Object.keys(initialHashes), features);
     if (!features.videoAnalysis) assert.doesNotMatch(readFileSync(path.join(packageRoot, "scripts/open-web.ps1"), "utf8"), /start-analyzer-background\.ps1/, "Starter opener refers to a removed video service");
+    assert.equal(existsSync(path.join(packageRoot, "lib/csv-table.ts")), Boolean(features.insights), "CSV reader must follow the insights entitlement");
     for (const [enabled, folder] of [[features.videoAnalysis, "app/api/videos"], [features.wechatImages, "app/api/wechat-images"], [features.insights, "app/api/reports"]]) assert.equal(existsSync(path.join(packageRoot, folder)), enabled, folder);
     for (const file of ["scripts/test-ecommerce-browser.mjs", "scripts/test-ecommerce-model.mjs", "scripts/ecommerce-test-model.mjs"]) assert.equal(existsSync(path.join(packageRoot, file)), false, `Test helper in delivery: ${file}`);
     if (!manifest.authorizedKnowledge.included) {

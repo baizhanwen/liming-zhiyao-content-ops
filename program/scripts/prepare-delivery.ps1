@@ -233,7 +233,7 @@ export function deliveryFeatureEnabled(feature: DeliveryFeature) {
     if (-not $selectedPlan.insights) {
         @(
             "app\insights", "app\api\analytics", "app\api\performance", "app\api\reports",
-            "components\InsightsWorkspace.tsx", "components\EChart.tsx", "lib\performance-analytics.ts"
+            "components\InsightsWorkspace.tsx", "components\EChart.tsx", "lib\performance-analytics.ts", "lib\csv-table.ts"
         ) | ForEach-Object { Remove-PackagePath $_ }
     }
 
