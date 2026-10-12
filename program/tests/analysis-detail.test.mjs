@@ -58,7 +58,7 @@ test("detail UI keeps protected media review while evidence locating stays hidde
   assert.doesNotMatch(detail, /单独重试这一版/);
   assert.match(detail, /这份报告是“部分完成”/);
   assert.match(detail, /item\.key !== "depth"/);
-  assert.match(detail, /detail\.job\?\.status === "partial" && qualityStatus !== "passed"/);
+  assert.match(detail, /effectiveJobStatus === "partial" && qualityStatus !== "passed"/);
   assert.match(detail, /qualityAudit\.score \+ \(removedDepthCheck\?\.passed === false \? 12 : 0\)/);
   assert.doesNotMatch(detail, /dangerouslySetInnerHTML/);
 });

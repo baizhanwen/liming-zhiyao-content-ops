@@ -5,6 +5,7 @@ import { readApiError as readError } from "../lib/client-format";
 
 
 import Link from "next/link";
+import { materialCardState } from "../lib/material-analysis-state";
 import { ChangeEvent, FormEvent, useCallback, useEffect, useState } from "react";
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import { Download, FolderInput, Upload } from "lucide-react";
@@ -12,11 +13,11 @@ import { preferredOrganizationId, rememberCurrentScope, scopedFetch } from "../l
 
 type Organization = { id: string; name: string };
 type Project = { id: string; name: string };
-type LibraryEntry = {
+type LibraryEntry = Parameters<typeof materialCardState>[0] & {
   id: string; reference_id?: string; video_id: string; category: string; tags: string[]; notes: string | null; updated_at: string;
   platform: string; source_type: string; source_url: string | null; title: string | null; author_name: string | null;
   duration_sec: number | null; status: string; job_status: string | null; job_progress: number | null; current_stage: string | null;
-  source_project_name: string; account_name: string | null; cover_url: string | null; reference_count?: number; imported_to_project?: number;
+  source_project_id?: string; source_project_name: string; account_name: string | null; cover_url: string | null; reference_count?: number; imported_to_project?: number;
 };
 
 const categories = [
@@ -165,7 +166,7 @@ export function VideoLibraryWorkspace({ mode }: { mode: "benchmark" | "assets" }
       </div>
       {error && <div className="inline-alert" role="alert">{error}</div>}{notice && <div className="library-notice" role="status">{notice}</div>}
       {loading ? <div className="list-empty">正在整理素材库…</div> : entries.length === 0 ? <div className="list-empty">{mode === "assets" ? "公司素材库还没有匹配的分析视频。新分析完成后会自动沉淀到这里。" : "当前项目还没有对标素材。请从素材中心选择并导入。"}</div> : <div className="library-grid">{entries.map((entry) => {
-        const checked = selected.includes(entry.id); const completed = entry.job_status === "completed" || entry.status === "ready";
+        const checked = selected.includes(entry.id); const analysisState = materialCardState(entry);
         const coverUrl = entry.cover_url ? entry.cover_url + (entry.cover_url.includes("?") ? "&" : "?") + "mediaRetry=" + (coverRetries[entry.id] ?? 0) : null;
         return <article className={`library-card${checked ? " selected" : ""}`} key={entry.reference_id ?? entry.id}>
           <div className="library-cover">
@@ -184,13 +185,13 @@ export function VideoLibraryWorkspace({ mode }: { mode: "benchmark" | "assets" }
                 {coverFailures[entry.id] ? <><strong>封面读取失败</strong><button type="button" onClick={() => retryCover(entry.id)}>重试</button></> : entry.source_type === "upload" ? "本地" : "链接"}
               </span>
             )}
-            <em className={`status ${completed ? "success" : entry.job_status === "failed" ? "danger" : "neutral"}`}>{completed ? "分析完成" : entry.current_stage || "处理中"}</em>
+            <em className={`status ${analysisState.tone}`}>{analysisState.label}</em>
             {mode === "assets" && <label className="library-select"><input type="checkbox" checked={checked} disabled={Boolean(entry.imported_to_project)} onChange={() => setSelected((current) => current.includes(entry.id) ? current.filter((id) => id !== entry.id) : [...current, entry.id])} /><span>{entry.imported_to_project ? "已导入" : "选择"}</span></label>}
           </div>
-          <div className="library-card-body"><div className="library-card-tags"><span>{categoryNames[entry.category] ?? "未分类"}</span><small>{entry.platform === "douyin" ? "抖音" : "本地上传"}</small></div><h3>{entry.title || "待提取视频标题"}</h3><p>{entry.account_name || entry.author_name || "未关联账号"} · 来源：{entry.source_project_name}</p><div className="plain-chips">{entry.tags.length ? entry.tags.map((tag) => <span key={tag}>{tag}</span>) : <span>暂无标签</span>}</div>
+          <div className="library-card-body"><div className="library-card-tags"><span>{categoryNames[entry.category] ?? "未分类"}</span><small>{entry.platform === "douyin" ? "抖音" : "本地上传"}</small></div><h3>{entry.title || "待提取视频标题"}</h3><p>{entry.account_name || entry.author_name || "未关联账号"} · 来源：{entry.source_project_name}</p>{analysisState.hint && <p>{analysisState.hint}</p>}<div className="plain-chips">{entry.tags.length ? entry.tags.map((tag) => <span key={tag}>{tag}</span>) : <span>暂无标签</span>}</div>
             {mode === "assets" && canManage && <div className="library-edit"><select value={entry.category} disabled={working || loading} aria-label="素材分类" onChange={(event) => saveMetadata(entry, event.target.value)}>{categories.filter(([value]) => value).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><input disabled={working || loading} value={tagDrafts[entry.id] ?? ""} onChange={(event) => setTagDrafts((current) => ({ ...current, [entry.id]: event.target.value }))} placeholder="标签用逗号分隔" aria-label="素材标签" /><button type="button" onClick={() => saveMetadata(entry)} disabled={working}>保存</button></div>}
           </div>
-          <footer><span>{mode === "assets" ? `已被 ${entry.reference_count ?? 0} 个项目引用` : `来自 ${entry.source_project_name}`}</span><div><Link href={`/analysis/${entry.video_id}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}&libraryEntryId=${encodeURIComponent(entry.id)}`}>查看分析</Link>{mode === "benchmark" && canWrite && <button type="button" disabled={working} onClick={() => removeReference(entry)}>移出项目</button>}</div></footer>
+          <footer><span>{mode === "assets" ? `已被 ${entry.reference_count ?? 0} 个项目引用` : `来自 ${entry.source_project_name}`}</span><div><Link href={`/analysis/${entry.video_id}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}&libraryEntryId=${encodeURIComponent(entry.id)}`}>查看分析</Link>{analysisState.tone !== "success" && entry.source_project_id === projectId && (mode === "assets" ? canManage : canWrite) && <Link href={`/analysis/${entry.video_id}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`}>进入来源空间分析</Link>}{mode === "benchmark" && canWrite && <button type="button" disabled={working} onClick={() => removeReference(entry)}>移出项目</button>}</div></footer>
         </article>;
       })}</div>}
     </article>

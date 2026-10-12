@@ -5,7 +5,7 @@ import { resetSegmentForRetry, type SegmentRetryTarget } from "../../../../../li
 import { readRequestIdentity } from "../../../../../lib/request-auth";
 import { isPlainRecord } from "../../../../../lib/service-auth";
 
-type JobRow = { id: string; organization_id: string; project_id: string; status: string; version: number; retry_count: number; lease_expires_at: string | null; checkpoint_stage: string | null; checkpoint_json: string | null; resume_count: number };
+type JobRow = { id: string; idempotency_key?: string; organization_id: string; project_id: string; status: string; version: number; retry_count: number; lease_expires_at: string | null; checkpoint_stage: string | null; checkpoint_json: string | null; resume_count: number };
 type ScriptVersion = "light_rewrite" | "restructured";
 
 const scriptVersionLabels: Record<ScriptVersion, string> = {
@@ -25,11 +25,12 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     if (requestedScriptVersion && !(requestedScriptVersion in scriptVersionLabels)) return apiError("SCRIPT_VERSION_INVALID", "口播版本参数无效。", 400);
 
     const db = getD1();
-    const job = await db.prepare("SELECT id, organization_id, project_id, status, version, retry_count, lease_expires_at, checkpoint_stage, checkpoint_json, resume_count FROM analysis_jobs WHERE id = ?").bind(jobId).first<JobRow>();
+    const job = await db.prepare("SELECT id, organization_id, project_id, status, version, retry_count, lease_expires_at, checkpoint_stage, checkpoint_json, resume_count, idempotency_key FROM analysis_jobs WHERE id = ?").bind(jobId).first<JobRow>();
     if (!job) return apiError("JOB_NOT_FOUND", "分析任务不存在。", 404);
     const access = await getProjectAccess(identity.authSubject, job.organization_id, job.project_id);
     if (!access || !canWriteProjectAccess(access)) return apiError("WRITE_ACCESS_REQUIRED", "当前角色不能重试分析任务。", 403);
 
+    if (job.idempotency_key?.startsWith("material-import:")) return apiError("IMPORTED_REPORT_REANALYSIS_REQUIRED", "导入报告没有可续跑的处理检查点，请打开素材详情主动重新分析；新任务会核对分析额度。", 409);
     const now = new Date().toISOString();
     const staleLease = !["pending", "completed", "partial", "failed", "cancelled"].includes(job.status) && Boolean(job.lease_expires_at && job.lease_expires_at <= now);
     if (job.status !== "partial" && job.status !== "failed" && job.status !== "cancelled" && !staleLease) {

@@ -1,9 +1,12 @@
+import { materialAnalysisProjection } from "../../../lib/material-analysis-state";
 import { ACTIVE_ANALYSIS_STATUSES_SQL } from "../../../lib/analysis-jobs";
 import { canWriteProjectAccess, getD1, getProjectAccess } from "../../../db/runtime";
 import { readAnalyzerReadiness } from "../../../lib/analyzer-readiness";
 import { apiError, errorResponse } from "../../../lib/api-response";
 import { summarizeSegmentProgress } from "../../../lib/analysis-segment-progress";
 import { readRequestIdentity } from "../../../lib/request-auth";
+
+const jobColumns = ["id","video_id","status","analysis_profile","progress","current_stage","error_code","error_message","retry_count","lease_expires_at","checkpoint_stage","checkpoint_json","checkpoint_updated_at","resume_count","created_at","updated_at"].map(name => `analysis_jobs.${name}`).join(",");
 
 export async function GET(request: Request) {
   const identity = await readRequestIdentity(request);
@@ -20,12 +23,12 @@ export async function GET(request: Request) {
     const [videos, jobs, readiness, queueStats, sharedQueue] = await Promise.all([
       db.prepare(`
         SELECT * FROM (
-          SELECT v.id, v.platform, v.source_type, v.source_url, v.title, v.author_name, v.status, v.error_message, v.created_at, a.filename, a.size_bytes,
+          SELECT v.id, v.platform, v.source_type, v.source_url, v.title, v.author_name, v.status, v.error_message, v.created_at, a.filename, a.size_bytes, (SELECT id FROM video_analyses WHERE organization_id=v.organization_id AND video_id=v.id ORDER BY created_at DESC LIMIT 1) AS analysis_id,
             0 AS is_reference, (SELECT library.id FROM video_library_entries library WHERE library.organization_id = v.organization_id AND library.source_video_id = v.id LIMIT 1) AS library_entry_id
           FROM videos v LEFT JOIN media_assets a ON a.id = v.media_asset_id
           WHERE v.organization_id = ? AND v.project_id = ? AND v.deleted_at IS NULL
           UNION ALL
-          SELECT v.id, v.platform, v.source_type, v.source_url, v.title, v.author_name, v.status, v.error_message, refs.created_at, a.filename, a.size_bytes,
+          SELECT v.id, v.platform, v.source_type, v.source_url, v.title, v.author_name, v.status, v.error_message, refs.created_at, a.filename, a.size_bytes, (SELECT id FROM video_analyses WHERE organization_id=v.organization_id AND video_id=v.id ORDER BY created_at DESC LIMIT 1) AS analysis_id,
             1 AS is_reference, library.id AS library_entry_id
           FROM project_video_references refs
           INNER JOIN video_library_entries library ON library.id = refs.library_entry_id AND library.organization_id = refs.organization_id
@@ -36,15 +39,16 @@ export async function GET(request: Request) {
         ) ORDER BY created_at DESC LIMIT 100
       `).bind(organizationId, projectId, organizationId, projectId).all(),
       db.prepare(`
-        SELECT id, video_id, status, analysis_profile, progress, current_stage, error_code, error_message, retry_count, lease_expires_at, checkpoint_stage, checkpoint_json, checkpoint_updated_at, resume_count, created_at, updated_at, COALESCE(enqueued_at,created_at) AS enqueued_at,
+        SELECT ${jobColumns}, COALESCE(analysis_jobs.enqueued_at,analysis_jobs.created_at) AS enqueued_at, ${materialAnalysisProjection("analysis_jobs")},
           (SELECT COUNT(*) FROM analysis_model_calls calls WHERE calls.job_id = analysis_jobs.id) AS model_call_count,
           (SELECT COUNT(*) FROM analysis_model_calls calls WHERE calls.job_id = analysis_jobs.id AND calls.total_tokens IS NULL) AS model_unknown_usage_count
         FROM analysis_jobs
-        WHERE organization_id = ? AND (project_id = ? OR video_id IN (
+        LEFT JOIN video_analyses latest_analysis ON latest_analysis.id=(SELECT id FROM video_analyses WHERE organization_id=analysis_jobs.organization_id AND video_id=analysis_jobs.video_id ORDER BY created_at DESC LIMIT 1)
+        WHERE analysis_jobs.organization_id = ? AND (analysis_jobs.project_id = ? OR analysis_jobs.video_id IN (
           SELECT library.source_video_id FROM project_video_references refs
           INNER JOIN video_library_entries library ON library.id = refs.library_entry_id AND library.organization_id = refs.organization_id
           WHERE refs.organization_id = ? AND refs.project_id = ? AND refs.purpose = 'analysis' AND refs.status = 'active'
-        )) ORDER BY created_at DESC LIMIT 150
+        )) ORDER BY analysis_jobs.created_at DESC LIMIT 150
       `).bind(organizationId, projectId, organizationId, projectId).all(),
       readAnalyzerReadiness(organizationId),
       db.prepare(`

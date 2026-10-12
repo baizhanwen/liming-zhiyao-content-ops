@@ -1,3 +1,4 @@
+import { materialAnalysisColumns } from "../../../lib/material-analysis-state";
 import { canAccessOrganizationVideoLibrary, canManageOrganizationVideoLibrary, ensureUser, getD1, getOrganizationAccess } from "../../../db/runtime";
 import { apiError, errorResponse } from "../../../lib/api-response";
 import { readRequestIdentity } from "../../../lib/request-auth";
@@ -54,7 +55,7 @@ export async function GET(request: Request) {
       SELECT library.id, library.category, library.tags_json, library.notes, library.created_at, library.updated_at,
         v.id AS video_id, v.platform, v.source_type, v.source_url, v.title, v.author_name, v.published_at, v.duration_sec, v.status,
         p.id AS source_project_id, p.name AS source_project_name, a.display_name AS account_name,
-        j.status AS job_status, j.progress AS job_progress, j.current_stage,
+        j.status AS job_status, j.progress AS job_progress, j.current_stage, ${materialAnalysisColumns},
         (SELECT COUNT(*) FROM project_video_references refs WHERE refs.organization_id = library.organization_id AND refs.library_entry_id = library.id AND refs.purpose = 'benchmark' AND refs.status = 'active') AS reference_count,
         CASE WHEN ? != '' AND EXISTS (
           SELECT 1 FROM project_video_references own_ref
@@ -64,6 +65,7 @@ export async function GET(request: Request) {
       FROM video_library_entries library
       INNER JOIN videos v ON v.id = library.source_video_id AND v.organization_id = library.organization_id
       INNER JOIN projects p ON p.id = v.project_id AND p.organization_id = v.organization_id
+      LEFT JOIN video_analyses latest_analysis ON latest_analysis.id=(SELECT id FROM video_analyses WHERE organization_id=v.organization_id AND video_id=v.id ORDER BY created_at DESC LIMIT 1)
       LEFT JOIN social_accounts a ON a.id = v.social_account_id
       LEFT JOIN analysis_jobs j ON j.id = (
         SELECT latest.id FROM analysis_jobs latest WHERE latest.organization_id = v.organization_id AND latest.video_id = v.id ORDER BY latest.created_at DESC LIMIT 1

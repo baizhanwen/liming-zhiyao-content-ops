@@ -359,6 +359,36 @@ try {
     const overAll=await http(`/api/video-library/transfer?organizationId=${user.org}`,{user});expect(overAll,400);
     writeFileSync(path.join(runDir,"material-export-selection.json"),JSON.stringify({passed:true,synthetic:true,exported:100,oversizedStatus:400,missingStatus:409,allOverLimitStatus:400,boundary:"Actual compiled Worker and D1; directly seeded synthetic rows, no model or field data"},null,2));
   });
+  await scenario("无报告与部分报告迁移、只读和主动分析额度：真实HTTP/D1/R2", async () => {
+    const user=users[1], states=["missing","partial","passed"], form=new FormData();
+    const entries=states.map((state,index)=>({library:{category:"other",tags:[],notes:null},video:{platform:"upload",sourceType:"upload",sourceHash:`synthetic-readiness-${index}`,title:`Synthetic readiness ${state}`,sourceMediaBlobName:`ready-${index}`},assets:[{blobName:`ready-${index}`,kind:"source_video",filename:`ready-${index}.mp4`,contentType:"video/mp4"}],transcripts:[],analyses:state==="missing"?[]:[{schema_version:"analysis.v7",report_json:JSON.stringify({analysis_meta:{quality_audit:{status:state==="passed"?"passed":"degraded",acceptance_passed:state==="passed",completion_status:state==="passed"?"complete":"partial",issues:state==="passed"?[]:["缺少视觉证据"]}}}),created_at:"2024-01-01T00:00:00.000Z"}],metrics:[]}));
+    form.set("organizationId",user.org);form.set("projectId",user.project);form.set("manifest",JSON.stringify({format:"liming-video-library-package",version:1,entries}));
+    entries.forEach((entry,index)=>form.append("media",new Blob([`synthetic-ready-${index}`]),entry.assets[0].blobName));
+    const beforeModels=await count("SELECT COUNT(*) AS n FROM analysis_model_calls")+await count("SELECT COUNT(*) AS n FROM model_calls");
+    const imported=expect(await http("/api/video-library/transfer",{user,method:"POST",body:form}),200);assert.equal(imported.imported,3);
+    const videos=(await db.prepare("SELECT * FROM videos WHERE organization_id=? AND project_id=? AND source_hash LIKE 'synthetic-readiness-%'").bind(user.org,user.project).all()).results;
+    const missing=videos.find(v=>v.title.endsWith("missing")),partial=videos.find(v=>v.title.endsWith("partial")),passed=videos.find(v=>v.title.endsWith("passed"));
+    assert.equal(missing.status,"pending");assert.equal(await count("SELECT COUNT(*) AS n FROM analysis_jobs WHERE video_id=?",missing.id),0);
+    const partialJob=await db.prepare("SELECT * FROM analysis_jobs WHERE video_id=?").bind(partial.id).first();assert.equal(partialJob.status,"partial");
+    assert.equal((await db.prepare("SELECT status FROM analysis_jobs WHERE video_id=?").bind(passed.id).first()).status,"completed");
+    const retryImport=await http(`/api/analysis-jobs/${partialJob.id}/retry`,{user,method:"POST",body:{}});expect(retryImport,409);assert.equal(retryImport.data.error.code,"IMPORTED_REPORT_REANALYSIS_REQUIRED");
+    const library=expect(await http(`/api/video-library?organizationId=${user.org}&q=Synthetic%20readiness`,{user}),200);assert.equal(library.entries.length,3);
+    const missingEntry=library.entries.find(e=>e.video_id===missing.id);assert.equal(missingEntry.analysis_id,null);assert.equal(missingEntry.job_status,null);
+    assert.equal(library.entries.find(e=>e.video_id===partial.id).analysis_acceptance_passed,0);
+    const owned=expect(await http(`/api/videos?${scope(user)}`,{user}),200);assert.equal(owned.videos.find(v=>v.id===missing.id).analysis_id,null);assert.equal(owned.jobs.find(j=>j.id===partialJob.id).is_imported_job,1);
+    const detail=expect(await http(`/api/videos/${missing.id}?${scope(user)}`,{user}),200);assert.equal(detail.analysis,null);assert.equal(detail.job,null);assert.equal(detail.canWrite,true);
+    const shared=expect(await http(`/api/videos/${missing.id}?organizationId=${user.org}&projectId=${users[0].project}&libraryEntryId=${missingEntry.id}`,{user:users[0]}),200);assert.equal(shared.canWrite,false);
+    const reanalyze=caller=>http(`/api/videos/${missing.id}/reanalyze`,{user:caller,method:"POST",body:{organizationId:user.org,projectId:user.project}});
+    expect(await reanalyze(users[0]),403);
+    const original=(await db.prepare("SELECT monthly_analysis_quota FROM organization_settings WHERE organization_id=?").bind(user.org).first()).monthly_analysis_quota;
+    const usage=await count("SELECT COUNT(*) AS n FROM analysis_jobs WHERE organization_id=? AND created_at>=strftime('%Y-%m-01T00:00:00.000Z','now') AND created_at<strftime('%Y-%m-%dT00:00:00.000Z','now','start of month','+1 month') AND idempotency_key NOT LIKE 'material-import:%'",user.org);
+    try {await db.prepare("UPDATE organization_settings SET monthly_analysis_quota=? WHERE organization_id=?").bind(usage,user.org).run();expect(await reanalyze(user),429);assert.equal(await count("SELECT COUNT(*) AS n FROM analysis_jobs WHERE video_id=?",missing.id),0);}
+    finally {await db.prepare("UPDATE organization_settings SET monthly_analysis_quota=? WHERE organization_id=?").bind(original,user.org).run();}
+    const accepted=expect(await reanalyze(user),201);const job=await db.prepare("SELECT idempotency_key,source_ref FROM analysis_jobs WHERE id=?").bind(accepted.job.id).first();assert.ok(job.idempotency_key.startsWith("reanalyze:"));assert.ok(job.source_ref);
+    expect(await cancel(user,accepted.job.id),200);
+    assert.equal(await count("SELECT COUNT(*) AS n FROM analysis_model_calls")+await count("SELECT COUNT(*) AS n FROM model_calls"),beforeModels);
+    writeFileSync(path.join(runDir,"material-analysis-readiness.json"),JSON.stringify({passed:true,synthetic:true,imported:3,unanalysedJobsBeforeAction:0,partialPreserved:true,retryImportStatus:409,sharedCanWrite:false,foreignActorStatus:403,quotaDeniedStatus:429,explicitAnalysisStatus:201,recordedModelCalls:0,boundary:"Actual local HTTP/D1/R2; opaque synthetic files and report metadata, no real processor or model invocation"},null,2));
+  });
   if (process.env.LAN_TEST_BACKUP === "1") await scenario("实际备份脚本恢复数据库与 R2：重新登录、版本关联、附件权限与继续审核发布", async () => {
     assert.equal(process.platform, "win32", "Shipped maintenance scripts require Windows");
     // Native Windows SQLite cannot use the long evidence-directory prefix.

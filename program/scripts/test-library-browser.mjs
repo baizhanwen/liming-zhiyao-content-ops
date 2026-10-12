@@ -11,7 +11,7 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const fixtureRoot = path.join(root, ".local/library-browser", Date.now().toString());
 await mkdir(fixtureRoot, { recursive: true });
 await writeFile(path.join(fixtureRoot, "index.html"), '<html lang="zh-CN"><meta charset="utf-8"><div id="root"></div><script type="module" src="/entry.tsx"></script></html>');
-await writeFile(path.join(fixtureRoot, "entry.tsx"), 'import React from "react";import {createRoot} from "react-dom/client";import {VideoLibraryWorkspace} from "../../../components/VideoLibraryWorkspace";import "../../../app/globals.css";createRoot(document.getElementById("root")!).render(<VideoLibraryWorkspace mode="assets"/>);');
+await writeFile(path.join(fixtureRoot, "entry.tsx"), 'import React from "react";import {createRoot} from "react-dom/client";import {VideoLibraryWorkspace} from "../../../components/VideoLibraryWorkspace";import {AnalysisWorkspace} from "../../../components/AnalysisWorkspace";import {AnalysisDetail} from "../../../components/AnalysisDetail";import "../../../app/globals.css";createRoot(document.getElementById("root")!).render(new URLSearchParams(location.search).get("view")==="queue"?<AnalysisWorkspace/>:new URLSearchParams(location.search).get("view")==="detail"?<AnalysisDetail videoId="video" organizationId="org" projectId="project"/>:<VideoLibraryWorkspace mode="assets"/>);');
 await writeFile(path.join(fixtureRoot, "link.tsx"), 'import React from "react";export default function Link(props){return <a {...props}/>;}');
 const { chromium } = await import(pathToFileURL(process.env.LAN_TEST_PLAYWRIGHT_MODULE || path.join(root, ".local/ecommerce-browser/node_modules/playwright/index.mjs")).href);
 const server = await createServer({ configFile: false, root: fixtureRoot, plugins: [react()], resolve: { alias: { "next/link": path.join(fixtureRoot, "link.tsx") } }, server: { host: "127.0.0.1", port: 0, fs: { allow: [root] } } });
@@ -22,12 +22,20 @@ try {
   await server.listen();
   browser = await chromium.launch({ headless: true, executablePath: "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe" });
   const page = await browser.newPage(); const errors = []; page.on("pageerror", error => errors.push(error.message));
-  let canManage = true, conflict = true, transfers = 0;
+  let canManage = true, conflict = true, transfers = 0, partialReport = false, writableDetail = true, historicalCompleted = false;
   let entry = { id: "entry", video_id: "video", category: "other", tags: ["existing"], notes: null, updated_at: "2026-10-12T01:00:00.000Z", title: "合成素材", platform: "douyin", source_type: "url", status: "ready", source_project_name: "合成项目", reference_count: 0 };
   await page.route("**/api/**", async route => {
     const url = new URL(route.request().url()), method = route.request().method(); let body, status = 200;
     if (url.pathname === "/api/organizations") body = { organizations: [{ id: "org", name: "合成公司" }] };
     else if (url.pathname === "/api/projects") body = { projects: [{ id: "project", name: "合成项目" }] };
+    else if (url.pathname === "/api/videos") {
+      const qa={analysis_id:partialReport?"report":null,analysis_schema_version:partialReport?"analysis.v7":null,analysis_quality_status:"degraded",analysis_acceptance_passed:0,analysis_completion_status:"partial",is_imported_job:1};
+      body={videos:[{id:"video",source_type:"url",title:"合成素材",status:partialReport?"ready":"pending",analysis_id:qa.analysis_id,error_message:"迁移包未包含分析报告",created_at:new Date().toISOString()}],jobs:partialReport?[{...qa,id:"job",video_id:"video",status:"partial",analysis_profile:"standard",progress:100,current_stage:"已迁入部分报告",error_code:"ANALYSIS_PARTIAL",error_message:"缺少视觉证据",checkpoint_stage:null,checkpoint_json:null,lease_expires_at:null,retry_count:0,resume_count:0,created_at:new Date().toISOString(),updated_at:new Date().toISOString()}]:[],canWrite:true,queue:{sampleCount:0,averageSeconds:null,waitingCount:0,runningCount:0,stoppingCount:0,ownCount:0,outstandingCount:0,userLimit:10,hostLimit:50},service:{credentialConfigured:true,modelConfigured:true,publicLinkCookieConfigured:true,analyzerOnline:true,canManageCookies:false}};
+    }
+    else if (url.pathname === "/api/videos/video") {
+      const analysis=partialReport?{id:"report",schema_version:"analysis.v7",report:{analysis_meta:{quality_audit:{status:"degraded",acceptance_passed:false,completion_status:"partial",issues:["缺少视觉证据"]}}},confidence:null,created_at:"2024-01-01T00:00:00.000Z"}:null;
+      body={video:{id:"video",source_type:"url",source_url:"https://example.invalid/fixture",media_url:null,title:"合成素材",status:partialReport?"ready":"pending",is_shared_reference:!writableDetail},job:partialReport?{id:"job",idempotency_key:"material-import:fixture",status:historicalCompleted?"completed":"partial",analysis_profile:"standard",progress:100,current_stage:"已迁入部分报告",error_code:"ANALYSIS_PARTIAL",error_message:"缺少视觉证据"}:null,transcript:null,analysis,analyses:analysis?[analysis]:[],metrics:[],assets:[],events:[],canWrite:writableDetail};
+    }
     else if (url.pathname === "/api/video-library" && method === "GET") body = { entries: [entry], canManage };
     else if (url.pathname === "/api/video-library" && method === "PATCH") {
       const input = route.request().postDataJSON(); requests.push(input);
@@ -83,6 +91,31 @@ try {
     await page.locator('input[type="file"]').setInputFiles({ name: "synthetic-material.zip", mimeType: "application/zip", buffer: Buffer.from(importZip) });
     await page.getByRole("alert").filter({ hasText: "文件已保留" }).waitFor();
     assert.match(await page.getByRole("status").innerText(), /本次已导入 0 条/); assert.equal(transfers, 2); assert.deepEqual(errors, []);
+  });
+  await check("material-without-report-shows-unanalysed-and-owned-source-link", async () => {
+    entry={...entry,analysis_id:null,job_status:null,current_stage:null,source_project_id:"project"};
+    await page.goto(server.resolvedUrls.local[0]); await page.locator(".library-cover em").filter({hasText:"尚未分析"}).waitFor();
+    const action=page.getByRole("link",{name:"进入来源空间分析",exact:true}); assert.match(await action.getAttribute("href"), /projectId=project$/); assert.doesNotMatch(await action.getAttribute("href"), /libraryEntryId/);
+  });
+  await check("old-import-quality-failure-is-not-displayed-as-full-success", async () => {
+    entry={...entry,analysis_id:"report",analysis_schema_version:"analysis.v7",analysis_quality_status:"degraded",analysis_acceptance_passed:0,analysis_completion_status:"partial",is_imported_job:1,job_status:"completed"};
+    await page.getByRole("button",{name:"刷新",exact:true}).click();await page.locator(".library-cover em").filter({hasText:"报告部分完成"}).waitFor();assert.equal(await page.locator(".library-cover em.success").count(),0);
+  });
+  await check("queue-without-report-offers-inspection-not-a-fake-completed-task", async () => {
+    partialReport=false;await page.goto(server.resolvedUrls.local[0]+"?view=queue");await page.getByRole("link",{name:"查看素材并分析",exact:true}).waitFor();assert.equal(await page.getByRole("button",{name:"重试",exact:true}).count(),0);
+    assert.equal(await page.locator(".analysis-row .status").innerText(),"尚未分析");
+  });
+  await check("imported-partial-queue-opens-new-analysis-instead-of-resuming-import", async () => {
+    partialReport=true;await page.goto(server.resolvedUrls.local[0]+"?view=queue");await page.getByRole("link",{name:"重新分析",exact:true}).waitFor();assert.equal(await page.getByRole("button",{name:"重试",exact:true}).count(),0);assert.equal(await page.locator(".analysis-row .status").innerText(),"报告部分完成");
+  });
+  await check("historical-completed-import-detail-still-shows-v7-partial-quality", async () => {
+    partialReport=true;historicalCompleted=true;await page.goto(server.resolvedUrls.local[0]+"?view=detail");await page.locator(".analysis-partial-banner").waitFor();assert.match(await page.locator(".media-review-panel .panel-heading .status").innerText(),/已迁入部分报告/);historicalCompleted=false;
+  });
+  await check("owned-unanalysed-detail-explains-explicit-quota-checked-analysis", async () => {
+    partialReport=false;await page.goto(server.resolvedUrls.local[0]+"?view=detail");await page.getByText("素材已保存，但尚无分析报告。",{exact:true}).waitFor();await page.getByRole("button",{name:"重新分析",exact:true}).waitFor();assert.match(await page.getByRole("status").innerText(),/新任务会核对分析额度/);
+  });
+  await check("shared-unanalysed-detail-remains-read-only", async () => {
+    writableDetail=false;await page.reload();await page.getByText("当前是只读视图，请由来源空间成员核对并主动分析。",{exact:true}).waitFor();assert.equal(await page.getByRole("button",{name:"重新分析",exact:true}).count(),0);assert.deepEqual(errors,[]);
   });
 } catch (error) { process.exitCode = 1; console.error(error.stack); }
 finally {

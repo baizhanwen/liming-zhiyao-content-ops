@@ -6,6 +6,22 @@ import { apiError, errorResponse } from "../../../../../lib/api-response";
 import { checkOrganizationQuota } from "../../../../../lib/operations";
 import { readRequestIdentity } from "../../../../../lib/request-auth";
 
+import { assertProjectWriteAccess, createProjectWriteAssertion, ProjectWriteAccessChangedError, projectWriteAccessCondition, projectWriteAccessBindings, type ProjectWriteScope } from "../../../../../lib/project-write-access";
+
+const currentSourceCondition = `EXISTS(SELECT 1 FROM videos v WHERE v.id=? AND v.organization_id=? AND v.project_id=? AND v.deleted_at IS NULL
+  AND v.source_type IS ? AND v.source_url IS ? AND v.media_asset_id IS ? AND (v.source_type<>'upload' OR EXISTS(
+    SELECT 1 FROM media_assets a WHERE a.id=v.media_asset_id AND a.organization_id=v.organization_id AND a.project_id=v.project_id
+      AND a.status='active' AND a.kind IN ('source_video','source_audio'))))`;
+const sourceBindings = (scope: ProjectWriteScope, video: VideoRow) => [video.id, scope.organizationId, scope.projectId, video.source_type, video.source_url, video.media_asset_id];
+async function conflictResponse(db: D1Database, scope: ProjectWriteScope, video: VideoRow) {
+  await assertProjectWriteAccess(db,scope);
+  const current=await db.prepare("SELECT id,source_type,source_url,media_asset_id FROM videos WHERE id=? AND organization_id=? AND project_id=? AND deleted_at IS NULL").bind(video.id,scope.organizationId,scope.projectId).first<VideoRow>();
+  if (!current) return apiError("VIDEO_NOT_FOUND", "素材已经删除，本次没有创建分析任务。", 404);
+  if (current.source_type!==video.source_type || current.source_url!==video.source_url || current.media_asset_id!==video.media_asset_id) return apiError("VIDEO_SOURCE_CHANGED", "素材来源在操作期间已改变，本次没有创建分析任务。请刷新核对后再操作。",409);
+  if (!await db.prepare(`SELECT 1 WHERE ${currentSourceCondition}`).bind(...sourceBindings(scope,video)).first()) return apiError("SOURCE_UNAVAILABLE", "原始媒体来源已失效，本次没有创建分析任务。请先核对附件。",409);
+  return apiError("ANALYSIS_ALREADY_RUNNING", "其他成员已启动该视频的分析，请刷新查看进度。",409);
+}
+
 type VideoRow = { id: string; source_type: "url" | "upload"; source_url: string | null; media_asset_id: string | null };
 
 export async function POST(request: Request, context: { params: Promise<{ videoId: string }> }) {
@@ -25,18 +41,22 @@ export async function POST(request: Request, context: { params: Promise<{ videoI
     if (readinessIssue) return apiError(readinessIssue.code, readinessIssue.message, 503);
     const user = await ensureUser(identity); const quota = await checkOrganizationQuota(organizationId, user.id, "analyses");
     if (!quota.allowed) return apiError("ANALYSIS_QUOTA_EXCEEDED", `本月分析任务已达到 ${quota.limit} 次套餐上限。`, 429, { usage: quota.current, limit: quota.limit });
+    const scope = { organizationId, projectId, userId: user.id };
+    const assertAccess = createProjectWriteAssertion(db, scope, async () => (await readRequestIdentity(request))?.authSubject === identity.authSubject);
     const sourceRef = video.source_type === "upload" ? video.media_asset_id : video.source_url;
     if (!sourceRef) return apiError("SOURCE_UNAVAILABLE", "原始媒体来源不存在，无法重新分析。", 409);
+    if (!await db.prepare(`SELECT 1 WHERE ${currentSourceCondition}`).bind(...sourceBindings(scope,video)).first()) return await conflictResponse(db,scope,video);
     const transcript = await db.prepare("SELECT id FROM video_transcripts WHERE organization_id = ? AND project_id = ? AND video_id = ? AND source = 'manual' ORDER BY version DESC LIMIT 1").bind(organizationId, projectId, videoId).first<{ id: string }>();
     const analysisProfile = normalizeAnalysisProfile(payload.analysisProfile); const now = new Date().toISOString(); const jobId = crypto.randomUUID();
+    await assertAccess();
     const results = await db.batch([
       db.prepare(`INSERT INTO analysis_jobs (id, organization_id, project_id, video_id, input_transcript_id, source_type, source_ref, idempotency_key, status, analysis_profile, progress, current_stage, retry_count, created_by, updated_by, created_at, updated_at)
         SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 0, '等待按新模式重新分析', 0, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')
-        WHERE NOT EXISTS (SELECT 1 FROM analysis_jobs WHERE organization_id = ? AND project_id = ? AND video_id = ? AND status IN (${activeStatuses.map(() => "?").join(",")}))
-      `).bind(jobId, organizationId, projectId, videoId, transcript?.id ?? null, video.source_type, sourceRef, `reanalyze:${jobId}`, analysisProfile, user.id, user.id, organizationId, projectId, videoId, ...activeStatuses),
+        WHERE ${projectWriteAccessCondition} AND ${currentSourceCondition} AND NOT EXISTS (SELECT 1 FROM analysis_jobs WHERE organization_id = ? AND project_id = ? AND video_id = ? AND status IN (${activeStatuses.map(() => "?").join(",")}))
+      `).bind(jobId, organizationId, projectId, videoId, transcript?.id ?? null, video.source_type, sourceRef, `reanalyze:${jobId}`, analysisProfile, user.id, user.id, ...projectWriteAccessBindings(scope), ...sourceBindings(scope,video), organizationId, projectId, videoId, ...activeStatuses),
       db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) SELECT ?, ?, ?, ?, 'analysis_job.reanalysis_created', 'analysis_job', ?, ?, ? WHERE EXISTS (SELECT 1 FROM analysis_jobs WHERE id = ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, jobId, JSON.stringify({ videoId, analysisProfile, inputTranscriptId: transcript?.id ?? null }), now, jobId),
     ]);
-    if (!results[0].meta.changes) return apiError("ANALYSIS_ALREADY_RUNNING", "其他成员已启动该视频的分析，请刷新查看进度。", 409);
+    if (!results[0].meta.changes) return await conflictResponse(db,scope,video);
     return Response.json({ job: { id: jobId, video_id: videoId, status: "pending", analysis_profile: analysisProfile, progress: 0, current_stage: "等待按新模式重新分析", retry_count: 0, created_at: now, updated_at: now } }, { status: 201 });
-  } catch (error) { return errorResponse(error); }
+  } catch (error) { return error instanceof ProjectWriteAccessChangedError ? apiError(error.code,"当前登录或项目权限已改变，本次没有创建分析任务。请刷新核对后再操作。",403) : errorResponse(error); }
 }
