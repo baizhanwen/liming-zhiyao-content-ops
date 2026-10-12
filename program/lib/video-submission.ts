@@ -71,8 +71,8 @@ export function newVideoSubmissionStatements(db: Database, input: Submission & {
       .bind(videoId, organizationId, projectId, input.mediaAssetId ?? null, sourceType === "url" ? "douyin" : "upload", sourceType, input.sourceUrl ?? null, sourceHash, input.title, userId, userId, now, now, ...projectWriteAccessBindings(input)),
     db.prepare(`INSERT INTO video_library_entries (id, organization_id, source_video_id, category, tags_json, created_by, updated_by, created_at, updated_at) SELECT ?, ?, ?, 'other', '[]', ?, ?, ?, ? WHERE ${written}`)
       .bind(crypto.randomUUID(), organizationId, videoId, userId, userId, now, now, ...writtenBindings),
-    db.prepare(`INSERT INTO analysis_jobs (id, organization_id, project_id, video_id, source_type, source_ref, idempotency_key, status, analysis_profile, progress, current_stage, retry_count, created_by, updated_by, created_at, updated_at) SELECT ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 0, ?, 0, ?, ?, ?, ? WHERE ${written}`)
-      .bind(jobId, organizationId, projectId, videoId, sourceType, sourceRef, sourceHash, analysisProfile, stage, userId, userId, now, now, ...writtenBindings),
+    db.prepare(`INSERT INTO analysis_jobs (id, organization_id, project_id, video_id, source_type, source_ref, idempotency_key, status, analysis_profile, progress, current_stage, retry_count, created_by, updated_by, created_at, updated_at) SELECT ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 0, ?, 0, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE ${written}`)
+      .bind(jobId, organizationId, projectId, videoId, sourceType, sourceRef, sourceHash, analysisProfile, stage, userId, userId, ...writtenBindings),
     db.prepare(`INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) SELECT ?, ?, ?, ?, ?, 'video', ?, ?, ? WHERE ${written}`)
       .bind(crypto.randomUUID(), organizationId, projectId, userId, sourceType === "url" ? "video.url_submitted" : "video.uploaded", videoId, JSON.stringify(input.auditMetadata), now, ...writtenBindings),
   ];

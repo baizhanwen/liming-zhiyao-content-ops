@@ -401,6 +401,41 @@ try {
     assert.equal(recordedModelCalls, 0);
     writeFileSync(path.join(runDir, "request-intake.json"), JSON.stringify({ passed: true, synthetic: true, results, recordedModelCalls, boundary: "Actual local HTTP/Worker/D1/R2; generated opaque bytes, no media decoding, model calls or real business data" }, null, 2));
   });
+  await scenario("公司月度与存储最后额度竞争：真实HTTP/D1/R2", async () => {
+    const org = users[0].org, settings = await db.prepare("SELECT monthly_analysis_quota,storage_quota_bytes FROM organization_settings WHERE organization_id=?").bind(org).first();
+    assert.ok(settings);
+    const monthUsage = await count("SELECT COUNT(*) AS n FROM analysis_jobs WHERE organization_id=? AND created_at>=strftime('%Y-%m-01T00:00:00.000Z','now') AND created_at<strftime('%Y-%m-%dT00:00:00.000Z','now','start of month','+1 month') AND idempotency_key NOT LIKE 'material-import:%'", org);
+    const reports = [];
+    try {
+      await db.prepare("UPDATE organization_settings SET monthly_analysis_quota=? WHERE organization_id=?").bind(monthUsage + 1, org).run();
+      const monthlyUsers = [users[0], users[2]];
+      const responses = await Promise.all(monthlyUsers.map(user => submit(user)));
+      assert.deepEqual(responses.map(r => r.status).sort(), [202, 429]);
+      const accepted = responses.find(r => r.status === 202); expect(await cancel(monthlyUsers[responses.findIndex(r => r.status === 202)], accepted.data.job.id), 200);
+      reports.push({ kind: "monthly-final-slot", statuses: responses.map(r => r.status), rejectedCode: responses.find(r => r.status === 429).data.error.code });
+      await db.prepare("UPDATE organization_settings SET monthly_analysis_quota=? WHERE organization_id=?").bind(settings.monthly_analysis_quota, org).run();
+      const used = await count("SELECT COALESCE(SUM(MAX(size_bytes,0)),0) AS n FROM media_assets WHERE organization_id=? AND status='active'", org);
+      const payloads = [Buffer.from("quota0"), Buffer.from("quota1")];
+      await db.prepare("UPDATE organization_settings SET storage_quota_bytes=? WHERE organization_id=?").bind(used + payloads[0].length, org).run();
+      const uploaded = await Promise.all(payloads.map(bytes => { const form = new FormData(); form.set("file", new Blob([bytes], { type: "video/mp4" }), "quota.mp4"); return http("/api/videos/upload", { user: users[0], method: "POST", body: form, headers: { "x-organization-id": org, "x-project-id": users[0].project } }); }));
+      assert.deepEqual(uploaded.map(r => r.status).sort(), [202, 429]);
+      const success = uploaded.find(r => r.status === 202); const job = success.data.job;
+      // Isolated lease injection exercises the actual protected artifact route;
+      // no external processor runs or produces a paid request.
+      await db.prepare("UPDATE analysis_jobs SET status='extracting',version=1,lease_owner='quota-fixture',lease_expires_at=? WHERE id=?").bind(new Date(Date.now() + 60000).toISOString(), job.id).run();
+      const artifact = await http(`/api/internal/analysis-jobs/${job.id}/artifacts`, { service: true, method: "POST", body: {}, headers: { "x-worker-id": "quota-fixture", "x-job-version": "1", "x-artifact-kind": "report", "x-artifact-filename": "quota.json" } });
+      expect(artifact, 429); assert.equal(artifact.data.error.code, "STORAGE_QUOTA_EXCEEDED");
+      const object = await (await mf.getR2Bucket("MEDIA")).head((await db.prepare("SELECT r2_key FROM media_assets WHERE video_id=?").bind(success.data.video.id).first()).r2_key);
+      assert.equal(object.size, payloads[0].length);
+      assert.equal(await count("SELECT SUM(size_bytes) AS n FROM media_assets WHERE organization_id=? AND status='active'", org), used + payloads[0].length);
+      assert.equal(await count("SELECT COUNT(*) AS n FROM media_assets WHERE analysis_job_id=?", job.id), 0);
+      await db.prepare("UPDATE analysis_jobs SET status='cancelled',lease_owner=NULL,lease_expires_at=NULL WHERE id=?").bind(job.id).run();
+      reports.push({ kind: "storage-final-slot", statuses: uploaded.map(r => r.status), rejectedCode: uploaded.find(r => r.status === 429).data.error.code, artifactStatus: artifact.status, artifactCode: artifact.data.error.code });
+    } finally {
+      await db.prepare("UPDATE organization_settings SET monthly_analysis_quota=?,storage_quota_bytes=? WHERE organization_id=?").bind(settings.monthly_analysis_quota, settings.storage_quota_bytes, org).run();
+    }
+    writeFileSync(path.join(runDir, "quota-concurrency.json"), JSON.stringify({ passed: true, synthetic: true, reports, boundary: "Actual local HTTP/D1/R2; synthetic accounts and bytes, artifact lease set only in this isolated fixture; no model or field business test" }, null, 2));
+  });
   await scenario("退出登录后旧 Cookie 无法继续访问", async () => {
     expect(await http("/api/auth/session", { user: users[0], method: "DELETE" }), 200);
     expect(await http(`/api/videos?${scope(users[0])}`, { user: users[0] }), 401);

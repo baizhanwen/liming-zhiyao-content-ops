@@ -1,4 +1,4 @@
-import { isLeasedAnalysisStatus } from "../../../../../../lib/analysis-jobs";
+import { isLeasedAnalysisStatus, LEASED_ANALYSIS_STATUSES_SQL } from "../../../../../../lib/analysis-jobs";
 import { getD1, getMediaBucket, sha256Hex } from "../../../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../../../lib/api-response";
 import { normalizeWorkerId, requireAnalyzerService } from "../../../../../../lib/service-auth";
@@ -56,6 +56,8 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
   if (declaredLength > sizeLimits[kind]) return apiError("ARTIFACT_TOO_LARGE", "分析产物超过大小限制。", 413);
 
   let storedKey: string | null = null;
+  let writeAttempted = false;
+  let submittedResponse: Response | null = null;
   try {
     const { jobId } = await context.params;
     const now = new Date().toISOString();
@@ -64,7 +66,7 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
       SELECT j.id, j.organization_id, j.project_id, j.video_id, j.status, j.lease_owner, j.lease_expires_at, j.version
       FROM analysis_jobs j
       INNER JOIN videos v ON v.id = j.video_id AND v.organization_id = j.organization_id AND v.project_id = j.project_id
-      WHERE j.id = ? AND j.lease_owner = ? AND j.version = ? AND j.lease_expires_at > ?
+      WHERE j.id = ? AND j.lease_owner = ? AND j.version = ? AND j.lease_expires_at > ? AND v.deleted_at IS NULL
     `).bind(jobId, workerId, version, now).first<ArtifactJob>();
     if (!job || !isLeasedAnalysisStatus(job.status)) return apiError("ARTIFACT_LEASE_INVALID", "任务租约已失效，分析产物未接收。", 409);
     const bytes = await request.arrayBuffer();
@@ -87,7 +89,7 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     }
     const assetId = crypto.randomUUID();
     storedKey = `organizations/${job.organization_id}/projects/${job.project_id}/videos/${job.video_id}/${kind}/${assetId}-${filename}`;
-    await getMediaBucket().put(storedKey, bytes, {
+    const stored = await getMediaBucket().put(storedKey, bytes, {
       httpMetadata: { contentType: rawContentType },
       customMetadata: {
         organizationId: job.organization_id,
@@ -99,17 +101,33 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
         ...(confidence === null ? {} : { confidence: String(confidence) }),
       },
     });
-    await db.prepare(`
+    if (!stored) throw new Error("MEDIA_OBJECT_NOT_WRITTEN");
+    submittedResponse = Response.json({ asset: { id: assetId, kind, filename, contentType: rawContentType, sizeBytes: bytes.byteLength, sha256, timestampMs, confidence } }, { status: 201 });
+    writeAttempted = true;
+    const result = await db.prepare(`
       INSERT INTO media_assets
         (id, organization_id, project_id, video_id, analysis_job_id, kind, r2_key, filename, content_type, size_bytes, sha256, status, created_by, updated_by, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
-    `).bind(assetId, job.organization_id, job.project_id, job.video_id, jobId, kind, storedKey, filename, rawContentType, bytes.byteLength, sha256, `service:${workerId}`, `service:${workerId}`, now, now).run();
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?
+      WHERE EXISTS(SELECT 1 FROM analysis_jobs j INNER JOIN videos v
+        ON v.id=j.video_id AND v.organization_id=j.organization_id AND v.project_id=j.project_id
+        WHERE j.id=? AND j.lease_owner=? AND j.version=? AND j.lease_expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          AND j.status IN (${LEASED_ANALYSIS_STATUSES_SQL}) AND v.deleted_at IS NULL)
+    `).bind(assetId, job.organization_id, job.project_id, job.video_id, jobId, kind, storedKey, filename, rawContentType, bytes.byteLength, sha256, `service:${workerId}`, `service:${workerId}`, now, now, jobId, workerId, version).run();
+    if (!result.meta.changes) throw new Error("ARTIFACT_LEASE_CHANGED");
     storedKey = null;
-    return Response.json({ asset: { id: assetId, kind, filename, contentType: rawContentType, sizeBytes: bytes.byteLength, sha256, timestampMs, confidence } }, { status: 201 });
+    return submittedResponse;
   } catch (error) {
     if (storedKey) {
-      try { await getMediaBucket().delete(storedKey); } catch { /* best-effort rollback */ }
+      if (writeAttempted) {
+        try {
+          const saved = await getD1().prepare("SELECT id FROM media_assets WHERE r2_key=?").bind(storedKey).first();
+          if (saved && submittedResponse) return submittedResponse;
+        } catch { return apiError("MEDIA_UPLOAD_STATUS_UNKNOWN", "分析附件提交结果暂时无法确认，对象已保留。请核对任务附件后再操作，避免重新运行模型。", 503); }
+      }
+      try { await getMediaBucket().delete(storedKey); }
+      catch { return apiError("MEDIA_UPLOAD_CLEANUP_PENDING", "分析附件未入库，暂存对象清理失败。请联系管理员核对存储后再操作。", 503); }
     }
+    if (error instanceof Error && error.message.includes("ARTIFACT_LEASE_CHANGED")) return apiError("ARTIFACT_LEASE_INVALID", "任务租约已失效，分析附件未保存。", 409);
     return errorResponse(error);
   }
 }

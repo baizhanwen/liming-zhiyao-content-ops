@@ -86,6 +86,7 @@ export const mediaAssets = sqliteTable("media_assets", {
 }, (table) => [
   uniqueIndex("idx_media_assets_r2_key").on(table.r2Key),
   index("idx_media_assets_project_kind").on(table.organizationId, table.projectId, table.kind),
+  index("media_assets_org_status_size_idx").on(table.organizationId, table.status, table.sizeBytes),
   index("idx_media_assets_video_kind").on(table.organizationId, table.projectId, table.videoId, table.kind),
   index("idx_media_assets_analysis_job_kind").on(table.analysisJobId, table.kind, table.status),
 ]);
@@ -158,6 +159,7 @@ export const analysisJobs = sqliteTable("analysis_jobs", {
 }, (table) => [
   uniqueIndex("idx_analysis_jobs_org_idempotency").on(table.organizationId, table.idempotencyKey),
   index("idx_analysis_jobs_project_status_created").on(table.organizationId, table.projectId, table.status, table.createdAt),
+  index("analysis_jobs_org_created_idx").on(table.organizationId, table.createdAt),
   index("idx_analysis_jobs_claimable").on(table.status, table.leaseExpiresAt, table.createdAt),
 ]);
 

@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from liming_analyzer.__main__ import build_lazy_processor
 from liming_analyzer.api_client import AnalysisResult, AnalyzerApiError, ClaimedJob
-from liming_analyzer.worker import classify_worker_error, process_once, run_forever
+from liming_analyzer.worker import classify_worker_error, process_once, run_forever, _is_transient_api_error
 
 
 class FakeClient:
@@ -28,6 +28,18 @@ class FakeClient:
 
 
 class WorkerTests(unittest.TestCase):
+    def test_quota_and_storage_failures_keep_their_actionable_codes(self):
+        for code, status in [("STORAGE_QUOTA_EXCEEDED", 429), ("ANALYSIS_QUOTA_EXCEEDED", 429), ("CAPACITY_UNAVAILABLE", 503), ("INVALID_MEDIA_SIZE", 400)]:
+            error = AnalyzerApiError(status, code, "synthetic 429 quota, not a model rate limit")
+            self.assertEqual(classify_worker_error(error), (code, str(error)))
+            self.assertFalse(_is_transient_api_error(error))
+
+    def test_unknown_artifact_outcomes_keep_their_codes(self):
+        for code in ("MEDIA_UPLOAD_STATUS_UNKNOWN", "MEDIA_UPLOAD_CLEANUP_PENDING"):
+            error = AnalyzerApiError(503, code, "synthetic storage outcome")
+            self.assertEqual(classify_worker_error(error)[0], code)
+        self.assertTrue(_is_transient_api_error(AnalyzerApiError(429, "MODEL_RATE_LIMITED", "provider rate limit")))
+
     def setUp(self):
         self.job = ClaimedJob(
             "job-1", "org-1", "project-1", "video-1", "url", "queued", 1, 2, {}

@@ -7,6 +7,10 @@ export function apiError(code: string, message: string, status: number, details?
 export function errorResponse(error: unknown) {
   if (error instanceof ProjectWriteAccessChangedError) return apiError(error.code, error.message, 403);
   const message = error instanceof Error ? error.message : "Unexpected error";
+  if (message.includes("ANALYSIS_MONTHLY_QUOTA_EXCEEDED")) return apiError("ANALYSIS_QUOTA_EXCEEDED", "本月分析任务额度已用完，或其他成员已先提交。请刷新用量后再操作；本次没有新建分析任务。", 429);
+  if (message.includes("MEDIA_STORAGE_QUOTA_EXCEEDED")) return apiError("STORAGE_QUOTA_EXCEEDED", "公司媒体存储额度已用完或已调整，本次附件未入库。请让管理员核对存储用量后再操作。", 429);
+  if (message.includes("MEDIA_SIZE_INVALID")) return apiError("INVALID_MEDIA_SIZE", "附件大小记录无效，本次未保存。", 400);
+  if (message.includes("ORGANIZATION_CAPACITY_INVALID")) return apiError("CAPACITY_UNAVAILABLE", "公司的额度配置无效，已停止新增任务或附件。请联系管理员核对配置。", 503);
   if (message.includes("ANALYSIS_USER_QUEUE_FULL")) return apiError("ANALYSIS_USER_QUEUE_FULL", "你已有 10 条未结束的分析任务（跨项目累计），请等待完成后再提交。本批已成功提交的任务会继续处理。", 429);
   if (message.includes("ANALYSIS_HOST_QUEUE_FULL")) return apiError("ANALYSIS_HOST_QUEUE_FULL", "主机已有 50 条未结束的分析任务，请等待队列释放名额后再提交。本批已成功提交的任务会继续处理。", 429);
   if (message.includes("ANALYZER_STOPPING")) return apiError("ANALYZER_STOPPING", "上一轮分析正在释放资源，请稍后再重试。", 409);

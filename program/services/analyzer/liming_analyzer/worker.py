@@ -19,10 +19,17 @@ class ProcessingFailure(RuntimeError):
 
 
 def _is_transient_api_error(error: AnalyzerApiError) -> bool:
+    if error.code in {"STORAGE_QUOTA_EXCEEDED", "ANALYSIS_QUOTA_EXCEEDED", "CAPACITY_UNAVAILABLE", "INVALID_MEDIA_SIZE"}:
+        return False
     return error.status in {408, 425, 429} or error.status >= 500 or error.code == "INVALID_RESPONSE"
 
 
 def classify_worker_error(error: Exception) -> tuple[str, str]:
+    if isinstance(error, AnalyzerApiError) and error.code in {
+        "STORAGE_QUOTA_EXCEEDED", "ANALYSIS_QUOTA_EXCEEDED", "CAPACITY_UNAVAILABLE", "INVALID_MEDIA_SIZE",
+        "MEDIA_UPLOAD_STATUS_UNKNOWN", "MEDIA_UPLOAD_CLEANUP_PENDING",
+    }:
+        return error.code, str(error)
     if isinstance(error, ProcessingFailure):
         return error.code, str(error)
     if isinstance(error, SourceDownloadError):

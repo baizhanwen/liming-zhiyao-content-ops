@@ -60,12 +60,14 @@ export function currentMonthStart() {
 export async function readOrganizationUsage(organizationId: string) {
   const db = getD1();
   const monthStart = currentMonthStart();
+  const monthDate = new Date(monthStart);
+  const nextMonthStart = new Date(Date.UTC(monthDate.getUTCFullYear(), monthDate.getUTCMonth() + 1, 1)).toISOString();
   const [projects, members, analyses, modelCalls, storage] = await Promise.all([
     db.prepare("SELECT COUNT(*) AS value FROM projects WHERE organization_id = ? AND deleted_at IS NULL AND status != 'archived'").bind(organizationId).first<{ value: number }>(),
     db.prepare("SELECT (SELECT COUNT(*) FROM organization_members WHERE organization_id = ? AND status = 'active') + (SELECT COUNT(*) FROM invitations WHERE organization_id = ? AND status = 'pending' AND julianday(expires_at) > julianday('now')) AS value").bind(organizationId, organizationId).first<{ value: number }>(),
-    db.prepare("SELECT COUNT(*) AS value FROM analysis_jobs WHERE organization_id = ? AND created_at >= ?").bind(organizationId, monthStart).first<{ value: number }>(),
+    db.prepare("SELECT COUNT(*) AS value FROM analysis_jobs WHERE organization_id = ? AND created_at >= ? AND created_at < ? AND idempotency_key NOT LIKE 'material-import:%'").bind(organizationId, monthStart, nextMonthStart).first<{ value: number }>(),
     db.prepare("SELECT COUNT(*) AS value FROM model_calls WHERE organization_id = ? AND created_at >= ?").bind(organizationId, monthStart).first<{ value: number }>(),
-    db.prepare("SELECT COALESCE(SUM(size_bytes), 0) AS value FROM media_assets WHERE organization_id = ? AND status = 'active'").bind(organizationId).first<{ value: number }>(),
+    db.prepare("SELECT COALESCE(SUM(MAX(size_bytes,0)), 0) AS value FROM media_assets WHERE organization_id = ? AND status = 'active'").bind(organizationId).first<{ value: number }>(),
   ]);
   return { projects: projects?.value ?? 0, members: members?.value ?? 0, analyses: analyses?.value ?? 0, modelCalls: modelCalls?.value ?? 0, storageBytes: storage?.value ?? 0, monthStart };
 }
