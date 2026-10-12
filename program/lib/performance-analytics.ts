@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { getD1 } from "../db/runtime";
 import { buildPerformanceDiagnostics } from "./performance-diagnostics.ts";
+import { metricUtc, metricTimeKey, metricUtcSql } from "./metric-time.ts";
 
 const identifier = z.string().trim().min(1).max(200);
 const nonNegativeInteger = z.coerce.number().int().min(0).max(2_147_483_647);
@@ -72,6 +73,7 @@ export const createReportSchema = z.object({
 export const finalizeReportSchema = z.object({ organizationId: identifier, projectId: identifier }).strict();
 
 export type MetricSnapshotRow = {
+  metric_id?: string; metric_created_at?: string;
   publication_id: string; content_item_id: string; title: string; platform: string; external_url: string | null; published_at: string | null; observed_at: string;
   video_id?: string | null; video_title?: string | null; video_duration_sec?: number | null;
   genre?: string | null; review_status?: string | null; views: number; likes: number; comments: number; shares: number; saves: number; followers_gained: number; leads: number; homepage_visits?: number; average_watch_seconds: number | null; completion_rate_bps: number | null; five_second_completion_rate_bps?: number | null; cover_ctr_bps?: number | null; two_second_bounce_rate_bps?: number | null;
@@ -204,9 +206,16 @@ function buildPeerGroups(rows: MetricSnapshotRow[], periodStart: string, periodE
 
 export function buildAnalyticsSnapshot(rows: MetricSnapshotRow[], periodStart: string, periodEnd: string, comparison: null | { periodStart: string; periodEnd: string; summary: { views: number; interactions: number; followersGained: number; leads: number } } = null) {
   const byPublication = new Map<string, MetricSnapshotRow[]>();
-  for (const row of rows) { const list = byPublication.get(row.publication_id) || []; list.push(row); byPublication.set(row.publication_id, list); }
+  const instants = new Map<string, MetricSnapshotRow>(); let timestampAliases = 0, timestampConflicts = 0;
+  for (const raw of rows.slice().sort((a,b)=>(a.metric_created_at||"").localeCompare(b.metric_created_at||"") || (a.metric_id||"").localeCompare(b.metric_id||""))) {
+    const row = { ...raw, observed_at: metricUtc(raw.observed_at) || raw.observed_at, published_at: metricUtc(raw.published_at) };
+    const key=JSON.stringify([row.publication_id,row.observed_at]), prior=instants.get(key);
+    if (prior) { timestampAliases++; if (["views","likes","comments","shares","saves","followers_gained","leads","homepage_visits","average_watch_seconds","completion_rate_bps","five_second_completion_rate_bps","cover_ctr_bps","two_second_bounce_rate_bps"].some(field=>prior[field as keyof MetricSnapshotRow]!==row[field as keyof MetricSnapshotRow])) timestampConflicts++; continue; }
+    instants.set(key,row);
+    const list = byPublication.get(row.publication_id) || []; list.push(row); byPublication.set(row.publication_id, list);
+  }
   const profiles = Array.from(byPublication.values()).flatMap((publicationRows) => {
-    const sorted = publicationRows.slice().sort((a, b) => a.observed_at.localeCompare(b.observed_at));
+    const sorted = publicationRows.slice().sort((a, b) => metricTimeKey(a.observed_at).localeCompare(metricTimeKey(b.observed_at)));
     const periodRows = sorted.filter((row) => isInPeriod(row, periodStart, periodEnd));
     if (!periodRows.length) return [];
     const latest = periodRows[periodRows.length - 1];
@@ -233,6 +242,7 @@ export function buildAnalyticsSnapshot(rows: MetricSnapshotRow[], periodStart: s
   const completionRows = latestRows.filter((row) => row.completion_rate_bps !== null); const watchRows = latestRows.filter((row) => row.average_watch_seconds !== null);
   const baselineCoverage = { total: profiles.length, complete: profiles.filter((profile) => profile.baselineMode !== "first_period_snapshot").length, partial: profiles.filter((profile) => profile.baselineMode === "first_period_snapshot").length, newPublications: profiles.filter((profile) => profile.baselineMode === "new_publication").length };
   const summary = {
+    timestampAliases, timestampConflicts,
     ...totals,
     contentCount: profiles.length,
     cumulativeViews: cumulative.views,
@@ -259,7 +269,7 @@ export function buildAnalyticsSnapshot(rows: MetricSnapshotRow[], periodStart: s
   const seriesMap = new Map<string, { date: string; views: number; interactions: number; followersGained: number; leads: number }>();
   for (const profile of profiles) {
     const daily = new Map<string, MetricSnapshotRow>();
-    for (const row of profile.periodRows) { const date = row.observed_at.slice(0, 10); const current = daily.get(date); if (!current || row.observed_at > current.observed_at) daily.set(date, row); }
+    for (const row of profile.periodRows) { const date = row.observed_at.slice(0, 10); const current = daily.get(date); if (!current || metricTimeKey(row.observed_at) > metricTimeKey(current.observed_at)) daily.set(date, row); }
     let previous = profile.baseline;
     for (const [date, row] of Array.from(daily.entries()).sort(([left], [right]) => left.localeCompare(right))) {
       const delta = metricDelta(row, previous); const current = seriesMap.get(date) || { date, views: 0, interactions: 0, followersGained: 0, leads: 0 };
@@ -296,7 +306,7 @@ export function buildAnalyticsSnapshot(rows: MetricSnapshotRow[], periodStart: s
 async function loadPerformancePeriodRows(db: ReturnType<typeof getD1>, organizationId: string, projectId: string, periodStart: string, periodEnd: string) {
   const rows = await db.prepare(`
     WITH combined AS (
-      SELECT m.publication_id, m.content_item_id, c.title, p.platform, p.external_url, p.published_at, m.observed_at,
+      SELECT m.id AS metric_id, m.created_at AS metric_created_at, m.publication_id, m.content_item_id, c.title, p.platform, p.external_url, ${metricUtcSql("p.published_at")} AS published_at, ${metricUtcSql("m.observed_at")} AS observed_at,
         NULL AS video_id, NULL AS video_title, NULL AS video_duration_sec,
         NULL AS genre, NULL AS review_status, m.views, m.likes, m.comments, m.shares, m.saves, m.followers_gained, m.leads,
         0 AS homepage_visits, m.average_watch_seconds, m.completion_rate_bps,
@@ -307,8 +317,8 @@ async function loadPerformancePeriodRows(db: ReturnType<typeof getD1>, organizat
       LEFT JOIN performance_import_batches b ON b.id = m.import_batch_id AND b.organization_id = m.organization_id AND b.project_id = m.project_id
       WHERE m.organization_id = ? AND m.project_id = ? AND (m.import_batch_id IS NULL OR b.status = 'completed')
       UNION ALL
-      SELECT 'platform:' || w.id AS publication_id, COALESCE(w.content_item_id, '') AS content_item_id, w.title, s.platform,
-        v.source_url AS external_url, w.published_at, s.as_of_at AS observed_at,
+      SELECT s.id AS metric_id, s.created_at AS metric_created_at, 'platform:' || w.id AS publication_id, COALESCE(w.content_item_id, '') AS content_item_id, w.title, s.platform,
+        v.source_url AS external_url, ${metricUtcSql("w.published_at")} AS published_at, ${metricUtcSql("s.as_of_at")} AS observed_at,
         w.video_id AS video_id, v.title AS video_title, v.duration_sec AS video_duration_sec, w.genre, w.review_status,
         s.views, s.likes, s.comments, s.shares, s.saves, s.follower_delta AS followers_gained, 0 AS leads,
         s.homepage_visits, CAST(s.avg_watch_ms / 1000 AS INTEGER) AS average_watch_seconds, s.completion_rate_bps,
@@ -324,12 +334,12 @@ async function loadPerformancePeriodRows(db: ReturnType<typeof getD1>, organizat
     )
     SELECT current.* FROM combined current
     WHERE substr(current.observed_at, 1, 10) BETWEEN ? AND ? OR (
-      substr(current.observed_at, 1, 10) < ? AND current.observed_at = (
-        SELECT MAX(previous.observed_at) FROM combined previous
+      substr(current.observed_at, 1, 10) < ? AND rtrim(current.observed_at,'Z') = (
+        SELECT MAX(rtrim(previous.observed_at,'Z')) FROM combined previous
         WHERE previous.publication_id = current.publication_id AND substr(previous.observed_at, 1, 10) < ?
       )
     )
-    ORDER BY current.observed_at ASC LIMIT 10000
+    ORDER BY rtrim(current.observed_at,'Z') ASC,current.metric_created_at,current.metric_id LIMIT 10000
   `).bind(organizationId, projectId, organizationId, projectId, periodStart, periodEnd, periodStart, periodStart).all<MetricSnapshotRow>();
   return rows.results;
 }
@@ -365,7 +375,7 @@ export function buildReportNarrative(snapshot: AnalyticsSnapshot) {
   if (!summary.contentCount) return { summary: "本报告周期内尚未导入已发布内容的数据快照。", highlights: ["当前没有可计算的内容表现数据。"], recommendations: ["从发布管理下载模板并导入至少一条作品快照。", "统一在固定时间记录累计播放和互动数据，保证周期可比。"] };
   const best = topContent[0]; const engagement = (summary.engagementRate * 100).toFixed(2); const qualifier = summary.baselineCoverage.partial ? "可确认" : "";
   const triggeredRules = snapshot.diagnostics.rules.filter((item) => item.status === "triggered").slice(0, 3);
-  const coverageNote = summary.baselineCoverage.partial ? `其中 ${summary.baselineCoverage.partial} 条历史作品缺少期初快照，增量从本期首条快照起计算。` : "全部纳入作品均有期初快照，或为本期新发布作品。";
+  const coverageNote = (summary.baselineCoverage.partial ? `其中 ${summary.baselineCoverage.partial} 条历史作品缺少期初快照，增量从本期首条快照起计算。` : "全部纳入作品均有期初快照，或为本期新发布作品。") + (summary.timestampAliases ? `发现 ${summary.timestampAliases} 条同一时刻的历史重复快照，其中 ${summary.timestampConflicts} 条指标不一致；仅使用首个已保存值，原记录未改，请人工核对。` : "");
   const viewsChange = snapshot.comparison?.changeRate.views;
   const comparisonHighlight = viewsChange === null || viewsChange === undefined ? "前一周期没有可比较的新增播放数据。" : `新增播放较前一周期${viewsChange >= 0 ? "增长" : "下降"} ${Math.abs(viewsChange * 100).toFixed(1)}%。`;
   return {

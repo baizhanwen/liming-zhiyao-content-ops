@@ -1,6 +1,7 @@
 import { readBoundedJson, RequestBodyError } from "../../../lib/bounded-request-body";
 import { createProjectWriteAssertion, ProjectWriteAccessChangedError } from "../../../lib/project-write-access";
 import { commitPerformanceImport } from "../../../lib/performance-import-transaction";
+import { metricUtc, metricUtcSql } from "../../../lib/metric-time";
 import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess, sha256Hex } from "../../../db/runtime";
 import { apiError, errorResponse } from "../../../lib/api-response";
 import { douyinPerformanceImportSchema, performanceImportSchema } from "../../../lib/performance-analytics";
@@ -17,12 +18,15 @@ type Work = {
     updated_at: string;
     match_status: string;
 };
-const workKey = (title: string, published: string, genre: string | null | undefined) => JSON.stringify([title, published, genre || ""]);
+const workKey = (title: string, published: string, genre: string | null | undefined) => JSON.stringify([title, metricUtc(published) || published, genre || ""]);
 async function importDouyinSnapshot(request: Request, identity: RequestIdentity, body: unknown) {
     const parsed = douyinPerformanceImportSchema.safeParse(body);
     if (!parsed.success)
         return apiError("INVALID_DOUYIN_METRIC_IMPORT", parsed.error.issues[0]?.message || "抖音 16 字段导入格式无效。", 400);
-    const { organizationId, projectId, format, asOfAt, filename, rows } = parsed.data;
+    const { organizationId, projectId, format, asOfAt: originalAsOfAt, filename, rows: originalRows } = parsed.data;
+    const asOfAt = metricUtc(originalAsOfAt);
+    if (!asOfAt || originalRows.some(row => !metricUtc(row.publishedAt))) return apiError("INVALID_DOUYIN_METRIC_IMPORT", "时间无法转换为有效 UTC 日期。", 400);
+    const rows = originalRows.map(row => ({ ...row, publishedAt: metricUtc(row.publishedAt)! }));
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
     if (!access || !canWriteProjectAccess(access))
         return apiError("IMPORT_ACCESS_DENIED", "当前角色不能导入抖音数据。", 403);
@@ -30,7 +34,8 @@ async function importDouyinSnapshot(request: Request, identity: RequestIdentity,
     const scope = { organizationId, projectId, userId: user.id };
     const assertAccess = createProjectWriteAssertion(db, scope, async () => (await readRequestIdentity(request))?.authSubject === identity.authSubject);
     const sourceHash = await sha256Hex(new TextEncoder().encode(JSON.stringify({ format, asOfAt, rows })));
-    const findDuplicate = () => db.prepare("SELECT id,status FROM platform_metric_import_batches WHERE organization_id=? AND project_id=? AND source_hash=? AND as_of_at=?").bind(organizationId, projectId, sourceHash, asOfAt).first<{
+    const legacyHash = await sha256Hex(new TextEncoder().encode(JSON.stringify({ format, asOfAt: originalAsOfAt, rows: originalRows })));
+    const findDuplicate = () => db.prepare("SELECT id,status FROM platform_metric_import_batches WHERE organization_id=? AND project_id=? AND source_hash IN (?,?) ORDER BY CASE WHEN source_hash=? AND status='failed' THEN 0 WHEN status<>'failed' THEN 1 ELSE 2 END,created_at,id LIMIT 1").bind(organizationId, projectId, sourceHash, legacyHash, legacyHash).first<{
         id: string;
         status: string;
     }>();
@@ -59,7 +64,7 @@ async function importDouyinSnapshot(request: Request, identity: RequestIdentity,
     for (const [index, row] of rows.entries()) {
         const titleNormalized = normalizedWorkTitle(row.title), key = workKey(titleNormalized, row.publishedAt, row.genre);
         const previous = owned.find(item => !used.has(String(item.id)) && (row.platformWorkId ? item.platform_work_id === row.platformWorkId : workKey(String(item.title_normalized), String(item.published_at), item.genre as string | null) === key)
-            && item.as_of_at === asOfAt && item.views === row.views && item.likes === row.likes && item.shares === row.shares && item.comments === row.comments && item.saves === row.saves && item.homepage_visits === row.homepageVisits && item.follower_delta === row.followerDelta
+            && metricUtc(String(item.as_of_at)) === asOfAt && item.views === row.views && item.likes === row.likes && item.shares === row.shares && item.comments === row.comments && item.saves === row.saves && item.homepage_visits === row.homepageVisits && item.follower_delta === row.followerDelta
             && item.completion_rate_bps === bps(row.completionRate) && item.five_second_completion_rate_bps === bps(row.fiveSecondCompletionRate) && item.cover_ctr_bps === bps(row.coverCtr) && item.two_second_bounce_rate_bps === bps(row.twoSecondBounceRate) && item.avg_watch_ms === (row.avgWatchMs ?? null));
         if (previous) {
             used.add(String(previous.id));
@@ -95,7 +100,7 @@ async function importDouyinSnapshot(request: Request, identity: RequestIdentity,
             for (const { row, work, create } of plans) {
                 if (create)
                     statements.push(db.prepare(`INSERT INTO platform_works(id,organization_id,project_id,platform,platform_work_id,title,title_normalized,published_at,genre,review_status_raw,review_status,match_status,created_by,updated_by,created_at,updated_at) SELECT ?,?,?,'douyin',?,?,?,?,?,?,?,?,?,?,?,? WHERE ${exists}`).bind(work.id, organizationId, projectId, row.platformWorkId || null, row.title, work.title_normalized, row.publishedAt, row.genre || null, row.reviewStatus || null, row.reviewStatus || null, work.match_status, user.id, user.id, now, now, marker));
-                statements.push(db.prepare(`INSERT OR IGNORE INTO platform_metric_snapshots(id,organization_id,project_id,platform,work_id,import_batch_id,as_of_at,views,completion_rate_bps,five_second_completion_rate_bps,cover_ctr_bps,two_second_bounce_rate_bps,avg_watch_ms,likes,shares,comments,saves,homepage_visits,follower_delta,created_by,created_at) SELECT ?,?,?,'douyin',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE ${exists}`).bind(crypto.randomUUID(), organizationId, projectId, work.id, batchId, asOfAt, row.views, bps(row.completionRate), bps(row.fiveSecondCompletionRate), bps(row.coverCtr), bps(row.twoSecondBounceRate), row.avgWatchMs ?? null, row.likes, row.shares, row.comments, row.saves, row.homepageVisits, row.followerDelta, user.id, now, marker));
+                statements.push(db.prepare(`INSERT OR IGNORE INTO platform_metric_snapshots(id,organization_id,project_id,platform,work_id,import_batch_id,as_of_at,views,completion_rate_bps,five_second_completion_rate_bps,cover_ctr_bps,two_second_bounce_rate_bps,avg_watch_ms,likes,shares,comments,saves,homepage_visits,follower_delta,created_by,created_at) SELECT ?,?,?,'douyin',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE ${exists} AND NOT EXISTS(SELECT 1 FROM platform_metric_snapshots existing WHERE existing.organization_id=? AND existing.project_id=? AND existing.work_id=? AND ${metricUtcSql("existing.as_of_at")}=?)`).bind(crypto.randomUUID(), organizationId, projectId, work.id, batchId, asOfAt, row.views, bps(row.completionRate), bps(row.fiveSecondCompletionRate), bps(row.coverCtr), bps(row.twoSecondBounceRate), row.avgWatchMs ?? null, row.likes, row.shares, row.comments, row.saves, row.homepageVisits, row.followerDelta, user.id, now, marker, organizationId, projectId, work.id, asOfAt));
             }
             for (const warning of warnings)
                 statements.push(db.prepare(`INSERT INTO platform_metric_import_errors(id,organization_id,project_id,import_batch_id,row_number,error_code,message,raw_json,created_at) SELECT ?,?,?,?,?,?,?,NULL,? WHERE ${exists}`).bind(crypto.randomUUID(), organizationId, projectId, batchId, warning.row, warning.code, warning.message, now, marker));
@@ -142,14 +147,17 @@ export async function POST(request: Request) {
         const parsed = performanceImportSchema.safeParse(body);
         if (!parsed.success)
             return apiError("INVALID_PERFORMANCE_IMPORT", parsed.error.issues[0]?.message || "导入数据格式无效。", 400);
-        const { organizationId, projectId, source, filename, rows } = parsed.data;
+        const { organizationId, projectId, source, filename, rows: originalRows } = parsed.data;
+        if (originalRows.some(row => !metricUtc(row.observedAt))) return apiError("INVALID_PERFORMANCE_IMPORT", "时间无法转换为有效 UTC 日期。", 400);
+        const rows = originalRows.map(row => ({ ...row, observedAt: metricUtc(row.observedAt)! }));
         const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
         if (!access || !canWriteProjectAccess(access))
             return apiError("IMPORT_ACCESS_DENIED", "当前角色不能导入运营数据。", 403);
         const db = getD1(), user = await ensureUser(identity), now = new Date().toISOString(), scope = { organizationId, projectId, userId: user.id };
         const assertAccess = createProjectWriteAssertion(db, scope, async () => (await readRequestIdentity(request))?.authSubject === identity.authSubject);
         const sourceHash = await sha256Hex(new TextEncoder().encode(JSON.stringify({ source, rows })));
-        const findDuplicate = () => db.prepare("SELECT id,status FROM performance_import_batches WHERE organization_id=? AND project_id=? AND source_hash=?").bind(organizationId, projectId, sourceHash).first<{
+        const legacyHash = await sha256Hex(new TextEncoder().encode(JSON.stringify({ source, rows: originalRows })));
+        const findDuplicate = () => db.prepare("SELECT id,status FROM performance_import_batches WHERE organization_id=? AND project_id=? AND source_hash IN (?,?) ORDER BY CASE WHEN source_hash=? AND status='failed' THEN 0 WHEN status<>'failed' THEN 1 ELSE 2 END,created_at,id LIMIT 1").bind(organizationId, projectId, sourceHash, legacyHash, legacyHash).first<{
             id: string;
             status: string;
         }>();
@@ -174,7 +182,7 @@ export async function POST(request: Request) {
         const previousSnapshots = duplicate ? (await db.prepare("SELECT id,publication_id,observed_at,content_item_id FROM publication_metric_snapshots WHERE import_batch_id=? AND organization_id=? AND project_id=?").bind(batchId, organizationId, projectId).all<{ id: string; publication_id: string; observed_at: string }>()).results : [];
         const availableRows = [...rows];
         for (const saved of previousSnapshots) {
-            const index = availableRows.findIndex(row => (row.publicationId || byUrl.get(normalizedUrl(row.externalUrl))?.id) === saved.publication_id && row.observedAt === saved.observed_at);
+            const index = availableRows.findIndex(row => (row.publicationId || byUrl.get(normalizedUrl(row.externalUrl))?.id) === saved.publication_id && row.observedAt === metricUtc(saved.observed_at));
             if (index < 0) return apiError("PERFORMANCE_IMPORT_RECOVERY_REQUIRED", "旧失败批次的已保存时间或关联与原文件不一致，已保留原数据。请先核对历史，勿直接重导。", 409);
             availableRows.splice(index, 1);
         }
@@ -191,7 +199,7 @@ export async function POST(request: Request) {
                 else
                     statements.push(db.prepare(`INSERT INTO performance_import_batches(id,organization_id,project_id,source,source_hash,original_filename,status,row_count,imported_by,created_at) SELECT ?,?,?,?,?,?,'processing',?,?,? WHERE ${exists}`).bind(batchId, organizationId, projectId, source, sourceHash, filename || null, rows.length, user.id, now, marker));
                 for (const { row, publication } of accepted)
-                    statements.push(db.prepare(`INSERT OR IGNORE INTO publication_metric_snapshots(id,organization_id,project_id,publication_id,content_item_id,import_batch_id,observed_at,views,likes,comments,shares,saves,followers_gained,leads,average_watch_seconds,completion_rate_bps,created_by,created_at) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE ${exists}`).bind(crypto.randomUUID(), organizationId, projectId, publication.id, publication.content_item_id, batchId, row.observedAt, row.views, row.likes, row.comments, row.shares, row.saves, row.followersGained, row.leads, row.averageWatchSeconds ?? null, row.completionRate === undefined ? null : Math.round(row.completionRate * 100), user.id, now, marker));
+                    statements.push(db.prepare(`INSERT OR IGNORE INTO publication_metric_snapshots(id,organization_id,project_id,publication_id,content_item_id,import_batch_id,observed_at,views,likes,comments,shares,saves,followers_gained,leads,average_watch_seconds,completion_rate_bps,created_by,created_at) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE ${exists} AND NOT EXISTS(SELECT 1 FROM publication_metric_snapshots existing WHERE existing.organization_id=? AND existing.project_id=? AND existing.publication_id=? AND ${metricUtcSql("existing.observed_at")}=?)`).bind(crypto.randomUUID(), organizationId, projectId, publication.id, publication.content_item_id, batchId, row.observedAt, row.views, row.likes, row.comments, row.shares, row.saves, row.followersGained, row.leads, row.averageWatchSeconds ?? null, row.completionRate === undefined ? null : Math.round(row.completionRate * 100), user.id, now, marker, organizationId, projectId, publication.id, row.observedAt));
                 statements.push(db.prepare(`UPDATE performance_import_batches SET status='completed',accepted_count=(SELECT COUNT(*) FROM publication_metric_snapshots WHERE import_batch_id=? AND organization_id=? AND project_id=?),rejected_count=row_count-(SELECT COUNT(*) FROM publication_metric_snapshots WHERE import_batch_id=? AND organization_id=? AND project_id=?),errors_json=?,completed_at=? WHERE id=? AND ${exists}`).bind(batchId, organizationId, projectId, batchId, organizationId, projectId, rejected.length ? JSON.stringify(rejected) : null, now, batchId, marker));
                 statements.push(db.prepare(`UPDATE performance_import_batches SET errors_json=json_insert(COALESCE(errors_json,'[]'),'$[#]',json_object('row',0,'reason',printf('%d 行未新增快照；相同作品和时间的数据保留',rejected_count))) WHERE id=? AND rejected_count>? AND ${exists}`).bind(batchId, rejected.length, marker));
                 return statements;

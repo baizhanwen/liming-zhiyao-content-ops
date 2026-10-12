@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { metricUtcSql, metricOrderSql } from "./metric-time";
 
 const isoDate = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -15,7 +16,7 @@ export const createEmployeeWorkReportSchema = z.object({
 type AnalysisRow = { job_id: string; video_id: string | null; title: string | null; source_ref: string; status: string; created_at: string; completed_at: string | null };
 type ContentRow = { content_item_id: string; title: string; status: string; created_at: string; version_count: number; last_version_at: string | null };
 type CountRow = { count: number };
-type WorkRow = { work_id: string; content_item_id: string | null; owner_user_id: string | null; title: string; published_at: string; video_id: string | null; views: number; likes: number; shares: number; comments: number; saves: number; follower_delta: number };
+type WorkRow = { work_id: string; content_item_id: string | null; owner_user_id: string | null; title: string; published_at: string; video_id: string | null; views: number; likes: number; shares: number; comments: number; saves: number; follower_delta: number; time_aliases?: number };
 
 export type EmployeeWorkReportSnapshot = {
   employee: { id: string; name: string };
@@ -67,24 +68,26 @@ export async function loadEmployeeWorkReport(db: D1Database, input: { organizati
 
   const versions = await db.prepare("SELECT COUNT(*) AS count FROM content_versions WHERE organization_id = ? AND project_id = ? AND created_by = ? AND substr(created_at, 1, 10) BETWEEN ? AND ?").bind(organizationId, projectId, employeeUserId, periodStart, periodEnd).first<CountRow>();
   const reviews = await db.prepare("SELECT COUNT(*) AS count FROM content_reviews WHERE organization_id = ? AND project_id = ? AND decided_by = ? AND decided_at IS NOT NULL AND substr(decided_at, 1, 10) BETWEEN ? AND ?").bind(organizationId, projectId, employeeUserId, periodStart, periodEnd).first<CountRow>();
-  const publications = await db.prepare("SELECT COUNT(*) AS count FROM publication_records WHERE organization_id = ? AND project_id = ? AND created_by = ? AND status = 'published' AND substr(COALESCE(published_at, created_at), 1, 10) BETWEEN ? AND ?").bind(organizationId, projectId, employeeUserId, periodStart, periodEnd).first<CountRow>();
+  const publications = await db.prepare(`SELECT COUNT(*) AS count FROM publication_records WHERE organization_id = ? AND project_id = ? AND created_by = ? AND status = 'published' AND substr(${metricUtcSql("COALESCE(published_at, created_at)")}, 1, 10) BETWEEN ? AND ?`).bind(organizationId, projectId, employeeUserId, periodStart, periodEnd).first<CountRow>();
 
   const worksResult = await db.prepare(`
-    WITH latest AS (
-      SELECT pms.work_id, MAX(pms.as_of_at) AS as_of_at
+    WITH stamps AS (
+      SELECT pms.*, ${metricOrderSql("pms.as_of_at")} AS instant
       FROM platform_metric_snapshots pms
-      WHERE pms.organization_id = ? AND pms.project_id = ?
-      GROUP BY pms.work_id
+      INNER JOIN platform_metric_import_batches batch ON batch.id=pms.import_batch_id AND batch.organization_id=pms.organization_id AND batch.project_id=pms.project_id AND batch.status='completed'
+      WHERE pms.organization_id = ? AND pms.project_id = ? AND substr(${metricUtcSql("pms.as_of_at")},1,10)<=?
+    ), latest AS (
+      SELECT stamps.*, ROW_NUMBER() OVER(PARTITION BY work_id ORDER BY instant DESC,created_at,id) AS rank,
+        COUNT(*) OVER(PARTITION BY work_id,instant) AS time_aliases FROM stamps WHERE instant IS NOT NULL
     )
-    SELECT pw.id AS work_id, pw.content_item_id, COALESCE(ci.assignee_user_id, ci.created_by) AS owner_user_id, pw.title, pw.published_at, pw.video_id,
-      pms.views, pms.likes, pms.shares, pms.comments, pms.saves, pms.follower_delta
+    SELECT pw.id AS work_id, ci.id AS content_item_id, COALESCE(ci.assignee_user_id, ci.created_by) AS owner_user_id, pw.title, ${metricUtcSql("pw.published_at")} AS published_at, pw.video_id,
+      pms.views, pms.likes, pms.shares, pms.comments, pms.saves, pms.follower_delta, pms.time_aliases
     FROM platform_works pw
-    INNER JOIN latest ON latest.work_id = pw.id
-    INNER JOIN platform_metric_snapshots pms ON pms.work_id = latest.work_id AND pms.as_of_at = latest.as_of_at
-    LEFT JOIN content_items ci ON ci.id = pw.content_item_id AND ci.deleted_at IS NULL
-    WHERE pw.organization_id = ? AND pw.project_id = ? AND substr(pw.published_at, 1, 10) BETWEEN ? AND ?
+    INNER JOIN latest pms ON pms.work_id=pw.id AND pms.rank=1
+    LEFT JOIN content_items ci ON ci.id = pw.content_item_id AND ci.organization_id=pw.organization_id AND ci.project_id=pw.project_id AND ci.deleted_at IS NULL
+    WHERE pw.organization_id = ? AND pw.project_id = ? AND substr(${metricUtcSql("pw.published_at")}, 1, 10) BETWEEN ? AND ?
     ORDER BY pms.views DESC
-  `).bind(organizationId, projectId, organizationId, projectId, periodStart, periodEnd).all<WorkRow>();
+  `).bind(organizationId, projectId, periodEnd, organizationId, projectId, periodStart, periodEnd).all<WorkRow>();
 
   const works = worksResult.results.map((row) => {
     const interactions = numberValue(row.likes) + numberValue(row.shares) + numberValue(row.comments) + numberValue(row.saves);
@@ -125,6 +128,6 @@ export async function loadEmployeeWorkReport(db: D1Database, input: { organizati
     content: contentResult.results.map((item) => ({ contentItemId: item.content_item_id, title: item.title, status: item.status, createdAt: item.created_at, versionsCreated: numberValue(item.version_count), lastVersionAt: item.last_version_at })),
     outcomes,
     benchmark: { cohortSize: works.length, minimumHighSample: 5, minimumViralSample: 10, p80Views, p90Views, medianEngagementRate, p75EngagementRate, rule: "高表现：同企业空间同周期播放前20%，且互动率不低于中位数；爆款：至少10条样本，播放前10%，且互动率进入前25%。" },
-    attribution: { unmatchedPublishedWorks: works.filter((work) => !work.content_item_id).length, note: "分析按任务发起人统计；内容按负责人（未指定时按创建人）统计；发布结果仅在作品已匹配内容任务时归因。" },
+    attribution: { unmatchedPublishedWorks: works.filter((work) => !work.content_item_id).length, note: "分析按任务发起人统计；内容按负责人（未指定时按创建人）统计；发布结果仅在作品已匹配内容任务时归因。" + (works.some(work => (work.time_aliases || 0)>1) ? "历史最新时刻含重复快照，使用首个已保存值，原记录未改，请人工核对。" : "") },
   };
 }

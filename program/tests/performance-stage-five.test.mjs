@@ -100,7 +100,8 @@ test("performance APIs enforce project access, deduplication, matching, and immu
   assert.match(analytics, /loadPerformanceAnalytics/);
   const analyticsSource = await readFile(new URL("../lib/performance-analytics.ts", import.meta.url), "utf8");
   assert.match(analyticsSource, /b\.status = 'completed'/);
-  assert.match(analyticsSource, /SELECT MAX\(previous\.observed_at\)/);
+  assert.match(analyticsSource, /SELECT MAX\(rtrim\(previous\.observed_at,'Z'\)\)/);
+  assert.match(analyticsSource, /metricUtcSql\("m\.observed_at"\)/);
   assert.match(analyticsSource, /safeDelta/);
   assert.match(analyticsSource, /videoId: profile\.latest\.video_id/);
   assert.match(analyticsSource, /LEFT JOIN videos v/);

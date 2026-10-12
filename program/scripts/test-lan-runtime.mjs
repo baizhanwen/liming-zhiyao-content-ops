@@ -458,6 +458,20 @@ try {
     writeFileSync(path.join(runDir,"performance-import.json"),JSON.stringify({passed:true,synthetic:true,lateFaultRollback:true,standardRows:500,douyinRows:500,duplicateAccepted:0,duplicateRejected:1,foreignActorStatus:403,recordedModelCalls:modelCalls,boundary:"Actual compiled Worker/HTTP/D1 with synthetic accounts/rows and SQL faults; no real source files, provider calls, devices or field capacity"},null,2));
   });
 
+  await scenario("metric offsets, legacy aliases and UTC analytics: actual HTTP/D1",async()=>{
+    const user=users[0],publication=await db.prepare("SELECT id FROM publication_records WHERE organization_id=? AND project_id=? AND status='published' LIMIT 1").bind(user.org,user.project).first();assert.ok(publication);
+    const row={publicationId:publication.id,observedAt:"2026-10-12T08:00:00+08:00",views:700};const body={organizationId:user.org,projectId:user.project,source:"csv",rows:[row]};
+    expect(await http('/api/performance',{user,method:'POST',body}),201);
+    expect(await http('/api/performance',{user,method:'POST',body:{...body,rows:[{...row,observedAt:'2026-10-12T00:00:00Z'}]}}),409);
+    await db.prepare("UPDATE publication_metric_snapshots SET observed_at='2026-10-12T08:00:00+08:00' WHERE publication_id=? AND views=700").bind(publication.id).run();
+    const duplicate=expect(await http('/api/performance',{user,method:'POST',body:{...body,rows:[{...row,observedAt:'2026-10-12T00:00:00Z',views:999}]}}),201).import;assert.equal(duplicate.accepted_count,0);
+    const scopeQuery=`organizationId=${user.org}&projectId=${user.project}`;const analytics=expect(await http('/api/analytics?'+scopeQuery+'&days=30',{user}),200);assert.ok(analytics.contentPerformance.some(work=>work.publicationId===publication.id&&work.views===700));
+    const platform={organizationId:user.org,projectId:user.project,source:'csv',format:'douyin_16',asOfAt:'2026-10-12T08:00:00.1234+08:00',rows:[{platformWorkId:'offset-fixture',title:'Synthetic offset work',publishedAt:'2026-10-01T08:00:00+08:00',views:800}]};
+    expect(await http('/api/performance',{user,method:'POST',body:platform}),201);
+    expect(await http('/api/performance',{user,method:'POST',body:{...platform,asOfAt:'2026-10-12T00:00:00.1234Z',rows:[{...platform.rows[0],publishedAt:'2026-10-01T00:00:00Z'}]}}),409);
+    const stored=await db.prepare("SELECT s.as_of_at,w.published_at FROM platform_metric_snapshots s JOIN platform_works w ON w.id=s.work_id WHERE w.platform_work_id='offset-fixture'").first();assert.equal(stored.as_of_at,'2026-10-12T00:00:00.1234Z');assert.equal(stored.published_at,'2026-10-01T00:00:00.000Z');
+    writeFileSync(path.join(runDir,'metric-time.json'),JSON.stringify({passed:true,synthetic:true,standardEquivalentStatus:409,legacySavedValue:700,legacyDuplicateAccepted:0,platformEquivalentStatus:409,stored,apiModels:await count('SELECT COUNT(*) AS n FROM model_calls')+await count('SELECT COUNT(*) AS n FROM analysis_model_calls'),boundary:'Actual compiled Worker/HTTP/D1, synthetic offset records; no live customer data or provider calls'},null,2));
+  });
   await scenario("analysis retry/cancel atomic audit and event failures", async () => {
     const user=users[0],created=expect(await submit(user),202),jobId=created.job.id;
     const snapshot=async()=>Object.fromEntries(await Promise.all(["analysis_jobs","analysis_job_events","audit_logs"].map(async table=>{
