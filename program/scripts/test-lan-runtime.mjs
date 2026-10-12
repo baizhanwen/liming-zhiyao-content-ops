@@ -269,6 +269,38 @@ try {
     const job = expect(await claim("runtime-after-restart"), 200).job; assert.equal(job.id, persistentJob);
     expect(await complete(await analyzing(job)), 200);
   });
+  await scenario("素材迁移包部分失败、重放与附件读取：真实HTTP/D1/R2", async () => {
+    const user = users[1], source = users[0];
+    const rows = (await db.prepare(`SELECT library.id,v.id AS video_id FROM video_library_entries library JOIN videos v ON v.id=library.source_video_id
+      WHERE v.organization_id=? AND v.project_id=? AND v.deleted_at IS NULL AND (v.id=? OR EXISTS(SELECT 1 FROM video_analyses analysis WHERE analysis.video_id=v.id)) ORDER BY (v.id=?) DESC LIMIT 2`)
+      .bind(source.org,source.project,uploadFixture.videoId,uploadFixture.videoId).all()).results;
+    assert.equal(rows.length,2);
+    const manifest = expect(await http(`/api/video-library/transfer?organizationId=${user.org}&entryIds=${rows.map(r=>r.id).join(',')}`,{user}),200);
+    manifest.entries.sort((a,b)=>b.assets.length-a.assets.length); assert.equal(manifest.entries[0].assets.length,1);
+    const files = new Map();
+    for (const entry of manifest.entries) for (const asset of entry.assets) { const response=await http(asset.downloadUrl,{user}); expect(response,200); files.set(asset.blobName,response.bytes); }
+    manifest.entries[1].video.title="Synthetic transfer HTTP failing item";
+    const submitPackage = () => {
+      const form = new FormData(); form.set("organizationId",user.org); form.set("projectId",user.project); form.set("manifest",JSON.stringify(manifest));
+      for (const [name,bytes] of files) form.append("media",new Blob([bytes]),name);
+      return http("/api/video-library/transfer",{user,method:"POST",body:form});
+    };
+    const beforeVideos = await count("SELECT COUNT(*) AS n FROM videos WHERE organization_id=? AND project_id=?",user.org,user.project);
+    await db.exec("CREATE TRIGGER synthetic_material_http_failure BEFORE INSERT ON videos WHEN NEW.title='Synthetic transfer HTTP failing item' BEGIN SELECT RAISE(ABORT,'synthetic material item failure'); END");
+    let partial;
+    try { partial=await submitPackage(); expect(partial,500); assert.deepEqual(partial.data.progress,{imported:1,skipped:0,failedEntry:2,remaining:1}); }
+    finally { await db.exec("DROP TRIGGER synthetic_material_http_failure"); }
+    assert.equal(await count("SELECT COUNT(*) AS n FROM videos WHERE organization_id=? AND project_id=?",user.org,user.project),beforeVideos+1);
+    const replay=expect(await submitPackage(),200); assert.deepEqual(replay,{imported:1,skipped:1});
+    assert.equal(await count("SELECT COUNT(*) AS n FROM videos WHERE organization_id=? AND project_id=?",user.org,user.project),beforeVideos+2);
+    const imported=await db.prepare("SELECT id FROM videos WHERE organization_id=? AND project_id=? AND source_hash=?").bind(user.org,user.project,manifest.entries[0].video.sourceHash).first();
+    const media=await http(`/api/videos/${imported.id}/media?${scope(user)}`,{user}); expect(media,200);
+    assert.equal(createHash("sha256").update(media.bytes).digest("hex"),uploadFixture.hash);
+    expect(await http(`/api/videos/${imported.id}/media?${scope(user)}`,{user:users[10]}),403);
+    const job=await db.prepare("SELECT status,idempotency_key FROM analysis_jobs WHERE video_id=?").bind(imported.id).first(); assert.equal(job.status,"completed"); assert.ok(job.idempotency_key.startsWith("material-import:"));
+    expect(await http("/api/video-library/transfer",{user,method:"POST",body:{malformed:true}}),400);
+    writeFileSync(path.join(runDir,"material-transfer.json"),JSON.stringify({passed:true,synthetic:true,partial:partial.data.progress,replay,mediaSha256:uploadFixture.hash,unauthorizedStatus:403,boundary:"Actual compiled HTTP/D1/R2; synthetic report and opaque bytes, no codecs, external models or business accounts"},null,2));
+  });
   await scenario("素材导入、移出、审计回退与旧页面冲突：真实HTTP/D1", async () => {
     const user = users[0], library = await db.prepare(`SELECT library.id,library.updated_at,v.id AS video_id,analysis.id AS analysis_id
       FROM video_library_entries library JOIN videos v ON v.id=library.source_video_id AND v.deleted_at IS NULL

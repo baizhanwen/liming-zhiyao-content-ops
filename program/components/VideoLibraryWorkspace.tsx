@@ -126,7 +126,12 @@ export function VideoLibraryWorkspace({ mode }: { mode: "benchmark" | "assets" }
         if (!asset.blobName) throw new Error("迁移包含有未命名的媒体文件。"); const bytes = archive[`media/${asset.blobName}`]; if (!bytes) throw new Error(`迁移包缺少媒体文件 ${asset.blobName}。`);
         form.append("media", new Blob([ownedBuffer(bytes)]), asset.blobName);
       }
-      const response = await scopedFetch("/api/video-library/transfer", { method: "POST", body: form }); if (!response.ok) throw new Error(await readError(response));
+      const response = await scopedFetch("/api/video-library/transfer", { method: "POST", body: form });
+      if (!response.ok) {
+        const failure = await response.clone().json().catch(() => null) as { progress?: { imported: number; skipped: number; failedEntry: number | null; remaining: number } } | null;
+        if (failure?.progress?.failedEntry) setNotice(`本次已导入 ${failure.progress.imported} 条，跳过 ${failure.progress.skipped} 条；从第 ${failure.progress.failedEntry} 条起还有 ${failure.progress.remaining} 条尚未确认完成。请刷新核对后再重试迁移包。`);
+        throw new Error(await readError(response));
+      }
       const body = await response.json() as { imported: number; skipped: number }; setNotice(`已导入 ${body.imported} 条素材${body.skipped ? `，跳过 ${body.skipped} 条重复素材` : ""}。`); await loadEntries(organizationId, projectId, query, category);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "素材迁移包导入失败。"); }
     finally { setTransferring(false); }

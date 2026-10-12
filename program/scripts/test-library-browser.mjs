@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createServer } from "vite";
 import react from "@vitejs/plugin-react";
+import { zipSync, strToU8 } from "fflate";
 
 // Real browser/component, synthetic intercepted API only. No business state.
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -21,7 +22,7 @@ try {
   await server.listen();
   browser = await chromium.launch({ headless: true, executablePath: "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe" });
   const page = await browser.newPage(); const errors = []; page.on("pageerror", error => errors.push(error.message));
-  let canManage = true, conflict = true;
+  let canManage = true, conflict = true, transfers = 0;
   let entry = { id: "entry", video_id: "video", category: "other", tags: ["existing"], notes: null, updated_at: "2026-10-12T01:00:00.000Z", title: "合成素材", platform: "douyin", source_type: "url", status: "ready", source_project_name: "合成项目", reference_count: 0 };
   await page.route("**/api/**", async route => {
     const url = new URL(route.request().url()), method = route.request().method(); let body, status = 200;
@@ -33,6 +34,11 @@ try {
       if (conflict) { await new Promise(resolve => { releaseSave = resolve; }); status = 409; body = { error: { code: "LIBRARY_VERSION_CONFLICT", message: "其他成员已修改这条素材，本次未覆盖。请先复制当前标签，再刷新核对后保存。" } }; }
       else { assert.equal(input.expectedUpdatedAt, entry.updated_at); entry = { ...entry, tags: input.tags, category: input.category, updated_at: "2026-10-12T01:00:00.002Z" }; body = { entry }; }
     } else if (url.pathname === "/api/video-library/references" && method === "POST") { status = 404; body = { error: { code: "LIBRARY_ENTRY_NOT_FOUND", message: "所选素材已删除，本批未导入。请刷新后重新选择。" } }; }
+    else if (url.pathname === "/api/video-library/transfer" && method === "POST") {
+      transfers += 1;
+      status = transfers === 1 ? 500 : 503;
+      body = { error: { code: transfers === 1 ? "INTERNAL_ERROR" : "MATERIAL_IMPORT_STATUS_UNKNOWN", message: transfers === 1 ? "合成第二条保存失败" : "素材保存结果暂时无法核对，文件已保留。请恢复数据服务并刷新核对后再决定重试。" }, progress: { imported: transfers === 1 ? 1 : 0, skipped: 0, failedEntry: transfers === 1 ? 2 : 1, remaining: transfers === 1 ? 1 : 2 } };
+    }
     else throw new Error(`Unexpected fixture API: ${method} ${url.pathname}`);
     await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
   });
@@ -64,6 +70,19 @@ try {
   await check("read-only-library-hides-metadata-controls", async () => {
     canManage = false; await page.getByRole("button", { name: "刷新", exact: true }).click();
     await page.getByRole("textbox", { name: "素材标签" }).waitFor({ state: "hidden" }); assert.equal(requests.length, 2); assert.deepEqual(errors, []);
+  });
+  const importZip = zipSync({ "manifest.json": strToU8(JSON.stringify({ format: "liming-video-library-package", version: 1, entries: [{ assets: [] }, { assets: [] }] })) });
+  await check("partial-material-import-displays-saved-count-and-no-automatic-retry", async () => {
+    canManage = true; await page.getByRole("button", { name: "刷新", exact: true }).click(); await page.getByRole("textbox", { name: "素材标签" }).waitFor();
+    await page.locator('input[type="file"]').setInputFiles({ name: "synthetic-material.zip", mimeType: "application/zip", buffer: Buffer.from(importZip) });
+    await page.getByRole("alert").filter({ hasText: "合成第二条保存失败" }).waitFor();
+    await page.getByRole("status").filter({ hasText: "本次已导入 1 条" }).waitFor(); assert.equal(transfers, 1);
+    assert.match(await page.getByRole("status").innerText(), /从第 2 条起还有 1 条/);
+  });
+  await check("unknown-material-result-explains-preserved-files-and-reconciliation", async () => {
+    await page.locator('input[type="file"]').setInputFiles({ name: "synthetic-material.zip", mimeType: "application/zip", buffer: Buffer.from(importZip) });
+    await page.getByRole("alert").filter({ hasText: "文件已保留" }).waitFor();
+    assert.match(await page.getByRole("status").innerText(), /本次已导入 0 条/); assert.equal(transfers, 2); assert.deepEqual(errors, []);
   });
 } catch (error) { process.exitCode = 1; console.error(error.stack); }
 finally {
