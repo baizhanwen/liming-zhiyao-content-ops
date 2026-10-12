@@ -7,12 +7,17 @@ import { extractDouyinUrl } from "../../../../lib/douyin-url";
 import { normalizeAnalysisProfile } from "../../../../lib/analysis-profile";
 import { isAnalysisSubmissionConflict } from "../../../../lib/analysis-submission-errors";
 import { createProjectWriteAssertion, ProjectWriteAccessChangedError } from "../../../../lib/project-write-access";
+import { readBoundedJson, RequestBodyError } from "../../../../lib/bounded-request-body";
 
 export async function POST(request: Request) {
   const identity = await readRequestIdentity(request);
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再提交视频链接。", 401);
   try {
-    const payload = await request.json() as { organizationId?: string; projectId?: string; url?: string; title?: string; analysisProfile?: unknown };
+    const input = await readBoundedJson(request, 32 * 1024, "链接提交内容过大，请缩短分享文案或内部备注后重新提交。");
+    if (!input || typeof input !== "object" || Array.isArray(input) || ["organizationId", "projectId", "url", "title"].some(key => {
+      const value = (input as Record<string, unknown>)[key]; return value !== undefined && value !== null && typeof value !== "string";
+    })) return apiError("INVALID_VIDEO_INPUT", "链接提交格式无效，请检查公司、项目、链接和内部备注。", 400);
+    const payload = input as { organizationId?: string; projectId?: string; url?: string; title?: string; analysisProfile?: unknown };
     const organizationId = payload.organizationId?.trim() ?? ""; const projectId = payload.projectId?.trim() ?? "";
     const analysisProfile = normalizeAnalysisProfile(payload.analysisProfile);
     const sourceUrl = extractDouyinUrl(payload.url ?? "");
@@ -33,6 +38,7 @@ export async function POST(request: Request) {
     if (!results[0].meta.changes) throw new ProjectWriteAccessChangedError();
     return Response.json({ video: { id: videoId, platform: "douyin", source_type: "url", source_url: sourceUrl, title: payload.title?.trim() || null, status: "pending", created_at: now }, job: { id: jobId, video_id: videoId, status: "pending", analysis_profile: analysisProfile, progress: 0, current_stage: "等待进入分析队列", retry_count: 0, created_at: now, updated_at: now } }, { status: 202 });
   } catch (error) {
+    if (error instanceof RequestBodyError) return apiError(error.code, error.message, error.status);
     if (error instanceof ProjectWriteAccessChangedError) return apiError(error.code, "登录状态或项目权限已改变，本次资料未保存。请刷新确认权限后重新提交。", 403);
     if (isAnalysisSubmissionConflict(error)) return apiError("VIDEO_SUBMISSION_CONFLICT", "相同素材已被其他成员提交。本次没有新建分析任务，请刷新列表；若素材在其他项目，再次提交即可复用。", 409);
     return errorResponse(error);

@@ -65,7 +65,7 @@ test("video ingestion checks project access before media buffering and uses priv
     readFile(new URL("../app/api/analysis-jobs/[jobId]/retry/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../db/runtime.ts", import.meta.url), "utf8"),
   ]);
-  assert.ok(upload.indexOf("getProjectAccess") < upload.indexOf("request.formData"));
+  assert.ok(upload.indexOf("await getProjectAccess") < upload.indexOf("await readBoundedFormData"));
   assert.match(upload, /organizations\/\$\{organizationId\}\/projects\/\$\{projectId\}/);
   assert.match(upload, /sha256Hex\(bytes\)/);
   assert.match(upload, /MEDIA_UPLOAD_STATUS_UNKNOWN/);

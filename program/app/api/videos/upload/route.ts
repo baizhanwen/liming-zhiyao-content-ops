@@ -6,6 +6,7 @@ import { readRequestIdentity } from "../../../../lib/request-auth";
 import { normalizeAnalysisProfile } from "../../../../lib/analysis-profile";
 import { isAnalysisSubmissionConflict } from "../../../../lib/analysis-submission-errors";
 import { createProjectWriteAssertion, projectWriteAccessBindings, projectWriteAccessCondition, ProjectWriteAccessChangedError } from "../../../../lib/project-write-access";
+import { readBoundedFormData, RequestBodyError } from "../../../../lib/bounded-request-body";
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const allowedTypes = new Set(["video/mp4", "video/quicktime", "video/webm", "audio/mpeg", "audio/mp4", "audio/wav", "audio/x-wav"]);
@@ -23,7 +24,7 @@ export async function POST(request: Request) {
     if (!organizationId || !projectId) return apiError("PROJECT_SCOPE_REQUIRED", "缺少公司或项目范围。", 400);
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
     if (!access || !canWriteProjectAccess(access)) return apiError("WRITE_ACCESS_REQUIRED", "当前角色不能上传分析素材。", 403);
-    const form = await request.formData(); const file = form.get("file"); const analysisProfile = normalizeAnalysisProfile(form.get("analysisProfile"));
+    const form = await readBoundedFormData(request, MAX_UPLOAD_BYTES + 64 * 1024, "上传请求过大，单文件最多 50 MB，请重新选择文件后分批提交。"); const file = form.get("file"); const analysisProfile = normalizeAnalysisProfile(form.get("analysisProfile"));
     if (!(file instanceof File)) return apiError("FILE_REQUIRED", "请选择视频或音频文件。", 400);
     if (!allowedTypes.has(file.type)) return apiError("UNSUPPORTED_MEDIA_TYPE", "仅支持 MP4、MOV、WebM、MP3、M4A 和 WAV。", 415);
     if (file.size <= 0 || file.size > MAX_UPLOAD_BYTES) return apiError("INVALID_FILE_SIZE", "文件大小需要在 1 字节至 50 MB 之间。", 413);
@@ -51,6 +52,7 @@ export async function POST(request: Request) {
     storedKey = null;
     return submittedResponse;
   } catch (error) {
+    if (error instanceof RequestBodyError) return apiError(error.code, error.message, error.status);
     if (storedKey) {
       if (batchAttempted) {
         try {

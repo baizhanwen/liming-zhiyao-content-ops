@@ -360,6 +360,47 @@ try {
     const { runBrowserChecks } = await import("./lan-browser-checks.mjs");
     browserResult = await runBrowserChecks({ origin, users, password, runDir, nextUrl, requests });
   });
+  await scenario("媒体请求大小、畸形输入与50MB边界：真实HTTP", async () => {
+    const before = await count("SELECT COUNT(*) AS n FROM videos");
+    const beforeAssets = await count("SELECT COUNT(*) AS n FROM media_assets");
+    const beforeModels = await count("SELECT COUNT(*) AS n FROM analysis_model_calls") + await count("SELECT COUNT(*) AS n FROM model_calls");
+    const results = [];
+    async function raw(route, body, contentType) {
+      const started = performance.now();
+      const response = await fetch(new URL(route, origin), { method: "POST", headers: { cookie: users[0].cookie, connection: "close", "content-type": contentType, "x-organization-id": users[0].org, "x-project-id": users[0].project }, body, ...(body instanceof ReadableStream ? { duplex: "half" } : {}), signal: AbortSignal.timeout(20000) });
+      const data = await response.json();
+      requests.push({ scenario: currentScenario, method: "POST", route, status: response.status, ms: Math.round(performance.now() - started) });
+      return { status: response.status, data };
+    }
+    for (const [body, expected] of [["{", 400], ["null", 400], [JSON.stringify({ url: "x".repeat(40 * 1024) }), 413]]) {
+      const response = await raw("/api/videos/from-url", body, "application/json"); expect(response, expected); results.push({ kind: "invalid-link", status: response.status, code: response.data.error.code });
+    }
+    const malformed = await raw("/api/videos/upload", "x", "multipart/form-data"); expect(malformed, 400); results.push({ kind: "missing-boundary", status: malformed.status, code: malformed.data.error.code });
+    const chunked = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(JSON.stringify({ url: "x".repeat(40 * 1024) }))); c.close(); } });
+    const chunkedResult = await raw("/api/videos/from-url", chunked, "application/json"); expect(chunkedResult, 413); results.push({ kind: "chunked-link", status: chunkedResult.status, code: chunkedResult.data.error.code });
+    const maximum = 50 * 1024 * 1024;
+    for (const size of [maximum + 64 * 1024 + 1, maximum + 1, maximum]) {
+      const form = new FormData(); form.set("file", new Blob([new Uint8Array(size)], { type: "video/mp4" }), `synthetic-boundary-${size}.mp4`);
+      const response = await http("/api/videos/upload", { user: users[0], method: "POST", body: form, headers: { "x-organization-id": users[0].org, "x-project-id": users[0].project } });
+      expect(response, size > maximum ? 413 : 202);
+      results.push({ kind: "file-boundary", bytes: size, status: response.status, code: response.data?.error?.code });
+      if (size === maximum) {
+        const video = response.data.video, job = response.data.job;
+        const object = await (await mf.getR2Bucket("MEDIA")).head((await db.prepare("SELECT r2_key FROM media_assets WHERE video_id=?").bind(video.id).first()).r2_key);
+        assert.equal(object.size, maximum); expect(await cancel(users[0], job.id), 200);
+      } else { assert.equal(await count("SELECT COUNT(*) AS n FROM videos"), before); assert.equal(await count("SELECT COUNT(*) AS n FROM media_assets"), beforeAssets); }
+    }
+    assert.equal(await count("SELECT COUNT(*) AS n FROM videos"), before + 1);
+    if (process.env.LAN_TEST_RESOURCE_SCRIPT) await new Promise((resolve, reject) => {
+      const child = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", process.env.LAN_TEST_RESOURCE_SCRIPT, "-RootProcessId", String(process.pid), "-OutputFile", path.join(runDir, "request-intake-resources.json")], { windowsHide: true, stdio: "ignore" });
+      const timer = setTimeout(() => { child.kill(); reject(new Error("Resource snapshot timeout")); }, 20000);
+      child.on("error", error => { clearTimeout(timer); reject(error); });
+      child.on("close", code => { clearTimeout(timer); if (code === 0) resolve(); else reject(new Error(`Resource snapshot failed: ${code}`)); });
+    });
+    const recordedModelCalls = await count("SELECT COUNT(*) AS n FROM analysis_model_calls") + await count("SELECT COUNT(*) AS n FROM model_calls") - beforeModels;
+    assert.equal(recordedModelCalls, 0);
+    writeFileSync(path.join(runDir, "request-intake.json"), JSON.stringify({ passed: true, synthetic: true, results, recordedModelCalls, boundary: "Actual local HTTP/Worker/D1/R2; generated opaque bytes, no media decoding, model calls or real business data" }, null, 2));
+  });
   await scenario("退出登录后旧 Cookie 无法继续访问", async () => {
     expect(await http("/api/auth/session", { user: users[0], method: "DELETE" }), 200);
     expect(await http(`/api/videos?${scope(users[0])}`, { user: users[0] }), 401);

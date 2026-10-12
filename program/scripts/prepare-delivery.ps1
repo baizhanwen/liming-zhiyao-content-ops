@@ -72,7 +72,7 @@ $excludedFiles = @(
     "db\schema.ts",
     "resources\authorized\dbskill\SOURCE.md", "resources\delivery\DELIVERY-GUIDE.txt",
     "scripts\verify-delivery.mjs", "scripts\test-lan-runtime.mjs", "scripts\lan-browser-checks.mjs", "scripts\lan-worker-check.py",
-    "scripts\test-lan-identity-runtime.mjs",
+    "scripts\test-lan-identity-runtime.mjs", "scripts\test-runtime-resources.ps1",
     "scripts\test-model-budget-runtime.mjs",
     "scripts\test-startup-recovery-runtime.mjs",
     "scripts\delivery-documentation.mjs", "scripts\test-delivery-documentation.mjs",
