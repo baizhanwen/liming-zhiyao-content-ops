@@ -52,7 +52,7 @@ test("Douyin import accepts native XLSX and normalizes decimal ratio cells", asy
   ]);
   assert.match(workspace, /\.xlsx/);
   assert.match(parser, /result \* 100/);
-  assert.match(xlsx, /unzipSync/);
+  assert.match(xlsx, /openBoundedZip/);
   assert.match(xlsx, /sharedStrings\.xml/);
 });
 

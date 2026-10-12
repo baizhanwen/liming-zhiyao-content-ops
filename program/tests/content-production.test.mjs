@@ -79,7 +79,7 @@ test("brand knowledge supports a validated tenant-scoped XLSX bulk import into d
   assert.match(workspace, /\/api\/knowledge\/import/);
   assert.match(workspace, /\/templates\/品牌知识库导入模板\.xlsx/);
   assert.match(workspace, /负责人确认后才会参与内容生成/);
-  assert.match(xlsxParser, /unzipSync/);
+  assert.match(xlsxParser, /openBoundedZip/);
   assert.equal(template.subarray(0, 2).toString("utf8"), "PK");
 });
 
