@@ -143,3 +143,21 @@ for (const legacyOutput of ["synthetic damaged JSON", '"legacy scalar"', '["lega
   } });
   assert.equal((await f.generate()).status, 409); const row = calls(f)[0]; assert.equal(row.status, "failed"); assert.equal(JSON.parse(row.output_json).legacyOutput, legacyOutput); assert.equal(requestRecord(row).totalTokens, 7); noVersion(f);
 });
+
+
+for (const [name,usage,expected] of [
+  ["known",{inputTokens:12,outputTokens:8,totalTokens:20},{inputTokens:12,outputTokens:8,totalTokens:20,usageKnown:true}],
+  ["partial",{inputTokens:12,outputTokens:null,totalTokens:null},{inputTokens:12,outputTokens:null,totalTokens:null,usageKnown:false}],
+  ["invalid",{inputTokens:-12,outputTokens:"8",totalTokens:NaN},{inputTokens:null,outputTokens:null,totalTokens:null,usageKnown:false}],
+]) test(`ecommerce adapter rejection preserves ${name} receipt and provider error code`,async t=>{
+  const f=await fixture(t,{onCall:()=>{const error=new Error("Synthetic rejected output");error.code="MODEL_EMPTY_RESPONSE";error.modelUsage=usage;throw error;}});
+  assert.equal((await f.generate()).status,502);assert.equal(f.calls.length,1);noVersion(f);
+  const row=calls(f)[0],record=requestRecord(row);assert.equal(row.error_code,"MODEL_EMPTY_RESPONSE");
+  assert.deepEqual({inputTokens:record.inputTokens,outputTokens:record.outputTokens,totalTokens:record.totalTokens,usageKnown:record.usageKnown},expected);
+});
+
+
+test("recovered ecommerce request retains known usage from a rejected late response",async t=>{
+  const f=await fixture(t,{onCall:({f})=>{f.sqlite.prepare("UPDATE ecommerce_generation_runs SET status='failed',error_code='RUN_RECOVERED'").run();f.sqlite.prepare("UPDATE model_calls SET status='failed',error_code='ECOMMERCE_CALL_RECOVERED',error_message='Keep reason',output_json='{\"sentinel\":true}'").run();const error=new Error('Synthetic empty response');error.code='MODEL_EMPTY_RESPONSE';error.modelUsage={inputTokens:12,outputTokens:8,totalTokens:20};throw error;}});
+  assert.equal((await f.generate()).status,502);assert.equal(f.calls.length,1);noVersion(f);const row=calls(f)[0];assert.equal(row.status,'failed');assert.equal(row.error_code,'ECOMMERCE_CALL_RECOVERED');assert.equal(row.error_message,'Keep reason');assert.equal(JSON.parse(row.output_json).sentinel,true);assert.equal(requestRecord(row).totalTokens,20);
+});

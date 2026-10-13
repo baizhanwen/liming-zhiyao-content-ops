@@ -12,7 +12,7 @@ import { ECOMMERCE_PROMPT_VERSION, ECOMMERCE_SYSTEM, mergeEcommercePatch, patchS
 import { hashJson } from "./products";
 import { activeRunPredicate } from "./runs";
 import { ecommerceGenerationGuide } from "./generation-guide";
-import { readModelUsage } from "../model-usage";
+import { readModelUsage, readModelFailureUsage, preserveInterruptedModelUsage } from "../model-usage";
 import { assertProjectWriteAccess, projectWriteAccessBindings, projectWriteAccessCondition, ProjectWriteAccessChangedError } from "../project-write-access";
 import type { ContentModelRequestRecord } from "../recorded-content-model";
 
@@ -82,8 +82,7 @@ async function invokeRecorded(request: Request, access: EcommerceAccess, runId: 
     if (!saved.meta.changes) {
       // Late receipts clarify cost without reviving a recovered request or
       // replacing its terminal reason and other recovery metadata.
-      await db.prepare(`UPDATE model_calls SET output_json=json_set(CASE WHEN output_json IS NULL THEN '{}' WHEN json_valid(output_json) THEN CASE WHEN json_type(output_json)='object' THEN output_json ELSE json_object('legacyOutput',output_json) END ELSE json_object('legacyOutput',output_json) END,'$.usage',json(?),'$.modelRequests',json(?)),latency_ms=? WHERE id=? AND organization_id=? AND project_id=? AND status='failed' AND error_code IN ('ECOMMERCE_CALL_RECOVERED','WEB_PROCESS_INTERRUPTED')`)
-        .bind(JSON.stringify({ inputTokens: record.inputTokens, outputTokens: record.outputTokens, totalTokens: record.totalTokens }), JSON.stringify([record]), record.latencyMs, callId, ...scope).run();
+      await preserveInterruptedModelUsage(db,{id:callId,organizationId:access.organizationId,projectId:access.projectId},record);
       throw new EcommerceError("RUN_ENDED", "本次请求已恢复或结束，迟到结果仅补记实际用量，不会保存为稿件。", 409);
     }
     await assertLiveAccess(request, access); await assertRunActive(access, runId); requireUnfrozen();
@@ -93,10 +92,11 @@ async function invokeRecorded(request: Request, access: EcommerceAccess, runId: 
     if (!recorded.meta.changes) { await assertLiveAccess(request, access); throw new EcommerceError("RUN_ENDED", "本次运行已结束或任务已修改，迟到结果不会保存。", 409); }
     return parsed;
   } catch (error) {
-    const code = error instanceof EcommerceError ? error.code : "MODEL_CALL_FAILED";
-    if (content === undefined) record.latencyMs = Date.now() - started;
-    await db.prepare("UPDATE model_calls SET status='failed',error_code=?,error_message=?,output_json=?,latency_ms=?,completed_at=? WHERE id=? AND organization_id=? AND project_id=? AND status='started'")
+    const code = error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : "MODEL_CALL_FAILED";
+    if (content === undefined) record = { ...record,latencyMs:Date.now()-started,...readModelFailureUsage(error) };
+    const saved = await db.prepare("UPDATE model_calls SET status='failed',error_code=?,error_message=?,output_json=?,latency_ms=?,completed_at=? WHERE id=? AND organization_id=? AND project_id=? AND status='started'")
       .bind(code, error instanceof EcommerceError ? error.message.slice(0, 1000) : "模型调用或回执保存失败，未保存稿件。已发出的请求仍计入用量，缺失回执需与供应商核对。", receipt(), record.latencyMs, new Date().toISOString(), callId, ...scope).run();
+    if (!saved.meta.changes) await preserveInterruptedModelUsage(db,{id:callId,organizationId:access.organizationId,projectId:access.projectId},record);
     throw error instanceof EcommerceError ? error : new EcommerceError(code, "模型调用失败，未覆盖原稿。请检查模型服务后使用新的运行重试。", 502);
   }
 }

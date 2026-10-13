@@ -1,3 +1,5 @@
+import { withModelRequestDeadline, ModelDeadlineError } from "./model-request-deadline";
+import { readModelUsage } from "./model-usage";
 import { extractResponseText } from "./model-response.ts";
 import { env } from "cloudflare:workers";
 import { modelPolicyError } from "./model-policy.ts";
@@ -18,7 +20,8 @@ type ModelRuntimeEnv = typeof env & {
 
 export class ModelConfigurationError extends Error {}
 export class ModelRequestError extends Error {
-  constructor(message: string, readonly code = "MODEL_REQUEST_FAILED") { super(message); }
+  readonly modelUsage: ReturnType<typeof readModelUsage>;
+  constructor(message: string, readonly code = "MODEL_REQUEST_FAILED", raw?: unknown) { super(message); this.modelUsage = readModelUsage(raw); }
 }
 
 export type ModelInvocation = {
@@ -48,44 +51,42 @@ export function extractModelResponseText(payload: unknown) {
 
 export async function invokeContentModel(input: { system: string; user: string; profile: ModelProfile; nativeJson?: boolean; temperature?: number; maxTokens?: number }): Promise<ModelInvocation> {
   const config = readContentModelConfig(input.profile);
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 90_000);
   const started = Date.now();
   try {
-    const isDeepSeek = config.provider.toLowerCase().includes("deepseek") || config.baseUrl.toLowerCase().includes("deepseek");
-    const requestBody: Record<string, unknown> = {
-      model: config.model,
-      messages: [{ role: "system", content: input.system }, { role: "user", content: input.user }],
-      temperature: Math.max(0, Math.min(1, input.temperature ?? 0.55)),
-      max_tokens: Math.max(600, Math.min(12_000, Math.trunc(input.maxTokens ?? 12_000))),
-    };
-    if (input.nativeJson !== false) requestBody.response_format = { type: "json_object" };
-    if (isDeepSeek) requestBody.thinking = { type: "disabled" };
-    const response = await fetch(`${config.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${config.apiKey}`, "content-type": "application/json" },
-      body: JSON.stringify(requestBody),
-      signal: controller.signal,
+    return await withModelRequestDeadline(90_000, async signal => {
+      const isDeepSeek = config.provider.toLowerCase().includes("deepseek") || config.baseUrl.toLowerCase().includes("deepseek");
+      const requestBody: Record<string, unknown> = {
+        model: config.model,
+        messages: [{ role: "system", content: input.system }, { role: "user", content: input.user }],
+        temperature: Math.max(0, Math.min(1, input.temperature ?? 0.55)),
+        max_tokens: Math.max(600, Math.min(12_000, Math.trunc(input.maxTokens ?? 12_000))),
+      };
+      if (input.nativeJson !== false) requestBody.response_format = { type: "json_object" };
+      if (isDeepSeek) requestBody.thinking = { type: "disabled" };
+      const response = await fetch(`${config.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${config.apiKey}`, "content-type": "application/json" },
+        body: JSON.stringify(requestBody),
+        signal,
     });
-    const raw = await response.json().catch(() => null) as unknown;
+    const raw = await response.json().catch(error => { if (signal.aborted) throw error; return null; }) as unknown;
     if (!response.ok) {
       const detail = raw && typeof raw === "object" && "error" in raw ? JSON.stringify((raw as { error: unknown }).error).slice(0, 500) : `HTTP ${response.status}`;
-      throw new ModelRequestError(`内容模型调用失败：${detail}`, `MODEL_HTTP_${response.status}`);
+      throw new ModelRequestError(`内容模型调用失败：${detail}`, `MODEL_HTTP_${response.status}`, raw);
     }
     const finishReason = raw && typeof raw === "object" && Array.isArray((raw as { choices?: unknown }).choices) ? ((raw as { choices: Array<{ finish_reason?: unknown }> }).choices[0]?.finish_reason) : null;
     const content = extractModelResponseText(raw);
     if (finishReason === "length") {
-      throw new ModelRequestError("内容模型输出达到长度上限，返回的 JSON 不完整。系统将切换兼容模式重试。", "MODEL_OUTPUT_TRUNCATED");
+      throw new ModelRequestError("内容模型输出达到长度上限，返回的 JSON 不完整。系统将切换兼容模式重试。", "MODEL_OUTPUT_TRUNCATED", raw);
     }
     if (!content) {
-      throw new ModelRequestError("内容模型没有返回可解析的文本。DeepSeek 的原生 JSON 模式偶尔会返回空内容，系统将切换兼容模式重试。", "MODEL_EMPTY_RESPONSE");
+      throw new ModelRequestError("内容模型没有返回可解析的文本。DeepSeek 的原生 JSON 模式偶尔会返回空内容，系统将切换兼容模式重试。", "MODEL_EMPTY_RESPONSE", raw);
     }
     return { provider: config.provider, model: config.model, profile: config.profile, content, raw, latencyMs: Date.now() - started };
+    });
   } catch (error) {
     if (error instanceof ModelRequestError) throw error;
-    if (error instanceof DOMException && error.name === "AbortError") throw new ModelRequestError("内容模型调用超时。", "MODEL_TIMEOUT");
+    if (error instanceof ModelDeadlineError || (error instanceof DOMException && error.name === "AbortError")) throw new ModelRequestError("内容模型调用超时。", "MODEL_TIMEOUT");
     throw new ModelRequestError(error instanceof Error ? error.message : "内容模型调用失败。");
-  } finally {
-    clearTimeout(timeout);
   }
 }

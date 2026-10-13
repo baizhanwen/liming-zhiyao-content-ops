@@ -19,6 +19,7 @@ const requests = [];
 const burstRounds = Number(process.env.LAN_TEST_ROUNDS || 10);
 assert.ok(Number.isInteger(burstRounds) && burstRounds > 0 && burstRounds <= 100);
 let mf, db, origin, currentScenario = "setup";
+let syntheticModelMode=false, syntheticModelRequests=0;
 let d1Persist = path.join(runDir, "d1"), r2Persist = path.join(runDir, "r2");
 const users = Array.from({ length: 11 }, (_, i) => ({
   id: `runtime-user-${i}`, email: `runtime-${i}@example.invalid`,
@@ -37,12 +38,19 @@ async function start() {
     r2Buckets: ["MEDIA", "MEDIA_LEGACY"], r2Persist,
     assets: { directory: path.join(root, "dist/client"), binding: "ASSETS", routerConfig: { has_user_worker: true } },
     // Reject any accidental external fetch from the application under test.
-    outboundService: () => new Response("External access disabled in LAN runtime test", { status: 502 }),
+    outboundService: request => {
+      if (syntheticModelMode && new URL(request.url).hostname === "model.example.invalid") {
+        syntheticModelRequests++;
+        return Response.json({usage:{prompt_tokens:12,completion_tokens:8,total_tokens:20},choices:[{message:{content:""}}]});
+      }
+      return new Response("External access disabled in LAN runtime test",{status:502});
+    },
     bindings: {
       DELIVERY_MODE: "1", LOCAL_DEV_AUTH: "0", TRUST_FORWARDED_IDENTITY: "0",
       ...(process.env.LAN_TEST_DEV_AUTH === "1" ? { DELIVERY_MODE: "0", LOCAL_DEV_AUTH: "1", TRUST_FORWARDED_IDENTITY: "1", LAN_MODE: "1", LAN_ACCESS_ORIGIN: "http://192.168.50.10:3000" } : {}),
       ANALYZER_SERVICE_TOKEN: serviceToken, ANALYZER_LLM_API_KEY: "synthetic-runtime-fixture",
       ANALYZER_LLM_BASE_URL: "https://model.example.invalid", ANALYZER_LLM_MODEL: "runtime-fixture", ANALYZER_LLM_PROVIDER: "openai",
+      PROJECT_ASSISTANT_MODEL_API_KEY:"synthetic-runtime-fixture",PROJECT_ASSISTANT_MODEL_BASE_URL:"https://model.example.invalid",PROJECT_ASSISTANT_MODEL_NAME:"runtime-fixture",PROJECT_ASSISTANT_MODEL_PROVIDER:"openai",
     },
   });
   origin = String(await mf.ready);
@@ -540,6 +548,18 @@ try {
     writeFileSync(path.join(runDir,'report-write.json'),JSON.stringify({passed:true,synthetic:true,outcomes,finalAuditRollback:true,missingReviewedVersion:400,staleReviewedVersion:409,finalStatus:'final',models:await count('SELECT COUNT(*) AS n FROM model_calls')+await count('SELECT COUNT(*) AS n FROM analysis_model_calls'),boundary:'Actual compiled Worker/HTTP/D1 and sessions; SQL audit faults and stale reviewed version. Overlapping writers/lost receipts proven separately by deterministic SQLite transport tests; no real employee or model.'},null,2));
   });
 
+  await scenario("failed synthetic assistant response retains usage: actual Worker/HTTP/D1",async()=>{
+    const user=users[0],before=await count('SELECT COUNT(*) AS n FROM model_calls');syntheticModelMode=true;
+    try {
+      const result=expect(await http('/api/project-assistant/status',{user,method:'POST',body:{organizationId:user.org,projectId:user.project}}),502);
+      assert.equal(result.error.code,'PROJECT_ASSISTANT_EMPTY_RESPONSE');
+    } finally {syntheticModelMode=false;}
+    assert.equal(syntheticModelRequests,1);assert.equal(await count('SELECT COUNT(*) AS n FROM model_calls'),before+1);
+    const row=await db.prepare("SELECT status,output_json FROM model_calls WHERE task_type='project_assistant.probe' ORDER BY created_at DESC LIMIT 1").first(),record=JSON.parse(row.output_json).modelRequests[0];
+    assert.equal(row.status,'failed');assert.equal(record.status,'failed');assert.equal(record.usageKnown,true);assert.equal(record.inputTokens,12);assert.equal(record.outputTokens,8);assert.equal(record.totalTokens,20);
+    writeFileSync(path.join(runDir,'model-deadline-accounting.json'),JSON.stringify({passed:true,synthetic:true,syntheticGatewayRequests:syntheticModelRequests,record,paidProviderCalls:0,externalNetworkCalls:0,boundary:'Built Worker/HTTP/D1 with intercepted synthetic gateway and known invalid output; verifies failed receipt propagation. Time bounds proved by separate deterministic clocks and local HTTP dripping body, no real provider usage/bill.'},null,2));
+  });
+
   if (process.env.LAN_TEST_BACKUP === "1") await scenario("实际备份脚本恢复数据库与 R2：重新登录、版本关联、附件权限与继续审核发布", async () => {
     assert.equal(process.platform, "win32", "Shipped maintenance scripts require Windows");
     // Native Windows SQLite cannot use the long evidence-directory prefix.
@@ -548,7 +568,7 @@ try {
     for (const filename of ["backup-local.ps1", "restore-local.ps1", "local-state-maintenance.ps1", "analyzer-instance-lock.ps1", "verify-state-databases.mjs"]) {
       cpSync(path.join(root, "scripts", filename), path.join(scripts, filename));
     }
-    const tables = ["users", "local_credentials", "projects", "videos", "media_assets", "analysis_jobs", "video_analyses", "content_items", "content_versions", "content_reviews", "publication_records", "published_copy_records", "video_library_entries", "project_video_references", "project_memory_events", "audit_logs", "video_transcripts", "video_metric_snapshots", "analysis_job_events", "knowledge_items", "knowledge_item_versions", "performance_import_batches", "publication_metric_snapshots", "platform_works", "platform_metric_import_batches", "platform_metric_snapshots", "platform_metric_import_errors", "performance_reports", "employee_work_reports"];
+    const tables = ["users", "local_credentials", "projects", "videos", "media_assets", "analysis_jobs", "video_analyses", "content_items", "content_versions", "content_reviews", "publication_records", "published_copy_records", "video_library_entries", "project_video_references", "project_memory_events", "audit_logs", "video_transcripts", "video_metric_snapshots", "analysis_job_events", "knowledge_items", "knowledge_item_versions", "performance_import_batches", "publication_metric_snapshots", "platform_works", "platform_metric_import_batches", "platform_metric_snapshots", "platform_metric_import_errors", "performance_reports", "employee_work_reports", "model_calls"];
     const snapshot = async () => Object.fromEntries(await Promise.all(tables.map(async name => {
       const rows = (await db.prepare(`SELECT * FROM ${name}`).all()).results.map(row => JSON.stringify(row)).sort();
       return [name, { rows: rows.length, sha256: createHash("sha256").update(JSON.stringify(rows)).digest("hex") }];

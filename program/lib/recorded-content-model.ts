@@ -4,7 +4,7 @@ import { assertMemoryAttempt, memoryAttemptBindings, memoryAttemptCondition } fr
 import { assertAssistantReplyActive, assistantReplyBindings, assistantReplyCondition, type AssistantReplyScope } from "./project-assistant-write";
 import { canContinueRewriteWrite, rewriteWriteAccessBindings, rewriteWriteAccessCondition } from "./script-rewrite-write";
 import { invokeContentModel, ModelRequestError, type ModelInvocation } from "./model-adapter";
-import { readModelUsage } from "./model-usage";
+import { readModelUsage, readModelFailureUsage, preserveInterruptedModelUsage } from "./model-usage";
 
 export type ContentModelRequestRecord = {
   id: string; step: string; status: "completed" | "failed";
@@ -61,10 +61,14 @@ export async function invokeRecordedContentRequest(input: Parameters<typeof invo
   try {
     response = await invokeModel(input);
   } catch (error) {
-    const record: ContentModelRequestRecord = { id: context.id, step: context.step, status: "failed", latencyMs: Date.now() - started, ...readModelUsage(null) };
+    const record: ContentModelRequestRecord = { id: context.id, step: context.step, status: "failed", latencyMs: Date.now() - started, ...readModelFailureUsage(error) };
     context.ledger.push(record);
-    await db.prepare("UPDATE model_calls SET status = ?, error_code = ?, error_message = ?, output_json = ?, latency_ms = ?, completed_at = ? WHERE id = ? AND status = 'started'")
+    const saved = await db.prepare("UPDATE model_calls SET status = ?, error_code = ?, error_message = ?, output_json = ?, latency_ms = ?, completed_at = ? WHERE id = ? AND status = 'started'")
       .bind(isRoot ? "started" : "failed", error instanceof ModelRequestError ? error.code : "MODEL_REQUEST_FAILED", error instanceof Error ? error.message.slice(0, 1000) : "模型请求失败", JSON.stringify({ usage: { inputTokens: record.inputTokens, outputTokens: record.outputTokens, totalTokens: record.totalTokens }, modelRequests: [record] }), record.latencyMs, isRoot ? null : new Date().toISOString(), context.id).run();
+    if (!saved.meta.changes) {
+      await preserveInterruptedModelUsage(db,context,record);
+      throw new ModelRequestError("该模型请求已因中断或恢复而结束，已停止后续请求，请刷新运行记录核对实际用量。", "MODEL_REQUEST_INTERRUPTED");
+    }
     throw error;
   }
   const record: ContentModelRequestRecord = { id: context.id, step: context.step, status: "completed", latencyMs: response.latencyMs, ...readModelUsage(response.raw) };
@@ -73,7 +77,10 @@ export async function invokeRecordedContentRequest(input: Parameters<typeof invo
   // represent one request; the first request uses the existing root row.
   const saved = await db.prepare("UPDATE model_calls SET status = ?, output_json = ?, latency_ms = ?, completed_at = ? WHERE id = ? AND status = 'started'")
     .bind(isRoot ? "started" : "completed", JSON.stringify({ content: response.content.slice(0, 200_000), usage: { inputTokens: record.inputTokens, outputTokens: record.outputTokens, totalTokens: record.totalTokens }, modelRequests: [record] }), response.latencyMs, isRoot ? null : new Date().toISOString(), context.id).run();
-  if (!saved.meta.changes) throw new ModelRequestError("该模型请求已因中断或恢复而结束，晚到结果没有继续保存。请刷新运行记录后再操作。", "MODEL_REQUEST_INTERRUPTED");
+  if (!saved.meta.changes) {
+    await preserveInterruptedModelUsage(db,context,record);
+    throw new ModelRequestError("该模型请求已因中断或恢复而结束，晚到结果仅补记有效用量，不保存稿件。请刷新运行记录后再操作。", "MODEL_REQUEST_INTERRUPTED");
+  }
   if (context.enforceProjectWriteAccess) await assertProjectWriteAccess(db, context);
   if (memoryScope) await assertMemoryAttempt(db, memoryScope);
   if (context.assistantReply) await assertAssistantReplyActive(db, context.assistantReply);

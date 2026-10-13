@@ -1,3 +1,5 @@
+import { withModelRequestDeadline, ModelDeadlineError } from "./model-request-deadline";
+import { readModelUsage } from "./model-usage";
 import { extractResponseText, responseContentText } from "./model-response.ts";
 import { env } from "cloudflare:workers";
 
@@ -28,8 +30,9 @@ export class ProjectAssistantConfigurationError extends Error {
 }
 
 export class ProjectAssistantRequestError extends Error {
-  constructor(message: string, readonly code = "PROJECT_ASSISTANT_REQUEST_FAILED") {
-    super(message);
+  readonly modelUsage: ReturnType<typeof readModelUsage>;
+  constructor(message: string, readonly code = "PROJECT_ASSISTANT_REQUEST_FAILED", raw?: unknown) {
+    super(message); this.modelUsage = readModelUsage(raw);
   }
 }
 
@@ -109,44 +112,43 @@ export async function invokeProjectAssistantModel(
 ): Promise<ProjectAssistantInvocation> {
   const config = options?.config ?? readProjectAssistantModelConfig();
   const fetchImpl = options?.fetchImpl ?? fetch;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), Math.max(5_000, Math.min(120_000, input.timeoutMs ?? 75_000)));
   const started = Date.now();
   try {
-    const requestBody: Record<string, unknown> = {
-      model: config.model,
-      messages: [
-        { role: "system", content: input.system },
-        { role: "user", content: input.user },
-      ],
-      temperature: Math.max(0, Math.min(1, input.temperature ?? 0.35)),
-      max_tokens: Math.max(64, Math.min(16_000, input.maxTokens ?? 8_000)),
-      response_format: { type: "json_object" },
-    };
-    if (config.provider.toLowerCase().includes("deepseek") || config.baseUrl.toLowerCase().includes("deepseek")) {
-      requestBody.thinking = { type: "disabled" };
-    }
-    const response = await fetchImpl(endpoint(config.baseUrl), {
-      method: "POST",
-      headers: {
-        authorization: "Bearer " + config.apiKey,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(requestBody),
-      signal: controller.signal,
+    return await withModelRequestDeadline(Math.max(5_000, Math.min(120_000, input.timeoutMs ?? 75_000)), async signal => {
+      const requestBody: Record<string, unknown> = {
+        model: config.model,
+        messages: [
+          { role: "system", content: input.system },
+          { role: "user", content: input.user },
+        ],
+        temperature: Math.max(0, Math.min(1, input.temperature ?? 0.35)),
+        max_tokens: Math.max(64, Math.min(16_000, input.maxTokens ?? 8_000)),
+        response_format: { type: "json_object" },
+      };
+      if (config.provider.toLowerCase().includes("deepseek") || config.baseUrl.toLowerCase().includes("deepseek")) {
+        requestBody.thinking = { type: "disabled" };
+      }
+      const response = await fetchImpl(endpoint(config.baseUrl), {
+        method: "POST",
+        headers: {
+          authorization: "Bearer " + config.apiKey,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(requestBody),
+        signal,
     });
-    const raw = await response.json().catch(() => null) as unknown;
+    const raw = await response.json().catch(error => { if (signal.aborted) throw error; return null; }) as unknown;
     if (!response.ok) {
       throw new ProjectAssistantRequestError(
         "独立项目助理模型调用失败：" + safeProviderDetail(raw, response.status),
-        "PROJECT_ASSISTANT_HTTP_" + response.status,
+        "PROJECT_ASSISTANT_HTTP_" + response.status, raw,
       );
     }
     const content = extractProjectAssistantResponseText(raw);
     if (!content) {
       throw new ProjectAssistantRequestError(
         "独立项目助理模型没有返回可解析的文本。",
-        "PROJECT_ASSISTANT_EMPTY_RESPONSE",
+        "PROJECT_ASSISTANT_EMPTY_RESPONSE", raw,
       );
     }
     return {
@@ -156,14 +158,13 @@ export async function invokeProjectAssistantModel(
       latencyMs: Date.now() - started,
       raw,
     };
+    });
   } catch (error) {
     if (error instanceof ProjectAssistantRequestError || error instanceof ProjectAssistantConfigurationError) throw error;
-    if (error instanceof DOMException && error.name === "AbortError") {
+    if (error instanceof ModelDeadlineError || (error instanceof DOMException && error.name === "AbortError")) {
       throw new ProjectAssistantRequestError("独立项目助理模型调用超时。", "PROJECT_ASSISTANT_TIMEOUT");
     }
     throw new ProjectAssistantRequestError(error instanceof Error ? error.message : "独立项目助理模型调用失败。");
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
