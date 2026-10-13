@@ -83,7 +83,7 @@ test("unwritten scaffolds cannot enter review, while a manually written script c
   f.runtime.getProjectAccess = async () => ({ organizationRole: "member", projectRole: "editor" });
   const params = { params: Promise.resolve({ contentId: f.contentId }) };
   const transition = f.load("app/api/content-items/[contentId]/transition/route.ts");
-  const rejected = await transition.POST(f.request({ toStatus: "internal_review" }), params);
+  const rejected = await transition.POST(f.request({ expectedVersion:1,toStatus: "internal_review" }), params);
   assert.equal(rejected.status, 409);
   assert.equal((await rejected.json()).error.code, "CONTENT_SCRIPT_REQUIRED");
   const pack = createProductionScaffold({ id: f.topicId, title: "AI" });
@@ -91,7 +91,7 @@ test("unwritten scaffolds cannot enter review, while a manually written script c
   const save = f.load("app/api/content-items/[contentId]/route.ts");
   const saved = await save.PATCH(f.request({ pack: { ...pack, fullScript: scienceScript, shortScript: scienceShort } }), params);
   assert.equal(saved.status, 200, await saved.clone().text());
-  const reviewed = await transition.POST(f.request({ toStatus: "internal_review" }), params);
+  const reviewed = await transition.POST(f.request({ expectedVersion:2,toStatus: "internal_review" }), params);
   assert.equal(reviewed.status, 200, await reviewed.clone().text());
 });
 

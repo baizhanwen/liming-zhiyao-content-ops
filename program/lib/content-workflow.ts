@@ -20,7 +20,7 @@ export const contentStatusLabels: Record<ContentStatus, string> = {
 
 export const workflowTransitionSchema = z.object({
   ...scope,
-  expectedVersion: z.number().int().min(1).optional(),
+  expectedVersion: z.number().int().min(1),
   toStatus: z.enum(contentStatuses),
   note: z.string().trim().max(2_000).optional(),
 }).strict().superRefine((value, context) => {

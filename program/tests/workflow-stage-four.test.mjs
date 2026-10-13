@@ -66,7 +66,7 @@ test("approval goes directly to publish-ready and records an approved version-bo
   f.runtime.getProjectAccess = async () => ({ organizationRole: "member", projectRole: "member" });
   f.mock("lib/content-workflow.ts", workflow);
   const route = f.load("app/api/content-items/[contentId]/transition/route.ts");
-  const approve = () => route.POST(new Request("http://localhost/api/content-items/test/transition", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, toStatus: "publish_ready" }) }), { params: Promise.resolve({ contentId }) });
+  const approve = () => route.POST(new Request("http://localhost/api/content-items/test/transition", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, expectedVersion:1, toStatus: "publish_ready" }) }), { params: Promise.resolve({ contentId }) });
   assert.equal((await approve()).status, 409);
   const reviewId = seed("content_reviews", { content_item_id: contentId, content_version_id: versionId, review_stage: "internal", round: 1, decision: "pending", requested_by: installation.userId, requested_at: now });
   assert.equal((await approve()).status, 200);
@@ -112,11 +112,12 @@ test("stage four APIs keep tenant scope, client visibility, audit events, and op
   assert.match(transition, /PENDING_REVIEW_REQUIRED/);
   assert.doesNotMatch(transition, /review_stage, round, decision, requested_by, requested_at\) VALUES \(\?, \?, \?, \?, \?, 'client'/);
   assert.match(transition, /content\.status\.changed/);
-  assert.match(transition, /results\[0\]\.meta\.changes/);
+  assert.match(transition, /commitContentWorkflowWrite/);
+  assert.match(transition, /if\(!committed\)/);
   assert.match(transition, /INSERT INTO project_memory_items/);
   assert.match(transition, /INSERT INTO project_memory_evidence/);
   assert.match(transition, /'review_feedback'/);
-  assert.ok(transition.indexOf("INSERT INTO project_memory_items") < transition.indexOf("db.batch(statements)"));
+  assert.ok(transition.indexOf("INSERT INTO project_memory_items") < transition.indexOf("const committed=await commitContentWorkflowWrite"));
   assert.match(comments, /canCommentOnContent/);
   assert.match(schedule, /PUBLISH_READY_REQUIRED/);
   assert.match(publication, /external_url/);

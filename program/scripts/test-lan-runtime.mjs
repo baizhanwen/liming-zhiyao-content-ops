@@ -553,6 +553,11 @@ try {
     await runWorkflowWriteChecks({db,http,expect,users,runDir});
   });
 
+  await scenario("review transitions and returned suggestions atomic: actual HTTP/D1",async()=>{
+    const {runReviewWriteChecks}=await import('./review-write-checks.mjs');
+    await runReviewWriteChecks({db,http,expect,users,runDir});
+  });
+
   await scenario("failed synthetic assistant response retains usage: actual Worker/HTTP/D1",async()=>{
     const user=users[0],before=await count('SELECT COUNT(*) AS n FROM model_calls');syntheticModelMode=true;
     try {
@@ -573,7 +578,7 @@ try {
     for (const filename of ["backup-local.ps1", "restore-local.ps1", "local-state-maintenance.ps1", "analyzer-instance-lock.ps1", "verify-state-databases.mjs"]) {
       cpSync(path.join(root, "scripts", filename), path.join(scripts, filename));
     }
-    const tables = ["users", "local_credentials", "projects", "videos", "media_assets", "analysis_jobs", "video_analyses", "content_items", "content_versions", "content_reviews", "publication_records", "published_copy_records", "video_library_entries", "project_video_references", "project_memory_events", "audit_logs", "video_transcripts", "video_metric_snapshots", "analysis_job_events", "knowledge_items", "knowledge_item_versions", "performance_import_batches", "publication_metric_snapshots", "platform_works", "platform_metric_import_batches", "platform_metric_snapshots", "platform_metric_import_errors", "performance_reports", "employee_work_reports", "model_calls", "content_comments", "content_schedules"];
+    const tables = ["users", "local_credentials", "projects", "videos", "media_assets", "analysis_jobs", "video_analyses", "content_items", "content_versions", "content_reviews", "publication_records", "published_copy_records", "video_library_entries", "project_video_references", "project_memory_events", "audit_logs", "video_transcripts", "video_metric_snapshots", "analysis_job_events", "knowledge_items", "knowledge_item_versions", "performance_import_batches", "publication_metric_snapshots", "platform_works", "platform_metric_import_batches", "platform_metric_snapshots", "platform_metric_import_errors", "performance_reports", "employee_work_reports", "model_calls", "content_comments", "content_schedules", "project_memory_items", "project_memory_evidence"];
     const snapshot = async () => Object.fromEntries(await Promise.all(tables.map(async name => {
       const rows = (await db.prepare(`SELECT * FROM ${name}`).all()).results.map(row => JSON.stringify(row)).sort();
       return [name, { rows: rows.length, sha256: createHash("sha256").update(JSON.stringify(rows)).digest("hex") }];
