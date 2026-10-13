@@ -20,6 +20,7 @@ const burstRounds = Number(process.env.LAN_TEST_ROUNDS || 10);
 assert.ok(Number.isInteger(burstRounds) && burstRounds > 0 && burstRounds <= 100);
 let mf, db, origin, currentScenario = "setup";
 let syntheticModelMode=false, syntheticModelRequests=0;
+let syntheticModelGateway=null;
 let d1Persist = path.join(runDir, "d1"), r2Persist = path.join(runDir, "r2");
 const users = Array.from({ length: 11 }, (_, i) => ({
   id: `runtime-user-${i}`, email: `runtime-${i}@example.invalid`,
@@ -41,6 +42,7 @@ async function start() {
     outboundService: request => {
       if (syntheticModelMode && new URL(request.url).hostname === "model.example.invalid") {
         syntheticModelRequests++;
+        if (syntheticModelGateway) return syntheticModelGateway(request);
         return Response.json({usage:{prompt_tokens:12,completion_tokens:8,total_tokens:20},choices:[{message:{content:""}}]});
       }
       return new Response("External access disabled in LAN runtime test",{status:502});
@@ -568,16 +570,21 @@ try {
     await runTopicContentWriteChecks({db,http,expect,users,runDir});
   });
 
+  await scenario("content generation ownership, recovery and quota: actual Worker/HTTP/D1",async()=>{
+    const {runContentGenerationOwnershipChecks}=await import('./content-generation-ownership-checks.mjs');
+    await runContentGenerationOwnershipChecks({db,http,expect,users,runDir,setGateway:handler=>{syntheticModelGateway=handler;syntheticModelMode=Boolean(handler);}});
+  });
+
   await scenario("failed synthetic assistant response retains usage: actual Worker/HTTP/D1",async()=>{
-    const user=users[0],before=await count('SELECT COUNT(*) AS n FROM model_calls');syntheticModelMode=true;
+    const user=users[0],before=await count('SELECT COUNT(*) AS n FROM model_calls'),gatewayBefore=syntheticModelRequests;syntheticModelMode=true;
     try {
       const result=expect(await http('/api/project-assistant/status',{user,method:'POST',body:{organizationId:user.org,projectId:user.project}}),502);
       assert.equal(result.error.code,'PROJECT_ASSISTANT_EMPTY_RESPONSE');
     } finally {syntheticModelMode=false;}
-    assert.equal(syntheticModelRequests,1);assert.equal(await count('SELECT COUNT(*) AS n FROM model_calls'),before+1);
+    assert.equal(syntheticModelRequests-gatewayBefore,1);assert.equal(await count('SELECT COUNT(*) AS n FROM model_calls'),before+1);
     const row=await db.prepare("SELECT status,output_json FROM model_calls WHERE task_type='project_assistant.probe' ORDER BY created_at DESC LIMIT 1").first(),record=JSON.parse(row.output_json).modelRequests[0];
     assert.equal(row.status,'failed');assert.equal(record.status,'failed');assert.equal(record.usageKnown,true);assert.equal(record.inputTokens,12);assert.equal(record.outputTokens,8);assert.equal(record.totalTokens,20);
-    writeFileSync(path.join(runDir,'model-deadline-accounting.json'),JSON.stringify({passed:true,synthetic:true,syntheticGatewayRequests:syntheticModelRequests,record,paidProviderCalls:0,externalNetworkCalls:0,boundary:'Built Worker/HTTP/D1 with intercepted synthetic gateway and known invalid output; verifies failed receipt propagation. Time bounds proved by separate deterministic clocks and local HTTP dripping body, no real provider usage/bill.'},null,2));
+    writeFileSync(path.join(runDir,'model-deadline-accounting.json'),JSON.stringify({passed:true,synthetic:true,syntheticGatewayRequests:syntheticModelRequests-gatewayBefore,record,paidProviderCalls:0,externalNetworkCalls:0,boundary:'Built Worker/HTTP/D1 with intercepted synthetic gateway and known invalid output; verifies failed receipt propagation. Time bounds proved by separate deterministic clocks and local HTTP dripping body, no real provider usage/bill.'},null,2));
   });
 
   if (process.env.LAN_TEST_BACKUP === "1") await scenario("实际备份脚本恢复数据库与 R2：重新登录、版本关联、附件权限与继续审核发布", async () => {

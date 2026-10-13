@@ -97,7 +97,7 @@ test("a provider receipt ended by restart is terminal and content generation can
   let f;
   f = await contentGenerationFixture(t, [], (_input, _count, base) => { f.sqlite.exec(recoverSql()); return base; });
   const before = f.sqlite.prepare("SELECT current_version FROM content_items WHERE id=?").get(f.contentId).current_version;
-  const response = await f.complete(); assert.equal(response.status, 502);
+  const response = await f.complete(); assert.equal(response.status, 409);
   const data = await response.json(); assert.equal(data.error.code, "MODEL_REQUEST_INTERRUPTED");
   assert.equal(f.calls.length, 1); assert.equal(f.sqlite.prepare("SELECT current_version FROM content_items WHERE id=?").get(f.contentId).current_version, before);
   const receipt = f.sqlite.prepare("SELECT status,error_code FROM model_calls").get();

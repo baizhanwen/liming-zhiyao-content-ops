@@ -25,6 +25,7 @@ type RequestContext = {
   provider: string; model: string; userId: string; step: string;
   inputHash: string; inputJson: string; monthlyLimit: number;
   ledger: ContentModelRequestRecord[];
+  contentGeneration?: { contentId: string; version: number; status: string };
 };
 
 /** Reserve each provider request atomically, including failed attempts/retries. */
@@ -35,6 +36,16 @@ export async function invokeRecordedContentRequest(input: Parameters<typeof invo
   const isRoot = context.id === context.rootCallId;
   const rewriteScope = context.rewriteWorkspaceId ? { organizationId: context.organizationId, projectId: context.projectId, userId: context.userId, workspaceId: context.rewriteWorkspaceId } : null;
   const memoryScope = context.memoryEventId && context.memoryAttemptCount !== undefined ? { organizationId: context.organizationId, projectId: context.projectId, eventId: context.memoryEventId, attemptCount: context.memoryAttemptCount } : null;
+  const generation = context.contentGeneration;
+  const generationSource = `EXISTS(SELECT 1 FROM content_items c WHERE c.id=? AND c.organization_id=? AND c.project_id=?
+    AND c.current_version=? AND c.status=? AND c.deleted_at IS NULL)`;
+  const generationSourceBindings = generation ? [generation.contentId,context.organizationId,context.projectId,generation.version,generation.status] : [];
+  // The existing root record owns the whole generation, including repairs.
+  // Its started status ends on success, failure or guarded startup recovery.
+  const generationOwner = isRoot
+    ? "NOT EXISTS(SELECT 1 FROM model_calls m WHERE m.organization_id=? AND m.project_id=? AND m.topic_id=? AND m.task_type='content_draft' AND m.status='started')"
+    : "EXISTS(SELECT 1 FROM model_calls m WHERE m.id=? AND m.organization_id=? AND m.project_id=? AND m.topic_id=? AND m.task_type='content_draft' AND m.status='started')";
+  const generationOwnerBindings = isRoot ? [context.organizationId,context.projectId,context.topicId] : [context.rootCallId,context.organizationId,context.projectId,context.topicId];
   const reserved = await db.prepare(`INSERT INTO model_calls (id, organization_id, project_id, topic_id, prompt_template_id, task_type, provider, model_name, model_profile, prompt_version, status, input_hash, input_json, created_by, created_at)
     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'started', ?, ?, ?, ?
     WHERE (SELECT COUNT(*) FROM model_calls WHERE organization_id = ? AND created_at >= ?) <
@@ -42,18 +53,26 @@ export async function invokeRecordedContentRequest(input: Parameters<typeof invo
       ${rewriteScope ? `AND ${rewriteWriteAccessCondition}` : ""}
       ${context.enforceProjectWriteAccess ? `AND ${projectWriteAccessCondition}` : ""}
       ${memoryScope ? `AND ${memoryAttemptCondition}` : ""}
-      ${context.assistantReply ? `AND ${assistantReplyCondition}` : ""}`)
+      ${context.assistantReply ? `AND ${assistantReplyCondition}` : ""}
+      ${generation ? `AND ${generationSource} AND ${generationOwner}` : ""}`)
     .bind(context.id, context.organizationId, context.projectId, context.topicId, context.promptTemplateId,
       isRoot ? (context.taskType ?? "content_draft") : (context.taskType ?? "content_draft") + ".request", context.provider, context.model, context.modelProfile ?? input.profile, context.promptVersion,
       context.inputHash, isRoot ? context.inputJson : JSON.stringify({ ...JSON.parse(context.inputJson), parentModelCallId: context.rootCallId, step: context.step }),
       context.userId, now, context.organizationId, month, context.monthlyLimit, context.organizationId, context.monthlyLimit,
       ...(rewriteScope ? rewriteWriteAccessBindings(rewriteScope) : []),
-      ...(context.enforceProjectWriteAccess ? projectWriteAccessBindings(context) : []), ...(memoryScope ? memoryAttemptBindings(memoryScope) : []), ...(context.assistantReply ? assistantReplyBindings(context.assistantReply) : [])).run();
+      ...(context.enforceProjectWriteAccess ? projectWriteAccessBindings(context) : []), ...(memoryScope ? memoryAttemptBindings(memoryScope) : []), ...(context.assistantReply ? assistantReplyBindings(context.assistantReply) : []),
+      ...(generation ? [...generationSourceBindings,...generationOwnerBindings] : [])).run();
   if (!reserved.meta.changes) {
     if (context.enforceProjectWriteAccess) await assertProjectWriteAccess(db, context);
     if (memoryScope) await assertMemoryAttempt(db, memoryScope);
     if (context.assistantReply) await assertAssistantReplyActive(db, context.assistantReply);
     if (rewriteScope && !await canContinueRewriteWrite(db, rewriteScope)) throw new ModelRequestError("项目权限或改写工作区状态已改变，本次未发起新的模型请求。", "REWRITE_ACCESS_CHANGED");
+    if (generation) {
+      if (!await db.prepare(`SELECT 1 WHERE ${generationSource}`).bind(...generationSourceBindings).first()) throw new ModelRequestError("稿件版本或状态已改变，本次未发起新的模型请求。请刷新后核对。", "CONTENT_VERSION_CONFLICT");
+      if (!await db.prepare(`SELECT 1 WHERE ${generationOwner}`).bind(...generationOwnerBindings).first()) throw new ModelRequestError(isRoot
+        ? "该内容已有生成任务在执行，本次未发起新的模型请求。请等待并刷新运行记录核对；若主机中断，请管理员按启动恢复说明处理。"
+        : "该生成任务已因中断或恢复结束，本次未发起后续模型请求。请刷新运行记录核对。",isRoot ? "CONTENT_GENERATION_IN_PROGRESS" : "MODEL_REQUEST_INTERRUPTED");
+    }
     throw new ModelRequestError("公司本月模型调用额度已用尽，本次未发起新的模型请求。", "MODEL_QUOTA_EXCEEDED");
   }
   const started = Date.now();

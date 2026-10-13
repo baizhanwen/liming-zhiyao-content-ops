@@ -244,7 +244,8 @@ export async function POST(request: Request, context: { params: Promise<{ conten
       if (!contextCheck.ok) throw new ModelRequestError(contextCheck.message, contextCheck.code);
       requestNumber += 1;
       return invokeRecordedContentRequest(input, { id: requestNumber === 1 ? modelCallId! : crypto.randomUUID(), rootCallId: modelCallId!, organizationId, projectId, topicId: item.topic_id, promptTemplateId: prompt!.id, promptVersion,
-        provider: config.provider, model: config.model, userId: user.id, step, inputHash, inputJson, monthlyLimit: quota.limit, ledger: modelRequests, enforceProjectWriteAccess: true, assertWriteAccess });
+        provider: config.provider, model: config.model, userId: user.id, step, inputHash, inputJson, monthlyLimit: quota.limit, ledger: modelRequests, enforceProjectWriteAccess: true, assertWriteAccess,
+        contentGeneration: { contentId, version: item.current_version, status: item.status } });
     };
     let pack: ReturnType<typeof productionPackSchema.parse> | null = null; let totalLatencyMs = 0; let correction = "";
     let citationDraft: ReturnType<typeof productionPackSchema.parse> | null = null;
@@ -409,7 +410,7 @@ export async function POST(request: Request, context: { params: Promise<{ conten
           pack = { ...candidateWithHistory, sourceUsageReport: buildSourceUsageReport(sourceList, candidate.data.citations, selectedKnowledgeSourceIds) };
         } else pack = { ...candidateWithMethodology, sourceUsageReport: buildSourceUsageReport(sourceList, candidate.data.citations, selectedKnowledgeSourceIds) };
       } catch (error) {
-        if (error instanceof ModelRequestError && ["MODEL_QUOTA_EXCEEDED", "CONTENT_VERSION_CONFLICT", "MODEL_REQUEST_INTERRUPTED"].includes(error.code)) throw error;
+        if (error instanceof ModelRequestError && ["MODEL_QUOTA_EXCEEDED", "CONTENT_VERSION_CONFLICT", "MODEL_REQUEST_INTERRUPTED", "CONTENT_GENERATION_IN_PROGRESS"].includes(error.code)) throw error;
         if (!(error instanceof ModelRequestError) || attempt === maxAttempts - 1) throw error;
         const citationFailure = citationDraft && (isCitationRepairError(error.code) || error.code === "CITATION_REPAIR_FAILED");
         // Standard generation keeps its existing budget. Template mode allows two edits of the actual draft.
@@ -435,7 +436,8 @@ export async function POST(request: Request, context: { params: Promise<{ conten
     const nextVersion = item.current_version + 1; const versionId = crypto.randomUUID(); const completedAt = new Date().toISOString(); const packJson = JSON.stringify(pack);
     const write = { contentId, organizationId, projectId, previousVersion: item.current_version, previousStatus: item.status, versionId, userId: user.id, now: completedAt };
     const statements = [
-      db.prepare(`INSERT INTO content_versions (id, organization_id, project_id, content_item_id, version, generation_mode, pack_json, full_script, short_script, change_summary, prompt_version, model_call_id, input_snapshot_json, input_snapshot_hash, source_manifest_json, context_snapshot_id, created_by, created_at) SELECT ?, organization_id, project_id, id, ?, 'ai', ?, ?, ?, 'AI 生成口播稿与生产包', ?, ?, ?, ?, ?, ?, ?, ? ${contentVersionSourceSql}`).bind(versionId, nextVersion, packJson, pack.fullScript, pack.shortScript, promptVersion, modelCallId, inputJson, inputHash, JSON.stringify(generationContext.sourceManifest), null, user.id, completedAt, ...contentVersionSourceBindings(write)),
+      db.prepare(`INSERT INTO content_versions (id, organization_id, project_id, content_item_id, version, generation_mode, pack_json, full_script, short_script, change_summary, prompt_version, model_call_id, input_snapshot_json, input_snapshot_hash, source_manifest_json, context_snapshot_id, created_by, created_at) SELECT ?, organization_id, project_id, id, ?, 'ai', ?, ?, ?, 'AI 生成口播稿与生产包', ?, ?, ?, ?, ?, ?, ?, ? ${contentVersionSourceSql}
+        AND EXISTS(SELECT 1 FROM model_calls m WHERE m.id=? AND m.organization_id=? AND m.project_id=? AND m.topic_id=? AND m.task_type='content_draft' AND m.status='started')`).bind(versionId, nextVersion, packJson, pack.fullScript, pack.shortScript, promptVersion, modelCallId, inputJson, inputHash, JSON.stringify(generationContext.sourceManifest), null, user.id, completedAt, ...contentVersionSourceBindings(write), modelCallId, organizationId, projectId, item.topic_id),
       ...contentVersionFollowupStatements(db, write),
       db.prepare(`UPDATE model_calls SET status = 'completed', output_json = ?, latency_ms = ?, error_code = NULL, error_message = NULL, completed_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'started' AND ${contentVersionWrittenSql}`).bind(JSON.stringify({ ...pack, modelRequests }), totalLatencyMs, completedAt, modelCallId, organizationId, projectId, ...contentVersionWrittenBindings(write)),
       ...pack.citations.map((citation) => db.prepare("INSERT INTO content_citations (id, organization_id, project_id, content_item_id, content_version_id, citation_type, citation_id, quote, created_by, created_at) SELECT ?, ?, ?, ?, id, ?, ?, ?, ?, ? FROM content_versions WHERE id = ? AND organization_id = ? AND project_id = ?").bind(crypto.randomUUID(), organizationId, projectId, contentId, citation.sourceType, citation.sourceId, citation.quote, user.id, completedAt, versionId, organizationId, projectId)),
@@ -445,6 +447,7 @@ export async function POST(request: Request, context: { params: Promise<{ conten
     const results = await db.batch(statements);
     if (!results[0].meta.changes) {
       await assertWriteAccess();
+      if (!await db.prepare("SELECT id FROM model_calls WHERE id=? AND organization_id=? AND project_id=? AND status='started'").bind(modelCallId, organizationId, projectId).first()) throw new ModelRequestError("生成任务已因中断或恢复结束，晚到结果未保存新版本。请刷新运行记录核对用量。", "MODEL_REQUEST_INTERRUPTED");
       await db.prepare("UPDATE model_calls SET status = 'failed', error_code = 'CONTENT_VERSION_CONFLICT', error_message = '生成期间稿件版本或状态已改变，本次结果未保存。', completed_at = ? WHERE id = ? AND status = 'started'").bind(completedAt, modelCallId).run();
       await finishGenerationSourceManifest(traceId, "failed", { promptHash: inputHash, errorCode: "CONTENT_VERSION_CONFLICT" });
       return apiError("CONTENT_VERSION_CONFLICT", "生成期间稿件版本或状态已改变，本次结果未覆盖已有内容，请刷新后重试。", 409);
@@ -464,7 +467,7 @@ export async function POST(request: Request, context: { params: Promise<{ conten
     if (error instanceof ProjectWriteAccessChangedError) return errorResponse(error);
     if (error instanceof ModelRequestError) {
       if (error.code === "MODEL_QUOTA_EXCEEDED") return apiError(error.code, error.message, 429);
-      if (error.code === "CONTENT_VERSION_CONFLICT") return apiError(error.code, error.message, 409);
+      if (["CONTENT_VERSION_CONFLICT", "CONTENT_GENERATION_IN_PROGRESS", "MODEL_REQUEST_INTERRUPTED"].includes(error.code)) return apiError(error.code, error.message, 409);
       const message = error.code === "MODEL_EMPTY_RESPONSE"
         ? "DeepSeek 连续两次返回空内容。系统已尝试原生 JSON 和兼容模式，请稍后重试或缩短输入资料。"
         : error.code === "CITATION_REPAIR_FAILED"
