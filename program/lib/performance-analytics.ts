@@ -70,7 +70,7 @@ export const createReportSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(),
 }).strict().refine((value) => value.periodStart <= value.periodEnd, { message: "报告开始日期不能晚于结束日期" });
 
-export const finalizeReportSchema = z.object({ organizationId: identifier, projectId: identifier }).strict();
+export const finalizeReportSchema = z.object({ organizationId: identifier, projectId: identifier, expectedUpdatedAt: z.string().min(1).max(100) }).strict();
 
 export type MetricSnapshotRow = {
   metric_id?: string; metric_created_at?: string;

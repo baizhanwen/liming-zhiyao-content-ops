@@ -154,7 +154,7 @@ export async function createLocalSession(userId: string, request: Request) {
   return `${sessionCookieName}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${sessionLifetimeSeconds}${secure}`;
 }
 
-function readSessionToken(request: Request) {
+export function readSessionToken(request: Request) {
   const cookie = request.headers.get("cookie") ?? "";
   for (const part of cookie.split(";")) {
     const [name, ...value] = part.trim().split("=");

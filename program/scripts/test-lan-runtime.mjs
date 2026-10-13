@@ -514,6 +514,32 @@ try {
     await db.prepare("DELETE FROM publication_metric_snapshots WHERE id LIKE 'synthetic-scale-%'").run();
   });
 
+  await scenario("report generation/finalization atomic audit and reviewed revision: actual HTTP/D1",async()=>{
+    const user=users[0],scope={organizationId:user.org,projectId:user.project},body={...scope,reportType:'custom',periodStart:'2026-10-03',periodEnd:'2026-10-04'};
+    const state=async()=>Object.fromEntries(await Promise.all(['performance_reports','employee_work_reports','audit_logs'].map(async table=>[table,JSON.stringify((await db.prepare(`SELECT * FROM ${table} ORDER BY id`).all()).results)])));
+    const outcomes=[];let enterprise;
+    for(const kind of ['enterprise','employee']){
+      const route=kind==='enterprise'?'/api/reports':'/api/employee-reports',input=kind==='enterprise'?body:{...body,employeeUserId:user.id},action=kind==='enterprise'?'performance.report.generated':'employee.report.generated';
+      for(const refresh of [false,true]){
+        if(refresh){const r=expect(await http(route,{user,method:'POST',body:input}),201);if(kind==='enterprise')enterprise=r.report;}
+        const before=await state();
+        await db.prepare(`CREATE TRIGGER synthetic_report_audit BEFORE INSERT ON audit_logs WHEN NEW.action='${action}' BEGIN SELECT RAISE(ABORT,'synthetic report audit failure'); END`).run();
+        try {expect(await http(route,{user,method:'POST',body:input}),500);assert.deepEqual(await state(),before);}finally{await db.prepare('DROP TRIGGER synthetic_report_audit').run();}
+        outcomes.push({kind,refresh,rolledBack:true});
+      }
+    }
+    const finalRoute='/api/reports/'+enterprise.id+'/finalize',before=await state();
+    await db.prepare("CREATE TRIGGER synthetic_final_audit BEFORE INSERT ON audit_logs WHEN NEW.action='performance.report.finalized' BEGIN SELECT RAISE(ABORT,'synthetic final audit failure'); END").run();
+    try{expect(await http(finalRoute,{user,method:'POST',body:{...scope,expectedUpdatedAt:enterprise.updated_at}}),500);assert.deepEqual(await state(),before);}finally{await db.prepare('DROP TRIGGER synthetic_final_audit').run();}
+    const refreshed=expect(await http('/api/reports',{user,method:'POST',body}),200).report;
+    expect(await http(finalRoute,{user,method:'POST',body:scope}),400);
+    expect(await http(finalRoute,{user,method:'POST',body:{...scope,expectedUpdatedAt:enterprise.updated_at}}),409);
+    const final=expect(await http(finalRoute,{user,method:'POST',body:{...scope,expectedUpdatedAt:refreshed.updated_at}}),200).report;
+    expect(await http('/api/reports',{user,method:'POST',body}),409);
+    assert.equal((await db.prepare('SELECT status FROM performance_reports WHERE id=?').bind(final.id).first()).status,'final');
+    writeFileSync(path.join(runDir,'report-write.json'),JSON.stringify({passed:true,synthetic:true,outcomes,finalAuditRollback:true,missingReviewedVersion:400,staleReviewedVersion:409,finalStatus:'final',models:await count('SELECT COUNT(*) AS n FROM model_calls')+await count('SELECT COUNT(*) AS n FROM analysis_model_calls'),boundary:'Actual compiled Worker/HTTP/D1 and sessions; SQL audit faults and stale reviewed version. Overlapping writers/lost receipts proven separately by deterministic SQLite transport tests; no real employee or model.'},null,2));
+  });
+
   if (process.env.LAN_TEST_BACKUP === "1") await scenario("实际备份脚本恢复数据库与 R2：重新登录、版本关联、附件权限与继续审核发布", async () => {
     assert.equal(process.platform, "win32", "Shipped maintenance scripts require Windows");
     // Native Windows SQLite cannot use the long evidence-directory prefix.
@@ -522,7 +548,7 @@ try {
     for (const filename of ["backup-local.ps1", "restore-local.ps1", "local-state-maintenance.ps1", "analyzer-instance-lock.ps1", "verify-state-databases.mjs"]) {
       cpSync(path.join(root, "scripts", filename), path.join(scripts, filename));
     }
-    const tables = ["users", "local_credentials", "projects", "videos", "media_assets", "analysis_jobs", "video_analyses", "content_items", "content_versions", "content_reviews", "publication_records", "published_copy_records", "video_library_entries", "project_video_references", "project_memory_events", "audit_logs", "video_transcripts", "video_metric_snapshots", "analysis_job_events", "knowledge_items", "knowledge_item_versions", "performance_import_batches", "publication_metric_snapshots", "platform_works", "platform_metric_import_batches", "platform_metric_snapshots", "platform_metric_import_errors", "performance_reports"];
+    const tables = ["users", "local_credentials", "projects", "videos", "media_assets", "analysis_jobs", "video_analyses", "content_items", "content_versions", "content_reviews", "publication_records", "published_copy_records", "video_library_entries", "project_video_references", "project_memory_events", "audit_logs", "video_transcripts", "video_metric_snapshots", "analysis_job_events", "knowledge_items", "knowledge_item_versions", "performance_import_batches", "publication_metric_snapshots", "platform_works", "platform_metric_import_batches", "platform_metric_snapshots", "platform_metric_import_errors", "performance_reports", "employee_work_reports"];
     const snapshot = async () => Object.fromEntries(await Promise.all(tables.map(async name => {
       const rows = (await db.prepare(`SELECT * FROM ${name}`).all()).results.map(row => JSON.stringify(row)).sort();
       return [name, { rows: rows.length, sha256: createHash("sha256").update(JSON.stringify(rows)).digest("hex") }];

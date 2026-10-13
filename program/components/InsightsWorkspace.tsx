@@ -274,12 +274,38 @@ export function InsightsWorkspace({ initialView, initialOrganizationId = "", ini
       }
     } finally { setBusy(""); }
   }
-  async function generateReport(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setBusy("report"); setError(""); const form = new FormData(event.currentTarget); const response = await scopedFetch("/api/reports", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, reportType: form.get("reportType"), periodStart: form.get("periodStart"), periodEnd: form.get("periodEnd"), title: form.get("title") || undefined }) }); if (!response.ok) setError(await readError(response)); else { const body = await response.json() as { report: Report }; await loadWorkspace(organizationId, projectId, days); setSelectedReportId(body.report.id); } setBusy(""); }
-  async function finalizeReport() { if (!selectedReport) return; setBusy("finalize"); const response = await scopedFetch(`/api/reports/${selectedReport.id}/finalize`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId }) }); if (!response.ok) setError(await readError(response)); else await loadWorkspace(organizationId, projectId, days); setBusy(""); }
+  async function generateReport(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); if (busy) return;
+    const form = new FormData(event.currentTarget); setBusy("report"); setError(""); let saved = false;
+    try {
+      const response = await scopedFetch("/api/reports", { method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({organizationId,projectId,reportType:form.get("reportType"),periodStart:form.get("periodStart"),periodEnd:form.get("periodEnd"),title:form.get("title")||undefined}) });
+      if (!response.ok) { setError(await readError(response)); return; }
+      const body = await response.json() as { report:Report };
+      if (!body.report?.id || !body.report.updated_at) throw new Error("报告保存回执不完整，请刷新列表核对，勿立即重复生成。");
+      saved = true; await loadWorkspace(organizationId,projectId,days); setSelectedReportId(body.report.id);
+    } catch(error) {
+      setError(saved ? "报告已保存，但列表刷新失败。请恢复连接并刷新页面查看，勿重复生成。"
+        : error instanceof TypeError ? "报告请求连接中断，暂时无法确认是否已保存。请刷新列表核对，勿立即重复生成。" : error instanceof Error ? error.message : "报告操作失败，请刷新列表核对。");
+    } finally { setBusy(""); }
+  }
+  async function finalizeReport() {
+    if (!selectedReport || busy) return;
+    setBusy("finalize"); setError(""); let saved = false;
+    try {
+      const response = await scopedFetch(`/api/reports/${selectedReport.id}/finalize`, {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({organizationId,projectId,expectedUpdatedAt:selectedReport.updated_at})});
+      if (!response.ok) { setError(await readError(response)); return; }
+      const body = await response.json() as { report:Report };
+      if (body.report?.id !== selectedReport.id || body.report.status !== "final") throw new Error("报告定稿回执不完整，请刷新列表核对，勿重复定稿。");
+      saved = true; await loadWorkspace(organizationId,projectId,days);
+    } catch(error) {
+      setError(saved ? "报告已定稿，但列表刷新失败。请恢复连接并刷新页面核对。"
+        : error instanceof TypeError ? "定稿请求连接中断，暂时无法确认结果。请刷新报告核对，勿连续点击定稿。" : error instanceof Error ? error.message : "定稿失败，请刷新报告核对。");
+    } finally { setBusy(""); }
+  }
 
   if (loading) return <div className="management-state" role="status">正在载入运营数据…</div>;
   if (!organizationId || !projectId) return <div className="empty-panel"><h2>请先创建企业空间</h2><p>运营数据和报告必须归属于明确的企业空间。</p></div>;
-  return <div className="insights-workspace"><div className="management-toolbar insights-toolbar"><label>公司<select value={organizationId} disabled={busy === "import"} onChange={(event) => runScopedAction(async () => { setOrganizationId(event.target.value); await loadProjects(event.target.value); }, setError)}>{organizations.map((organization) => <option value={organization.id} key={organization.id}>{organization.name}</option>)}</select></label><label>企业空间<select value={projectId} disabled={busy === "import"} onChange={(event) => runScopedAction(async () => { setProjectId(event.target.value); rememberCurrentScope(organizationId, event.target.value); await loadWorkspace(organizationId, event.target.value, days); }, setError)}>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select></label><nav><a className={initialView === "overview" ? "active" : ""} href={`/insights?view=overview&organizationId=${organizationId}&projectId=${projectId}`}>复盘</a><a className={initialView === "imports" ? "active" : ""} href={`/insights?view=imports&organizationId=${organizationId}&projectId=${projectId}`}>导入</a><a className={initialView === "matches" ? "active" : ""} href={`/insights?view=matches&organizationId=${organizationId}&projectId=${projectId}`}>作品匹配</a><a className={initialView === "reports" ? "active" : ""} href={`/insights?view=reports&organizationId=${organizationId}&projectId=${projectId}`}>报告</a></nav></div>{error && <div className="inline-alert" role="alert">{error}</div>}
+  return <div className="insights-workspace"><div className="management-toolbar insights-toolbar"><label>公司<select value={organizationId} disabled={Boolean(busy)} onChange={(event) => runScopedAction(async () => { setOrganizationId(event.target.value); await loadProjects(event.target.value); }, setError)}>{organizations.map((organization) => <option value={organization.id} key={organization.id}>{organization.name}</option>)}</select></label><label>企业空间<select value={projectId} disabled={Boolean(busy)} onChange={(event) => runScopedAction(async () => { setProjectId(event.target.value); rememberCurrentScope(organizationId, event.target.value); await loadWorkspace(organizationId, event.target.value, days); }, setError)}>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select></label><nav><a className={initialView === "overview" ? "active" : ""} href={`/insights?view=overview&organizationId=${organizationId}&projectId=${projectId}`}>复盘</a><a className={initialView === "imports" ? "active" : ""} href={`/insights?view=imports&organizationId=${organizationId}&projectId=${projectId}`}>导入</a><a className={initialView === "matches" ? "active" : ""} href={`/insights?view=matches&organizationId=${organizationId}&projectId=${projectId}`}>作品匹配</a><a className={initialView === "reports" ? "active" : ""} href={`/insights?view=reports&organizationId=${organizationId}&projectId=${projectId}`}>报告</a></nav></div>{error && <div className="inline-alert" role="alert">{error}</div>}
     {initialView === "overview" && <Overview analytics={analytics} trendOption={trendOption} performanceMapOption={performanceMapOption} days={days} onDays={async (value) => { setDays(value); await loadWorkspace(organizationId, projectId, value); }} />}
     {initialView === "imports" && <ImportView canImport={canImport} imports={[...platformImports, ...imports]} rows={rows} filename={filename} format={importFormat} offsetMinutes={importOffset} onOffset={(value) => { setImportOffset(value); importPreview.clear(); }} asOfAt={asOfAt} message={parseMessage} phase={importPreview.preview.phase} busy={busy} onFormat={(value) => { setImportFormat(value); importPreview.clear(); }} onAsOfAt={(value) => { try { setAsOfAt(value ? importDate(value, importOffset) : ""); } catch { setAsOfAt(""); setError("数据截至时间无效，请重新填写。"); } }} onTemplate={downloadTemplate} onFile={parseImportFile} onSubmit={submitImport} matchHref={`/insights?view=matches&organizationId=${organizationId}&projectId=${projectId}`} />}
     {initialView === "matches" && <OwnedWorkMatchingView organizationId={organizationId} projectId={projectId} />}
@@ -380,11 +406,11 @@ function EnterpriseReportsView({ reports, selected, organizationId, projectId, c
   const recommendationRow = (item: string, index: number) => { const locator = `recommendation:${index}`; const saved = savedMemoLocators.has(locator); return <article key={`${item}-${index}`}><i aria-hidden="true">{String(index + 1).padStart(2, "0")}</i><p>{item}</p><button type="button" disabled={saved || Boolean(memoBusy)} onClick={() => void saveRecommendation(item, index)}>{saved ? <BookmarkCheck aria-hidden="true" /> : <BookmarkPlus aria-hidden="true" />}{saved ? "已记到备忘" : memoBusy === locator ? "保存中" : "记到我的备忘"}</button></article>; };
   return <div className="reports-layout">
     <aside className="panel reports-list">
-      {canGenerate && <form onSubmit={onGenerate}><h2>生成周期报告</h2><label>类型<select name="reportType" defaultValue="weekly"><option value="weekly">周报</option><option value="monthly">月报</option><option value="custom">自定义</option></select></label><div><label>开始<input type="date" name="periodStart" defaultValue={isoDate(-6)} required /></label><label>结束<input type="date" name="periodEnd" defaultValue={isoDate()} required /></label></div><label>标题<input name="title" maxLength={200} placeholder="留空使用默认标题" /></label><button disabled={busy === "report"}>{busy === "report" ? "生成中…" : "生成 / 刷新草稿"}</button></form>}
+      {canGenerate && <form onSubmit={onGenerate}><h2>生成周期报告</h2><label>类型<select name="reportType" defaultValue="weekly"><option value="weekly">周报</option><option value="monthly">月报</option><option value="custom">自定义</option></select></label><div><label>开始<input type="date" name="periodStart" defaultValue={isoDate(-6)} required /></label><label>结束<input type="date" name="periodEnd" defaultValue={isoDate()} required /></label></div><label>标题<input name="title" maxLength={200} placeholder="留空使用默认标题" /></label><button disabled={Boolean(busy)}>{busy === "report" ? "生成中…" : "生成 / 刷新草稿"}</button></form>}
       <nav>{reports.map((report) => <button className={selected?.id === report.id ? "active" : ""} onClick={() => onSelect(report.id)} key={report.id}><span>{report.status === "final" ? "已定稿" : "草稿"}</span><strong>{report.title}</strong><small>{report.period_start} 至 {report.period_end}</small></button>)}</nav>
     </aside>
     <main className="panel report-document">{selected && metrics ? <>
-      <header><div><span>{selected.status === "final" ? "正式报告" : "报告草稿"}</span><h1>{selected.title}</h1><p>{selected.period_start} 至 {selected.period_end} · 生成于 {formatDate(selected.generated_at)}</p></div><div><button onClick={() => window.print()}>打印</button>{selected.status === "draft" && canGenerate && <button className="primary" disabled={busy === "finalize"} onClick={onFinalize}>确认定稿</button>}</div></header>
+      <header><div><span>{selected.status === "final" ? "正式报告" : "报告草稿"}</span><h1>{selected.title}</h1><p>{selected.period_start} 至 {selected.period_end} · 生成于 {formatDate(selected.generated_at)}</p></div><div><button onClick={() => window.print()}>打印</button>{selected.status === "draft" && canGenerate && <button className="primary" disabled={Boolean(busy)} onClick={onFinalize}>{busy === "finalize" ? "正在定稿…" : "确认定稿"}</button>}</div></header>
       <section className="report-brief"><div><span>本期判断</span><h2>{selected.summary}</h2></div><aside><span>数据覆盖</span><strong>{metrics.summary.baselineCoverage ? `${metrics.summary.baselineCoverage.complete}/${metrics.summary.baselineCoverage.total}` : metrics.summary.contentCount}</strong><small>{metrics.summary.baselineCoverage?.partial ? `${metrics.summary.baselineCoverage.partial} 条仅部分覆盖` : "可用于本期判断"}</small></aside></section>
       <section className="report-result-block"><header><div><span>经营结果</span><h2>本期核心指标</h2></div><small>先看结果，再决定下期动作</small></header><div className="report-kpis"><Kpi label="纳入内容" value={String(metrics.summary.contentCount)} note="本期可比作品" /><Kpi label="新增播放" value={formatNumber(metrics.summary.views)} note={metrics.comparison ? comparisonNote(metrics, "views") : "暂无可比前期"} /><Kpi label="周期互动率" value={`${(metrics.summary.engagementRate * 100).toFixed(2)}%`} note={`${formatNumber(metrics.summary.interactions)} 次新增互动`} /><Kpi label="新增线索" value={formatNumber(metrics.summary.leads)} note={metrics.comparison ? comparisonNote(metrics, "leads") : "暂无可比前期"} /></div>
         {metrics.topContent.length > 0 && <div className="report-result-ranking"><div className="heading"><span>表现前列内容</span><span>新增播放</span><span>互动率</span></div>{metrics.topContent.slice(0, 3).map((item, index) => <a key={item.publicationId} href={item.externalUrl || undefined} target={item.externalUrl ? "_blank" : undefined} rel="noreferrer"><span><i>{index + 1}</i><strong>{item.title}</strong></span><b>{formatNumber(item.views)}</b><em>{(item.engagementRate * 100).toFixed(2)}%</em></a>)}</div>}
@@ -420,10 +446,18 @@ function EmployeeReportsView({ organizationId, projectId }: { organizationId: st
   }, [fetchReports, applyReports]);
   async function selectEmployee(value: string) { setLoading(true); setError(""); try { await loadReports(value); } catch (reason) { setError(reason instanceof Error ? reason.message : "员工报告加载失败"); } finally { setLoading(false); } }
   async function generate(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); const form = new FormData(event.currentTarget); setBusy(true); setError("");
-    const response = await scopedFetch("/api/employee-reports", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, employeeUserId, reportType: form.get("reportType"), periodStart: form.get("periodStart"), periodEnd: form.get("periodEnd"), title: form.get("title") || undefined }) });
-    if (!response.ok) setError(await readError(response)); else { const body = await response.json() as { report: EmployeeReport }; await loadReports(employeeUserId); setSelectedReportId(body.report.id); }
-    setBusy(false);
+    event.preventDefault(); if (busy) return;
+    const form = new FormData(event.currentTarget); setBusy(true); setError(""); let saved = false;
+    try {
+      const response = await scopedFetch("/api/employee-reports", {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({organizationId,projectId,employeeUserId,reportType:form.get("reportType"),periodStart:form.get("periodStart"),periodEnd:form.get("periodEnd"),title:form.get("title")||undefined})});
+      if (!response.ok) { setError(await readError(response)); return; }
+      const body = await response.json() as { report:EmployeeReport };
+      if (!body.report?.id || !body.report.updated_at) throw new Error("员工报告保存回执不完整，请刷新列表核对，勿立即重复生成。");
+      saved = true; await loadReports(employeeUserId); setSelectedReportId(body.report.id);
+    } catch(error) {
+      setError(saved ? "员工报告已保存，但列表刷新失败。请恢复连接并刷新页面查看，勿重复生成。"
+        : error instanceof TypeError ? "员工报告请求连接中断，暂时无法确认是否已保存。请刷新列表核对，勿立即重复生成。" : error instanceof Error ? error.message : "员工报告操作失败，请刷新列表核对。");
+    } finally { setBusy(false); }
   }
   const selected = reports.find((report) => report.id === selectedReportId) || null;
   let snapshot: EmployeeReportSnapshot | null = null; if (selected) { try { snapshot = JSON.parse(selected.snapshot_json) as EmployeeReportSnapshot; } catch { snapshot = null; } }
@@ -434,7 +468,7 @@ function EmployeeReportsView({ organizationId, projectId }: { organizationId: st
   if (loading) return <div className="panel employee-report-loading">正在读取员工工作记录…</div>;
   return <div className="reports-layout employee-reports-layout">
     <aside className="panel reports-list employee-reports-list">
-      <div className="employee-report-person"><span>报告员工</span><select value={employeeUserId} onChange={(event) => void selectEmployee(event.target.value)}>{employees.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><small>{employee?.email || ""}</small></div>
+      <div className="employee-report-person"><span>报告员工</span><select value={employeeUserId} disabled={busy} onChange={(event) => void selectEmployee(event.target.value)}>{employees.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><small>{employee?.email || ""}</small></div>
       {canGenerate && <form onSubmit={generate}><h2>生成工作报告</h2><label>周期<select name="reportType" defaultValue="weekly"><option value="weekly">周报</option><option value="monthly">月报</option><option value="custom">自定义</option></select></label><div><label>开始<input type="date" name="periodStart" defaultValue={isoDate(-6)} required /></label><label>结束<input type="date" name="periodEnd" defaultValue={isoDate()} required /></label></div><label>标题<input name="title" maxLength={200} placeholder="留空使用默认标题" /></label><button disabled={busy}>{busy ? "正在汇总…" : <><RefreshCw aria-hidden="true" />生成 / 刷新报告</>}</button></form>}
       {error && <p className="employee-report-error" role="alert">{error}</p>}
       <nav>{reports.map((report) => <button type="button" className={selected?.id === report.id ? "active" : ""} onClick={() => setSelectedReportId(report.id)} key={report.id}><span>工作报告</span><strong>{report.title}</strong><small>{report.period_start} 至 {report.period_end}</small></button>)}</nav>
