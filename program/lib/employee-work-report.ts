@@ -19,6 +19,7 @@ type CountRow = { count: number };
 type WorkRow = { work_id: string; content_item_id: string | null; owner_user_id: string | null; title: string; published_at: string; video_id: string | null; views: number; likes: number; shares: number; comments: number; saves: number; follower_delta: number; time_aliases?: number };
 
 export type EmployeeWorkReportSnapshot = {
+  details?: { analyses: { shown: number; total: number }; content: { shown: number; total: number } };
   employee: { id: string; name: string };
   period: { start: string; end: string };
   summary: {
@@ -49,7 +50,7 @@ export async function loadEmployeeWorkReport(db: D1Database, input: { organizati
   const { organizationId, projectId, employeeUserId, employeeName, periodStart, periodEnd } = input;
   const analysesResult = await db.prepare(`
     SELECT aj.id AS job_id, aj.video_id, v.title, aj.source_ref, aj.status, aj.created_at, aj.completed_at
-    FROM analysis_jobs aj LEFT JOIN videos v ON v.id = aj.video_id
+    FROM analysis_jobs aj LEFT JOIN videos v ON v.id = aj.video_id AND v.organization_id=aj.organization_id AND v.project_id=aj.project_id
     WHERE aj.organization_id = ? AND aj.project_id = ? AND aj.created_by = ?
       AND substr(aj.created_at, 1, 10) BETWEEN ? AND ?
     ORDER BY aj.created_at DESC LIMIT 100
@@ -59,12 +60,23 @@ export async function loadEmployeeWorkReport(db: D1Database, input: { organizati
     SELECT ci.id AS content_item_id, ci.title, ci.status, ci.created_at,
       COUNT(ev.id) AS version_count, MAX(ev.created_at) AS last_version_at
     FROM content_items ci
-    LEFT JOIN content_versions ev ON ev.content_item_id = ci.id AND ev.created_by = ? AND substr(ev.created_at, 1, 10) BETWEEN ? AND ?
+    LEFT JOIN content_versions ev ON ev.content_item_id = ci.id AND ev.organization_id=ci.organization_id AND ev.project_id=ci.project_id AND ev.created_by = ? AND substr(ev.created_at, 1, 10) BETWEEN ? AND ?
     WHERE ci.organization_id = ? AND ci.project_id = ? AND ci.deleted_at IS NULL
       AND COALESCE(ci.assignee_user_id, ci.created_by) = ?
       AND (substr(ci.created_at, 1, 10) BETWEEN ? AND ? OR ev.id IS NOT NULL)
     GROUP BY ci.id ORDER BY COALESCE(MAX(ev.created_at), ci.created_at) DESC LIMIT 100
   `).bind(employeeUserId, periodStart, periodEnd, organizationId, projectId, employeeUserId, periodStart, periodEnd).all<ContentRow>();
+
+  const [analysisTotals, contentTotals] = await Promise.all([
+    db.prepare(`SELECT COUNT(*) AS count,SUM(status IN ('completed','partial')) AS completed,SUM(status IN ('failed','cancelled')) AS failed
+      FROM analysis_jobs WHERE organization_id=? AND project_id=? AND created_by=? AND substr(created_at,1,10) BETWEEN ? AND ?`)
+      .bind(organizationId,projectId,employeeUserId,periodStart,periodEnd).first<{ count: number; completed: number; failed: number }>(),
+    db.prepare(`SELECT COUNT(*) AS count FROM content_items ci WHERE ci.organization_id=? AND ci.project_id=? AND ci.deleted_at IS NULL
+      AND COALESCE(ci.assignee_user_id,ci.created_by)=? AND (substr(ci.created_at,1,10) BETWEEN ? AND ? OR EXISTS(
+        SELECT 1 FROM content_versions ev WHERE ev.content_item_id=ci.id AND ev.organization_id=ci.organization_id AND ev.project_id=ci.project_id
+          AND ev.created_by=? AND substr(ev.created_at,1,10) BETWEEN ? AND ?))`)
+      .bind(organizationId,projectId,employeeUserId,periodStart,periodEnd,employeeUserId,periodStart,periodEnd).first<CountRow>(),
+  ]);
 
   const versions = await db.prepare("SELECT COUNT(*) AS count FROM content_versions WHERE organization_id = ? AND project_id = ? AND created_by = ? AND substr(created_at, 1, 10) BETWEEN ? AND ?").bind(organizationId, projectId, employeeUserId, periodStart, periodEnd).first<CountRow>();
   const reviews = await db.prepare("SELECT COUNT(*) AS count FROM content_reviews WHERE organization_id = ? AND project_id = ? AND decided_by = ? AND decided_at IS NOT NULL AND substr(decided_at, 1, 10) BETWEEN ? AND ?").bind(organizationId, projectId, employeeUserId, periodStart, periodEnd).first<CountRow>();
@@ -110,10 +122,10 @@ export async function loadEmployeeWorkReport(db: D1Database, input: { organizati
   const highCount = outcomes.filter((item) => item.label === "high").length;
   const viralCount = outcomes.filter((item) => item.label === "viral").length;
   const summary = {
-    analysesStarted: analyses.length,
-    analysesCompleted: analyses.filter((item) => item.status === "completed" || item.status === "partial").length,
-    analysesFailed: analyses.filter((item) => item.status === "failed" || item.status === "cancelled").length,
-    contentOwned: contentResult.results.length,
+    analysesStarted: numberValue(analysisTotals?.count),
+    analysesCompleted: numberValue(analysisTotals?.completed),
+    analysesFailed: numberValue(analysisTotals?.failed),
+    contentOwned: numberValue(contentTotals?.count),
     versionsCreated: numberValue(versions?.count),
     reviewsCompleted: numberValue(reviews?.count),
     publishingActions: numberValue(publications?.count),
@@ -122,6 +134,7 @@ export async function loadEmployeeWorkReport(db: D1Database, input: { organizati
     viralWorks: viralCount,
   };
   return {
+    details: { analyses: { shown: analyses.length, total: summary.analysesStarted }, content: { shown: contentResult.results.length, total: summary.contentOwned } },
     employee: { id: employeeUserId, name: employeeName }, period: { start: periodStart, end: periodEnd }, summary,
     summaryText: `${employeeName}本期发起 ${summary.analysesStarted} 个视频分析，完成 ${summary.analysesCompleted} 个；主创或负责 ${summary.contentOwned} 个内容任务，产出 ${summary.versionsCreated} 个内容版本。${outcomes.length ? `已归因 ${outcomes.length} 条发布作品，其中 ${highCount} 条达到高表现标准${viralCount ? `、${viralCount} 条达到爆款标准` : ""}。` : "当前还没有可回溯到本人内容任务的发布作品。"}`,
     analyses: analyses.map((item) => ({ jobId: item.job_id, videoId: item.video_id, title: item.title?.trim() || item.source_ref, status: item.status, startedAt: item.created_at, completedAt: item.completed_at })),

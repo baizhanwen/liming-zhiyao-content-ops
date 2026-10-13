@@ -74,6 +74,7 @@ export const finalizeReportSchema = z.object({ organizationId: identifier, proje
 
 export type MetricSnapshotRow = {
   metric_id?: string; metric_created_at?: string;
+  timestamp_aliases?: number; timestamp_conflicts?: number;
   publication_id: string; content_item_id: string; title: string; platform: string; external_url: string | null; published_at: string | null; observed_at: string;
   video_id?: string | null; video_title?: string | null; video_duration_sec?: number | null;
   genre?: string | null; review_status?: string | null; views: number; likes: number; comments: number; shares: number; saves: number; followers_gained: number; leads: number; homepage_visits?: number; average_watch_seconds: number | null; completion_rate_bps: number | null; five_second_completion_rate_bps?: number | null; cover_ctr_bps?: number | null; two_second_bounce_rate_bps?: number | null;
@@ -208,6 +209,7 @@ export function buildAnalyticsSnapshot(rows: MetricSnapshotRow[], periodStart: s
   const byPublication = new Map<string, MetricSnapshotRow[]>();
   const instants = new Map<string, MetricSnapshotRow>(); let timestampAliases = 0, timestampConflicts = 0;
   for (const raw of rows.slice().sort((a,b)=>(a.metric_created_at||"").localeCompare(b.metric_created_at||"") || (a.metric_id||"").localeCompare(b.metric_id||""))) {
+    timestampAliases += raw.timestamp_aliases || 0; timestampConflicts += raw.timestamp_conflicts || 0;
     const row = { ...raw, observed_at: metricUtc(raw.observed_at) || raw.observed_at, published_at: metricUtc(raw.published_at) };
     const key=JSON.stringify([row.publication_id,row.observed_at]), prior=instants.get(key);
     if (prior) { timestampAliases++; if (["views","likes","comments","shares","saves","followers_gained","leads","homepage_visits","average_watch_seconds","completion_rate_bps","five_second_completion_rate_bps","cover_ctr_bps","two_second_bounce_rate_bps"].some(field=>prior[field as keyof MetricSnapshotRow]!==row[field as keyof MetricSnapshotRow])) timestampConflicts++; continue; }
@@ -304,6 +306,7 @@ export function buildAnalyticsSnapshot(rows: MetricSnapshotRow[], periodStart: s
 }
 
 async function loadPerformancePeriodRows(db: ReturnType<typeof getD1>, organizationId: string, projectId: string, periodStart: string, periodEnd: string) {
+  const metricValues = "json_array(views,likes,comments,shares,saves,followers_gained,leads,homepage_visits,average_watch_seconds,completion_rate_bps,five_second_completion_rate_bps,cover_ctr_bps,two_second_bounce_rate_bps)";
   const rows = await db.prepare(`
     WITH combined AS (
       SELECT m.id AS metric_id, m.created_at AS metric_created_at, m.publication_id, m.content_item_id, c.title, p.platform, p.external_url, ${metricUtcSql("p.published_at")} AS published_at, ${metricUtcSql("m.observed_at")} AS observed_at,
@@ -331,16 +334,34 @@ async function loadPerformancePeriodRows(db: ReturnType<typeof getD1>, organizat
         AND COALESCE(w.review_status, '') NOT LIKE '%自见%'
         AND COALESCE(w.review_status, '') NOT LIKE '%仅自己%'
         AND COALESCE(w.review_status, '') NOT LIKE '%私密%'
+    ), clock_rows AS (
+      SELECT combined.*,${metricValues} AS metrics,
+        ROW_NUMBER() OVER(PARTITION BY publication_id,observed_at ORDER BY metric_created_at,metric_id) AS clock_rank,
+        FIRST_VALUE(${metricValues}) OVER(PARTITION BY publication_id,observed_at ORDER BY metric_created_at,metric_id) AS first_metrics
+      FROM combined WHERE observed_at IS NOT NULL AND substr(observed_at,1,10)<=?
+    ), clock_meta AS (
+      SELECT publication_id,observed_at,COUNT(*)-1 AS aliases,
+        SUM(CASE WHEN metrics IS NOT first_metrics THEN 1 ELSE 0 END) AS conflicts FROM clock_rows GROUP BY publication_id,observed_at
+    ), unique_rows AS (
+      SELECT c.*,m.aliases,m.conflicts,substr(c.observed_at,1,10) AS day,
+        CASE WHEN substr(c.observed_at,1,10)<? THEN 0 ELSE 1 END AS period_group
+      FROM clock_rows c JOIN clock_meta m ON m.publication_id=c.publication_id AND m.observed_at=c.observed_at WHERE c.clock_rank=1
+    ), ranked AS (
+      SELECT unique_rows.*,
+        ROW_NUMBER() OVER(PARTITION BY publication_id,day ORDER BY rtrim(observed_at,'Z') DESC) AS day_last,
+        ROW_NUMBER() OVER(PARTITION BY publication_id,period_group ORDER BY rtrim(observed_at,'Z')) AS first_group,
+        ROW_NUMBER() OVER(PARTITION BY publication_id,period_group ORDER BY rtrim(observed_at,'Z') DESC) AS last_group,
+        SUM(aliases) OVER(PARTITION BY publication_id,period_group) AS period_aliases,
+        SUM(conflicts) OVER(PARTITION BY publication_id,period_group) AS period_conflicts
+      FROM unique_rows
     )
-    SELECT current.* FROM combined current
-    WHERE substr(current.observed_at, 1, 10) BETWEEN ? AND ? OR (
-      substr(current.observed_at, 1, 10) < ? AND rtrim(current.observed_at,'Z') = (
-        SELECT MAX(rtrim(previous.observed_at,'Z')) FROM combined previous
-        WHERE previous.publication_id = current.publication_id AND substr(previous.observed_at, 1, 10) < ?
-      )
-    )
-    ORDER BY rtrim(current.observed_at,'Z') ASC,current.metric_created_at,current.metric_id LIMIT 10000
-  `).bind(organizationId, projectId, organizationId, projectId, periodStart, periodEnd, periodStart, periodStart).all<MetricSnapshotRow>();
+    SELECT ranked.*,
+      CASE WHEN period_group=0 THEN aliases WHEN first_group=1 THEN period_aliases ELSE 0 END AS timestamp_aliases,
+      CASE WHEN period_group=0 THEN conflicts WHEN first_group=1 THEN period_conflicts ELSE 0 END AS timestamp_conflicts
+    FROM ranked WHERE (period_group=1 AND (day_last=1 OR first_group=1)) OR (period_group=0 AND last_group=1)
+    ORDER BY rtrim(observed_at,'Z'),metric_created_at,metric_id LIMIT 50001
+  `).bind(organizationId, projectId, organizationId, projectId, periodEnd, periodStart).all<MetricSnapshotRow>();
+  if (rows.results.length > 50_000) throw new Error("PERFORMANCE_RESULT_CAPACITY_EXCEEDED");
   return rows.results;
 }
 

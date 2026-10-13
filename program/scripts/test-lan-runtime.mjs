@@ -499,6 +499,21 @@ try {
     writeFileSync(path.join(runDir,"analysis-job-actions.json"),JSON.stringify({passed:true,synthetic:true,outcomes,deletedSourceCancelStatus:200,deletedSourceRetryStatus:404,events:3,recordedModelCalls:0,boundary:"Actual compiled HTTP/D1; synthetic accounts/source, SQL faults, no model calls; lost acknowledgement covered separately by injected unit transport"},null,2));
   });
 
+  await scenario("large analytics preserves more than 10000 raw snapshots: actual HTTP/D1", async () => {
+    const user=users[0],publication=await db.prepare("SELECT id,content_item_id FROM publication_records WHERE organization_id=? AND project_id=? AND status='published' LIMIT 1").bind(user.org,user.project).first();assert.ok(publication);
+    const now=new Date().toISOString(),size=10020;
+    for(let start=0;start<size;start+=250){const statements=[];
+      for(let i=start;i<Math.min(start+250,size);i++)statements.push(db.prepare("INSERT INTO publication_metric_snapshots(id,organization_id,project_id,publication_id,content_item_id,observed_at,views,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)").bind('synthetic-scale-'+i,user.org,user.project,publication.id,publication.content_item_id,new Date(Date.UTC(2026,9,12,1,0,i)).toISOString(),1000+i,user.id,now));
+      await db.batch(statements);
+    }
+    const started=performance.now();
+    const generated=expect(await http('/api/reports',{user,method:'POST',body:{organizationId:user.org,projectId:user.project,reportType:'custom',periodStart:'2026-10-11',periodEnd:'2026-10-12',title:'Synthetic large analytics'}}),201);
+    const snapshot=JSON.parse(generated.report.metrics_json),work=snapshot.contentPerformance.find(row=>row.publicationId===publication.id);assert.equal(work.views,11019);
+    const saved=await db.prepare('SELECT metrics_json FROM performance_reports WHERE id=?').bind(generated.report.id).first();assert.deepEqual(JSON.parse(saved.metrics_json),snapshot);
+    writeFileSync(path.join(runDir,'analytics-scale.json'),JSON.stringify({passed:true,synthetic:true,rawInserted:size,latestViews:work.views,reportId:generated.report.id,reportMs:Math.round(performance.now()-started),modelCalls:await count('SELECT COUNT(*) AS n FROM model_calls')+await count('SELECT COUNT(*) AS n FROM analysis_model_calls'),boundary:'Compiled Worker/HTTP/D1 and saved report, synthetic data; fixtures removed before backup, report retained. No real accounts, provider billing, devices or field capacity.'},null,2));
+    await db.prepare("DELETE FROM publication_metric_snapshots WHERE id LIKE 'synthetic-scale-%'").run();
+  });
+
   if (process.env.LAN_TEST_BACKUP === "1") await scenario("实际备份脚本恢复数据库与 R2：重新登录、版本关联、附件权限与继续审核发布", async () => {
     assert.equal(process.platform, "win32", "Shipped maintenance scripts require Windows");
     // Native Windows SQLite cannot use the long evidence-directory prefix.
@@ -507,7 +522,7 @@ try {
     for (const filename of ["backup-local.ps1", "restore-local.ps1", "local-state-maintenance.ps1", "analyzer-instance-lock.ps1", "verify-state-databases.mjs"]) {
       cpSync(path.join(root, "scripts", filename), path.join(scripts, filename));
     }
-    const tables = ["users", "local_credentials", "projects", "videos", "media_assets", "analysis_jobs", "video_analyses", "content_items", "content_versions", "content_reviews", "publication_records", "published_copy_records", "video_library_entries", "project_video_references", "project_memory_events", "audit_logs", "video_transcripts", "video_metric_snapshots", "analysis_job_events", "knowledge_items", "knowledge_item_versions", "performance_import_batches", "publication_metric_snapshots", "platform_works", "platform_metric_import_batches", "platform_metric_snapshots", "platform_metric_import_errors"];
+    const tables = ["users", "local_credentials", "projects", "videos", "media_assets", "analysis_jobs", "video_analyses", "content_items", "content_versions", "content_reviews", "publication_records", "published_copy_records", "video_library_entries", "project_video_references", "project_memory_events", "audit_logs", "video_transcripts", "video_metric_snapshots", "analysis_job_events", "knowledge_items", "knowledge_item_versions", "performance_import_batches", "publication_metric_snapshots", "platform_works", "platform_metric_import_batches", "platform_metric_snapshots", "platform_metric_import_errors", "performance_reports"];
     const snapshot = async () => Object.fromEntries(await Promise.all(tables.map(async name => {
       const rows = (await db.prepare(`SELECT * FROM ${name}`).all()).results.map(row => JSON.stringify(row)).sort();
       return [name, { rows: rows.length, sha256: createHash("sha256").update(JSON.stringify(rows)).digest("hex") }];
@@ -592,6 +607,10 @@ try {
   });
 
   await scenario("媒体请求大小、畸形输入与50MB边界：真实HTTP", async () => {
+    // Large SQL and native backup can outlast the synthetic worker's 45s
+    // presence. Refresh through the real service API before testing acceptance.
+    const presence=await claim("runtime-media-boundary");assert.ok([200,204].includes(presence.status));
+    if(presence.status===200)expect(await release(presence.data.job),200);
     const before = await count("SELECT COUNT(*) AS n FROM videos");
     const beforeAssets = await count("SELECT COUNT(*) AS n FROM media_assets");
     const beforeModels = await count("SELECT COUNT(*) AS n FROM analysis_model_calls") + await count("SELECT COUNT(*) AS n FROM model_calls");
