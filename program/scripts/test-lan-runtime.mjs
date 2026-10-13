@@ -558,6 +558,11 @@ try {
     await runReviewWriteChecks({db,http,expect,users,runDir});
   });
 
+  await scenario("performance published/private visibility scope: actual HTTP/D1",async()=>{
+    const {runPerformanceVisibilityChecks}=await import('./performance-visibility-checks.mjs');
+    await runPerformanceVisibilityChecks({db,http,expect,users,runDir});
+  });
+
   await scenario("failed synthetic assistant response retains usage: actual Worker/HTTP/D1",async()=>{
     const user=users[0],before=await count('SELECT COUNT(*) AS n FROM model_calls');syntheticModelMode=true;
     try {

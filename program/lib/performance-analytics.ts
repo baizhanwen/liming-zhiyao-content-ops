@@ -1,3 +1,4 @@
+import { publicPlatformWorkSql } from "./performance-visibility.ts";
 import { z } from "zod";
 import type { getD1 } from "../db/runtime";
 import { buildPerformanceDiagnostics } from "./performance-diagnostics.ts";
@@ -318,7 +319,7 @@ async function loadPerformancePeriodRows(db: ReturnType<typeof getD1>, organizat
       INNER JOIN publication_records p ON p.id = m.publication_id AND p.organization_id = m.organization_id AND p.project_id = m.project_id
       INNER JOIN content_items c ON c.id = m.content_item_id AND c.organization_id = m.organization_id AND c.project_id = m.project_id
       LEFT JOIN performance_import_batches b ON b.id = m.import_batch_id AND b.organization_id = m.organization_id AND b.project_id = m.project_id
-      WHERE m.organization_id = ? AND m.project_id = ? AND (m.import_batch_id IS NULL OR b.status = 'completed')
+      WHERE m.organization_id = ? AND m.project_id = ? AND p.status='published' AND (m.import_batch_id IS NULL OR b.status = 'completed')
       UNION ALL
       SELECT s.id AS metric_id, s.created_at AS metric_created_at, 'platform:' || w.id AS publication_id, COALESCE(w.content_item_id, '') AS content_item_id, w.title, s.platform,
         v.source_url AS external_url, ${metricUtcSql("w.published_at")} AS published_at, ${metricUtcSql("s.as_of_at")} AS observed_at,
@@ -331,9 +332,7 @@ async function loadPerformancePeriodRows(db: ReturnType<typeof getD1>, organizat
       LEFT JOIN videos v ON v.id = w.video_id AND v.organization_id = w.organization_id AND v.project_id = w.project_id AND v.deleted_at IS NULL
       INNER JOIN platform_metric_import_batches b ON b.id = s.import_batch_id AND b.organization_id = s.organization_id AND b.project_id = s.project_id AND b.status = 'completed'
       WHERE s.organization_id = ? AND s.project_id = ?
-        AND COALESCE(w.review_status, '') NOT LIKE '%自见%'
-        AND COALESCE(w.review_status, '') NOT LIKE '%仅自己%'
-        AND COALESCE(w.review_status, '') NOT LIKE '%私密%'
+        AND ${publicPlatformWorkSql("w")}
     ), clock_rows AS (
       SELECT combined.*,${metricValues} AS metrics,
         ROW_NUMBER() OVER(PARTITION BY publication_id,observed_at ORDER BY metric_created_at,metric_id) AS clock_rank,

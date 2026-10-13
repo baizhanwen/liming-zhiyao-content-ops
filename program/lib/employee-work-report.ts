@@ -1,3 +1,4 @@
+import { publicPlatformWorkSql } from "./performance-visibility.ts";
 import { z } from "zod";
 import { metricUtcSql, metricOrderSql } from "./metric-time";
 
@@ -97,7 +98,7 @@ export async function loadEmployeeWorkReport(db: D1Database, input: { organizati
     FROM platform_works pw
     INNER JOIN latest pms ON pms.work_id=pw.id AND pms.rank=1
     LEFT JOIN content_items ci ON ci.id = pw.content_item_id AND ci.organization_id=pw.organization_id AND ci.project_id=pw.project_id AND ci.deleted_at IS NULL
-    WHERE pw.organization_id = ? AND pw.project_id = ? AND substr(${metricUtcSql("pw.published_at")}, 1, 10) BETWEEN ? AND ?
+    WHERE pw.organization_id = ? AND pw.project_id = ? AND substr(${metricUtcSql("pw.published_at")}, 1, 10) BETWEEN ? AND ? AND ${publicPlatformWorkSql("pw")}
     ORDER BY pms.views DESC
   `).bind(organizationId, projectId, periodEnd, organizationId, projectId, periodStart, periodEnd).all<WorkRow>();
 
