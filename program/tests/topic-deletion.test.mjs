@@ -14,7 +14,7 @@ test("topic deletion requires an administrator, exact-title confirmation, and ke
   assert.match(route, /access\.organizationRole !== "admin"/);
   assert.match(route, /confirmationTitle !== topic\.title/);
   assert.match(route, /SET deleted_at = \?, updated_by = \?, updated_at = \?/);
-  assert.match(route, /'topic\.deleted'/);
+  assert.match(route, /["']topic\.deleted["']/);
   assert.match(route, /deletionMode: "soft"/);
 
   assert.match(workspace, /method: "DELETE"/);
