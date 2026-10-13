@@ -29,15 +29,18 @@ export const workflowTransitionSchema = z.object({
 
 export const createContentCommentSchema = z.object({
   ...scope,
+  expectedVersion: z.number().int().min(1),
   visibility: z.enum(["internal", "client"]),
   body: z.string().trim().min(1).max(4_000),
   anchor: z.object({ field: z.enum(["fullScript", "shortScript", "storyboard", "productionPack"]), quote: z.string().trim().max(500).optional() }).strict().optional(),
 }).strict();
 
-export const resolveContentCommentSchema = z.object({ ...scope, resolved: z.boolean() }).strict();
+export const resolveContentCommentSchema = z.object({ ...scope, resolved: z.boolean(), expectedUpdatedAt: z.string().min(1).max(100) }).strict();
 
 export const scheduleContentSchema = z.object({
   ...scope,
+  expectedVersion: z.number().int().min(1),
+  expectedUpdatedAt: z.string().min(1).max(100).nullable(),
   platform: z.enum(["douyin", "xiaohongshu", "wechat_channels", "bilibili", "other"]),
   scheduledAt: z.iso.datetime({ offset: true }),
   timezone: z.string().trim().min(1).max(80).default("Asia/Shanghai"),
@@ -47,7 +50,8 @@ export const scheduleContentSchema = z.object({
 
 export const publicationRecordSchema = z.object({
   ...scope,
-  expectedVersion: z.number().int().min(1).optional(),
+  expectedVersion: z.number().int().min(1),
+  expectedUpdatedAt: z.string().min(1).max(100).optional(),
   publicationId: identifier.optional(),
   platform: z.enum(["douyin", "xiaohongshu", "wechat_channels", "bilibili", "other"]),
   status: z.enum(["scheduled", "publishing", "published", "failed", "cancelled"]),

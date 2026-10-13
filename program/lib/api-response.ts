@@ -7,6 +7,7 @@ export function apiError(code: string, message: string, status: number, details?
 export function errorResponse(error: unknown) {
   if (error instanceof ProjectWriteAccessChangedError) return apiError(error.code, error.message, 403);
   const message = error instanceof Error ? error.message : "Unexpected error";
+  if (error instanceof Error && "code" in error && error.code === "CONTENT_OPERATION_STATUS_UNKNOWN") return apiError(error.code, error.message, 503);
   if (error instanceof Error && "code" in error && error.code === "REPORT_WRITE_STATUS_UNKNOWN") return apiError("REPORT_WRITE_STATUS_UNKNOWN", message, 503);
   if (message.includes("PERFORMANCE_RESULT_CAPACITY_EXCEEDED")) return apiError("PERFORMANCE_RESULT_CAPACITY_EXCEEDED", "该周期压缩后的统计数据仍超过当前处理预算，本次没有生成或更新报告。请缩短周期，或联系管理员核对空间规模；不会显示截断结果。", 422);
   if (message.includes("ANALYSIS_MONTHLY_QUOTA_EXCEEDED")) return apiError("ANALYSIS_QUOTA_EXCEEDED", "本月分析任务额度已用完，或其他成员已先提交。请刷新用量后再操作；本次没有新建分析任务。", 429);

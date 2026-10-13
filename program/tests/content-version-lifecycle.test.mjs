@@ -20,10 +20,10 @@ async function fixture(t) {
 // but before D1 commits it; this exercises the actual snapshot race.
 function interleave(f, pattern, action) {
   const prepare = f.db.prepare, batch = f.db.batch;
-  f.db.prepare = sql => { const statement = prepare(sql); statement.auditSql = sql; return statement; };
+  f.db.prepare = sql => { const statement = prepare(sql),bind=statement.bind; statement.auditSql=sql;statement.bind=(...values)=>{statement.auditValues=values;return bind(...values);};return statement; };
   let injected = false;
   f.db.batch = async statements => {
-    if (!injected && statements.some(s => pattern.test(s.auditSql || ""))) {
+    if (!injected && statements.some(s => pattern.test((s.auditSql || "")+JSON.stringify(s.auditValues||[])))) {
       injected = true;
       await action();
     }

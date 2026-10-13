@@ -82,7 +82,7 @@ test("approval goes directly to publish-ready and records an approved version-bo
 
 test("workflow contracts require reasons and traceable publication outcomes", async () => {
   const workflow = await import("../lib/content-workflow.ts");
-  const scope = { organizationId: "org-1", projectId: "project-1" };
+  const scope = { organizationId: "org-1", projectId: "project-1", expectedVersion:1 };
   assert.equal(workflow.workflowTransitionSchema.safeParse({ ...scope, toStatus: "internal_revision" }).success, false);
   assert.equal(workflow.workflowTransitionSchema.safeParse({ ...scope, toStatus: "internal_revision", note: "补充客户确认数据" }).success, true);
   assert.equal(workflow.publicationRecordSchema.safeParse({ ...scope, platform: "douyin", status: "published" }).success, false);
