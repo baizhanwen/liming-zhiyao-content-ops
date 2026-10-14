@@ -2,6 +2,7 @@ import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess } from "../.
 import { apiError, errorResponse } from "../../../lib/api-response";
 import { canManageProjectKnowledge, includesValue, knowledgeCategories, knowledgeSourceTypes } from "../../../lib/content-ops";
 import { readRequestIdentity } from "../../../lib/request-auth";
+import {commitReferenceWrite} from "../../../lib/reference-write";
 
 export async function GET(request: Request) {
   const identity = await readRequestIdentity(request); if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再访问品牌知识。", 401);
@@ -35,11 +36,11 @@ export async function POST(request: Request) {
     if (payload.sourceType !== "manual" && !sourceRef) return apiError("KNOWLEDGE_SOURCE_REF_REQUIRED", "客户资料、反馈或分析沉淀必须填写具体来源。", 400);
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId); if (!access || !canWriteProjectAccess(access)) return apiError("WRITE_ACCESS_REQUIRED", "当前角色不能添加品牌知识。", 403);
     const user = await ensureUser(identity); const db = getD1(); const itemId = crypto.randomUUID(); const now = new Date().toISOString();
-    await db.batch([
-      db.prepare("INSERT INTO knowledge_items (id, organization_id, project_id, category, title, status, current_version, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'draft', 1, ?, ?, ?, ?)").bind(itemId, organizationId, projectId, payload.category, title, user.id, user.id, now, now),
-      db.prepare("INSERT INTO knowledge_item_versions (id, organization_id, project_id, item_id, version, body, source_type, source_ref, change_summary, created_by, created_at) VALUES (?, ?, ?, ?, 1, ?, ?, ?, '首次录入', ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, itemId, body, payload.sourceType, sourceRef, user.id, now),
-      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'knowledge.created', 'knowledge_item', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, itemId, JSON.stringify({ category: payload.category, sourceType: payload.sourceType }), now),
-    ]);
+    const saved=await commitReferenceWrite(db,{request,authSubject:identity.authSubject,scope:{organizationId,projectId,userId:user.id},targetId:itemId,version:now,action:'knowledge.created',targetType:'knowledge_item',metadata:{category:payload.category,sourceType:payload.sourceType},guard:'1',bindings:[],mutate:(marker,markerId)=>[
+      db.prepare(`INSERT INTO knowledge_items (id, organization_id, project_id, category, title, status, current_version, created_by, updated_by, created_at, updated_at) SELECT ?, ?, ?, ?, ?, 'draft', 1, ?, ?, ?, ? WHERE ${marker}`).bind(itemId,organizationId,projectId,payload.category,title,user.id,user.id,now,now,markerId),
+      db.prepare(`INSERT INTO knowledge_item_versions (id, organization_id, project_id, item_id, version, body, source_type, source_ref, change_summary, created_by, created_at) SELECT ?, ?, ?, ?, 1, ?, ?, ?, '首次录入', ?, ? WHERE ${marker}`).bind(crypto.randomUUID(),organizationId,projectId,itemId,body,payload.sourceType,sourceRef,user.id,now,markerId),
+    ]});
+    if(!saved)return apiError('KNOWLEDGE_STATE_CHANGED','空间状态已改变，本次资料未保存。请刷新核对，先复制填写内容。',409);
     return Response.json({ item: { id: itemId, category: payload.category, title, body, source_type: payload.sourceType, source_ref: sourceRef, status: "draft", current_version: 1, updated_at: now } }, { status: 201 });
   } catch (error) { return errorResponse(error); }
 }

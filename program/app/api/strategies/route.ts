@@ -2,6 +2,7 @@ import { canWriteProjectAccess, ensureUser, getD1, getOrganizationAccess, getPro
 import { apiError, errorResponse } from "../../../lib/api-response";
 import { canManageProjectKnowledge, cleanStringList, parseJsonValue } from "../../../lib/content-ops";
 import { readRequestIdentity } from "../../../lib/request-auth";
+import {commitReferenceWrite,referenceWriteUnknown} from "../../../lib/reference-write";
 
 export async function GET(request: Request) {
   const identity = await readRequestIdentity(request); if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再访问内容策略。", 401);
@@ -61,13 +62,16 @@ export async function POST(request: Request) {
     }).slice(0, 20) : [];
     if (!topicMix.length || topicMix.reduce((total, item) => total + item.ratio, 0) !== 100) return apiError("INVALID_TOPIC_MIX", "选题比例至少包含一项，且合计必须为 100%。", 400);
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId); if (!access || !canWriteProjectAccess(access)) return apiError("WRITE_ACCESS_REQUIRED", "当前角色不能创建内容策略。", 403);
-    const user = await ensureUser(identity); const db = getD1(); const latest = await db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM content_strategies WHERE organization_id = ? AND project_id = ?").bind(organizationId, projectId).first<{ version: number }>();
-    const version = (latest?.version ?? 0) + 1; const strategyId = crypto.randomUUID(); const now = new Date().toISOString();
+    const user = await ensureUser(identity); const db = getD1(); const strategyId = crypto.randomUUID(); const now = new Date().toISOString();
     const optional = (key: string, max: number) => typeof payload[key] === "string" && payload[key].trim() ? payload[key].trim().slice(0, max) : null;
-    await db.batch([
-      db.prepare("INSERT INTO content_strategies (id, organization_id, project_id, version, name, status, positioning, persona, target_audience, pain_points_json, pillars_json, topic_mix_json, style_notes, cadence, conversion_path, objectives_json, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(strategyId, organizationId, projectId, version, name, positioning, optional("persona", 1000), targetAudience, JSON.stringify(painPoints), JSON.stringify(pillars), JSON.stringify(topicMix), optional("styleNotes", 2000), optional("cadence", 500), optional("conversionPath", 2000), JSON.stringify(objectives), user.id, user.id, now, now),
-      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'strategy.created', 'content_strategy', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, strategyId, JSON.stringify({ version, name }), now),
-    ]);
+    const saved=await commitReferenceWrite(db,{request,authSubject:identity.authSubject,scope:{organizationId,projectId,userId:user.id},targetId:strategyId,version:now,action:'strategy.created',targetType:'content_strategy',metadata:{name},guard:'1',bindings:[],mutate:(marker,markerId)=>[
+      // Allocate from the database inside this transaction, not a stale preflight.
+      db.prepare(`INSERT INTO content_strategies (id, organization_id, project_id, version, name, status, positioning, persona, target_audience, pain_points_json, pillars_json, topic_mix_json, style_notes, cadence, conversion_path, objectives_json, created_by, updated_by, created_at, updated_at) SELECT ?, ?, ?, (SELECT COALESCE(MAX(version),0)+1 FROM content_strategies WHERE organization_id=? AND project_id=?), ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${marker}`).bind(strategyId,organizationId,projectId,organizationId,projectId,name,positioning,optional('persona',1000),targetAudience,JSON.stringify(painPoints),JSON.stringify(pillars),JSON.stringify(topicMix),optional('styleNotes',2000),optional('cadence',500),optional('conversionPath',2000),JSON.stringify(objectives),user.id,user.id,now,now,markerId),
+      db.prepare(`UPDATE audit_logs SET metadata_json=json_set(metadata_json,'$.version',(SELECT version FROM content_strategies WHERE id=? AND organization_id=? AND project_id=?)) WHERE id=? AND ${marker}`).bind(strategyId,organizationId,projectId,markerId,markerId),
+    ]});
+    if(!saved)return apiError('STRATEGY_STATE_CHANGED','空间状态已改变，本次策略未保存。请刷新核对，先复制填写内容。',409);
+    let stored:{version:number}|null;try{stored=await db.prepare('SELECT version FROM content_strategies WHERE id=? AND organization_id=? AND project_id=?').bind(strategyId,organizationId,projectId).first<{version:number}>();}catch{throw referenceWriteUnknown();}
+    if(!stored)throw referenceWriteUnknown();const version=stored.version;
     return Response.json({ strategy: { id: strategyId, version, name, status: "draft", positioning, target_audience: targetAudience, pain_points: painPoints, pillars, topic_mix: topicMix, objectives, created_at: now, updated_at: now } }, { status: 201 });
   } catch (error) { return errorResponse(error); }
 }
