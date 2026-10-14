@@ -333,11 +333,16 @@ async function loadPerformancePeriodRows(db: ReturnType<typeof getD1>, organizat
       INNER JOIN platform_metric_import_batches b ON b.id = s.import_batch_id AND b.organization_id = s.organization_id AND b.project_id = s.project_id AND b.status = 'completed'
       WHERE s.organization_id = ? AND s.project_id = ?
         AND ${publicPlatformWorkSql("w")}
+    ), prior_clocks AS (
+      SELECT publication_id,MAX(rtrim(observed_at,'Z')) AS latest_clock
+      FROM combined WHERE observed_at IS NOT NULL AND substr(observed_at,1,10)<? GROUP BY publication_id
     ), clock_rows AS (
-      SELECT combined.*,${metricValues} AS metrics,
-        ROW_NUMBER() OVER(PARTITION BY publication_id,observed_at ORDER BY metric_created_at,metric_id) AS clock_rank,
-        FIRST_VALUE(${metricValues}) OVER(PARTITION BY publication_id,observed_at ORDER BY metric_created_at,metric_id) AS first_metrics
-      FROM combined WHERE observed_at IS NOT NULL AND substr(observed_at,1,10)<=?
+      SELECT c.*,${metricValues} AS metrics,
+        ROW_NUMBER() OVER(PARTITION BY c.publication_id,c.observed_at ORDER BY metric_created_at,metric_id) AS clock_rank,
+        FIRST_VALUE(${metricValues}) OVER(PARTITION BY c.publication_id,c.observed_at ORDER BY metric_created_at,metric_id) AS first_metrics
+      FROM combined c LEFT JOIN prior_clocks p ON p.publication_id=c.publication_id
+      WHERE c.observed_at IS NOT NULL AND substr(c.observed_at,1,10)<=?
+        AND (substr(c.observed_at,1,10)>=? OR rtrim(c.observed_at,'Z')=p.latest_clock)
     ), clock_meta AS (
       SELECT publication_id,observed_at,COUNT(*)-1 AS aliases,
         SUM(CASE WHEN metrics IS NOT first_metrics THEN 1 ELSE 0 END) AS conflicts FROM clock_rows GROUP BY publication_id,observed_at
@@ -359,7 +364,7 @@ async function loadPerformancePeriodRows(db: ReturnType<typeof getD1>, organizat
       CASE WHEN period_group=0 THEN conflicts WHEN first_group=1 THEN period_conflicts ELSE 0 END AS timestamp_conflicts
     FROM ranked WHERE (period_group=1 AND (day_last=1 OR first_group=1)) OR (period_group=0 AND last_group=1)
     ORDER BY rtrim(observed_at,'Z'),metric_created_at,metric_id LIMIT 50001
-  `).bind(organizationId, projectId, organizationId, projectId, periodEnd, periodStart).all<MetricSnapshotRow>();
+  `).bind(organizationId, projectId, organizationId, projectId, periodStart, periodEnd, periodStart, periodStart).all<MetricSnapshotRow>();
   if (rows.results.length > 50_000) throw new Error("PERFORMANCE_RESULT_CAPACITY_EXCEEDED");
   return rows.results;
 }
