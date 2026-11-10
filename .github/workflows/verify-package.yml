@@ -31,6 +31,8 @@ jobs:
           cache-dependency-path: program/package-lock.json
       - name: Build and verify the customer package
         run: |
+          node --test ./program/tests/verification-copy.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Unicode installation copy verification failed.' }
           & ./program/scripts/prepare-delivery.ps1 -Distribution github -DestinationRoot "$env:RUNNER_TEMP/full-package"
           if ($LASTEXITCODE -ne 0) { throw 'Package acceptance failed.' }
       - name: Collect verified package

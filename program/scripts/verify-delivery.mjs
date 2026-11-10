@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync, openSync, closeSync, writeSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync, openSync, closeSync, writeSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, randomBytes } from "node:crypto";
@@ -8,6 +8,7 @@ import { createServer } from "node:net";
 import { DatabaseSync } from "node:sqlite";
 import { verifyDeliveryDocumentation } from "./delivery-documentation.mjs";
 import { verifyDeliveryScripts } from "./delivery-script-policy.mjs";
+import { copyVerificationFiles } from "./copy-verification-files.mjs";
 
 // Validate the final, pruned customer files in a separate installation. Never
 // load the development .dev.vars or touch the customer's persistent storage.
@@ -128,7 +129,7 @@ try {
     verifyDeliveryDocumentation(packageRoot, sourceRoot);
   });
   mkdirSync(installRoot, { recursive: true });
-  cpSync(packageRoot, installRoot, { recursive: true });
+  copyVerificationFiles(packageRoot, installRoot);
   installWorkingDirectory = realpathSync.native(installRoot);
   assert.ok(statSync(installWorkingDirectory).isDirectory());
   assert.ok(statSync(path.join(installWorkingDirectory, "scripts/prepare-runtime-configuration.mjs")).isFile());
@@ -146,7 +147,7 @@ try {
   syntheticVars = syntheticVars.replace(/^ANALYZER_TIMEOUT_[A-Z_]+=.*\r?\n/gm, "") + "\nLEGACY_CUSTOM_SETTING=preserve-this\n";
   if (manifest.license.features.videoAnalysis && process.env.DELIVERY_TEST_PYTHON_ENV) {
     const mediaRoot = path.join(installRoot, ".local/test-media"); mkdirSync(mediaRoot, { recursive: true });
-    for (const executable of ["ffmpeg.exe", "ffprobe.exe"]) cpSync(path.join(process.env.SystemRoot || "C:/Windows", "System32/cmd.exe"), path.join(mediaRoot, executable));
+    for (const executable of ["ffmpeg.exe", "ffprobe.exe"]) copyVerificationFiles(path.join(process.env.SystemRoot || "C:/Windows", "System32/cmd.exe"), path.join(mediaRoot, executable));
     const fixtureSettings = { ANALYZER_LLM_API_KEY: "synthetic-unused", ANALYZER_LLM_BASE_URL: "https://example.invalid/v1", ANALYZER_LLM_MODEL: "synthetic-unused", ANALYZER_LLM_PROVIDER: "openai", ANALYZER_WORKER_ID: "delivery-empty-queue", ANALYZER_YTDLP_COOKIES_FROM_BROWSER: "none", ANALYZER_FFMPEG: path.join(mediaRoot, "ffmpeg.exe"), ANALYZER_FFPROBE: path.join(mediaRoot, "ffprobe.exe") };
     for (const [key, value] of Object.entries(fixtureSettings)) {
       const expression = new RegExp(`^${key}=.*$`, "m");
@@ -278,8 +279,8 @@ try {
     const backups = readdirSync(path.join(installRoot, "backups")).filter(f => f.endsWith(".zip")).sort();
     const backup = path.join(installRoot, "backups", backups.at(-1));
     const retainedProgram = path.join(runRoot, "program-before-upgrade");
-    cpSync(packageRoot, retainedProgram, { recursive: true });
-    cpSync(path.join(installRoot, ".dev.vars"), path.join(runRoot, "private-config-before-upgrade"));
+    copyVerificationFiles(packageRoot, retainedProgram);
+    copyVerificationFiles(path.join(installRoot, ".dev.vars"), path.join(runRoot, "private-config-before-upgrade"));
     const first = "9998_acceptance_partial_upgrade.sql", second = "9999_acceptance_failed_upgrade.sql";
     for (const name of [first, second]) assert.equal(existsSync(path.join(installRoot, "drizzle", name)), false);
     writeFileSync(path.join(installRoot, "drizzle", first), "CREATE TABLE acceptance_upgrade_marker (id INTEGER PRIMARY KEY); INSERT INTO acceptance_upgrade_marker VALUES (1); UPDATE projects SET name = 'Partially upgraded';\n");
@@ -294,8 +295,8 @@ try {
     // Keep failed migration files and the pre-restore database for inspection.
     // This is a synthetic upgrade of this candidate, not two released versions.
     renameSync(path.join(installRoot, "drizzle"), path.join(runRoot, "failed-upgrade-migrations"));
-    cpSync(retainedProgram, installRoot, { recursive: true });
-    cpSync(path.join(runRoot, "private-config-before-upgrade"), path.join(installRoot, ".dev.vars"));
+    copyVerificationFiles(retainedProgram, installRoot);
+    copyVerificationFiles(path.join(runRoot, "private-config-before-upgrade"), path.join(installRoot, ".dev.vars"));
     for (const [file, expected] of Object.entries(initialHashes)) if (file !== ".dev.vars") assert.equal(sha(path.join(installRoot, file)), expected, `Rollback program mismatch: ${file}`);
     assert.equal(sha(path.join(installRoot, ".dev.vars")), configurationHash);
     await run("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/restore-local.ps1", "-BackupPath", backup], "RESTORE\n");
