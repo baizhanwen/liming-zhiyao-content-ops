@@ -1,0 +1,64 @@
+name: Verify full Windows package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CI: "1"
+      WRANGLER_SEND_METRICS: "false"
+      DELIVERY_VERIFY_ENVIRONMENT_BRIDGE: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.23.2"
+          cache: npm
+          cache-dependency-path: program/package-lock.json
+      - name: Build and verify the customer package
+        run: |
+          & ./program/scripts/prepare-delivery.ps1 -Distribution github -DestinationRoot "$env:RUNNER_TEMP/full-package"
+          if ($LASTEXITCODE -ne 0) { throw 'Package acceptance failed.' }
+      - name: Collect verified package
+        run: |
+          $archives = @(Get-ChildItem "$env:RUNNER_TEMP/full-package" -Filter '*.zip' -File)
+          if ($archives.Count -ne 1) { throw 'Expected one verified package.' }
+          $assets = "$env:RUNNER_TEMP/release-assets"
+          New-Item -ItemType Directory -Force $assets | Out-Null
+          $zip = Join-Path $assets 'LimingZhiyao-Windows-Full.zip'
+          Copy-Item -LiteralPath $archives[0].FullName -Destination $zip
+          $candidate = $archives[0].FullName.Substring(0, $archives[0].FullName.Length - 4)
+          $report = Join-Path $candidate 'LimingZhiyao/delivery-validation.json'
+          if (-not (Get-Content -Raw -LiteralPath $report | ConvertFrom-Json).passed) { throw 'Validation did not pass.' }
+          Copy-Item -LiteralPath $report -Destination (Join-Path $assets 'delivery-validation.json')
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText("$zip.sha256", "$hash  LimingZhiyao-Windows-Full.zip`n")
+      - name: Retain verified package
+        uses: actions/upload-artifact@v4
+        with:
+          name: LimingZhiyao-Windows-Full
+          path: ${{ runner.temp }}/release-assets/*
+          if-no-files-found: error
+          retention-days: 14
+      - name: Retain synthetic acceptance diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-acceptance-diagnostics
+          path: program/.local/dv/**/verification.log
+          if-no-files-found: ignore
+          retention-days: 3

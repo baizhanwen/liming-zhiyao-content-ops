@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync, openSync, closeSync, writeSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync, openSync, closeSync, writeSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, randomBytes } from "node:crypto";
@@ -18,6 +18,7 @@ const manifest = JSON.parse(readFileSync(path.join(packageRoot, "delivery-manife
 const githubDistribution = manifest.distribution === "github";
 const runRoot = path.join(sourceRoot, ".local/dv", `${manifest.license.code}-${randomBytes(4).toString("hex")}`);
 const installRoot = path.join(runRoot, "客户 install"); // Exercise Chinese and spaces.
+let installWorkingDirectory = installRoot;
 mkdirSync(runRoot, { recursive: true });
 const files = dir => readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
   assert.ok(!entry.isSymbolicLink(), "Delivery must not contain filesystem links");
@@ -42,9 +43,15 @@ const environment = {
 };
 async function run(executable, args, input, expectedFailure = false) {
   return await new Promise((resolve, reject) => {
-    const child = spawn(executable, args, { cwd: installRoot, env: environment, windowsHide: true, stdio: ["pipe", log, log] });
+    assert.ok(statSync(installWorkingDirectory).isDirectory(), "Verification working directory must exist before starting a process");
+    const child = spawn(executable, args, { cwd: installWorkingDirectory, env: environment, windowsHide: true, stdio: ["pipe", log, log] });
     const timer = setTimeout(() => { void stop(child); reject(new Error(`Command timeout: ${path.basename(executable)}`)); }, 900_000);
-    child.on("error", error => { clearTimeout(timer); reject(error); });
+    child.on("error", error => {
+      clearTimeout(timer);
+      const context = { executable, args, cwd: installWorkingDirectory, executableExists: existsSync(executable), cwdExists: existsSync(installWorkingDirectory) };
+      writeSync(log, `\nSPAWN FAILED ${JSON.stringify(context)}\n`);
+      reject(new Error(`${error.message}; ${JSON.stringify(context)}`, { cause: error }));
+    });
     child.on("close", code => {
       clearTimeout(timer);
       if ((!expectedFailure && code === 0) || (expectedFailure && Number.isInteger(code) && code > 0)) resolve(code);
@@ -73,7 +80,7 @@ async function start() {
   writeFileSync(path.join(installRoot, ".local/app.port"), String(port));
   // Same vinext dev entry and LAN binding as start-lan.ps1; no auto-open helper
   // or media worker is started during this isolated, synthetic acceptance test.
-  server = spawn(process.execPath, [path.join(installRoot, "node_modules/vinext/dist/cli.js"), "dev", "--hostname", "0.0.0.0", "--port", String(port)], { cwd: installRoot, env: environment, windowsHide: true, stdio: ["ignore", log, log] });
+  server = spawn(process.execPath, [path.join(installRoot, "node_modules/vinext/dist/cli.js"), "dev", "--hostname", "0.0.0.0", "--port", String(port)], { cwd: installWorkingDirectory, env: environment, windowsHide: true, stdio: ["ignore", log, log] });
   let startupError;
   server.on("error", error => { startupError = error; });
   for (let attempt = 0; attempt < 90; attempt++) {
@@ -120,7 +127,11 @@ try {
   await check("offline-customer-manual-and-recovery-links", async () => {
     verifyDeliveryDocumentation(packageRoot, sourceRoot);
   });
+  mkdirSync(installRoot, { recursive: true });
   cpSync(packageRoot, installRoot, { recursive: true });
+  installWorkingDirectory = realpathSync.native(installRoot);
+  assert.ok(statSync(installWorkingDirectory).isDirectory());
+  assert.ok(statSync(path.join(installWorkingDirectory, "scripts/prepare-runtime-configuration.mjs")).isFile());
   await check("per-installation-runtime-secrets", async () => {
     await run(process.execPath, ["scripts/prepare-runtime-configuration.mjs"]);
     const variables = readFileSync(path.join(installRoot, ".dev.vars"), "utf8");

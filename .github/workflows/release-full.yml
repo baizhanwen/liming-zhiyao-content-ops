@@ -104,3 +104,11 @@ jobs:
           $assets = @(Get-ChildItem "$env:RUNNER_TEMP/release-assets" -File | ForEach-Object FullName)
           gh release create $tag @assets --target $env:GITHUB_SHA --title '利明智耀工作台 · 开发完整版' --notes-file $notesFile --latest
           if ($LASTEXITCODE -ne 0) { throw 'GitHub Release publication failed.' }
+      - name: Retain synthetic acceptance diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-acceptance-diagnostics
+          path: program/.local/dv/**/verification.log
+          if-no-files-found: ignore
+          retention-days: 3
