@@ -27,8 +27,8 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
       mutate: (marker, markerId) => db.prepare(`UPDATE analysis_jobs SET status = 'cancelled',
         current_stage = CASE WHEN lease_owner IS NOT NULL AND lease_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ','now')
           THEN '任务已取消，等待释放处理资源' ELSE '任务已取消' END,
-        last_heartbeat_at = NULL, result_key = NULL, version = version + 1,
-        updated_by = ?, updated_at = ? WHERE id = ? AND ${marker}`).bind(user.id, now, jobId, markerId),
+        completed_at = ?, last_progress_at = ?, last_heartbeat_at = NULL, result_key = NULL, version = version + 1,
+        updated_by = ?, updated_at = ? WHERE id = ? AND ${marker}`).bind(now, now, user.id, now, jobId, markerId),
     });
     if (!state) {
       await assertAccess();

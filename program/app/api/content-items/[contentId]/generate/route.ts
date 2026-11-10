@@ -312,7 +312,7 @@ export async function POST(request: Request, context: { params: Promise<{ conten
           profile: modelProfile,
           temperature: rewriteRevision ? 0.2 : undefined,
           nativeJson: attempt === 0,
-        }, { config });
+        });
         totalLatencyMs += invocation.latencyMs;
         // Persist unvalidated responses separately from completed content versions.
         // A failed repair must not erase the original draft response.

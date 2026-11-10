@@ -479,18 +479,40 @@ class ProviderTests(unittest.TestCase):
                 Image.eval(image, lambda value: 255 - value).save(second)
                 return [Keyframe(0, black), Keyframe(1_000, first), Keyframe(2_000, duplicate), Keyframe(3_000, second)]
 
+        blocked_snapshots = []
+
         class Ocr:
             calls = 0
 
             def recognize(self, _path):
+                # Snapshot while the current OCR call has not returned yet.
+                blocked_snapshots.append(analyzer.progress_snapshot())
                 self.calls += 1
                 return ("有效标题", 90) if self.calls == 1 else ("低置信乱码", 20)
 
+        history = []
+
+        class ObservedAnalyzer(KeyframeVisualAnalyzer):
+            def _set_progress(self, progress):
+                history.append(dict(progress))
+                super()._set_progress(progress)
+
+        analyzer = ObservedAnalyzer(Extractor(), Ocr())
         with tempfile.TemporaryDirectory() as directory:
-            output = KeyframeVisualAnalyzer(Extractor(), Ocr()).analyze(
+            output = analyzer.analyze(
                 NormalizedMedia(Path("video.mp4"), None, MediaInfo(6_000, 64, 64, "h264", "aac")),
                 Path(directory),
             )
+        self.assertEqual([row["candidates_checked"] for row in blocked_snapshots], [0, 1, 3])
+        self.assertEqual([row["ocr_completed"] for row in blocked_snapshots], [0, 1, 2])
+        actual = analyzer.progress_snapshot()
+        self.assertEqual(actual["candidates_checked"], 4)
+        self.assertEqual(actual["candidates_total"], 4)
+        self.assertEqual(actual["ocr_completed"], 3)
+        self.assertEqual(actual["ocr_total"], 3)
+        self.assertEqual(actual["sampled_frames"], 3)
+        kept_counts = [row["sampled_frames"] for row in history if "sampled_frames" in row]
+        self.assertEqual(kept_counts, sorted(kept_counts))
         self.assertEqual(len(output.keyframes), 3)
         self.assertEqual(len(output.observations), 1)
         self.assertEqual(output.keyframes[2].ocr_text, None)

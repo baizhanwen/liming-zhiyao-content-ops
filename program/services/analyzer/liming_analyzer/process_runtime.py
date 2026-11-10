@@ -11,8 +11,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from .windows_runtime import InstanceLock, ProcessTree, installation_root
+from .platform_runtime import InstanceLock, ProcessTree, installation_root, prepare_processing_child
 from .worker import ProcessingFailure, classify_worker_error
+from .task_progress import ProgressObservations, observe, safe_observation
 
 
 @dataclass(frozen=True)
@@ -51,10 +52,13 @@ def _build_processor(settings, client, monitor):
     return build_lazy_processor(settings, client, monitor=monitor)
 
 
-def _child_main(connection, settings, root, workspace, factory):
+def _child_main(connection, settings, root, workspace, factory, owner_pid=None):
     # No model, FFmpeg, helper or task is started before the owner attaches us
     # to its Windows job object and sends the first command.
     try:
+        if os.name != "nt":
+            prepared = prepare_processing_child(owner_pid)
+            connection.send(("prepared", prepared))
         first = connection.recv()
         if first != "attached":
             return
@@ -72,13 +76,17 @@ def _child_main(connection, settings, root, workspace, factory):
                 command, job = connection.recv()
                 if command == "stop":
                     return
+                observations = ProgressObservations()
+
                 def heartbeat(status, progress, stage):
                     with channel_lock:
-                        connection.send(("heartbeat", (status, progress, stage)))
+                        connection.send(("heartbeat", (status, progress, stage, observations.snapshot())))
                         response, value = connection.recv()
                     if response != "ok":
                         raise RuntimeError("Analyzer owner rejected heartbeat")
                     return value
+
+                heartbeat.observe = observations.update
                 try:
                     result = processor(job, heartbeat)
                     connection.send(("result", result))
@@ -99,6 +107,7 @@ class IsolatedProcessor:
         self.factory = factory
         self.process = self.connection = self.tree = self.workspace = None
         self.resources_released = True
+        self._child_attached = False
 
     def _start(self, job):
         context = multiprocessing.get_context("spawn")
@@ -108,11 +117,26 @@ class IsolatedProcessor:
         (self.workspace / ".analyzer-owned").write_text("v1", encoding="ascii")
         self.connection, child = context.Pipe()
         self.tree = ProcessTree()
-        self.process = context.Process(target=_child_main, args=(child, self.settings, str(self.root), str(self.workspace), self.factory))
+        self.process = context.Process(target=_child_main, args=(child, self.settings, str(self.root), str(self.workspace), self.factory, os.getpid()))
         try:
             self.process.start()
             child.close()
-            self.tree.attach(self.process.pid)
+            if os.name == "nt":
+                self.tree.attach(self.process.pid)
+            else:
+                deadline = time.monotonic() + 15
+                while not self.connection.poll(0.2):
+                    self.client.check_control(job)
+                    if not self.process.is_alive() or time.monotonic() >= deadline:
+                        raise ProcessingFailure("ANALYZER_PROCESS_START_FAILED", "分析处理进程未能建立隔离执行环境。")
+                try:
+                    kind, prepared = self.connection.recv()
+                except (EOFError, OSError) as error:
+                    raise ProcessingFailure("ANALYZER_PROCESS_START_FAILED", "分析处理进程未能建立隔离执行环境。") from error
+                if kind != "prepared":
+                    raise ProcessingFailure("ANALYZER_PROCESS_START_FAILED", "分析处理进程未能建立隔离执行环境。")
+                self.tree.attach(self.process.pid, prepared)
+            self._child_attached = True
             self._send("attached")
             deadline = time.monotonic() + 15
             while not self.connection.poll(0.2):
@@ -146,6 +170,13 @@ class IsolatedProcessor:
             self.tree.close()  # kill the whole owned tree, including native helpers
             self.tree = None
         if self.process:
+            if self.process.pid is not None and not self._child_attached and self.process.is_alive():
+                # This exact unreaped multiprocessing child has not received
+                # permission to start business work. Recover failed handshakes.
+                self.process.terminate()
+                self.process.join(2)
+                if self.process.is_alive():
+                    self.process.kill()
             if self.process.pid is not None:
                 self.process.join(5)
             if self.process.pid is not None and self.process.is_alive():
@@ -153,6 +184,7 @@ class IsolatedProcessor:
                 raise SystemExit("Analyzer process could not be stopped; refusing to run another task")
             self.process.close()
             self.process = None
+            self._child_attached = False
         if self.connection:
             self.connection.close()
             self.connection = None
@@ -196,7 +228,12 @@ class IsolatedProcessor:
                     except (EOFError, OSError) as error:
                         raise ProcessingFailure("ANALYZER_PROCESS_CRASHED", "分析处理进程异常退出，已释放资源，后续任务将继续。") from error
                     if kind == "heartbeat":
-                        status, progress, stage = value
+                        if not isinstance(value, (tuple, list)) or len(value) not in {3, 4}:
+                            raise ProcessingFailure("ANALYZER_PROCESS_CRASHED", "分析处理进程返回无效状态，已释放资源。")
+                        status, progress, stage = value[:3]
+                        observation = safe_observation(value[3]) if len(value) == 4 else None
+                        if observation is not None:
+                            observe(heartbeat, observation["phase"], **observation["metrics"])
                         new_phase = "initialization" if "初始化本地分析模型" in stage else {
                             "downloading": "download", "processing": "media", "transcribing": "evidence",
                             "extracting": "artifacts", "analyzing": "model",

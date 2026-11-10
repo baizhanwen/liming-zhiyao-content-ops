@@ -109,6 +109,13 @@ class ApiClientTests(unittest.TestCase):
         self.assertIsNotNone(job)
         self.assertEqual(job.analysis_profile, "deep")
 
+    def test_heartbeat_sends_only_whitelisted_observation_counters(self):
+        transport = FakeTransport([(200, {"job": {"status": "downloading", "progress": 8, "version": 4}})])
+        client = AnalyzerApiClient("https://example.test", "secret", "worker-01", transport)
+        job = ClaimedJob("job-1", "org-1", "project-1", "video-1", "url", "downloading", 8, 3, {})
+        client.heartbeat(job, "downloading", 8, "正在采集", observation={"phase": "browser", "requests": 2, "url": "https://private.invalid", "headers": {"Authorization": "synthetic-private"}})
+        self.assertEqual(transport.requests[0][3]["observation"], {"phase": "browser", "metrics": {"requests": 2}})
+
     def test_heartbeat_carries_version_and_returns_next_version(self):
         transport = FakeTransport([(200, {"job": {"status": "processing", "progress": 20, "version": 4}})])
         client = AnalyzerApiClient("https://example.test", "secret", "worker-01", transport)

@@ -99,9 +99,9 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
       guardBindings: [now],
       mutate: (marker, markerId) => db.prepare(`UPDATE analysis_jobs SET status = 'pending', progress = CASE WHEN checkpoint_stage IN ('evidence_ready', 'segment_progress') THEN 82 ELSE 0 END,
         checkpoint_json = COALESCE(?, checkpoint_json), checkpoint_updated_at = COALESCE(?, checkpoint_updated_at), current_stage = ?, error_code = NULL, error_message = NULL,
-        completed_at = NULL, retry_count = retry_count + 1, recovery_attempt_count = 0, queue_user_id = ?, enqueued_at = ?, lease_owner = NULL, lease_expires_at = NULL,
+        completed_at = NULL, started_at = NULL, stage_started_at = NULL, last_progress_at = ?, progress_json = NULL, retry_count = retry_count + 1, recovery_attempt_count = 0, queue_user_id = ?, enqueued_at = ?, lease_owner = NULL, lease_expires_at = NULL,
         last_heartbeat_at = NULL, result_key = NULL, version = version + 1, updated_by = ?, updated_at = ? WHERE id = ? AND ${marker}`)
-        .bind(retryCheckpointJson, retryCheckpointJson ? now : null, stage, user.id, now, user.id, now, jobId, markerId),
+        .bind(retryCheckpointJson, retryCheckpointJson ? now : null, stage, now, user.id, now, user.id, now, jobId, markerId),
     });
     if (!state) {
       await assertAccess();

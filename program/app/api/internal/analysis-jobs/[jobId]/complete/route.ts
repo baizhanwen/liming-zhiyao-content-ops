@@ -81,8 +81,8 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     const finalVersion = payload.version + 1;
     const analysisId = crypto.randomUUID();
     const statements = [
-      db.prepare("UPDATE analysis_jobs SET status = ?, progress = 100, current_stage = ?, error_code = ?, error_message = ?, completed_at = ?, lease_owner = NULL, lease_expires_at = NULL, result_key = ?, checkpoint_stage = ?, checkpoint_json = ?, checkpoint_updated_at = ?, version = version + 1, updated_by = ?, updated_at = ? WHERE id = ? AND status = 'analyzing' AND lease_owner = ? AND version = ? AND lease_expires_at > ?")
-        .bind(finalStatus, finalStage, finalStatus === "partial" ? "ANALYSIS_PARTIAL" : null, partialMessage, nowIso, payload.resultKey, partialCheckpointStage, partialCheckpointJson, partialCheckpointJson ? nowIso : null, actor, nowIso, jobId, payload.workerId, payload.version, nowIso),
+      db.prepare("UPDATE analysis_jobs SET status = ?, progress = 100, current_stage = ?, error_code = ?, error_message = ?, completed_at = ?, last_progress_at = ?, lease_owner = NULL, lease_expires_at = NULL, result_key = ?, checkpoint_stage = ?, checkpoint_json = ?, checkpoint_updated_at = ?, version = version + 1, updated_by = ?, updated_at = ? WHERE id = ? AND status = 'analyzing' AND lease_owner = ? AND version = ? AND lease_expires_at > ?")
+        .bind(finalStatus, finalStage, finalStatus === "partial" ? "ANALYSIS_PARTIAL" : null, partialMessage, nowIso, nowIso, payload.resultKey, partialCheckpointStage, partialCheckpointJson, partialCheckpointJson ? nowIso : null, actor, nowIso, jobId, payload.workerId, payload.version, nowIso),
     ];
     if (payload.transcript) {
       statements.push(db.prepare(`

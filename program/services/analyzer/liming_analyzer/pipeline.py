@@ -28,6 +28,7 @@ from .adapters import (
 )
 from .api_client import AnalysisResult, ClaimedJob
 from .evidence import clean_transcript
+from .task_progress import observe
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -72,7 +73,7 @@ def _visual_heartbeat_progress(
     details: list[str] = []
     if keyframes_total:
         details.append(
-            f"关键帧 {min(keyframes_completed, keyframes_total)}/{keyframes_total}"
+            f"候选画面 {min(keyframes_completed, keyframes_total)}/{keyframes_total}"
         )
     if batch_total:
         batch_label = "视觉补全" if phase == "vision_retry" else "视觉批次"
@@ -220,6 +221,9 @@ class AnalysisPipeline:
             base_checkpoint = _evidence_checkpoint(media, transcript, visuals, source_metadata)
 
             def persist_segment_progress(progress_payload: Mapping[str, Any]) -> None:
+                rows = progress_payload.get("segments")
+                if isinstance(rows, list):
+                    observe(heartbeat, "model_analysis", completed=sum(1 for row in rows if isinstance(row, Mapping) and row.get("status") == "completed"), total=len(rows))
                 try:
                     self.checkpoints.save(latest[0], "segment_progress", {**base_checkpoint, "segment_progress": dict(progress_payload)})
                 except Exception as error:  # noqa: BLE001 - checkpoint is resumability only
@@ -245,12 +249,17 @@ class AnalysisPipeline:
                 monitor = getattr(self, "runtime_monitor", None)
                 if callable(monitor):
                     monitor("duration", media.info.duration_ms / 1000)
+                observe(heartbeat, "model_analysis")
                 current = heartbeat("analyzing", max(84, job.progress), "已从证据检查点恢复，正在继续结构分析")
                 current, structure = self._run_structure(current, media, transcript, visuals, source_metadata, heartbeat, max(84, current.progress), "正在从证据检查点继续生成结构化结论")
                 return build_analysis_result(transcript, structure, source_metadata)
             configure_visual_profile = getattr(self.visual, "set_analysis_profile", None)
             if callable(configure_visual_profile):
                 configure_visual_profile(job.analysis_profile)
+            configure_source_progress = getattr(self.source, "set_progress", None)
+            if callable(configure_source_progress):
+                configure_source_progress(getattr(heartbeat, "observe", None))
+            observe(heartbeat, "public_page")
             current = heartbeat("downloading", 5, "正在安全获取源媒体")
             current, acquired = self._run_monitored(
                 lambda: self.source.acquire(current, workspace / "source-media"),
@@ -262,6 +271,9 @@ class AnalysisPipeline:
             )
             acquired = acquired if isinstance(acquired, AcquiredSource) else AcquiredSource(acquired)
 
+            observe(heartbeat, "validating_media", completed=1, total=1, downloaded_bytes=acquired.path.stat().st_size)
+            current = heartbeat("downloading", max(8, current.progress), "已取得源媒体")
+            observe(heartbeat, "audio_chunks")
             current = heartbeat("processing", 18, "正在规范化媒体并提取音轨")
             current, media = self._run_monitored(
                 lambda: self.media.prepare(acquired.path, workspace / "normalized"),
@@ -278,6 +290,7 @@ class AnalysisPipeline:
             configure_speech_context = getattr(self.speech, "set_context", None)
             if callable(configure_speech_context):
                 configure_speech_context(acquired.metadata.title if acquired.metadata else None)
+            observe(heartbeat, "model_transcription", **({"transcribed_chunks": 0, "total_chunks": 1} if media.audio_path and manual_transcript is None else {}))
             current = heartbeat("transcribing", 35, "正在使用人工校正版并提取画面" if manual_transcript else "正在并行转写语音与提取画面")
 
             with ThreadPoolExecutor(max_workers=2, thread_name_prefix="liming-evidence") as executor:
@@ -305,7 +318,8 @@ class AnalysisPipeline:
                             progress = max(progress, visual_progress)
                         else:
                             detail = ""
-                            progress = min(64, progress + 4)
+                            # No provider counters means no measurable new work.
+                            progress = max(40, progress)
                         speech_pending = (
                             transcript_future is not None
                             and transcript_future in pending
@@ -319,10 +333,26 @@ class AnalysisPipeline:
                             stage = "正在转写语音"
                         if detail:
                             stage += f" · {detail}"
+                        observed_phase = "frames" if visual_pending and snapshot.get("phase") == "extracting_frames" else "model_vision" if visual_pending else "model_transcription"
+                        observed_metrics = {
+                            key: _progress_count(snapshot[source]) for key, source in (
+                                ("candidates_checked", "candidates_checked" if "candidates_checked" in snapshot else "keyframes_completed"),
+                                ("candidates_total", "candidates_total" if "candidates_total" in snapshot else "keyframes_total"),
+                                ("sampled_frames", "sampled_frames"), ("total_frames", "total_frames"),
+                                ("ocr_completed", "ocr_completed"), ("ocr_total", "ocr_total"),
+                                ("vision_batches_completed", "batch_completed"), ("vision_batches_total", "batch_total"),
+                            ) if source in snapshot
+                        }
+                        if transcript_future is not None:
+                            observed_metrics.update(transcribed_chunks=int(transcript_future.done() and transcript_future.exception() is None), total_chunks=1)
+                        observe(heartbeat, observed_phase, **observed_metrics)
                         current = heartbeat("transcribing", progress, stage)
                 transcript = manual_transcript or clean_transcript(transcript_future.result() if transcript_future else TranscriptOutput("zh-CN", ()))
                 visuals = visuals_future.result()
 
+            observe(heartbeat, "vision_complete", **({"transcribed_chunks": 1, "total_chunks": 1} if transcript_future is not None else {}), sampled_frames=len(visuals.keyframes), total_frames=len(visuals.keyframes))
+            current = heartbeat("transcribing", max(68, current.progress), "语音与画面证据已取得")
+            observe(heartbeat, "saving")
             current = heartbeat("extracting", 70, "正在整理字幕、OCR 与关键帧证据")
             if self.artifacts:
                 current, visuals = self._run_monitored(
@@ -338,6 +368,7 @@ class AnalysisPipeline:
                     self.checkpoints.save(current, "evidence_ready", _evidence_checkpoint(media, transcript, visuals, acquired.metadata))
                 except Exception as error:  # noqa: BLE001 - checkpoint is resumability only
                     logger.warning("Could not persist the analysis checkpoint: %s", error)
+            observe(heartbeat, "model_analysis")
             current = heartbeat("analyzing", 84, "正在生成可追溯结构化结论")
             current, structure = self._run_structure(current, media, transcript, visuals, acquired.metadata, heartbeat, 88, "模型正在生成可追溯结构化结论")
             return build_analysis_result(transcript, structure, acquired.metadata)

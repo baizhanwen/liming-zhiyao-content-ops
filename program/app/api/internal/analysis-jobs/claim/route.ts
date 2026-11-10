@@ -27,9 +27,10 @@ export async function POST(request: Request) {
     // forever. Manual retry preserves cumulative attempt_count for fencing.
     await db.prepare(`UPDATE analysis_jobs SET status = 'failed', error_code = 'ANALYZER_RECOVERY_EXHAUSTED',
       error_message = '连续三次执行中断，已停止自动恢复。请检查主机后手动重试。', current_stage = '自动恢复次数已用尽',
+      completed_at = COALESCE(lease_expires_at, ?), last_progress_at = ?,
       lease_owner = NULL, lease_expires_at = NULL, version = version + 1, updated_at = ?
       WHERE status IN (${LEASED_ANALYSIS_STATUSES_SQL}) AND lease_expires_at <= ? AND recovery_attempt_count >= 3`)
-      .bind(nowIso, nowIso).run();
+      .bind(nowIso, nowIso, nowIso, nowIso).run();
     const job = await db.prepare(`
       UPDATE analysis_jobs
       SET status = 'queued',
@@ -38,6 +39,7 @@ export async function POST(request: Request) {
           lease_owner = ?, lease_expires_at = ?, last_heartbeat_at = ?, attempt_count = attempt_count + 1,
           recovery_attempt_count = recovery_attempt_count + 1,
           resume_count = resume_count + CASE WHEN checkpoint_stage IN ('evidence_ready', 'segment_progress') THEN 1 ELSE 0 END,
+          started_at = ?, stage_started_at = ?, last_progress_at = ?, progress_json = '{"phase":"loading_models","metrics":{}}', completed_at = NULL,
           version = version + 1, updated_by = ?, updated_at = ?
       WHERE id = (
         SELECT j.id FROM analysis_jobs j
@@ -53,7 +55,7 @@ export async function POST(request: Request) {
       )
       RETURNING id, organization_id, project_id, video_id, input_transcript_id, source_type, source_ref, analysis_profile, status, progress, current_stage,
         lease_owner, lease_expires_at, attempt_count, version, result_key, checkpoint_stage, checkpoint_json, checkpoint_updated_at, resume_count
-    `).bind(workerId, leaseExpiresAt, nowIso, actor, nowIso, nowIso, nowIso).first<ClaimedJob>();
+    `).bind(workerId, leaseExpiresAt, nowIso, nowIso, nowIso, nowIso, actor, nowIso, nowIso, nowIso).first<ClaimedJob>();
     if (!job) return new Response(null, { status: 204 });
 
     const source = await db.prepare(`
@@ -66,11 +68,11 @@ export async function POST(request: Request) {
       WHERE j.id = ? AND j.lease_owner = ? AND j.version = ?
     `).bind(job.id, workerId, job.version).first<JobSource>();
     if (!source || (job.source_type === "url" ? !source.source_url : !source.r2_key)) {
-      await db.prepare("UPDATE analysis_jobs SET status = 'failed', error_code = 'SOURCE_UNAVAILABLE', error_message = '任务来源记录不完整', lease_owner = NULL, lease_expires_at = NULL, version = version + 1, updated_at = ? WHERE id = ? AND lease_owner = ? AND version = ?").bind(nowIso, job.id, workerId, job.version).run();
+      await db.prepare("UPDATE analysis_jobs SET status = 'failed', error_code = 'SOURCE_UNAVAILABLE', error_message = '任务来源记录不完整', lease_owner = NULL, lease_expires_at = NULL, completed_at = ?, last_progress_at = ?, version = version + 1, updated_at = ? WHERE id = ? AND lease_owner = ? AND version = ?").bind(nowIso, nowIso, nowIso, job.id, workerId, job.version).run();
       return apiError("JOB_SOURCE_UNAVAILABLE", "任务来源记录不完整。", 409);
     }
     if (job.input_transcript_id && (!source.transcript_id || !source.transcript_segments_json || !source.transcript_language)) {
-      await db.prepare("UPDATE analysis_jobs SET status = 'failed', error_code = 'TRANSCRIPT_UNAVAILABLE', error_message = '人工校正版不存在或范围不匹配', lease_owner = NULL, lease_expires_at = NULL, version = version + 1, updated_at = ? WHERE id = ? AND lease_owner = ? AND version = ?").bind(nowIso, job.id, workerId, job.version).run();
+      await db.prepare("UPDATE analysis_jobs SET status = 'failed', error_code = 'TRANSCRIPT_UNAVAILABLE', error_message = '人工校正版不存在或范围不匹配', lease_owner = NULL, lease_expires_at = NULL, completed_at = ?, last_progress_at = ?, version = version + 1, updated_at = ? WHERE id = ? AND lease_owner = ? AND version = ?").bind(nowIso, nowIso, nowIso, job.id, workerId, job.version).run();
       return apiError("JOB_TRANSCRIPT_UNAVAILABLE", "人工校正版不存在或范围不匹配。", 409);
     }
     await db.prepare("INSERT INTO analysis_job_events (id, organization_id, project_id, job_id, video_id, event_type, to_status, progress, worker_id, details_json, created_at) VALUES (?, ?, ?, ?, ?, 'claimed', ?, ?, ?, ?, ?)")
@@ -82,7 +84,7 @@ export async function POST(request: Request) {
         if (!Array.isArray(segments)) throw new Error("segments must be an array");
         manualTranscript = { id: source.transcript_id, version: source.transcript_version ?? 1, language: source.transcript_language, segments };
       } catch {
-        await db.prepare("UPDATE analysis_jobs SET status = 'failed', error_code = 'TRANSCRIPT_INVALID', error_message = '人工校正版内容损坏', lease_owner = NULL, lease_expires_at = NULL, version = version + 1, updated_at = ? WHERE id = ? AND lease_owner = ? AND version = ?").bind(nowIso, job.id, workerId, job.version).run();
+        await db.prepare("UPDATE analysis_jobs SET status = 'failed', error_code = 'TRANSCRIPT_INVALID', error_message = '人工校正版内容损坏', lease_owner = NULL, lease_expires_at = NULL, completed_at = ?, last_progress_at = ?, version = version + 1, updated_at = ? WHERE id = ? AND lease_owner = ? AND version = ?").bind(nowIso, nowIso, nowIso, job.id, workerId, job.version).run();
         return apiError("JOB_TRANSCRIPT_INVALID", "人工校正版内容损坏，无法重新分析。", 409);
       }
     }

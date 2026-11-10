@@ -278,9 +278,12 @@ class KeyframeVisualAnalyzer:
             "phase": "ocr",
             "keyframes_completed": 0,
             "keyframes_total": len(candidates),
+            "candidates_checked": 0, "candidates_total": len(candidates),
+            "sampled_frames": 0, "ocr_completed": 0,
         })
         low_contrast_removed = 0
         similar_removed = 0
+        completed_candidates = 0
         duration_ms = max(0, media.info.duration_ms)
         candidate_interval_ms = duration_ms / max(1, len(candidates) - 1) if candidates else 0
         local_similarity_window_ms = max(
@@ -292,6 +295,8 @@ class KeyframeVisualAnalyzer:
                 "phase": "ocr",
                 "keyframes_completed": candidate_index,
                 "keyframes_total": len(candidates),
+                "candidates_checked": completed_candidates, "candidates_total": len(candidates),
+                "sampled_frames": len(keyframes), "ocr_completed": len(keyframes),
             })
             signature = self._image_signature(frame.path)
             if signature is not None:
@@ -299,6 +304,7 @@ class KeyframeVisualAnalyzer:
                 is_boundary = candidate_index in {0, len(candidates) - 1}
                 if contrast < 4.0 and not is_boundary:
                     low_contrast_removed += 1
+                    completed_candidates += 1
                     continue
                 if any(
                     abs(frame.timestamp_ms - previous_timestamp) <= local_similarity_window_ms
@@ -306,6 +312,7 @@ class KeyframeVisualAnalyzer:
                     for previous_timestamp, previous_hash in accepted_signatures
                 ):
                     similar_removed += 1
+                    completed_candidates += 1
                     continue
                 accepted_signatures.append((frame.timestamp_ms, image_hash))
             text, confidence = self.ocr.recognize(frame.path)
@@ -319,6 +326,7 @@ class KeyframeVisualAnalyzer:
                     confidence if useful_text else None,
                 )
             )
+            completed_candidates += 1
             if useful_text:
                 ocr_observations.append({
                     "kind": "ocr",
@@ -352,6 +360,9 @@ class KeyframeVisualAnalyzer:
                     **progress,
                     "keyframes_completed": len(candidates),
                     "keyframes_total": len(candidates),
+                    "candidates_checked": len(candidates), "candidates_total": len(candidates),
+                    "sampled_frames": len(keyframes), "total_frames": len(keyframes),
+                    "ocr_completed": len(keyframes), "ocr_total": len(keyframes),
                 })
 
             if callable(set_progress_callback):
@@ -408,6 +419,9 @@ class KeyframeVisualAnalyzer:
             "phase": "completed",
             "keyframes_completed": len(candidates),
             "keyframes_total": len(candidates),
+            "candidates_checked": len(candidates), "candidates_total": len(candidates),
+            "sampled_frames": len(keyframes), "total_frames": len(keyframes),
+            "ocr_completed": len(keyframes), "ocr_total": len(keyframes),
         })
         return VisualOutput(tuple(keyframes), tuple(combined), stats)
 

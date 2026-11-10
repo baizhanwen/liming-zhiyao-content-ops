@@ -52,7 +52,7 @@ function fixture({ runtime = {}, worker = {}, quotaAllowed = true } = {}) {
     new Function("require", "module", "exports", source)((specifier) => {
       if (mocked.has(specifier)) return mocked.get(specifier);
       if (!specifier.startsWith(".")) throw new Error(`Unexpected dependency: ${specifier}`);
-      return load(path.resolve(path.dirname(filename), `${specifier}.ts`));
+      return load(path.resolve(path.dirname(filename), specifier.endsWith(".ts") ? specifier : `${specifier}.ts`));
     }, loadedModule, loadedModule.exports);
     cache.set(filename, loadedModule.exports);
     return loadedModule.exports;

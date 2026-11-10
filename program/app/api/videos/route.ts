@@ -1,3 +1,4 @@
+import { taskProgressSnapshot } from "../../../lib/analysis-task-progress";
 import { materialAnalysisProjection } from "../../../lib/material-analysis-state";
 import { ACTIVE_ANALYSIS_STATUSES_SQL } from "../../../lib/analysis-jobs";
 import { canWriteProjectAccess, getD1, getProjectAccess } from "../../../db/runtime";
@@ -6,7 +7,7 @@ import { apiError, errorResponse } from "../../../lib/api-response";
 import { summarizeSegmentProgress } from "../../../lib/analysis-segment-progress";
 import { readRequestIdentity } from "../../../lib/request-auth";
 
-const jobColumns = ["id","video_id","status","analysis_profile","progress","current_stage","error_code","error_message","retry_count","lease_expires_at","checkpoint_stage","checkpoint_json","checkpoint_updated_at","resume_count","created_at","updated_at"].map(name => `analysis_jobs.${name}`).join(",");
+const jobColumns = ["id","video_id","status","analysis_profile","progress","current_stage","error_code","error_message","retry_count","lease_expires_at","checkpoint_stage","checkpoint_json","checkpoint_updated_at","resume_count","attempt_count","started_at","stage_started_at","last_progress_at","progress_json","last_heartbeat_at","lease_owner","completed_at","created_at","updated_at"].map(name => `analysis_jobs.${name}`).join(",");
 
 export async function GET(request: Request) {
   const identity = await readRequestIdentity(request);
@@ -39,7 +40,7 @@ export async function GET(request: Request) {
         ) ORDER BY created_at DESC LIMIT 100
       `).bind(organizationId, projectId, organizationId, projectId).all(),
       db.prepare(`
-        SELECT ${jobColumns}, COALESCE(analysis_jobs.enqueued_at,analysis_jobs.created_at) AS enqueued_at, ${materialAnalysisProjection("analysis_jobs")},
+        SELECT ${jobColumns}, analysis_jobs.enqueued_at AS progress_enqueued_at, COALESCE(analysis_jobs.enqueued_at,analysis_jobs.created_at) AS enqueued_at, ${materialAnalysisProjection("analysis_jobs")},
           (SELECT COUNT(*) FROM analysis_model_calls calls WHERE calls.job_id = analysis_jobs.id) AS model_call_count,
           (SELECT COUNT(*) FROM analysis_model_calls calls WHERE calls.job_id = analysis_jobs.id AND calls.total_tokens IS NULL) AS model_unknown_usage_count
         FROM analysis_jobs
@@ -79,7 +80,7 @@ export async function GET(request: Request) {
     ]);
     const safeJobs = jobs.results.map((job) => ({ ...job,
       current_stage: job.status === "cancelled" && (!job.lease_expires_at || String(job.lease_expires_at) <= queueNow) ? "任务已取消" : job.current_stage,
-      checkpoint_json: undefined, segment_progress: summarizeSegmentProgress(job.checkpoint_json) }));
+      checkpoint_json: undefined, progress_json: undefined, lease_owner: undefined, progress_enqueued_at: undefined, taskProgress: taskProgressSnapshot({ ...job, enqueued_at: job.progress_enqueued_at } as Parameters<typeof taskProgressSnapshot>[0], queueNow), segment_progress: summarizeSegmentProgress(job.checkpoint_json) }));
     return Response.json({
       videos: videos.results, jobs: safeJobs, canWrite: canWriteProjectAccess(access),
       queue: { sampleCount: queueStats?.sample_count ?? 0, averageSeconds: queueStats?.average_seconds ?? null, waitingCount: sharedQueue?.waiting_count ?? 0, runningCount: sharedQueue?.running_count ?? 0,

@@ -22,8 +22,8 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     if (job.version !== payload.version) return apiError("JOB_VERSION_CONFLICT", "任务版本已发生变化。", 409);
     const actor = `service:${payload.workerId}`; const finalVersion = payload.version + 1;
     const results = await db.batch([
-      db.prepare("UPDATE analysis_jobs SET status = 'failed', progress = ?, current_stage = ?, error_code = ?, error_message = ?, lease_owner = NULL, lease_expires_at = NULL, result_key = ?, version = version + 1, updated_by = ?, updated_at = ? WHERE id = ? AND lease_owner = ? AND version = ? AND lease_expires_at > ?")
-        .bind(payload.progress, payload.stage, payload.errorCode, payload.errorMessage, payload.resultKey, actor, nowIso, jobId, payload.workerId, payload.version, nowIso),
+      db.prepare("UPDATE analysis_jobs SET status = 'failed', progress = ?, current_stage = ?, error_code = ?, error_message = ?, lease_owner = NULL, lease_expires_at = NULL, result_key = ?, completed_at = ?, last_progress_at = ?, version = version + 1, updated_by = ?, updated_at = ? WHERE id = ? AND lease_owner = ? AND version = ? AND lease_expires_at > ?")
+        .bind(payload.progress, payload.stage, payload.errorCode, payload.errorMessage, payload.resultKey, nowIso, nowIso, actor, nowIso, jobId, payload.workerId, payload.version, nowIso),
       db.prepare("UPDATE videos SET status = 'failed', error_message = ?, updated_by = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND EXISTS (SELECT 1 FROM analysis_jobs j WHERE j.id = ? AND j.video_id = videos.id AND j.status = 'failed' AND j.result_key = ? AND j.version = ?)")
         .bind(payload.errorMessage, actor, nowIso, job.video_id, job.organization_id, job.project_id, jobId, payload.resultKey, finalVersion),
       db.prepare("INSERT INTO analysis_job_events (id, organization_id, project_id, job_id, video_id, event_type, from_status, to_status, progress, worker_id, details_json, created_at) SELECT ?, organization_id, project_id, id, video_id, 'failed', ?, 'failed', progress, ?, ?, ? FROM analysis_jobs WHERE id = ? AND result_key = ? AND version = ?")

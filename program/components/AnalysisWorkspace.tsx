@@ -11,14 +11,18 @@ import { preferredOrganizationId, rememberCurrentScope, scopedFetch } from "../l
 import { analysisProfileBudgets, analysisProfileSegmentLimits, estimateAnalysisMaximumTokens, estimateMediaSourceTokens, estimateRepresentativeFrames, type AnalysisProfile } from "../lib/analysis-profile";
 import { VideoLibraryWorkspace } from "./VideoLibraryWorkspace";
 import { useAnalysisProfile } from "./useAnalysisProfile";
+import TaskProgress, { initialTaskRefresh, type TaskRefreshState } from "./TaskProgress";
+import type { TaskProgressSnapshot } from "../lib/task-progress-view";
+import { createTaskSnapshotReader } from "../lib/task-snapshot-reader";
 
 type Organization = { id: string; name: string };
 type Project = { id: string; name: string };
 type UploadEstimate = { name: string; durationSeconds: number | null };
 type Video = { analysis_id?: string | null; id: string; platform: string; source_type: string; source_url: string | null; title: string | null; status: string; error_message: string | null; created_at: string; filename?: string | null; size_bytes?: number | null; is_reference?: number | boolean };
-type Job = Partial<Parameters<typeof materialCardState>[0]> & { model_call_count?: number; model_unknown_usage_count?: number; enqueued_at?: string; id: string; video_id: string; status: string; analysis_profile: string; progress: number; current_stage: string | null; error_code: string | null; error_message: string | null; retry_count: number; lease_expires_at: string | null; checkpoint_stage: string | null; checkpoint_updated_at: string | null; resume_count: number; segment_progress?: { total: number; completed: number; failed: number; inProgress: number; remaining: number; segments: Array<{ windowKey: string; index: number; startMs: number; endMs: number; status: "pending" | "in_progress" | "completed" | "failed"; attempts: number; error: string | null }> } | null; created_at: string; updated_at: string };
+type Job = Partial<Parameters<typeof materialCardState>[0]> & { model_call_count?: number; model_unknown_usage_count?: number; enqueued_at?: string; id: string; video_id: string; status: string; analysis_profile: string; progress: number; current_stage: string | null; error_code: string | null; error_message: string | null; retry_count: number; lease_expires_at: string | null; checkpoint_stage: string | null; checkpoint_updated_at: string | null; resume_count: number; taskProgress?: TaskProgressSnapshot; segment_progress?: { total: number; completed: number; failed: number; inProgress: number; remaining: number; segments: Array<{ windowKey: string; index: number; startMs: number; endMs: number; status: "pending" | "in_progress" | "completed" | "failed"; attempts: number; error: string | null }> } | null; created_at: string; updated_at: string };
 type ServiceStatus = { checkedAt: string; credentialConfigured: boolean; modelConfigured: boolean; publicLinkCookieConfigured: boolean; publicLinkAuthenticationMode: "anonymous" | "browser" | "cookie_file" | "none"; browserLoginStatus: "logged_in" | "not_logged_in" | "unavailable" | "disabled" | "checking" | "unknown"; browserLoginDetected: boolean; browserLoginBrowser: string | null; browserLoginCheckedAt: string | null; browserLoginMessage: string | null; cookieUpdatedAt: string | null; canManageCookies: boolean; analyzerOnline: boolean; lastWorkerHeartbeat: string | null };
 type QueueStatus = { sampleCount: number; averageSeconds: number | null; waitingCount: number; runningCount: number; stoppingCount: number; ownCount: number; outstandingCount: number; userLimit: number; hostLimit: number };
+type VideoListResponse = { videos: Video[]; jobs: Job[]; canWrite: boolean; service: ServiceStatus; queue: QueueStatus };
 
 const stages = ["媒体入库", "音频处理", "语音转写", "字幕与关键帧", "结构化分析", "生成报告"];
 const statusLabels: Record<string, string> = { pending: "等待中", queued: "已排队", downloading: "获取媒体", processing: "处理媒体", transcribing: "语音转写", extracting: "提取画面", analyzing: "结构分析", completed: "已完成", partial: "部分完成", failed: "失败", cancelled: "已取消" };
@@ -144,19 +148,49 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
   const [analysisProfile, updateAnalysisProfile] = useAnalysisProfile();
   const [uploadEstimates, setUploadEstimates] = useState<UploadEstimate[]>([]);
   const [inspectingFiles, setInspectingFiles] = useState(false);
+  const [taskConnection, setTaskConnection] = useState<TaskRefreshState>({ ...initialTaskRefresh });
+  const [taskSnapshotTimes, setTaskSnapshotTimes] = useState<Record<string, number>>({});
+  const taskReader = useRef<{ key: string; reader: ReturnType<typeof createTaskSnapshotReader<VideoListResponse>> } | null>(null);
+  const projectLoadSequence = useRef(0);
+  const requestedTaskScope = useRef({ organizationId: "", projectId: "" });
 
-  const loadVideos = useCallback(async (orgId: string, projId: string) => {
-    if (!orgId || !projId) { setVideos([]); setJobs([]); return; }
-    const response = await scopedFetch(`/api/videos?organizationId=${encodeURIComponent(orgId)}&projectId=${encodeURIComponent(projId)}`);
-    if (!response.ok) throw new Error(await readError(response));
-    const body = await response.json() as { videos: Video[]; jobs: Job[]; canWrite: boolean; service: ServiceStatus; queue: QueueStatus };
-    setVideos(body.videos); setJobs(body.jobs); setCanWrite(body.canWrite); setService(body.service); setQueue(body.queue);
+  const clearTaskScope = useCallback(() => {
+    taskReader.current?.reader.dispose(); taskReader.current = null;
+    setVideos([]); setJobs([]); setService(null); setQueue(null); setCanWrite(false);
+    setTaskConnection({ ...initialTaskRefresh }); setTaskSnapshotTimes({});
   }, []);
 
+  const loadVideos = useCallback(async (orgId: string, projId: string) => {
+    if (requestedTaskScope.current.organizationId !== orgId || requestedTaskScope.current.projectId !== projId) return;
+    if (!orgId || !projId) { clearTaskScope(); return; }
+    const key = `${orgId}:${projId}`;
+    if (taskReader.current?.key !== key) {
+      clearTaskScope();
+      const reader = createTaskSnapshotReader<VideoListResponse>({
+        read: async (signal) => {
+          const response = await scopedFetch(`/api/videos?organizationId=${encodeURIComponent(orgId)}&projectId=${encodeURIComponent(projId)}`, { signal }, { organizationId: orgId, projectId: projId });
+          if (!response.ok) throw new Error(await readError(response));
+          return await response.json() as VideoListResponse;
+        },
+        onData: (body, receivedAt) => {
+          setVideos(body.videos); setJobs(body.jobs); setCanWrite(body.canWrite); setService(body.service); setQueue(body.queue);
+          setTaskSnapshotTimes(Object.fromEntries(body.jobs.map((job) => [job.id, receivedAt])));
+        },
+        onConnection: setTaskConnection,
+      });
+      taskReader.current = { key, reader };
+    }
+    await taskReader.current.reader.refresh();
+  }, [clearTaskScope]);
+
   const loadProjects = useCallback(async (orgId: string) => {
+    const sequence = ++projectLoadSequence.current;
+    requestedTaskScope.current = { organizationId: orgId, projectId: "" };
+    clearTaskScope(); setProjectId("");
     const body = await loadClientProjects<Project>(orgId, "");
-    setProjects(body.projects); const first = body.selected; setProjectId(first); rememberCurrentScope(orgId, first); await loadVideos(orgId, first);
-  }, [loadVideos]);
+    if (sequence !== projectLoadSequence.current) return;
+    setProjects(body.projects); const first = body.selected; setProjectId(first); requestedTaskScope.current = { organizationId: orgId, projectId: first }; rememberCurrentScope(orgId, first); await loadVideos(orgId, first);
+  }, [loadVideos, clearTaskScope]);
 
   useEffect(() => { let active = true; (async () => { try { const response = await fetch("/api/organizations"); if (!response.ok) throw new Error(await readError(response)); const body = await response.json() as { organizations: Organization[] }; if (!active) return; setOrganizations(body.organizations); const first = preferredOrganizationId(body.organizations); setOrganizationId(first); if (first) await loadProjects(first); } catch (reason) { if (active) setError(reason instanceof Error ? reason.message : "加载失败"); } finally { if (active) setLoading(false); } })(); return () => { active = false; }; }, [loadProjects]);
   useEffect(() => {
@@ -164,17 +198,23 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
     const timer = window.setInterval(() => { void loadVideos(organizationId, projectId).catch(() => undefined); }, 4_000);
     return () => window.clearInterval(timer);
   }, [loadVideos, organizationId, projectId]);
+  useEffect(() => () => { projectLoadSequence.current += 1; taskReader.current?.reader.dispose(); taskReader.current = null; }, []);
 
-  function appendCreated(body: { video: Video; job: Job }) { setVideos((current) => [body.video, ...current]); setJobs((current) => [body.job, ...current]); }
+  function appendCreated(body: { video: Video; job: Job }) { setVideos((current) => [body.video, ...current.filter((video) => video.id !== body.video.id)]); setJobs((current) => [body.job, ...current.filter((job) => job.id !== body.job.id)]); setTaskSnapshotTimes((current) => ({ ...current, [body.job.id]: Date.now() })); }
 
   async function submitUrl(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setSubmitting(true); setError(""); setSubmitMessage(""); const formElement = event.currentTarget; const form = new FormData(formElement);
+    const requestedScope = taskReader.current;
     try {
       const response = await scopedFetch("/api/videos/from-url", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, url: form.get("url"), title: form.get("title"), analysisProfile }) });
+      if (taskReader.current !== requestedScope) return;
       if (!response.ok) { setError(await readError(response)); return; }
-      const body = await response.json() as { video: Video; job: Job; reused?: boolean }; appendCreated(body); formElement.reset();
+      const body = await response.json() as { video: Video; job: Job; reused?: boolean };
+      if (taskReader.current !== requestedScope) return;
+      requestedScope?.reader.invalidate(); appendCreated(body); formElement.reset();
+      void loadVideos(organizationId, projectId).catch(() => undefined);
       setSubmitMessage(body.reused ? "该视频已有分析记录，已直接复用到当前项目。" : "已加入主机共享队列，将逐条处理。页面会自动更新进度，完成后可直接查看结果。");
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "链接入库失败，请稍后重试。"); }
+    } catch (reason) { if (taskReader.current === requestedScope) setError(reason instanceof Error ? reason.message : "链接入库失败，请稍后重试。"); }
     finally { setSubmitting(false); }
   }
 
@@ -221,24 +261,33 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
     if (!files.length) { setError("请选择至少一个视频或音频文件。"); setSubmitting(false); return; }
     if (files.length > 10) { setError("每批最多提交 10 个文件，请重新选择。"); setSubmitting(false); return; }
     let completed = 0, uncertain = 0, notAttempted = 0, rejected = 0; const failures: string[] = [];
+    const requestedScope = taskReader.current;
     for (const [index, file] of files.entries()) {
+      if (taskReader.current !== requestedScope) break;
       setUploadProgress(`正在上传 ${index + 1} / ${files.length}：${file.name}`);
       try {
         const form = new FormData(); form.set("file", file); form.set("analysisProfile", analysisProfile);
         const response = await scopedFetch("/api/videos/upload", { method: "POST", headers: { "x-organization-id": organizationId, "x-project-id": projectId }, body: form });
+        if (taskReader.current !== requestedScope) break;
         if (!response.ok) {
           const payload = await response.clone().json().catch(() => null) as { error?: { code?: unknown } } | null;
           const code = payload?.error?.code;
           failures.push(`${file.name}：${await readError(response)}`);
           if (code === "MEDIA_UPLOAD_STATUS_UNKNOWN") uncertain += 1; else rejected += 1;
           if ([401, 403, 429].includes(response.status) || code === "MEDIA_UPLOAD_STATUS_UNKNOWN" || code === "MEDIA_UPLOAD_CLEANUP_PENDING") { notAttempted = files.length - index - 1; break; }
-        } else { appendCreated(await response.json()); completed += 1; }
+        } else {
+          const body = await response.json() as { video: Video; job: Job };
+          if (taskReader.current !== requestedScope) break;
+          requestedScope?.reader.invalidate(); appendCreated(body); completed += 1;
+          void loadVideos(organizationId, projectId).catch(() => undefined);
+        }
       } catch (reason) {
         uncertain += 1; notAttempted = files.length - index - 1;
         failures.push(`${file.name}：提交结果待核对。请刷新列表确认后再重试，避免重复提交。${reason instanceof Error ? reason.message : "网络请求失败"}`);
         break;
       }
     }
+    if (taskReader.current !== requestedScope) { setSubmitting(false); return; }
     if (completed === files.length) { formElement.reset(); setUploadEstimates([]); }
     setUploadProgress(`批量上传结束：已提交 ${completed} 个，未提交 ${rejected} 个，待核对 ${uncertain} 个，未尝试 ${notAttempted} 个。`);
     if (failures.length) setError(failures.join("；")); setSubmitting(false);
@@ -246,23 +295,35 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
 
   async function retry(jobId: string, segmentKey?: string) {
     setError(""); setJobActionId(jobId);
+    const requestedScope = taskReader.current;
     try {
       const response = await scopedFetch(`/api/analysis-jobs/${jobId}/retry`, { method: "POST", ...(segmentKey ? { headers: { "content-type": "application/json" }, body: JSON.stringify({ segmentKey }) } : {}) });
+      if (taskReader.current !== requestedScope) return;
       if (!response.ok) { setError(await readError(response)); return; }
       const body = await response.json() as { job: Job };
-      setJobs((current) => current.map((job) => job.id === jobId ? { ...job, ...body.job } : job));
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "任务重试失败，请稍后再试。"); }
+      if (taskReader.current !== requestedScope) return;
+      requestedScope?.reader.invalidate();
+      setJobs((current) => current.map((job) => job.id === jobId ? { ...job, ...body.job, taskProgress: body.job.taskProgress } : job));
+      setTaskSnapshotTimes((current) => ({ ...current, [jobId]: Date.now() }));
+      await loadVideos(organizationId, projectId);
+    } catch (reason) { if (taskReader.current === requestedScope) setError(reason instanceof Error ? reason.message : "任务重试失败，请稍后再试。"); }
     finally { setJobActionId(""); }
   }
 
   async function cancelJob(jobId: string) {
     setError(""); setJobActionId(jobId);
+    const requestedScope = taskReader.current;
     try {
       const response = await scopedFetch(`/api/analysis-jobs/${jobId}/cancel`, { method: "POST" });
+      if (taskReader.current !== requestedScope) return;
       if (!response.ok) { setError(await readError(response)); return; }
       const body = await response.json() as { job: Job };
-      setJobs((current) => current.map((job) => job.id === jobId ? { ...job, ...body.job } : job));
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "任务取消失败，请稍后再试。"); }
+      if (taskReader.current !== requestedScope) return;
+      requestedScope?.reader.invalidate();
+      setJobs((current) => current.map((job) => job.id === jobId ? { ...job, ...body.job, taskProgress: body.job.taskProgress } : job));
+      setTaskSnapshotTimes((current) => ({ ...current, [jobId]: Date.now() }));
+      await loadVideos(organizationId, projectId);
+    } catch (reason) { if (taskReader.current === requestedScope) setError(reason instanceof Error ? reason.message : "任务取消失败，请稍后再试。"); }
     finally { setJobActionId(""); }
   }
 
@@ -293,7 +354,8 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
 
   return <div className={`analysis-layout${initialView === "videos" ? "" : " single-view"}`}>
     <section className="analysis-main">
-      <div className="management-toolbar analysis-toolbar"><label>公司<select value={organizationId} onChange={(event) => runScopedAction(async () => { const id = event.target.value; setOrganizationId(id); await loadProjects(id); }, setError)}>{organizations.map((organization) => <option key={organization.id} value={organization.id}>{organization.name}</option>)}</select></label><label>企业空间<select value={projectId} onChange={(event) => runScopedAction(async () => { const id = event.target.value; setProjectId(id); rememberCurrentScope(organizationId, id); await loadVideos(organizationId, id); }, setError)}>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><button type="button" onClick={() => loadVideos(organizationId, projectId)}>刷新状态</button></div>
+      <div className="management-toolbar analysis-toolbar"><label>公司<select value={organizationId} onChange={(event) => runScopedAction(async () => { const id = event.target.value; setOrganizationId(id); await loadProjects(id); }, setError)}>{organizations.map((organization) => <option key={organization.id} value={organization.id}>{organization.name}</option>)}</select></label><label>企业空间<select value={projectId} onChange={(event) => runScopedAction(async () => { const id = event.target.value; setProjectId(id); requestedTaskScope.current = { organizationId, projectId: id }; rememberCurrentScope(organizationId, id); await loadVideos(organizationId, id); }, setError)}>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><button type="button" disabled={taskConnection.pending} onClick={() => { void loadVideos(organizationId, projectId).catch(() => undefined); }}>{taskConnection.pending ? "正在刷新状态…" : "刷新状态"}</button></div>
+      {taskConnection.error && jobs.length === 0 && <div className="inline-alert" role="alert">任务状态读取失败：{taskConnection.error}。正在自动重连。</div>}
       {error && <div className="inline-alert" role="alert">{error}</div>}{submitMessage && <div className="analysis-submit-notice" role="status">{submitMessage}</div>}
       {initialView === "videos" && service && <article className="panel analysis-readiness"><div><p className="section-kicker">分析服务就绪状态 · 分析前自动检查</p><h2>{linkAnalysisReady ? anonymousCollection ? "抖音链接一键分析已就绪，无需个人登录" : service.publicLinkAuthenticationMode === "browser" ? "检测到分析主机抖音已登录，无需 Cookie" : "抖音链接一键分析已就绪" : !service.credentialConfigured ? "分析服务凭据尚未配置" : !service.modelConfigured ? "请先完成结构分析模型配置" : !service.analyzerOnline ? "分析服务没有连接，请重新启动" : service.browserLoginStatus === "checking" ? "正在检测分析主机抖音登录状态" : service.browserLoginStatus === "disabled" ? "浏览器检测未启用，请上传 Cookie" : service.browserLoginStatus === "unavailable" ? "分析主机 Edge 登录信息不可读，可上传 Cookie" : "分析主机抖音未登录，可上传 Cookie"}</h2></div><dl><div><dt>自动分析服务</dt><dd className={service.analyzerOnline ? "ready" : "waiting"}>{service.analyzerOnline ? "运行中" : service.modelConfigured ? "未连接" : "等待模型配置"}</dd></div><div><dt>结构分析模型</dt><dd className={service.modelConfigured ? "ready" : "waiting"}>{service.modelConfigured ? "已配置" : "待配置"}</dd></div><div><dt>视频采集方式</dt><dd className={anonymousCollection || service.publicLinkCookieConfigured ? "ready" : "waiting"}>{anonymousCollection ? "Skill Collect 独立匿名浏览器" : service.publicLinkAuthenticationMode === "browser" ? "分析主机浏览器" : service.publicLinkAuthenticationMode === "cookie_file" ? "Cookie 文件" : "尚未连接"}</dd></div><div><dt>服务心跳</dt><dd>{service.lastWorkerHeartbeat ? new Date(service.lastWorkerHeartbeat).toLocaleTimeString("zh-CN") : "尚未连接"}</dd></div></dl><div className="analysis-readiness-actions">{service.canManageCookies && !anonymousCollection && <><input ref={cookieFileRef} className="sr-only" type="file" accept=".txt,text/plain" onChange={updateDouyinCookies} disabled={cookieUpdating || cookieDeleting} aria-label="选择抖音 cookies.txt" /><button type="button" disabled={cookieUpdating || cookieDeleting} onClick={() => cookieFileRef.current?.click()}>{cookieUpdating ? "正在更新…" : service.cookieUpdatedAt ? "更新 Cookie" : service.browserLoginDetected ? "导入 Cookie（优先）" : "选择 Cookie 文件"}</button>{service.cookieUpdatedAt && <button className="danger-action" type="button" disabled={cookieUpdating || cookieDeleting} onClick={deleteDouyinCookies}>{cookieDeleting ? "正在清除…" : "清除 Cookie"}</button>}<a href="https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc" target="_blank" rel="noreferrer">获取导出扩展</a></>}<Link href="/settings">系统设置 →</Link></div></article>}      {cookieMessage && <div className="analysis-submit-notice" role="status">{cookieMessage}</div>}
       {initialView === "videos" && <article className="panel pipeline-panel"><div className="panel-heading"><div><p className="section-kicker">异步分析流水线</p><h2>网页请求只负责入库，计算任务分阶段执行</h2></div><span className="status neutral">可重试 · 可追溯</span></div><ol>{stages.map((stage, index) => <li key={stage}><span>{index + 1}</span><strong>{stage}</strong>{index < stages.length - 1 && <i aria-hidden="true" />}</li>)}</ol></article>}
@@ -305,8 +367,37 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
           const importState = job?.is_imported_job ? materialCardState({ ...job, analysis_id: video.analysis_id, job_status: job.status, current_stage: job.current_stage }) : null;
           const partial = job?.status === "partial" || importState?.tone === "warning"; const failed = job?.status === "failed" || job?.status === "cancelled"; const retryable = (partial || failed) && !job?.is_imported_job; const active = Boolean(job && activeJobStatuses.has(job.status));
           const stale = Boolean(job && active && job.lease_expires_at && new Date(job.lease_expires_at).getTime() <= new Date(service?.checkedAt || 0).getTime()); const timing = job ? queueLabel(job, jobs, queue) : ""; const guidance = job ? guidanceForJob(job) : ""; const errorMessage = job ? visibleJobError(job) : video.error_message || "";
-          // @ts-expect-error The conditional JSX branch guarantees `job` exists before reading resume_count.
-          return <article className="analysis-row" key={video.id}><span className={`media-kind ${video.source_type}`}>{video.source_type === "url" ? "链" : "媒"}</span><div className="analysis-copy"><strong>{video.title || "待提取视频标题"}</strong><small>{video.is_reference ? "复用公司素材库分析" : video.source_type === "url" ? "抖音公开链接" : `${video.filename || "本地媒体"} · ${video.size_bytes ? `${(video.size_bytes / 1024 / 1024).toFixed(1)} MB` : ""}`}</small><div className="job-stage"><span>{stale ? "任务心跳已过期，可以恢复" : missingReport ? "尚无分析报告，请打开素材详情主动分析" : job?.current_stage || "等待任务创建"}</span>{job && !missingReport && <div className="progress-track small"><i style={{ width: `${job.progress}%` }} /></div>}</div>{(job?.checkpoint_stage === "evidence_ready" || job?.checkpoint_stage === "segment_progress") && !["completed", "partial"].includes(job.status) && <small className="job-checkpoint">已保存分析检查点 · 重试会跳过已完成分段</small>}{job?.segment_progress && !["completed", "partial"].includes(job.status) && <small className="job-checkpoint">长视频分段：已完成 {job.segment_progress.completed} / {job.segment_progress.total} · 剩余 {job.segment_progress.remaining}{job.segment_progress.failed ? ` · 失败 ${job.segment_progress.failed}` : ""}</small>}{timing && !stale && <small className="job-timing">{timing}</small>}{Boolean(job?.model_call_count) && <small>累计结构模型调用 {job.model_call_count} 次{job.model_unknown_usage_count ? ` · ${job.model_unknown_usage_count} 次用量未确认，重试可能产生额外调用` : ""}</small>}{errorMessage && <p>{errorMessage}</p>}{guidance && <p className="job-guidance"><strong>处理建议：</strong>{guidance}</p>}</div><div className="analysis-status"><span className={`status ${failed || stale ? "danger" : partial ? "warning" : !missingReport && job?.status === "completed" ? "success" : "neutral"}`}>{missingReport ? "尚未分析" : stale ? "待恢复" : importState?.label || statusLabels[job?.status || "pending"] || job?.status}</span><small>{missingReport ? 0 : job?.progress || 0}%</small>{job && <small className="job-profile">{profileLabels[job.analysis_profile || "standard"] || "历史模式"}</small>}{job?.resume_count > 0 && <small>已续跑 {job.resume_count} 次</small>}{missingReport && <Link href={`/analysis/${video.id}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`}>{canWrite && !video.is_reference ? "查看素材并分析" : "查看素材"}</Link>}{!missingReport && (job?.status === "completed" || job?.status === "partial") && <Link href={`/analysis/${video.id}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`}>{initialView === "assets" ? "查看资产" : "查看结果"}</Link>}{job?.error_code && ["DOUYIN_COOKIE_EXPIRED", "DOUYIN_ACCESS_REJECTED", "DOUYIN_BROWSER_UNAVAILABLE", "DOUYIN_COOKIE_INVALID"].includes(job.error_code) && service?.canManageCookies && !anonymousCollection && <button type="button" disabled={cookieUpdating} onClick={() => cookieFileRef.current?.click()}>更新 Cookie</button>}{job?.is_imported_job && partial && canWrite && !video.is_reference && <Link href={`/analysis/${video.id}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`}>重新分析</Link>}{stale && job && !job.is_imported_job && canWrite && !video.is_reference && <button type="button" disabled={jobActionId === job.id} onClick={() => retry(job.id)}>{(job.checkpoint_stage === "evidence_ready" || job.checkpoint_stage === "segment_progress") ? "从检查点继续" : "恢复"}</button>}{retryable && job && canWrite && !video.is_reference && <button type="button" disabled={jobActionId === job.id} onClick={() => retry(job.id)}>{(job.checkpoint_stage === "evidence_ready" || job.checkpoint_stage === "segment_progress") ? "从检查点继续" : "重试"}</button>}{(retryable || stale) && job && canWrite && !video.is_reference && job.segment_progress?.segments.filter((segment) => segment.status !== "completed").map((segment) => <button key={`${job.id}-${segment.windowKey}`} type="button" disabled={jobActionId === job.id} onClick={() => retry(job.id, segment.windowKey)}>重试第 {segment.index} 段</button>)}{active && !stale && job && canWrite && !video.is_reference && <button type="button" disabled={jobActionId === job.id} onClick={() => cancelJob(job.id)}>取消</button>}</div></article>;
+          return <article className="analysis-row" key={video.id}>
+            <span className={`media-kind ${video.source_type}`}>{video.source_type === "url" ? "链" : "媒"}</span>
+            <div className="analysis-copy">
+              <strong>{video.title || "待提取视频标题"}</strong>
+              <small>{video.is_reference ? "复用公司素材库分析" : video.source_type === "url" ? "抖音公开链接" : `${video.filename || "本地媒体"} · ${video.size_bytes ? `${(video.size_bytes / 1024 / 1024).toFixed(1)} MB` : ""}`}</small>
+              {missingReport && <small className="job-stage">尚无分析报告，请打开素材详情主动分析</small>}
+              {!missingReport && importState && <small className="job-stage">{importState.label}</small>}
+              {(job?.model_call_count ?? 0) > 0 && <small>累计结构模型调用 {job?.model_call_count} 次{job?.model_unknown_usage_count ? ` · ${job.model_unknown_usage_count} 次用量未确认，重试可能产生额外调用` : ""}</small>}
+              {errorMessage && <p>{errorMessage}</p>}
+              {guidance && <p className="job-guidance"><strong>处理建议：</strong>{guidance}</p>}
+            </div>
+            <div className="analysis-status">
+              <span className={`status ${failed || stale ? "danger" : partial ? "warning" : !missingReport && job?.status === "completed" ? "success" : "neutral"}`}>{missingReport ? "尚未分析" : stale ? "待恢复" : importState?.label || statusLabels[job?.status || "pending"] || job?.status}</span>
+              {job && <small className="job-profile">{profileLabels[job.analysis_profile || "standard"] || "历史模式"}</small>}
+              {(job?.resume_count ?? 0) > 0 && <small>已续跑 {job?.resume_count} 次</small>}
+              {missingReport && <Link href={`/analysis/${video.id}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`}>{canWrite && !video.is_reference ? "查看素材并分析" : "查看素材"}</Link>}
+              {!missingReport && (job?.status === "completed" || job?.status === "partial") && <Link href={`/analysis/${video.id}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`}>{initialView === "assets" ? "查看资产" : "查看结果"}</Link>}
+              {job?.error_code && ["DOUYIN_COOKIE_EXPIRED", "DOUYIN_ACCESS_REJECTED", "DOUYIN_BROWSER_UNAVAILABLE", "DOUYIN_COOKIE_INVALID"].includes(job.error_code) && service?.canManageCookies && !anonymousCollection && <button type="button" disabled={cookieUpdating} onClick={() => cookieFileRef.current?.click()}>更新 Cookie</button>}
+              {Boolean(job?.is_imported_job) && partial && canWrite && !video.is_reference && <Link href={`/analysis/${video.id}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`}>重新分析</Link>}
+              {stale && job && !job.is_imported_job && canWrite && !video.is_reference && <button type="button" disabled={jobActionId === job.id} onClick={() => retry(job.id)}>{(job.checkpoint_stage === "evidence_ready" || job.checkpoint_stage === "segment_progress") ? "从检查点继续" : "恢复"}</button>}
+              {retryable && job && canWrite && !video.is_reference && <button type="button" disabled={jobActionId === job.id} onClick={() => retry(job.id)}>{(job.checkpoint_stage === "evidence_ready" || job.checkpoint_stage === "segment_progress") ? "从检查点继续" : "重试"}</button>}
+              {(retryable || stale) && job && !job.is_imported_job && canWrite && !video.is_reference && job.segment_progress?.segments.filter((segment) => segment.status !== "completed").map((segment) => <button key={`${job.id}-${segment.windowKey}`} type="button" disabled={jobActionId === job.id} onClick={() => retry(job.id, segment.windowKey)}>重试第 {segment.index} 段</button>)}
+              {active && !stale && job && !job.is_imported_job && canWrite && !video.is_reference && <button type="button" disabled={jobActionId === job.id} onClick={() => cancelJob(job.id)}>取消</button>}
+            </div>
+            {job && !job.is_imported_job && !missingReport ? <TaskProgress compact className="analysis-task-progress" task={job} connection={taskConnection} snapshotAt={taskSnapshotTimes[job.id] ?? null} onRefresh={() => { void loadVideos(organizationId, projectId).catch(() => undefined); }}>
+              {stale && <p className="job-timing">最近后台心跳已过期，可以从已保存进度恢复。</p>}
+              {(job.checkpoint_stage === "evidence_ready" || job.checkpoint_stage === "segment_progress") && !["completed", "partial"].includes(job.status) && <p className="job-checkpoint">已保存分析检查点 · 重试会跳过已完成分段</p>}
+              {job.segment_progress && !["completed", "partial"].includes(job.status) && <p className="job-timing">长视频分段：已完成 {job.segment_progress.completed} / {job.segment_progress.total} · 剩余 {job.segment_progress.remaining}{job.segment_progress.failed ? ` · 失败 ${job.segment_progress.failed}` : ""}</p>}
+              {timing && !stale && <p className="job-timing">{timing}</p>}
+            </TaskProgress> : !missingReport && !importState && <p className="analysis-task-progress job-timing">等待任务创建</p>}
+          </article>;
         })}</div>}
       </article>
     </section>
