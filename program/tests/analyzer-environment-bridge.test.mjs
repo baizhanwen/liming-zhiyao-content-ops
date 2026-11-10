@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
+import { PassThrough } from "node:stream";
 import { request } from "node:http";
 import test from "node:test";
-import { createAnalyzerEnvironmentBridge } from "../scripts/analyzer-environment-bridge.mjs";
+import { createAnalyzerEnvironmentBridge, runRuntimeCommand } from "../scripts/analyzer-environment-bridge.mjs";
 
 const token = "synthetic-runtime-token-00000000000000000000";
 const key = "synthetic-provider-key-must-not-leak";
@@ -113,4 +114,36 @@ test("repair of a running analyzer handles stopRequired internally before setup 
   }
   assert.equal(body.job.status, "succeeded");
   assert.deepEqual(calls, ["setup", "stop", "setup", "start"]);
+});
+
+
+test("runtime subprocesses force UTF-8 and preserve split Chinese progress packets", async () => {
+  let observed;
+  const lines = [];
+  const children = new Set();
+  const result = await runRuntimeCommand("status", {
+    root: "/synthetic-private-checkout", children, onLine: line => lines.push(line),
+    spawnProcess(command, args, options) {
+      observed = { command, args, options };
+      const child = new EventEmitter();
+      child.stdout = new PassThrough(); child.stderr = new PassThrough();
+      child.kill = () => true;
+      queueMicrotask(() => {
+        const packet = Buffer.from(JSON.stringify({ ready: false, message: "仍需准备中文模型", checks: [] }) + "\n", "utf8");
+        const split = packet.indexOf(Buffer.from("中", "utf8")) + 1;
+        child.stdout.write(packet.subarray(0, split));
+        child.stdout.end(packet.subarray(split)); child.stderr.end();
+        setImmediate(() => child.emit("close", 0, null));
+      });
+      return child;
+    },
+  });
+  assert.equal(observed.options.env.PYTHONUTF8, "1");
+  assert.equal(observed.options.env.PYTHONIOENCODING, "utf-8");
+  assert.equal(observed.args.at(-1), "status");
+  assert.equal(result.code, 0);
+  assert.equal(result.result.message, "仍需准备中文模型");
+  assert.equal(lines.length, 1);
+  assert.doesNotMatch(lines[0], /\uFFFD/u);
+  assert.equal(children.size, 0);
 });

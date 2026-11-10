@@ -64,8 +64,8 @@ def child() -> int:
     cache = ROOT / ".local/model-cache"
     report["requiredFiles"] = [{"path": str(file.relative_to(cache)), "size": file.stat().st_size} for file in cache.rglob("*")
                                if file.is_file() and file.suffix in {".pt", ".bin", ".pdiparams", ".json", ".yml", ".yaml"} and file.name != "models-ready.json" and not any(part.startswith(".") for part in file.relative_to(cache).parts)]
-    (ROOT / ".local/model-cache/models-ready.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
-    (verification / "result.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
+    (ROOT / ".local/model-cache/models-ready.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (verification / "result.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False), flush=True)
     return 0
 

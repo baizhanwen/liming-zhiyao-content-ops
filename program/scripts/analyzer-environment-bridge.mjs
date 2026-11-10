@@ -53,11 +53,11 @@ function pythonCommand(root) {
   return process.platform === "win32" ? ["py", "-3.11"] : ["python3.11"];
 }
 
-function streamRuntimeProcess(command, args, { root, onLine, children, timeoutMs }) {
+function streamRuntimeProcess(command, args, { root, onLine, children, timeoutMs, spawnProcess = spawn }) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const child = spawnProcess(command, args, {
       cwd: root, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, PYTHONUNBUFFERED: "1" },
+      env: { ...process.env, PYTHONUNBUFFERED: "1", PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
     });
     children.add(child);
     let lastJson = null;
@@ -86,19 +86,19 @@ function streamRuntimeProcess(command, args, { root, onLine, children, timeoutMs
   });
 }
 
-export async function runRuntimeCommand(action, { root = projectRoot, onLine = () => {}, children = new Set() } = {}) {
+export async function runRuntimeCommand(action, { root = projectRoot, onLine = () => {}, children = new Set(), spawnProcess = spawn } = {}) {
   if (![...actions, "status"].includes(action)) throw new Error("Unsupported runtime action");
   if (action === "setup" && process.platform === "win32") {
     const [probePython, ...probePrefix] = pythonCommand(root);
     const probe = spawnSync(probePython, [...probePrefix, "-I", "-c", "import sys; assert sys.version_info[:2] == (3,11) and sys.maxsize > 2**32"], { cwd: root, windowsHide: true, timeout: 10_000, stdio: "ignore" });
     if (probe.status !== 0) {
       onLine("正在为本项目准备 Python 3.11（验证官方发布者签名）…");
-      const installed = await streamRuntimeProcess("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path.join(root, "scripts", "install-python311.ps1"), "-TargetDirectory", path.join(root, ".local", "python311")], { root, onLine, children, timeoutMs: 20 * 60_000 });
+      const installed = await streamRuntimeProcess("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path.join(root, "scripts", "install-python311.ps1"), "-TargetDirectory", path.join(root, ".local", "python311")], { root, onLine, children, spawnProcess, timeoutMs: 20 * 60_000 });
       if (installed.code !== 0) return installed;
     }
   }
   const [python, ...prefix] = pythonCommand(root);
-  return streamRuntimeProcess(python, [...prefix, path.join(root, "scripts", "analyzer_local_runtime.py"), action], { root, onLine, children, timeoutMs: action === "setup" ? 45 * 60_000 : action === "check" ? 240_000 : 90_000 });
+  return streamRuntimeProcess(python, [...prefix, path.join(root, "scripts", "analyzer_local_runtime.py"), action], { root, onLine, children, spawnProcess, timeoutMs: action === "setup" ? 45 * 60_000 : action === "check" ? 240_000 : 90_000 });
 }
 
 function publicRuntimeStatus(result, redact) {

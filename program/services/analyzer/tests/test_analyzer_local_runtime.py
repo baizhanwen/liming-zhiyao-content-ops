@@ -130,3 +130,74 @@ def test_missing_media_tools_install_only_from_locked_project_manifest(tmp_path,
     assert (module.LOCAL / "ffmpeg.path").read_text().strip() == str(bin_dir)
     assert all(Path(path).is_relative_to(tmp_path) for path in pair.values())
     assert json.loads(capsys.readouterr().out)["ready"]
+
+
+def test_setup_pins_uv_to_own_environment_and_selected_python(tmp_path, monkeypatch, capsys):
+    module = runtime_module()
+    isolate(module, tmp_path, monkeypatch)
+    for key, value in {
+        "UV_PROJECT_ENVIRONMENT": "/another/project/venv",
+        "UV_CACHE_DIR": "/another/cache",
+        "UV_PYTHON": "/another/python",
+        "UV_CONFIG_FILE": "/another/uv.toml",
+        "UV_NO_SYNC": "1",
+        "UV_PYTHON_DOWNLOADS": "automatic",
+        "PYTHONIOENCODING": "ascii",
+        "PYTHONUTF8": "0",
+    }.items():
+        monkeypatch.setenv(key, value)
+    snapshots = iter([{"ready": False, "workerRunning": False}, {"ready": True, "workerRunning": False}])
+    monkeypatch.setattr(module, "readiness_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(module, "active_process", lambda: None)
+    monkeypatch.setattr(module.shutil, "which", lambda name, **_kwargs: "/fixture/" + name if name in {"uv", "npm", "npm.cmd"} else None)
+    monkeypatch.setattr(module, "resolve_media_tools", lambda *_args: {"ffmpeg": "/fixture/ffmpeg", "ffprobe": "/fixture/ffprobe"})
+    monkeypatch.setattr(module, "_test_media_binary", lambda _path: True)
+    calls = []
+    def run(command, *, env, cwd, **_kwargs):
+        calls.append((command, env.copy(), cwd))
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(module.subprocess, "run", run)
+    assert module.setup() == 0
+    command, env, cwd = calls[0]
+    assert cwd == module.ANALYZER
+    assert command[:4] == ["/fixture/uv", "sync", "--no-config", "--locked"]
+    assert command[command.index("--python") + 1] == str(Path(module.sys.executable).resolve())
+    assert {key: value for key, value in env.items() if key.startswith("UV_")} == {
+        "UV_CACHE_DIR": str(module.LOCAL / "uv-cache"),
+        "UV_PROJECT_ENVIRONMENT": str(module.ANALYZER / ".venv"),
+        "UV_PYTHON": str(Path(module.sys.executable).resolve()),
+        "UV_PYTHON_DOWNLOADS": "never",
+        "UV_NO_CONFIG": "1",
+    }
+    for _command, subprocess_env, _cwd in calls:
+        assert subprocess_env["PYTHONIOENCODING"] == "utf-8"
+        assert subprocess_env["PYTHONUTF8"] == "1"
+    assert calls[-1][0] == [str(module.interpreter()), str(module.ROOT / "scripts/prepare_analyzer_models.py")]
+    assert json.loads(capsys.readouterr().out.splitlines()[-1])["ready"]
+
+
+def test_worker_and_model_records_round_trip_utf8_paths(tmp_path, monkeypatch):
+    module = runtime_module()
+    isolate(module, tmp_path / "中文安装目录", monkeypatch)
+    cache = module.LOCAL / "model-cache"
+    cache.mkdir(parents=True)
+    model = cache / "语音模型.bin"
+    model.write_bytes(b"fixture-model")
+    model_record = cache / "models-ready.json"
+    model_record.write_text(json.dumps({"modelsReady": True, "requiredFiles": [{"path": model.name, "size": model.stat().st_size}], "message": "模型已准备"}, ensure_ascii=False), encoding="utf-8")
+    record = {"pid": 424242, "project": str(module.ROOT), "log": str(module.LOCAL / "中文日志.log")}
+    module.PID_FILE.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(module.os, "kill", lambda *_args: None)
+    monkeypatch.setattr(module.subprocess, "check_output", lambda *_args, **_kwargs: f"{module.interpreter()} -m liming_analyzer")
+    original_read = Path.read_text
+    reads = []
+    def read(path, *args, **kwargs):
+        if path in {module.PID_FILE, model_record}:
+            assert kwargs.get("encoding") == "utf-8"
+            reads.append(path)
+        return original_read(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "read_text", read)
+    assert module.active_process() == record
+    snapshot = module.readiness_snapshot()
+    assert snapshot["modelsReady"] and snapshot["workerRunning"]
+    assert set(reads) == {module.PID_FILE, model_record}

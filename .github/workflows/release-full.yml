@@ -28,14 +28,28 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       - uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "22.23.2"
           cache: npm
           cache-dependency-path: program/package-lock.json
       - name: Install development dependencies
         working-directory: program
         run: npm ci --no-audit --no-fund
+      - name: Check isolated Python environment management
+        working-directory: program
+        run: |
+          python -m venv .local/runtime-tests
+          $testPython = Join-Path (Get-Location) '.local/runtime-tests/Scripts/python.exe'
+          $pytestRequirement = & $testPython -c "import tomllib; data = tomllib.load(open('services/analyzer/uv.lock', 'rb')); print(next('pytest==' + package['version'] for package in data['package'] if package['name'] == 'pytest'))"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read the locked test dependency.' }
+          & $testPython -m pip install --disable-pip-version-check $pytestRequirement
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot prepare the isolated runtime tests.' }
+          & $testPython -m pytest services/analyzer/tests/test_analyzer_local_runtime.py services/analyzer/tests/test_prepare_analyzer_models.py -q
+          if ($LASTEXITCODE -ne 0) { throw 'Python runtime isolation tests failed.' }
       - name: Check source and run regression tests
         working-directory: program
         run: npm test

@@ -7,6 +7,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import time
 import venv
 from pathlib import Path
@@ -85,7 +86,7 @@ def install_media_packages():
             raise RuntimeError("The project-local media executable did not pass verification.")
     directories = list(dict.fromkeys(str(Path(path).parent) for path in pair.values()))
     (LOCAL / "ffmpeg.path").write_text(os.pathsep.join(directories) + "\n", encoding="utf-8")
-    (LOCAL / "media-tools.json").write_text(json.dumps({"source": "locked-npm-registry", **pair}, indent=2) + "\n")
+    (LOCAL / "media-tools.json").write_text(json.dumps({"source": "locked-npm-registry", **pair}, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({"phase": "media_tools_ready", "ready": True}), flush=True)
     return 0
 
@@ -99,7 +100,7 @@ def runtime_environment(*, load_configuration=True) -> dict[str, str]:
     # imports are always this project's, even if the caller has an active venv.
     env = {
         key: value for key, value in os.environ.items()
-        if not key.startswith(("ANALYZER_", "CONTENT_MODEL_", "PROJECT_ASSISTANT_MODEL_"))
+        if not key.startswith(("ANALYZER_", "CONTENT_MODEL_", "PROJECT_ASSISTANT_MODEL_", "UV_"))
         and key not in {"PYTHONPATH", "VIRTUAL_ENV", "PADDLE_PDX_CACHE_HOME", "MODELSCOPE_CACHE", "HF_HOME", "TORCH_HOME", "XDG_CACHE_HOME", "PLAYWRIGHT_BROWSERS_PATH", "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "MINIMAX_API_KEY"}
     }
     if load_configuration:
@@ -123,6 +124,10 @@ def runtime_environment(*, load_configuration=True) -> dict[str, str]:
     env["PYTHONPATH"] = str(ANALYZER)
     env["VIRTUAL_ENV"] = str(interpreter().parent.parent)
     env["PYTHONUNBUFFERED"] = "1"
+    # Windows pipes otherwise use the local ANSI codepage, while the bridge
+    # decodes UTF-8. Keep Chinese paths and progress reports round-trippable.
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
     env["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
     env["PADDLE_PDX_MODEL_SOURCE"] = env.get("ANALYZER_PADDLE_MODEL_SOURCE", "bos") or "bos"
     tools = resolve_media_tools(env)
@@ -137,7 +142,7 @@ def active_process():
     if not PID_FILE.is_file():
         return None
     try:
-        record = json.loads(PID_FILE.read_text())
+        record = json.loads(PID_FILE.read_text(encoding="utf-8"))
         pid = int(record["pid"])
         os.kill(pid, 0)
         if os.name != "nt":
@@ -155,7 +160,7 @@ def readiness_snapshot():
     cache = LOCAL / "model-cache"
     model_record = cache / "models-ready.json"
     try:
-        prepared = json.loads(model_record.read_text())
+        prepared = json.loads(model_record.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         prepared = {}
     required = prepared.get("requiredFiles", [])
@@ -215,9 +220,17 @@ def setup():
         if not uv:
             print(json.dumps({"ready": False, "workerRunning": False, "missing": ["uv"], "checks": [], "message": "未找到本项目安装工具。"}, ensure_ascii=False), flush=True)
             return 1
-    env["UV_CACHE_DIR"] = str(LOCAL / "uv-cache")
+    # Use exactly the 3.11 interpreter selected/prepared by this checkout's
+    # bridge. User uv configuration must never redirect or sync another venv.
+    env.update({
+        "UV_CACHE_DIR": str(LOCAL / "uv-cache"),
+        "UV_PROJECT_ENVIRONMENT": str(ANALYZER / ".venv"),
+        "UV_PYTHON": str(Path(sys.executable).resolve()),
+        "UV_PYTHON_DOWNLOADS": "never",
+        "UV_NO_CONFIG": "1",
+    })
     commands = [
-        ("installing_media_dependencies", [uv, "sync", "--locked", "--extra", "media", "--extra", "dev"], ANALYZER),
+        ("installing_media_dependencies", [uv, "sync", "--no-config", "--locked", "--python", env["UV_PYTHON"], "--extra", "media", "--extra", "dev"], ANALYZER),
         ("installing_collector_dependencies", [npm, "ci", "--prefix", str(ANALYZER / "liming_analyzer/douyin_collector/node"), "--omit=dev", "--no-audit", "--no-fund"], ROOT),
         ("installing_browser", [npm, "run", "install-browser", "--prefix", str(ANALYZER / "liming_analyzer/douyin_collector/node")], ROOT),
     ]
@@ -290,7 +303,7 @@ def main() -> int:
         process = subprocess.Popen([str(interpreter()), "-m", "liming_analyzer"], cwd=ROOT, env=env,
                                    stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
                                    start_new_session=True)
-    PID_FILE.write_text(json.dumps({"pid": process.pid, "project": str(ROOT), "log": str(log)}) + "\n")
+    PID_FILE.write_text(json.dumps({"pid": process.pid, "project": str(ROOT), "log": str(log)}) + "\n", encoding="utf-8")
     time.sleep(1)
     if process.poll() is not None:
         print(json.dumps({"started": False, "ready": False, "workerRunning": False, "missing": ["分析服务启动失败，请检查本项目模型配置和运行日志"], "checks": []}, ensure_ascii=False))
