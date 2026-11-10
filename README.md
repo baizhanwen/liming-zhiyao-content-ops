@@ -14,7 +14,7 @@
 
 日常使用双击 `start-local.bat`，停止使用 `stop-local.bat`；团队协作使用 `start-lan.bat`。首次安装及模型下载需要网络，这个 ZIP 不包含预装依赖或模型缓存。下载包不携带开发者的密钥、数据库、媒体、Cookie、缓存或 Git 历史。
 
-仓库目前为私有仓库，查看 Release 和下载附件需要相应 GitHub 仓库访问权限。GitHub 自动生成的「Source code」压缩包是开发源码；安装使用请选择上面的完整版 ZIP。
+仓库已公开，可直接查看 Release 和下载附件。GitHub 自动生成的「Source code」压缩包是开发源码；安装使用请选择上面的完整版 ZIP。
 
 ## 开发与发布
 

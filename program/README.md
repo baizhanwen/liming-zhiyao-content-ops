@@ -20,7 +20,7 @@
 
 ## 下载与首次安装（Windows）
 
-从 [GitHub Releases](https://github.com/baizhanwen/liming-zhiyao-content-ops/releases/latest) 的 Assets 下载 `LimingZhiyao-Windows-Full.zip`，完整解压后进入 `LimingZhiyao` 文件夹。下载包默认是开发完整版，包含 4,176 条方法原子，无需激活码；仓库目前为私有，下载需要相应访问权限。GitHub 的「Source code」压缩包供源码开发使用。
+从 [GitHub Releases](https://github.com/baizhanwen/liming-zhiyao-content-ops/releases/latest) 的 Assets 下载 `LimingZhiyao-Windows-Full.zip`，完整解压后进入 `LimingZhiyao` 文件夹。下载包默认是开发完整版，包含 4,176 条方法原子，无需激活码；仓库已公开，可直接下载。GitHub 的「Source code」压缩包供源码开发使用。
 
 1. 保持联网，双击 `setup-local.bat`，等待网页依赖安装和数据库初始化；缺少 64 位 Node.js 22.13 或更高版本时，安装程序会按提示自动准备 Node.js；
 2. 双击 `start-local.bat`，保持启动窗口开启；
