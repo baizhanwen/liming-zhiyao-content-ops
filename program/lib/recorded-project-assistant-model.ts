@@ -1,3 +1,4 @@
+import { readEffectiveModelRuntime } from "./model-settings";
 import { getD1, sha256Hex } from "../db/runtime";
 import { checkOrganizationQuota } from "./operations";
 import { invokeRecordedContentRequest, type ContentModelRequestRecord } from "./recorded-content-model";
@@ -18,7 +19,7 @@ type Scope = {
 /** Record each independent assistant request, including optional repairs and probes. */
 export function createRecordedProjectAssistantInvoker(scope: Scope) {
   return async (input: Parameters<typeof invokeProjectAssistantModel>[0], assistantReply?: AssistantReplyScope) => {
-    const config = readProjectAssistantModelConfig();
+    const config = readProjectAssistantModelConfig(await readEffectiveModelRuntime(scope.organizationId));
     const quota = await checkOrganizationQuota(scope.organizationId, scope.userId, "modelCalls");
     if (!quota.allowed) throw new ProjectAssistantRequestError("公司本月模型调用额度已用尽，独立项目助理未发起新的请求。", "MODEL_QUOTA_EXCEEDED");
     const id = crypto.randomUUID(), ledger: ContentModelRequestRecord[] = [], db = getD1();
@@ -31,7 +32,7 @@ export function createRecordedProjectAssistantInvoker(scope: Scope) {
         promptVersion: scope.promptVersion, provider: config.provider, model: config.model,
         inputHash, inputJson: JSON.stringify({ sourceId: scope.sourceId ?? null }), step: scope.taskType,
         monthlyLimit: quota.limit, ledger, enforceProjectWriteAccess: true, assertWriteAccess: scope.assertWriteAccess, memoryEventId: scope.memoryEventId, memoryAttemptCount: scope.memoryAttemptCount, assistantReply,
-      }, async () => ({ ...await invokeProjectAssistantModel(input), profile: "max" as const }));
+      }, async () => ({ ...await invokeProjectAssistantModel({ ...input, organizationId: scope.organizationId }, { config }), profile: "max" as const }));
       const recorded = await db.prepare(`UPDATE model_calls SET status = 'completed', completed_at = ? WHERE id = ? AND status = 'started' AND ${projectWriteAccessCondition} ${memoryScope ? `AND ${memoryAttemptCondition}` : ""} ${assistantReply ? `AND ${assistantReplyCondition}` : ""}`)
         .bind(new Date().toISOString(), id, ...projectWriteAccessBindings(scope), ...(memoryScope ? memoryAttemptBindings(memoryScope) : []), ...(assistantReply ? assistantReplyBindings(assistantReply) : [])).run();
       if (!recorded.meta.changes) { await assertProjectWriteAccess(db, scope); if (memoryScope) await assertMemoryAttempt(db, memoryScope); if (assistantReply) await assertAssistantReplyActive(db, assistantReply); throw new ProjectAssistantRequestError("独立项目助理的请求记录已改变，结果没有继续写入。", "PROJECT_ASSISTANT_RECORD_CHANGED"); }

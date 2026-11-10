@@ -1,0 +1,19 @@
+.intro { margin: 0; padding: 0 18px 16px; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.roles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 16px; border-top: 1px solid var(--line); background: var(--surface-soft); }
+.role { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: white; }
+.role h3 { margin: 0 0 6px; font-size: 14px; }
+.description { min-height: 38px; margin: 0 0 10px; color: var(--muted); font-size: 11px; line-height: 1.65; }
+.state { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; color: var(--subtle); font-size: 10px; }
+.state strong { color: var(--brand); font-weight: 650; }
+.fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.form { margin-top: 15px; }
+.form input { min-width: 0; }
+.keyNote { margin: 0; color: var(--subtle); font-size: 10px; line-height: 1.6; }
+.clear { display: flex !important; align-items: flex-start; gap: 7px !important; color: var(--muted); }
+.clear input { flex: 0 0 auto; width: 15px; min-height: 15px; margin: 1px 0 0; accent-color: var(--brand); }
+.actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.actions button { min-height: 35px; padding: 7px 10px; font-size: 11px; }
+.message { margin: 12px 0 0; padding: 10px; border-radius: 7px; color: var(--brand-deep); background: var(--brand-soft); font-size: 11px; line-height: 1.65; overflow-wrap: anywhere; }
+.error { color: var(--danger); background: #fff2f0; }
+.loading { padding: 0 18px 18px; color: var(--muted); font-size: 12px; }
+@media (max-width: 900px) { .roles { grid-template-columns: 1fr; }.description { min-height: 0; } }

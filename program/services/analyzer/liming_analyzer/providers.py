@@ -26,6 +26,7 @@ from .asr_timeline import aligned_asr_segments
 from .evidence import deduplicate_timed_rows, is_near_duplicate, normalize_evidence_text
 from .ffmpeg import FfmpegFrameExtractor, FfmpegMediaProcessor
 from .methodology import analysis_methodology_prompt, select_video_analysis_methodology
+from .model_compat import completion_options, is_minimax_flash
 
 
 def _confidence(value: Any) -> int | None:
@@ -2580,7 +2581,13 @@ class InstructorStructureAnalyzer:
             self.restructure_plan_model = RestructurePlan
             self.restructure_section_model = RestructureSection
             self.insight_evidence_repair_model = InsightEvidenceRepair
-            mode = instructor.Mode.JSON if provider.strip().lower() == "deepseek" else instructor.Mode.TOOLS
+            mode = (
+                instructor.Mode.MD_JSON
+                if is_minimax_flash(provider, model)
+                else instructor.Mode.JSON
+                if provider.strip().lower() == "deepseek"
+                else instructor.Mode.TOOLS
+            )
             client = instructor.from_openai(OpenAI(api_key=api_key, base_url=base_url, max_retries=0, timeout=120), mode=mode)
         else:
             self.segment_report_model = report_model
@@ -2697,7 +2704,7 @@ class InstructorStructureAnalyzer:
                 if callable(create_with_completion):
                     return create_with_completion(**kwargs)
                 return completions.create(**kwargs), None
-            return model_calls.invoke(task, kwargs["max_tokens"], operation)
+            return model_calls.invoke(task, kwargs.get("max_tokens", kwargs.get("max_completion_tokens")), operation)
         actual_input_tokens = 0
         actual_output_tokens = 0
         actual_total_tokens = 0
@@ -2785,7 +2792,7 @@ class InstructorStructureAnalyzer:
                 "model": self.model,
                 "response_model": response_model,
                 "max_retries": 1,
-                "max_tokens": output_tokens,
+                **completion_options(self.provider, self.model, output_tokens),
                 "temperature": 0.2,
                 "messages": [
                     {
@@ -2903,7 +2910,7 @@ class InstructorStructureAnalyzer:
                 "model": self.model,
                 "response_model": response_model,
                 "max_retries": 1,
-                "max_tokens": requested_tokens,
+                **completion_options(self.provider, self.model, requested_tokens),
                 "temperature": 0.0 if task == "corrected_original" else 0.25,
                 "messages": [
                     {
@@ -2977,7 +2984,7 @@ class InstructorStructureAnalyzer:
                 "model": self.model,
                 "response_model": self.insight_evidence_repair_model,
                 "max_retries": 1,
-                "max_tokens": requested_tokens,
+                **completion_options(self.provider, self.model, requested_tokens),
                 "temperature": 0.0,
                 "messages": [
                     {

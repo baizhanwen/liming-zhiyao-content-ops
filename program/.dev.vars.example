@@ -17,15 +17,26 @@ ANALYZER_SERVICE_TOKEN=local-change-me-before-using-analyzer
 ANALYZER_BASE_URL=http://127.0.0.1:3000
 ANALYZER_WORKER_ID=analyzer-01
 
+# 本项目首次启动自动生成独立密钥；留空即可，已有值不会被启动过程覆盖。
+MODEL_SETTINGS_ENCRYPTION_KEY=
+LOCAL_RUNTIME_TOKEN=
+LOCAL_RUNTIME_URL=http://127.0.0.1:3001
+
 # 留空时自动使用安装程序记录的 FFmpeg/ffprobe，避免继承 Windows 中同名的错误环境变量。
 ANALYZER_FFMPEG=
 ANALYZER_FFPROBE=
 
-# 视频分析使用的 OpenAI 兼容模型。要使用视频分析时填写模型名和 API Key。
-ANALYZER_LLM_PROVIDER=deepseek
-ANALYZER_LLM_BASE_URL=https://api.deepseek.com/v1
-ANALYZER_LLM_MODEL=
+# 模型默认值；启动后可在网页“系统设置”中保存各公司的模型和密钥。
+ANALYZER_LLM_PROVIDER=minimax
+ANALYZER_LLM_BASE_URL=https://api.minimax.cn/v1
+ANALYZER_LLM_MODEL=MiniMax-M3.1-Flash
 ANALYZER_LLM_API_KEY=
+
+# 与 lmzy 一致的本地转写，模型下载到本项目自己的缓存。
+ANALYZER_ASR_ENGINE=faster-whisper
+ANALYZER_ASR_MODEL=small
+ANALYZER_ASR_LANGUAGE=zh
+ANALYZER_ASR_DEVICE=auto
 
 # 内容生成默认复用 ANALYZER_LLM_*。只有需要使用另一套模型时才填写。
 CONTENT_MODEL_PROVIDER=
@@ -33,10 +44,10 @@ CONTENT_MODEL_BASE_URL=
 CONTENT_MODEL_NAME=
 CONTENT_MODEL_API_KEY=
 
-# MiniMax Token Plan 图片理解，可选。Key 需要以 sk-cp 开头。
-ANALYZER_VISION_PROVIDER=minimax-token-plan
-ANALYZER_VISION_BASE_URL=https://api.minimaxi.com
-ANALYZER_VISION_MODEL=understand_image
+# MiniMax-M3.1-Flash 使用普通图片输入接口；旧 Token Plan/MCP 仍可在网页单独配置。
+ANALYZER_VISION_PROVIDER=minimax
+ANALYZER_VISION_BASE_URL=https://api.minimax.cn/v1
+ANALYZER_VISION_MODEL=MiniMax-M3.1-Flash
 ANALYZER_VISION_API_KEY=
 
 # 独立项目助理，可选；启用时四项必须同时填写。
@@ -45,9 +56,8 @@ PROJECT_ASSISTANT_MODEL_BASE_URL=
 PROJECT_ASSISTANT_MODEL_NAME=
 PROJECT_ASSISTANT_MODEL_API_KEY=
 
-# 抖音链接解析，可选。推荐使用导出的 Cookie 文件；也可指定浏览器配置。
-ANALYZER_YTDLP_COOKIES_FROM_BROWSER=edge
-ANALYZER_YTDLP_COOKIE_FILE=.local/douyin-cookies.txt
+# 抖音链接通过 Skill Collect 独立匿名 Chromium 采集，不使用 Cookie 配置。
+# 在网页“系统设置 → 视频分析服务”一键配置依赖、模型和浏览器。
 
 # 分阶段硬时限（秒）；旧配置不必新增这些键，留空使用内置默认值。
 # 语音与画面并行阶段共用 EVIDENCE 时限。长视频另加有限时长预算。

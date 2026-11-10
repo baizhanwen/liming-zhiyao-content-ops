@@ -1,3 +1,4 @@
+import { readEffectiveModelRuntime } from "../../../../../lib/model-settings";
 import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess, sha256Hex } from "../../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../../lib/api-response";
 import { parseModelJson } from "../../../../../lib/content-production";
@@ -55,7 +56,7 @@ async function invokeTrackedModel(input: GenerationScope & {
   taskType: string; system: string; payload: unknown; maxTokens: number; temperature: number;
 }) {
   await input.assertWritable();
-  const db = getD1(); const config = readContentModelConfig("max");
+  const db = getD1(); const config = readContentModelConfig("max", await readEffectiveModelRuntime(input.organizationId));
   const userJson = JSON.stringify(input.payload); const inputJson = JSON.stringify({ runId: input.runId, payload: input.payload }); const inputHash = await sha256Hex(new TextEncoder().encode(`${input.system}\n${userJson}`));
   // Only foundation steps can resume. Repairs and audits must use fresh feedback.
   if (input.resumeRunIds?.length && ["script_rewrite_micro_homomorphic_body_batch", "script_rewrite_restructure_facts_batch"].includes(input.taskType)) {
@@ -78,7 +79,7 @@ async function invokeTrackedModel(input: GenerationScope & {
       await input.assertWritable();
       const invocation = await invokeRecordedContentRequest({ system: input.system, user: userJson, profile: "max", nativeJson: attempt === 0, temperature: input.temperature, maxTokens: input.maxTokens }, {
         id: attempt === 0 ? id : crypto.randomUUID(), rootCallId: id, organizationId: input.organizationId, projectId: input.projectId,
-        topicId: null, promptTemplateId: null, taskType: input.taskType, promptVersion: SCRIPT_REWRITE_PROMPT_VERSION, provider: config.provider, model: config.model, userId: input.userId,
+        topicId: null, promptTemplateId: null, taskType: input.taskType, promptVersion: SCRIPT_REWRITE_PROMPT_VERSION, modelConfig: config, provider: config.provider, model: config.model, userId: input.userId,
         step: attempt === 0 ? "generation" : "json_repair", inputHash, inputJson, monthlyLimit: quota.limit, ledger: modelRequests,
         rewriteWorkspaceId: input.workspaceId,
       });
@@ -652,7 +653,7 @@ async function polishRestructuredParagraphs(scope: GenerationScope, units: Scrip
 /** A reviewable saved body can be polished without repeating extraction/planning. */
 async function recoverRestructuredDraft(scope: GenerationScope, units: ScriptUnit[]): Promise<GenerationResult | null> {
   if (!scope.resumeRunIds?.length) return null;
-  const db = getD1(), config = readContentModelConfig("max");
+  const db = getD1(), config = readContentModelConfig("max", await readEffectiveModelRuntime(scope.organizationId));
   const placeholders = scope.resumeRunIds.map(() => "?").join(",");
   const saved = await db.prepare(`SELECT v.run_id, v.text, v.paragraphs_json, v.source_mapping_json, v.outline_json FROM script_rewrite_versions v JOIN script_rewrite_runs r ON r.id = v.run_id AND r.organization_id = v.organization_id AND r.project_id = v.project_id AND r.workspace_id = v.workspace_id WHERE v.organization_id = ? AND v.project_id = ? AND v.created_by = ? AND v.variant = 'restructured' AND r.status = 'completed' AND v.model_provider = ? AND v.model_name = ? AND v.run_id IN (${placeholders}) ORDER BY v.created_at DESC LIMIT 1`).bind(scope.organizationId, scope.projectId, scope.userId, config.provider, config.model, ...scope.resumeRunIds).first<{ run_id: string; text: string; paragraphs_json: string; source_mapping_json: string; outline_json: string }>();
   if (!saved) return null;
@@ -1036,7 +1037,7 @@ export async function POST(request: Request, context: { params: Promise<{ rewrit
         ancestorId = ancestor.retry_of_run_id;
       }
     }
-    readContentModelConfig("max");
+    readContentModelConfig("max", await readEffectiveModelRuntime(organizationId));
     const estimate = estimateRewriteUsage(workspace.source_text, variants); const user = await ensureUser(identity);
     const writeScope = { organizationId, projectId, workspaceId: rewriteId, userId: user.id };
     const assertWritable = async () => {

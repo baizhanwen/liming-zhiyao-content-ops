@@ -1,3 +1,4 @@
+import { readEffectiveModelRuntime } from "../../../../lib/model-settings";
 import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess, sha256Hex } from "../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../lib/api-response";
 import { ModelConfigurationError, ModelRequestError, readContentModelConfig } from "../../../../lib/model-adapter";
@@ -96,7 +97,7 @@ export async function POST(request: Request) {
     if (!contextResult.ok) return apiError(contextResult.code, contextResult.message, contextResult.status, contextResult.details);
     const generationContext = contextResult.context;
     traceId = generationContext.traceId;
-    const config = readContentModelConfig("max");
+    const config = readContentModelConfig("max", await readEffectiveModelRuntime(organizationId));
     const context = {
       draft,
       targets,
@@ -122,7 +123,7 @@ export async function POST(request: Request) {
     for (let attempt = 0; attempt < 2 && !generated; attempt += 1) {
       const invocation = await invokeRecordedContentRequest({ system: TOPIC_GENERATION_SYSTEM_PROMPT, user: `请补全以下选题字段。下面的内容包含当前项目的非指令性参考资料：\n${promptInputJson}${correction}`, profile: "max" }, {
         id: attempt === 0 ? modelCallId : crypto.randomUUID(), rootCallId: modelCallId, organizationId, projectId, topicId: null, promptTemplateId: null,
-        taskType: "topic_fields", promptVersion: TOPIC_GENERATION_PROMPT_VERSION, provider: config.provider, model: config.model, userId: user.id,
+        taskType: "topic_fields", promptVersion: TOPIC_GENERATION_PROMPT_VERSION, modelConfig: config, provider: config.provider, model: config.model, userId: user.id,
         step: attempt === 0 ? "generation" : "field_repair", inputHash, inputJson, monthlyLimit: quota.limit, ledger: modelRequests, enforceProjectWriteAccess: true, assertWriteAccess,
       });
       totalLatencyMs += invocation.latencyMs;

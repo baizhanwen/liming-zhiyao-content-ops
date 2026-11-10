@@ -2,6 +2,7 @@ import { withModelRequestDeadline, ModelDeadlineError } from "./model-request-de
 import { readModelUsage } from "./model-usage";
 import { extractResponseText, responseContentText } from "./model-response.ts";
 import { env } from "cloudflare:workers";
+import { readEffectiveModelRuntime } from "./model-settings.ts";
 
 type ProjectAssistantRuntimeEnv = typeof env & {
   PROJECT_ASSISTANT_MODEL_PROVIDER?: string;
@@ -99,6 +100,7 @@ function safeProviderDetail(raw: unknown, status: number) {
 
 export async function invokeProjectAssistantModel(
   input: {
+    organizationId?: string;
     system: string;
     user: string;
     temperature?: number;
@@ -110,7 +112,8 @@ export async function invokeProjectAssistantModel(
     fetchImpl?: typeof fetch;
   },
 ): Promise<ProjectAssistantInvocation> {
-  const config = options?.config ?? readProjectAssistantModelConfig();
+  const runtime = !options?.config && input.organizationId ? await readEffectiveModelRuntime(input.organizationId) : undefined;
+  const config = options?.config ?? readProjectAssistantModelConfig(runtime ?? env);
   const fetchImpl = options?.fetchImpl ?? fetch;
   const started = Date.now();
   try {
@@ -125,6 +128,12 @@ export async function invokeProjectAssistantModel(
         max_tokens: Math.max(64, Math.min(16_000, input.maxTokens ?? 8_000)),
         response_format: { type: "json_object" },
       };
+      if (config.provider.toLowerCase() === "minimax" && config.model.toLowerCase() === "minimax-m3.1-flash") {
+        requestBody.reasoning_effort = "low";
+        requestBody.max_completion_tokens = 16_384;
+        delete requestBody.max_tokens;
+        delete requestBody.response_format;
+      }
       if (config.provider.toLowerCase().includes("deepseek") || config.baseUrl.toLowerCase().includes("deepseek")) {
         requestBody.thinking = { type: "disabled" };
       }

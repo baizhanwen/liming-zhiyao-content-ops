@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getD1 } from "../../db/runtime";
 import { isGenerationFrozen } from "../generation-freeze.mjs";
 import { checkOrganizationQuota } from "../operations";
+import { readEffectiveModelRuntime } from "../model-settings";
 import { invokeContentModel, readContentModelConfig, ModelConfigurationError } from "../model-adapter";
 import { authorize, auditStatement, enabledGuard, EcommerceError, requireChanged, type EcommerceAccess } from "./access";
 import { buildEcommerceContext } from "./context";
@@ -49,7 +50,7 @@ async function invokeRecorded(request: Request, access: EcommerceAccess, runId: 
   const db = getD1(), now = new Date().toISOString(), month = now.slice(0, 7) + "-01T00:00:00.000Z", callId = crypto.randomUUID(), scope = [access.organizationId, access.projectId];
   const quota = await checkOrganizationQuota(access.organizationId, access.userId, "modelCalls");
   if (!quota.allowed) throw new EcommerceError("MODEL_QUOTA_EXCEEDED", "公司本月模型调用额度已用尽。", 429);
-  const config = readContentModelConfig("max");
+  const config = readContentModelConfig("max", await readEffectiveModelRuntime(access.organizationId));
   const user = JSON.stringify({ stage, payload, outputSchema });
   const callHash = await hashJson({ system: ECOMMERCE_SYSTEM, user });
   await assertLiveAccess(request, access); requireUnfrozen();
@@ -75,7 +76,7 @@ async function invokeRecorded(request: Request, access: EcommerceAccess, runId: 
   let content: string | undefined;
   const receipt = () => JSON.stringify({ ...(content !== undefined ? { content } : {}), usage: { inputTokens: record.inputTokens, outputTokens: record.outputTokens, totalTokens: record.totalTokens }, modelRequests: [record] });
   try {
-    const response = await invokeContentModel({ system: ECOMMERCE_SYSTEM, user, profile: "max", maxTokens: stage === "plan" ? 4000 : 12000, temperature: stage === "review" ? .1 : .45 });
+    const response = await invokeContentModel({ organizationId: access.organizationId, system: ECOMMERCE_SYSTEM, user, profile: "max", maxTokens: stage === "plan" ? 4000 : 12000, temperature: stage === "review" ? .1 : .45 }, { config });
     record = { id: callId, step: stage, status: "completed", latencyMs: response.latencyMs, ...readModelUsage(response.raw) };
     content = response.content.slice(0, 200_000);
     const saved = await db.prepare("UPDATE model_calls SET output_json=?,latency_ms=? WHERE id=? AND organization_id=? AND project_id=? AND status='started'").bind(receipt(), response.latencyMs, callId, ...scope).run();
@@ -115,7 +116,7 @@ export async function generateEcommerce(request: Request, access: EcommerceAcces
   const requestHash = await hashJson({ taskId, input }), previous = await replay(access, input.idempotencyKey, requestHash);
   if (previous) return previous;
   requireUnfrozen();
-  try { readContentModelConfig("max"); } catch (error) { if (error instanceof ModelConfigurationError) throw new EcommerceError("MODEL_NOT_CONFIGURED", "请先配置内容模型。", 503); throw error; }
+  try { readContentModelConfig("max", await readEffectiveModelRuntime(access.organizationId)); } catch (error) { if (error instanceof ModelConfigurationError) throw new EcommerceError("MODEL_NOT_CONFIGURED", "请先配置内容模型。", 503); throw error; }
   const context = await buildEcommerceContext(access, taskId), task = context.task, db = getD1(), scope = [access.organizationId, access.projectId];
   if (!context.ready) throw new EcommerceError("TASK_INCOMPLETE", `请补齐：${context.missing.join("、")}`, 409);
   if (task.revision !== input.revision || task.current_version !== input.baseVersion || task.status === "archived") throw new EcommerceError("STATE_CHANGED", "任务或稿件已改变，请刷新后重试。", 409);

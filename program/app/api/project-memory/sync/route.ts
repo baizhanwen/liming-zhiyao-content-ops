@@ -1,3 +1,4 @@
+import { readEffectiveModelRuntime } from "../../../../lib/model-settings";
 import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess } from "../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../lib/api-response";
 import { projectAssistantConfigurationStatus } from "../../../../lib/project-assistant-model";
@@ -22,7 +23,7 @@ export async function POST(request: Request) {
     if (!organizationId || !projectId) return apiError("PROJECT_SCOPE_REQUIRED", "缺少公司或项目范围。", 400);
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
     if (!access || !canWriteProjectAccess(access)) return apiError("WRITE_ACCESS_REQUIRED", "当前角色不能同步项目记忆。", 403);
-    const configuration = projectAssistantConfigurationStatus();
+    const configuration = projectAssistantConfigurationStatus(await readEffectiveModelRuntime(organizationId));
     if (!configuration.configured) {
       return apiError(
         "PROJECT_ASSISTANT_NOT_CONFIGURED",

@@ -4,6 +4,7 @@ import argparse
 import logging
 import sys
 import threading
+from dataclasses import replace
 
 from .api_client import AnalyzerApiClient, AnalyzerApiError, ClaimedJob, Processor
 from .bootstrap import AnalyzerSettings, build_client, build_pipeline
@@ -13,11 +14,14 @@ from .windows_runtime import InstanceAlreadyRunning
 
 def build_lazy_processor(settings: AnalyzerSettings, client: AnalyzerApiClient, monitor=None) -> Processor:
     pipeline = None
+    pipeline_settings = None
 
     def process(job: ClaimedJob, heartbeat):
-        nonlocal pipeline
+        nonlocal pipeline, pipeline_settings
         current_job = job
-        if pipeline is None:
+        fetch_configuration = getattr(client, "model_configuration", None)
+        active_settings = replace(settings, **fetch_configuration(job)) if callable(fetch_configuration) else settings
+        if pipeline is None or pipeline_settings != active_settings:
             warm_status = "analyzing" if job.checkpoint_stage in {"evidence_ready", "segment_progress"} else "downloading"
             warm_message = "正在初始化本地分析模型（首次使用可能需要下载）"
             current_job = heartbeat(warm_status, max(2, job.progress), warm_message)
@@ -44,7 +48,8 @@ def build_lazy_processor(settings: AnalyzerSettings, client: AnalyzerApiClient, 
             )
             thread.start()
             try:
-                pipeline = build_pipeline(settings, client)
+                pipeline = build_pipeline(active_settings, client)
+                pipeline_settings = active_settings
                 if monitor is not None:
                     pipeline.runtime_monitor = monitor
             except Exception as error:

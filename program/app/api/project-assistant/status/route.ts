@@ -1,3 +1,4 @@
+import { readEffectiveModelRuntime } from "../../../../lib/model-settings";
 import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess } from "../../../../db/runtime";
 import { createRecordedProjectAssistantInvoker } from "../../../../lib/recorded-project-assistant-model";
 import { apiError, errorResponse } from "../../../../lib/api-response";
@@ -36,7 +37,7 @@ export async function GET(request: Request) {
       readProjectAssistantBenchmarkStatusWithDb(db, current), readCoreContentStrategy(db, current),
       db.prepare("SELECT COUNT(*) AS count FROM project_memory_items WHERE organization_id = ? AND project_id = ? AND status = 'confirmed' AND (expires_at IS NULL OR expires_at > ?)").bind(current.organizationId, current.projectId, new Date().toISOString()).first<{ count: number }>(),
     ]);
-    return Response.json({ configuration: projectAssistantConfigurationStatus(), health: { checked: false }, benchmarks, coreStrategy, memoryStatus: { confirmedCount: Number(memories?.count || 0) } });
+    return Response.json({ configuration: projectAssistantConfigurationStatus(await readEffectiveModelRuntime(current.organizationId)), health: { checked: false }, benchmarks, coreStrategy, memoryStatus: { confirmedCount: Number(memories?.count || 0) } });
   } catch (error) {
     return errorResponse(error);
   }
@@ -52,7 +53,7 @@ export async function POST(request: Request) {
     const assertWriteAccess = createProjectWriteAssertion(getD1(), { organizationId: current.organizationId, projectId: current.projectId, userId: user.id }, async () => (await readRequestIdentity(request))?.authSubject === current.identity.authSubject);
     const health = await probeProjectAssistantModel(createRecordedProjectAssistantInvoker({ organizationId: current.organizationId, projectId: current.projectId, userId: user.id, taskType: "project_assistant.probe", promptVersion: "project-assistant.probe.v1", assertWriteAccess }));
     await assertWriteAccess();
-    return Response.json({ configuration: projectAssistantConfigurationStatus(), health: { checked: true, ...health } });
+    return Response.json({ configuration: projectAssistantConfigurationStatus(await readEffectiveModelRuntime(current.organizationId)), health: { checked: true, ...health } });
   } catch (error) {
     if (error instanceof ProjectAssistantConfigurationError) return apiError(error.code, error.message, 503);
     if (error instanceof ProjectAssistantRequestError) return apiError(error.code, error.message, error.code === "MODEL_QUOTA_EXCEEDED" ? 429 : 502);

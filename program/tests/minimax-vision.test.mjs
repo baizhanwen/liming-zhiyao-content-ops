@@ -53,7 +53,7 @@ test("MiniMax visual integration uses official MCP, numbered contact sheets and 
   assert.match(engine, /request_id/);
   assert.match(engine, /provider_code/);
   assert.match(capabilities, /minimax_token_plan_mcp/);
-  assert.match(capabilities, /MiniMax-M3 是文本模型/);
+  assert.match(capabilities, /未启用本项目的直接图片适配器/);
   assert.match(bootstrap, /MiniMaxTokenPlanMcpVisionEngine/);
   assert.match(provider, /visual_understanding_coverage/);
   assert.match(route, /model\.vision_probe/);

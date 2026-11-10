@@ -1,10 +1,23 @@
 param(
     [string]$PathFile = "",
-    [switch]$CheckOnly
+    [switch]$CheckOnly,
+    [switch]$ProjectOnly
 )
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+
+if ($ProjectOnly) {
+    # The Settings-page installer uses a project-owned npm runtime. Keep the
+    # existing manual winget setup below unchanged, including its PATH support.
+    $projectRoot = Split-Path -Parent $PSScriptRoot
+    $python = Join-Path $projectRoot "services\analyzer\.venv\Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
+        throw "Prepare this project's Python environment before installing media tools."
+    }
+    & $python (Join-Path $PSScriptRoot "analyzer_local_runtime.py") install-media-tools
+    exit $LASTEXITCODE
+}
 
 function Test-MediaBinary([string]$Path) {
     if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }

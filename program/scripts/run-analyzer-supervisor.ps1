@@ -38,6 +38,8 @@ function Import-AnalyzerEnvironment {
     $env:PYTHONUNBUFFERED = "1"
     . (Join-Path $PSScriptRoot "analyzer-media-runtime.ps1")
     $null = Import-AnalyzerMediaRuntime $ProjectRoot
+    . (Join-Path $PSScriptRoot "analyzer-collector-runtime.ps1")
+    $null = Import-AnalyzerCollectorRuntime $ProjectRoot -AllowUnavailable
     . (Join-Path $PSScriptRoot "analyzer-source-runtime.ps1")
     return Set-AnalyzerSourceRuntime $ProjectRoot
 }

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+import os
 import shutil
 import time
 from collections.abc import Callable, Mapping
@@ -59,6 +61,11 @@ class PlatformSourceProvider:
         source_url = job.source.get("source_url")
         if not isinstance(source_url, str) or not is_allowed_douyin_url(source_url):
             raise ValueError("claimed public source is not an allowed Douyin URL")
+        if getattr(self.public_video, "uses_cookie_snapshots", True) is False:
+            # Skill Collect owns a fresh anonymous context for each acquisition.
+            # Existing Cookie APIs remain available for older clients, but their
+            # personal/organization snapshots never enter this collector.
+            return self.public_video.download(source_url, destination)
         # Remote organization snapshots are job-local. A 404 may delete this
         # temporary file, but must never erase the host's manually imported file.
         with TemporaryDirectory(prefix="liming-job-cookies-") as temporary:
@@ -70,6 +77,107 @@ class PlatformSourceProvider:
                 logger.warning("Video source failed: job=%s code=%s", job.id, error.code)
                 raise
         return resolved if isinstance(resolved, AcquiredSource) else AcquiredSource(resolved)
+
+
+class SkillCollectPublicVideoResolver:
+    """Bridge the vendored lmzy collector to the existing analysis contract."""
+
+    uses_cookie_snapshots = False
+
+    def __init__(
+        self,
+        collector=None,
+        *,
+        ffmpeg: str = "ffmpeg",
+        ffprobe: str = "ffprobe",
+        browser_timeout: int = 180,
+        progress=None,
+        cancelled=None,
+    ) -> None:
+        from .douyin_collector import collect
+
+        self._collector = collector if collector is not None else collect
+        self._ffmpeg = ffmpeg
+        self._ffprobe = ffprobe
+        self._browser_timeout = browser_timeout
+        self._progress = progress
+        self._cancelled = cancelled
+
+    def download(self, url: str, destination: Path, *, cookie_file: Path | None = None) -> AcquiredSource:
+        from .douyin_collector import CollectorError
+
+        if not is_allowed_douyin_url(url):
+            raise ValueError("public resolver only accepts allowed Douyin URLs")
+        destination = Path(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        evidence_path = destination.with_name(destination.name + ".acquisition.json")
+        published = False
+        completed = False
+        try:
+            with TemporaryDirectory(prefix=".source-capture-", dir=destination.parent.resolve()) as temporary:
+                folder = Path(temporary)
+                result = self._collector(
+                    url, folder,
+                    progress=self._progress,
+                    cancelled=self._cancelled,
+                    browser_timeout=self._browser_timeout,
+                    ffmpeg=self._ffmpeg,
+                    ffprobe=self._ffprobe,
+                )
+                source = Path(result["media_path"])
+                if source.is_symlink() or not source.resolve().is_relative_to(folder.resolve()) or not source.is_file():
+                    raise SourceDownloadError("SOURCE_DOWNLOAD_FAILED", "采集产物未处于当前任务目录，请重试。")
+                metadata = SourceMetadata(
+                    platform_work_id=str(result["video_id"])[:200],
+                    title=str(result.get("title") or "抖音视频")[:500],
+                    duration_sec=_integer(result.get("duration")),
+                )
+                # Preserve bounded provenance and silent-video limitations for
+                # this task without signed URLs, cookies or browser responses.
+                evidence = {key: result[key] for key in (
+                    "video_id", "source_url", "sha256", "size_bytes", "duration",
+                    "has_video", "has_audio", "limitations", "acquisition_method",
+                    "identity_verified", "coverage", "reported_duration", "evidence",
+                ) if key in result}
+                pending_evidence = folder / "acquisition.json"
+                pending_evidence.write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8")
+                source.replace(destination)
+                published = True
+                os.replace(pending_evidence, evidence_path)
+                completed = True
+                return AcquiredSource(destination, metadata)
+        except CollectorError as error:
+            failure = _collector_failure(error.code)
+            logger.warning("Skill Collect acquisition failed: code=%s", failure.code)
+            raise failure from None
+        except SourceDownloadError:
+            raise
+        except Exception:  # noqa: BLE001 - keep private acquisition diagnostics out of worker errors
+            raise SourceDownloadError("SOURCE_DOWNLOAD_FAILED", "未能获取完整视频，请重试或上传本地视频。") from None
+        finally:
+            if published and not completed:
+                destination.unlink(missing_ok=True)
+                evidence_path.unlink(missing_ok=True)
+
+
+def _collector_failure(code: str) -> SourceDownloadError:
+    # Only public, fixed messages cross the worker API. Collector diagnostics
+    # can contain transient request state and must never be serialized here.
+    if code in {"cancelled"}:
+        return SourceDownloadError("SOURCE_CANCELLED", "视频采集已取消。")
+    if code in {"ffmpeg_missing", "browser_unavailable", "browser_missing", "node_missing", "browser_runtime", "browser_dependency", "douyin_browser_runtime"}:
+        return SourceDownloadError("SOURCE_RUNTIME_UNAVAILABLE", "视频采集环境未就绪，请运行 tools\\setup-analyzer.bat 安装 Chromium、Node 和 FFmpeg。")
+    if code == "douyin_rate_limited":
+        return SourceDownloadError("SOURCE_RATE_LIMITED", "抖音暂时限制了采集请求，请稍后重试或上传本地视频。")
+    if code in {"dns", "network", "http", "timeout", "browser_timeout", "browser_failed", "source_timeout", "douyin_browser_timeout", "douyin_resolve_failed", "douyin_fetch"}:
+        return SourceDownloadError("SOURCE_NETWORK_FAILED", "获取视频时网络或抖音服务暂时异常，请稍后重试。")
+    if code in {"restricted", "douyin_blocked", "douyin_restricted", "douyin_browser_required", "douyin_unavailable", "douyin_access_restricted", "douyin_login_required", "douyin_verification_required"}:
+        return SourceDownloadError("DOUYIN_ACCESS_REJECTED", "抖音公开页面暂未提供可验证原片，可能存在访问限制或验证码，请稍后重试或上传本地视频。")
+    if code == "douyin_not_found":
+        return SourceDownloadError("SOURCE_UNAVAILABLE", "原视频不存在、已删除或不可访问，请确认链接或上传本地视频。")
+    if code in {"duration", "too_large"}:
+        return SourceDownloadError("SOURCE_UNAVAILABLE", "原视频须不超过 100 MiB，且时长在 20 分钟以内；可上传本地视频继续。")
+    return SourceDownloadError("SOURCE_DOWNLOAD_FAILED", "未能获取完整且身份一致的原片，请确认链接后重试或上传本地视频。")
 
 
 def _integer(value: Any) -> int | None:

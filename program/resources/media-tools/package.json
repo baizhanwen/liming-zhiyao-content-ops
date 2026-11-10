@@ -1,0 +1,10 @@
+{
+  "name": "liming-zhiyao-media-tools",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Project-local FFmpeg and FFprobe runtime fallback",
+  "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "1.1.0",
+    "@ffprobe-installer/ffprobe": "2.1.2"
+  }
+}

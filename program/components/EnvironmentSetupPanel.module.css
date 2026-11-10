@@ -1,0 +1,14 @@
+.intro { margin: 0; padding: 0 18px 15px; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.body { display: grid; gap: 15px; padding: 16px 18px; border-top: 1px solid var(--line); }
+.status { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; font-size: 12px; }
+.status strong { color: var(--ink); }.status span { color: var(--muted); }
+.checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; padding: 0; margin: 0; list-style: none; }
+.check { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 8px; padding: 10px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); }
+.indicator { display: grid; place-items: center; width: 19px; height: 19px; border-radius: 50%; color: #896a23; background: #fff1cc; font-size: 10px; font-weight: 750; }
+.ready .indicator { color: #2b7555; background: #e3f4e9; }.error .indicator { color: var(--danger); background: #ffe8e5; }
+.check div { min-width: 0; display: grid; gap: 3px; }.check strong { color: var(--ink); font-size: 11px; font-weight: 650; }.check small { color: var(--muted); font-size: 10px; line-height: 1.6; overflow-wrap: anywhere; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }.actions button { min-height: 36px; padding: 8px 12px; font-size: 11px; }
+.message { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }.failure { color: var(--danger); }
+.job { min-width: 0; display: grid; gap: 8px; }.job h3 { margin: 0; color: var(--ink); font-size: 12px; }
+.log { max-height: 260px; margin: 0; overflow: auto; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: #f6f7f9; color: #3a4350; font: 11px/1.7 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 700px) { .checks { grid-template-columns: 1fr; } }

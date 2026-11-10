@@ -23,7 +23,7 @@ function Read-LogTail([string]$Path, [int]$Count = 18) {
 }
 
 Write-Host ""
-Write-Host "[1/7] Python environment"
+Write-Host "[1/8] Python environment"
 if (Test-Path -LiteralPath $python) {
     & $python -c "import platform,sys; print(sys.version.split()[0] + ' / ' + platform.architecture()[0] + ' / ' + platform.machine())"
     & $python -m pip check
@@ -35,7 +35,7 @@ if (Test-Path -LiteralPath $python) {
 }
 
 Write-Host ""
-Write-Host "[2/7] Native runtime"
+Write-Host "[2/8] Native runtime"
 $configuredFfmpeg = $env:ANALYZER_FFMPEG
 $configuredFfprobe = $env:ANALYZER_FFPROBE
 Remove-Item Env:ANALYZER_FFMPEG -ErrorAction SilentlyContinue
@@ -60,7 +60,20 @@ if ($configuredFfmpeg -or $configuredFfprobe) {
 }
 
 Write-Host ""
-Write-Host "[3/7] Analyzer configuration"
+Write-Host "[3/8] Anonymous video collector"
+try {
+    . (Join-Path $PSScriptRoot "analyzer-media-runtime.ps1")
+    . (Join-Path $PSScriptRoot "analyzer-collector-runtime.ps1")
+    $collectorRuntime = Import-AnalyzerCollectorRuntime $projectRoot
+    Write-Host "[OK] Node.js - $($collectorRuntime.Node)"
+    Write-Host "[OK] Project browser cache - $($collectorRuntime.BrowserPath)"
+    & $collectorRuntime.Node $collectorRuntime.Script --doctor
+    if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] Chromium could not launch. Run tools\setup-analyzer.bat." }
+}
+catch { Write-Host "[ERROR] $($_.Exception.Message)" }
+
+Write-Host ""
+Write-Host "[4/8] Analyzer configuration"
 $values = @{}
 $varsPath = Join-Path $projectRoot ".dev.vars"
 if (Test-Path -LiteralPath $varsPath) {
@@ -68,12 +81,13 @@ if (Test-Path -LiteralPath $varsPath) {
         if ($_ -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$') { $values[$matches[1]] = $matches[2].Trim().Trim('"').Trim("'") }
     }
 }
-$required = @("ANALYZER_SERVICE_TOKEN", "ANALYZER_BASE_URL", "ANALYZER_WORKER_ID", "ANALYZER_LLM_API_KEY", "ANALYZER_LLM_BASE_URL", "ANALYZER_LLM_MODEL", "ANALYZER_LLM_PROVIDER")
+$required = @("ANALYZER_SERVICE_TOKEN", "ANALYZER_BASE_URL", "ANALYZER_WORKER_ID")
 foreach ($name in $required) {
     $value = [string]$values[$name]
     $display = if (-not $value) { "MISSING" } elseif ($name -match 'TOKEN|API_KEY') { "configured ($($value.Length) chars)" } else { $value }
     Write-Host "$name=$display"
 }
+Write-Host "Cloud models are configured in the Settings page and checked for each claimed job."
 $modelSource = [string]$values["ANALYZER_PADDLE_MODEL_SOURCE"]
 if (-not $modelSource) { $modelSource = "bos (default)" }
 Write-Host "ANALYZER_PADDLE_MODEL_SOURCE=$modelSource"
@@ -101,7 +115,7 @@ foreach ($modelName in @($detectionModel, $recognitionModel)) {
 }
 
 Write-Host ""
-Write-Host "[4/7] Web application"
+Write-Host "[5/8] Web application"
 $portPath = Join-Path $localDirectory "app.port"
 $appPort = if (Test-Path -LiteralPath $portPath) { (Get-Content -Raw -LiteralPath $portPath).Trim() } else { "" }
 if ($appPort) {
@@ -113,7 +127,7 @@ if ($appPort) {
 } else { Write-Host "[ERROR] .local\app.port is missing. Start the web application first." }
 
 Write-Host ""
-Write-Host "[5/7] Supervisor process"
+Write-Host "[6/8] Supervisor process"
 $pidPath = Join-Path $localDirectory "analyzer.pid"
 if (Test-Path -LiteralPath $pidPath) {
     $savedId = 0
@@ -135,7 +149,7 @@ if ($appPort -and $values["ANALYZER_SERVICE_TOKEN"] -and $values["ANALYZER_WORKE
 }
 
 Write-Host ""
-Write-Host "[6/7] Startup status"
+Write-Host "[7/8] Startup status"
 $statusPath = Join-Path $localDirectory "analyzer-start-error.txt"
 if (Test-Path -LiteralPath $statusPath) {
     Read-LogTail $statusPath 8 | ForEach-Object { Write-Host $_ }
@@ -144,7 +158,7 @@ if (Test-Path -LiteralPath $statusPath) {
 }
 
 Write-Host ""
-Write-Host "[7/7] Recent analyzer errors"
+Write-Host "[8/8] Recent analyzer errors"
 $errorLog = Join-Path $localDirectory "logs\analyzer-error.log"
 Read-LogTail $errorLog | ForEach-Object { Write-Host $_ }
 

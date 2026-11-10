@@ -3,7 +3,7 @@ import { assertProjectWriteAccess, projectWriteAccessBindings, projectWriteAcces
 import { assertMemoryAttempt, memoryAttemptBindings, memoryAttemptCondition } from "./project-memory-write";
 import { assertAssistantReplyActive, assistantReplyBindings, assistantReplyCondition, type AssistantReplyScope } from "./project-assistant-write";
 import { canContinueRewriteWrite, rewriteWriteAccessBindings, rewriteWriteAccessCondition } from "./script-rewrite-write";
-import { invokeContentModel, ModelRequestError, type ModelInvocation } from "./model-adapter";
+import { invokeContentModel, readContentModelConfig, ModelRequestError, type ModelInvocation } from "./model-adapter";
 import { readModelUsage, readModelFailureUsage, preserveInterruptedModelUsage } from "./model-usage";
 
 export type ContentModelRequestRecord = {
@@ -12,6 +12,7 @@ export type ContentModelRequestRecord = {
   totalTokens: number | null; usageKnown: boolean;
 };
 type RequestContext = {
+  modelConfig?: ReturnType<typeof readContentModelConfig>;
   id: string; rootCallId: string; organizationId: string; projectId: string;
   topicId: string | null; promptTemplateId: string | null; promptVersion: string;
   taskType?: string;
@@ -78,7 +79,7 @@ export async function invokeRecordedContentRequest(input: Parameters<typeof invo
   const started = Date.now();
   let response: ModelInvocation;
   try {
-    response = await invokeModel(input);
+    response = await invokeModel({ ...input, organizationId: context.organizationId }, context.modelConfig ? { config: context.modelConfig } : undefined);
   } catch (error) {
     const record: ContentModelRequestRecord = { id: context.id, step: context.step, status: "failed", latencyMs: Date.now() - started, ...readModelFailureUsage(error) };
     context.ledger.push(record);

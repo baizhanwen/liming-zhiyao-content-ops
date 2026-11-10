@@ -1,0 +1,13 @@
+{
+  "name": "zhixu-douyin-collector",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "check": "node capture-douyin.mjs --check-runtime",
+    "install-browser": "playwright install chromium"
+  },
+  "dependencies": {
+    "@playwright/test": "1.64.1"
+  }
+}

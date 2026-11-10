@@ -1,3 +1,4 @@
+import { readEffectiveModelRuntime } from "../../../../lib/model-settings";
 import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess, sha256Hex } from "../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../lib/api-response";
 import { ModelConfigurationError, ModelRequestError, readContentModelConfig } from "../../../../lib/model-adapter";
@@ -45,7 +46,7 @@ export async function POST(request: Request) {
 
     const db = getD1();
     const assertWriteAccess = createProjectWriteAssertion(db, { organizationId, projectId, userId: user.id }, async () => (await readRequestIdentity(request))?.authSubject === identity.authSubject);
-    const config = readContentModelConfig("max");
+    const config = readContentModelConfig("max", await readEffectiveModelRuntime(organizationId));
     const [project, strategy, knowledgeRows] = await Promise.all([
       db.prepare("SELECT name, client_name FROM projects WHERE id = ? AND organization_id = ? AND deleted_at IS NULL").bind(projectId, organizationId).first<{ name: string; client_name: string }>(),
       db.prepare("SELECT id, name, positioning, persona, target_audience, pain_points_json, pillars_json, objectives_json, style_notes, conversion_path FROM content_strategies WHERE organization_id = ? AND project_id = ? AND status = 'active' ORDER BY version DESC LIMIT 1").bind(organizationId, projectId).first<Record<string, string | null>>(),
@@ -99,7 +100,7 @@ export async function POST(request: Request) {
           nativeJson: attempt === 0,
         }, {
           id: attempt === 0 ? modelCallId : crypto.randomUUID(), rootCallId: modelCallId, organizationId, projectId, topicId: null, promptTemplateId: null,
-          taskType: "wechat_image", promptVersion: WECHAT_IMAGE_PROMPT_VERSION, provider: config.provider, model: config.model, userId: user.id,
+          taskType: "wechat_image", promptVersion: WECHAT_IMAGE_PROMPT_VERSION, modelConfig: config, provider: config.provider, model: config.model, userId: user.id,
           step: attempt === 0 ? "generation" : "image_copy_repair", inputHash, inputJson, monthlyLimit: quota.limit, ledger: modelRequests, enforceProjectWriteAccess: true, assertWriteAccess,
         });
       } catch (error) {

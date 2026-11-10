@@ -1,5 +1,6 @@
 import {
   isMiniMaxTokenPlanKey,
+  isMiniMaxFlashVisionConfiguration,
   parseVisionProbeMetadata,
   visionConfigurationFingerprint,
 } from "./minimax-vision.ts";
@@ -51,14 +52,16 @@ export function readModelServiceStatuses(runtime: Runtime, options: StatusOption
     note: "负责长视频结构、亮点、语言与节奏分析。",
   };
 
+  const contentSavedInUi = value(runtime, "CONTENT_MODEL_CONFIGURED_IN_UI") === "1";
+  const contentValue = (ownName: string, fallbackName: string) => value(runtime, ownName) || (contentSavedInUi ? "" : value(runtime, fallbackName));
   const contentResolved = {
-    provider: value(runtime, "CONTENT_MODEL_PROVIDER") || value(runtime, "ANALYZER_LLM_PROVIDER"),
-    baseUrl: value(runtime, "CONTENT_MODEL_BASE_URL") || value(runtime, "ANALYZER_LLM_BASE_URL"),
-    model: value(runtime, "CONTENT_MODEL_NAME") || value(runtime, "ANALYZER_LLM_MODEL"),
-    apiKey: value(runtime, "CONTENT_MODEL_API_KEY") || value(runtime, "ANALYZER_LLM_API_KEY"),
+    provider: contentValue("CONTENT_MODEL_PROVIDER", "ANALYZER_LLM_PROVIDER"),
+    baseUrl: contentValue("CONTENT_MODEL_BASE_URL", "ANALYZER_LLM_BASE_URL"),
+    model: contentValue("CONTENT_MODEL_NAME", "ANALYZER_LLM_MODEL"),
+    apiKey: contentValue("CONTENT_MODEL_API_KEY", "ANALYZER_LLM_API_KEY"),
   };
   const contentConfigured = Object.values(contentResolved).every(Boolean);
-  const contentDedicated = ["CONTENT_MODEL_PROVIDER", "CONTENT_MODEL_BASE_URL", "CONTENT_MODEL_NAME", "CONTENT_MODEL_API_KEY"]
+  const contentDedicated = contentSavedInUi || ["CONTENT_MODEL_PROVIDER", "CONTENT_MODEL_BASE_URL", "CONTENT_MODEL_NAME", "CONTENT_MODEL_API_KEY"]
     .every((name) => Boolean(value(runtime, name)));
   const contentGeneration: ModelServiceStatus = {
     id: "contentGeneration",
@@ -79,10 +82,15 @@ export function readModelServiceStatuses(runtime: Runtime, options: StatusOption
   };
 
   const visionKey = value(runtime, "ANALYZER_VISION_API_KEY");
-  const keyFormatValid = isMiniMaxTokenPlanKey(visionKey);
+  const flashVision = isMiniMaxFlashVisionConfiguration(runtime);
+  const tokenPlan = !flashVision && isMiniMaxTokenPlanKey(visionKey);
+  const visionNames = ["ANALYZER_VISION_PROVIDER", "ANALYZER_VISION_BASE_URL", "ANALYZER_VISION_MODEL", "ANALYZER_VISION_API_KEY"];
+  const visionMissing = missing(runtime, visionNames);
+  const keyFormatValid = tokenPlan || (flashVision && Boolean(visionKey));
+  const visionConfigured = tokenPlan || (flashVision && visionMissing.length === 0);
   const parsedProbe = parseVisionProbeMetadata(options.visualProbe);
   const visualProbe = parsedProbe?.fingerprint === visionConfigurationFingerprint(runtime) ? parsedProbe : null;
-  const visualReadiness: ModelServiceStatus["readiness"] = !keyFormatValid
+  const visualReadiness: ModelServiceStatus["readiness"] = !visionConfigured
     ? "incomplete"
     : visualProbe?.status === "passed"
       ? "ready"
@@ -92,22 +100,24 @@ export function readModelServiceStatuses(runtime: Runtime, options: StatusOption
   const visualUnderstanding: ModelServiceStatus = {
     id: "visualUnderstanding",
     label: "视频画面理解",
-    configured: keyFormatValid,
+    configured: visionConfigured,
     readiness: visualReadiness,
-    stateLabel: !keyFormatValid
-      ? visionKey ? "密钥格式不兼容" : "等待 Token Plan 密钥"
+    stateLabel: !visionConfigured
+      ? flashVision ? "等待完整图片模型配置" : visionKey ? "密钥格式不兼容" : "等待图片模型配置"
       : visualProbe?.status === "passed"
         ? "真实图片预检通过"
         : visualProbe?.status === "failed"
           ? "真实图片预检失败"
-          : "密钥格式正确 · 待图片预检",
-    provider: "MiniMax Token Plan",
-    model: "understand_image（MCP）",
-    missing: visionKey ? (keyFormatValid ? [] : ["ANALYZER_VISION_API_KEY（MiniMax Token Plan Key）"]) : ["ANALYZER_VISION_API_KEY"],
+          : flashVision ? "配置完整 · 待图片预检" : "密钥格式正确 · 待图片预检",
+    provider: flashVision ? value(runtime, "ANALYZER_VISION_PROVIDER") || null : "MiniMax Token Plan",
+    model: flashVision ? value(runtime, "ANALYZER_VISION_MODEL") || null : "understand_image（MCP）",
+    missing: flashVision ? visionMissing : visionKey ? (keyFormatValid ? [] : ["ANALYZER_VISION_API_KEY（MiniMax Token Plan Key）"]) : ["ANALYZER_VISION_API_KEY"],
     isolation: "independent",
-    note: !keyFormatValid
-      ? "不再把 MiniMax-M3 文本聊天接口当作视觉模型。"
-      : visualProbe?.message || "已识别 Token Plan Key；请用内置测试图确认真实图片能力。",
+    note: flashVision
+      ? visualProbe?.message || "MiniMax-M3.1-Flash 使用当前配置的密钥与 OpenAI 兼容图片接口；可用内置测试图确认实际图片能力。"
+      : !keyFormatValid
+        ? "旧版 MiniMax-M3 不作为视觉模型；可配置 MiniMax-M3.1-Flash 普通 API，或 MiniMax Token Plan。"
+        : visualProbe?.message || "已识别 Token Plan Key；请用内置测试图确认真实图片能力。",
     keyFormatValid,
     probeStatus: visualProbe?.status || "not_checked",
     probeCheckedAt: visualProbe?.checkedAt || null,

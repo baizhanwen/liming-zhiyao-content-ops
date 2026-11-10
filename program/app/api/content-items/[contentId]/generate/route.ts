@@ -1,3 +1,4 @@
+import { readEffectiveModelRuntime } from "../../../../../lib/model-settings";
 import { readBenchmarkFeedback, materialFeedbackFromRow } from "../../../../../lib/benchmark-feedback";
 import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess, sha256Hex } from "../../../../../db/runtime";
 import { readCoreContentStrategy, strategyForTask } from "../../../../../lib/content-strategy-policy";
@@ -75,7 +76,7 @@ export async function POST(request: Request, context: { params: Promise<{ conten
     const user = await ensureUser(identity);
     const quota = await checkOrganizationQuota(organizationId, user.id, "modelCalls");
     if (!quota.allowed) return apiError("MODEL_QUOTA_EXCEEDED", `本月模型调用已达到 ${quota.limit} 次套餐上限。`, 429, { usage: quota.current, limit: quota.limit });
-    const config = readContentModelConfig(modelProfile);
+    const config = readContentModelConfig(modelProfile, await readEffectiveModelRuntime(organizationId));
     const { contentId } = await context.params; const db = getD1();
     const assertWriteAccess = createProjectWriteAssertion(db, { organizationId, projectId, userId: user.id }, async () => (await readRequestIdentity(request))?.authSubject === identity.authSubject);
     const item = await db.prepare(`
@@ -244,7 +245,7 @@ export async function POST(request: Request, context: { params: Promise<{ conten
       if (!contextCheck.ok) throw new ModelRequestError(contextCheck.message, contextCheck.code);
       requestNumber += 1;
       return invokeRecordedContentRequest(input, { id: requestNumber === 1 ? modelCallId! : crypto.randomUUID(), rootCallId: modelCallId!, organizationId, projectId, topicId: item.topic_id, promptTemplateId: prompt!.id, promptVersion,
-        provider: config.provider, model: config.model, userId: user.id, step, inputHash, inputJson, monthlyLimit: quota.limit, ledger: modelRequests, enforceProjectWriteAccess: true, assertWriteAccess,
+        modelConfig: config, provider: config.provider, model: config.model, userId: user.id, step, inputHash, inputJson, monthlyLimit: quota.limit, ledger: modelRequests, enforceProjectWriteAccess: true, assertWriteAccess,
         contentGeneration: { contentId, version: item.current_version, status: item.status } });
     };
     let pack: ReturnType<typeof productionPackSchema.parse> | null = null; let totalLatencyMs = 0; let correction = "";
@@ -305,13 +306,13 @@ export async function POST(request: Request, context: { params: Promise<{ conten
           nativeJson: true,
           temperature: 0.1,
           maxTokens: 6000,
-        } : {
+        } : { organizationId: organizationId,
           system: systemPrompt,
           user: `${singleBenchmark ? "请按 singleBenchmarkTemplate.plan 逐段仿写；若含 rewriteRevision 则编辑其 previousDraft，按逐段预算修正而不是重新构思。必须返回完整生产包、benchmarkRewriteSegments 和有效引用。" : "请根据以下 JSON 输入生成生产包。严格遵守 contextLayers 的事实、方法与案例边界；methodologyPlan 已在调用前由系统确定，不要自行改写计划。benchmarkUsageRequirements 中每一条已勾选参考素材都要逐条记录：每条都要各有一个 benchmark citation，并在 qualityReview.benchmarkMethods 中用相同 sourceId 说明方法应用或反例规避方式；内容借鉴可选，不强制采用："}\n${attemptInputJson}${rewriteRevision ? "" : correction}`,
           profile: modelProfile,
           temperature: rewriteRevision ? 0.2 : undefined,
           nativeJson: attempt === 0,
-        });
+        }, { config });
         totalLatencyMs += invocation.latencyMs;
         // Persist unvalidated responses separately from completed content versions.
         // A failed repair must not erase the original draft response.

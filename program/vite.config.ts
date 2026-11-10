@@ -2,6 +2,7 @@ import vinext from "vinext";
 import { defineConfig } from "vite";
 import hostingConfig from "./.openai/hosting.json";
 import { sites } from "./build/sites-vite-plugin";
+import { analyzerEnvironmentBridge } from "./build/analyzer-environment-plugin";
 
 const LOCAL_PLACEHOLDER_DATABASE_ID =
   "00000000-0000-4000-8000-000000000000";
@@ -17,6 +18,7 @@ const ignoredWatchPaths = [
   "**/dist/**",
   "**/node_modules/**",
   "**/outputs/**",
+  "**/.local/**",
   "**/services/analyzer/.venv/**",
   "**/services/analyzer/model-cache/**",
 ];
@@ -73,6 +75,7 @@ export default defineConfig(async () => {
     plugins: [
       vinext(),
       sites(),
+      analyzerEnvironmentBridge(),
       cloudflare({
         viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
         config: localBindingConfig,
