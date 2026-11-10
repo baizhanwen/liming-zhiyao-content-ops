@@ -15,6 +15,7 @@ const sourceRoot = fileURLToPath(new URL("..", import.meta.url));
 const packageRoot = path.resolve(process.argv[2] || "");
 assert.ok(process.argv[2] && existsSync(path.join(packageRoot, "delivery-manifest.json")), "A generated delivery directory is required");
 const manifest = JSON.parse(readFileSync(path.join(packageRoot, "delivery-manifest.json"), "utf8"));
+const githubDistribution = manifest.distribution === "github";
 const runRoot = path.join(sourceRoot, ".local/dv", `${manifest.license.code}-${randomBytes(4).toString("hex")}`);
 const installRoot = path.join(runRoot, "客户 install"); // Exercise Chinese and spaces.
 mkdirSync(runRoot, { recursive: true });
@@ -35,7 +36,10 @@ function stop(child) {
   });
   child.kill("SIGTERM");
 }
-const environment = { ...process.env, CI: "1", WRANGLER_SEND_METRICS: "false", WRANGLER_WRITE_LOGS: "false", LAN_MODE: "1" };
+const environment = {
+  ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(?:ANALYZER_|CONTENT_MODEL_|PROJECT_ASSISTANT_MODEL_|LOCAL_RUNTIME_|MODEL_SETTINGS_|FIRST_RUN_|LOCAL_DEV_|DELIVERY_MODE$|GH_TOKEN$|GITHUB_TOKEN$)/u.test(name))),
+  CI: "1", WRANGLER_SEND_METRICS: "false", WRANGLER_WRITE_LOGS: "false", LAN_MODE: "1",
+};
 async function run(executable, args, input, expectedFailure = false) {
   return await new Promise((resolve, reject) => {
     const child = spawn(executable, args, { cwd: installRoot, env: environment, windowsHide: true, stdio: ["pipe", log, log] });
@@ -89,6 +93,20 @@ try {
     assert.ok(!/^[A-Z_]+API_KEY[ \t]*=[ \t]*\S/m.test(variables), "Delivery contains a configured API key");
     const features = manifest.license.features;
     verifyDeliveryScripts(Object.keys(initialHashes), features);
+    for (const filename of ["build/analyzer-environment-plugin.ts", "scripts/start-web-with-environment.mjs", "scripts/prepare-runtime-configuration.mjs", "scripts/analyzer-environment-bridge.mjs"])
+      assert.ok(existsSync(path.join(packageRoot, filename)), `Missing settings runtime: ${filename}`);
+    if (features.videoAnalysis) for (const filename of ["scripts/analyzer_local_runtime.py", "scripts/prepare_analyzer_models.py", "services/analyzer/uv.lock", "services/analyzer/liming_analyzer/douyin_collector/node/package-lock.json"])
+      assert.ok(existsSync(path.join(packageRoot, filename)), `Missing video environment dependency: ${filename}`);
+    if (githubDistribution) {
+      assert.equal(manifest.activationRequired, false);
+      assert.equal(manifest.authorizedKnowledge.included, true);
+      assert.equal(manifest.license.name, "开发完整版");
+      assert.equal(features.videoAnalysis, true); assert.equal(features.insights, true);
+      assert.match(variables, /^FIRST_RUN_REQUIRE_SETUP_CODE=0$/m);
+      for (const name of ["FIRST_RUN_SETUP_CODE", "FIRST_RUN_SETUP_CODE_HASH", "LOCAL_RUNTIME_TOKEN", "MODEL_SETTINGS_ENCRYPTION_KEY", "ANALYZER_SERVICE_TOKEN"])
+        assert.match(variables, new RegExp(`^${name}=[ \\t]*$`, "m"), `Shared secret in GitHub download: ${name}`);
+      assert.ok(!Object.keys(initialHashes).some(filename => /delivery-credential/i.test(filename)), "GitHub downloads must not contain activation credentials");
+    }
     if (!features.videoAnalysis) assert.doesNotMatch(readFileSync(path.join(packageRoot, "scripts/open-web.ps1"), "utf8"), /start-analyzer-background\.ps1/, "Starter opener refers to a removed video service");
     assert.equal(existsSync(path.join(packageRoot, "lib/csv-table.ts")), Boolean(features.insights), "CSV reader must follow the insights entitlement");
     for (const [enabled, folder] of [[features.videoAnalysis, "app/api/videos"], [features.wechatImages, "app/api/wechat-images"], [features.insights, "app/api/reports"]]) assert.equal(existsSync(path.join(packageRoot, folder)), enabled, folder);
@@ -103,7 +121,16 @@ try {
     verifyDeliveryDocumentation(packageRoot, sourceRoot);
   });
   cpSync(packageRoot, installRoot, { recursive: true });
-  let syntheticVars = readFileSync(path.join(installRoot, ".dev.vars"), "utf8").replace(/^FIRST_RUN_SETUP_CODE_HASH=.*$/m, `FIRST_RUN_SETUP_CODE_HASH=${createHash("sha256").update(setupCode).digest("hex")}`).replace(/^ANALYZER_SERVICE_TOKEN=.*$/m, `ANALYZER_SERVICE_TOKEN=${randomBytes(32).toString("hex")}`);
+  await check("per-installation-runtime-secrets", async () => {
+    await run(process.execPath, ["scripts/prepare-runtime-configuration.mjs"]);
+    const variables = readFileSync(path.join(installRoot, ".dev.vars"), "utf8");
+    for (const name of ["MODEL_SETTINGS_ENCRYPTION_KEY", "LOCAL_RUNTIME_TOKEN", "ANALYZER_SERVICE_TOKEN"])
+      assert.match(variables, new RegExp(`^${name}=[a-f0-9]{64}$`, "m"));
+    await run(process.execPath, ["scripts/prepare-runtime-configuration.mjs"]);
+    assert.equal(readFileSync(path.join(installRoot, ".dev.vars"), "utf8"), variables, "Restart must preserve this installation's generated secrets");
+  });
+  let syntheticVars = readFileSync(path.join(installRoot, ".dev.vars"), "utf8");
+  if (!githubDistribution) syntheticVars = syntheticVars.replace(/^FIRST_RUN_SETUP_CODE_HASH=.*$/m, `FIRST_RUN_SETUP_CODE_HASH=${createHash("sha256").update(setupCode).digest("hex")}`);
   // Exercise an older configuration with none of the newly added timeout keys.
   syntheticVars = syntheticVars.replace(/^ANALYZER_TIMEOUT_[A-Z_]+=.*\r?\n/gm, "") + "\nLEGACY_CUSTOM_SETTING=preserve-this\n";
   if (manifest.license.features.videoAnalysis && process.env.DELIVERY_TEST_PYTHON_ENV) {
@@ -149,11 +176,13 @@ try {
     await run(process.execPath, ["scripts/prepare-login-startup.mjs"]);
     await run(process.execPath, ["scripts/sync-authorized-knowledge.mjs"]);
     await start();
-    assert.equal((await http("/api/first-run")).data.setupRequired, true);
+    const firstRun = (await http("/api/first-run")).data;
+    assert.equal(firstRun.setupRequired, true);
+    assert.equal(firstRun.setupCodeRequired, !githubDistribution);
     assert.equal((await http("/api/auth/session")).status, 401);
   });
   await check("http-first-run-concurrency-and-password-login", async () => {
-    const replies = await Promise.all(Array.from({ length: 8 }, (_, i) => http("/api/first-run", { method: "POST", body: { companyName: `Acceptance company ${i}`, administratorName: `Acceptance admin ${i}`, email: `acceptance-${i}@example.invalid`, password, confirmation: password, setupCode } })));
+    const replies = await Promise.all(Array.from({ length: 8 }, (_, i) => http("/api/first-run", { method: "POST", body: { companyName: `Acceptance company ${i}`, administratorName: `Acceptance admin ${i}`, email: `acceptance-${i}@example.invalid`, password, confirmation: password, ...(!githubDistribution ? { setupCode } : {}) } })));
     assert.equal(replies.filter(r => r.status === 201).length, 1);
     assert.equal(replies.filter(r => r.status === 409).length, 7);
     administrator = replies.find(r => r.status === 201).data.installation;
@@ -171,6 +200,17 @@ try {
   await check("customer-project-write-and-restart-persistence", async () => {
     const created = await http("/api/projects", { method: "POST", authenticated: true, body: { organizationId: administrator.organizationId, name: "Acceptance project" } });
     assert.equal(created.status, 201); projectId = created.data.project.id;
+    if (manifest.authorizedKnowledge.included) {
+      const library = await http(`/api/authorized-knowledge?organizationId=${administrator.organizationId}&projectId=${projectId}`, { authenticated: true });
+      assert.equal(library.status, 200);
+      assert.equal(library.data.source.item_count, manifest.authorizedKnowledge.atomCount);
+      assert.ok(library.data.atoms.length > 0, "Bundled methods must be searchable after first setup");
+    }
+    if (manifest.license.features.videoAnalysis) {
+      const runtime = await http(`/api/analyzer-environment?organizationId=${administrator.organizationId}`, { authenticated: true });
+      assert.equal(runtime.status, 200);
+      if (process.env.DELIVERY_VERIFY_ENVIRONMENT_BRIDGE === "1") assert.equal(runtime.data.available, true, "Settings must connect to this package's environment manager");
+    }
     await stop(server); server = null;
     await run(process.execPath, ["scripts/prepare-login-startup.mjs"]);
     await start();

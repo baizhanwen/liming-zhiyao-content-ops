@@ -7,12 +7,14 @@ type DeliveryEnv = typeof env & {
   DELIVERY_MODE?: string;
   FIRST_RUN_SETUP_CODE?: string;
   FIRST_RUN_SETUP_CODE_HASH?: string;
+  FIRST_RUN_REQUIRE_SETUP_CODE?: string;
 };
 
 export type FirstRunStatus = {
   deliveryMode: boolean;
   setupRequired: boolean;
   setupCodeConfigured: boolean;
+  setupCodeRequired: boolean;
 };
 
 export function isDeliveryMode() {
@@ -47,13 +49,16 @@ function hashesEqual(expected: string, supplied: string) {
 
 export async function readFirstRunStatus(): Promise<FirstRunStatus> {
   const deliveryMode = isDeliveryMode();
-  if (!deliveryMode) return { deliveryMode: false, setupRequired: false, setupCodeConfigured: false };
+  if (!deliveryMode) return { deliveryMode: false, setupRequired: false, setupCodeConfigured: false, setupCodeRequired: false };
   const organization = await getD1().prepare("SELECT 1 AS configured FROM organizations LIMIT 1").first<{ configured: number }>();
   const setupCompleted = await getD1().prepare("SELECT value FROM installation_settings WHERE key = 'setup_completed' LIMIT 1").first<{ value: string }>();
   return {
     deliveryMode,
     setupRequired: !organization && setupCompleted?.value !== "1",
     setupCodeConfigured: Boolean(configuredSetupCode().hash || configuredSetupCode().legacyPlaintext),
+    // Only an explicit download-package policy disables activation. Existing
+    // commercial installations keep their setup-code requirement by default.
+    setupCodeRequired: (env as DeliveryEnv).FIRST_RUN_REQUIRE_SETUP_CODE?.trim() !== "0",
   };
 }
 
@@ -68,12 +73,14 @@ export async function initializeCommercialInstallation(input: {
   if (!status.deliveryMode) throw new Error("FIRST_RUN_NOT_AVAILABLE");
   if (!status.setupRequired) throw new Error("FIRST_RUN_ALREADY_COMPLETED");
 
-  const configured = configuredSetupCode();
-  if (!configured.hash && !configured.legacyPlaintext) throw new Error("FIRST_RUN_CODE_NOT_CONFIGURED");
-  const suppliedHash = await sha256Hex(new TextEncoder().encode(input.setupCode.trim()));
-  const expectedHash = configured.hash || await sha256Hex(new TextEncoder().encode(configured.legacyPlaintext));
-  if (!/^[0-9a-f]{64}$/u.test(expectedHash) || !hashesEqual(expectedHash, suppliedHash)) {
-    throw new Error("FIRST_RUN_CODE_INVALID");
+  if (status.setupCodeRequired) {
+    const configured = configuredSetupCode();
+    if (!configured.hash && !configured.legacyPlaintext) throw new Error("FIRST_RUN_CODE_NOT_CONFIGURED");
+    const suppliedHash = await sha256Hex(new TextEncoder().encode(input.setupCode.trim()));
+    const expectedHash = configured.hash || await sha256Hex(new TextEncoder().encode(configured.legacyPlaintext));
+    if (!/^[0-9a-f]{64}$/u.test(expectedHash) || !hashesEqual(expectedHash, suppliedHash)) {
+      throw new Error("FIRST_RUN_CODE_INVALID");
+    }
   }
 
   const companyName = input.companyName.trim();

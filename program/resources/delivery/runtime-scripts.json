@@ -1,6 +1,7 @@
 {
   "version": 1,
   "common": [
+    "analyzer-environment-bridge.mjs",
     "analyzer-instance-lock.ps1",
     "backup-local.ps1",
     "factory-reset.ps1",
@@ -12,6 +13,7 @@
     "open-web.ps1",
     "prepare-local-web.ps1",
     "prepare-login-startup.mjs",
+    "prepare-runtime-configuration.mjs",
     "recover-performance-imports.mjs",
     "recover-performance-imports.ps1",
     "restore-local.ps1",
@@ -22,17 +24,22 @@
     "select-local-port.ps1",
     "sql-statements.mjs",
     "start-lan.ps1",
+    "start-web-with-environment.mjs",
     "stop-local.ps1",
     "sync-authorized-knowledge.mjs",
     "verify-state-databases.mjs"
   ],
   "videoAnalysis": [
+    "analyzer-collector-runtime.ps1",
     "analyzer-media-runtime.ps1",
     "analyzer-source-runtime.ps1",
+    "analyzer_local_runtime.py",
     "check-analyzer.ps1",
+    "install-collector.ps1",
     "install-ffmpeg.ps1",
     "install-python311.ps1",
     "install-vcredist.ps1",
+    "prepare_analyzer_models.py",
     "refresh-douyin-cookies.ps1",
     "repair-analyzer-models.ps1",
     "repair-media-buckets.mjs",

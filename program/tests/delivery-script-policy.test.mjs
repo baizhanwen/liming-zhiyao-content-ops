@@ -48,6 +48,20 @@ test("approved runtime scripts do not import a removed local script", () => {
   const names = expectedDeliveryScripts({ videoAnalysis: true });
   for (const filename of names.filter(name => name.endsWith(".mjs"))) {
     const source = readFileSync(path.join(root, filename), "utf8");
-    for (const match of source.matchAll(/(?:from\s*|import\s*\()(["'])(\.\/[a-z0-9-]+\.mjs)\1/g)) assert.ok(names.includes("scripts/" + match[2].slice(2)), `${filename}: ${match[2]}`);
+    for (const match of source.matchAll(/(?:from\s*|import\s*\()(["'])(\.\/[a-z0-9_-]+\.mjs)\1/g)) assert.ok(names.includes("scripts/" + match[2].slice(2)), `${filename}: ${match[2]}`);
+  }
+});
+
+
+test("download packages retain the complete environment settings startup chain", () => {
+  const names = expectedDeliveryScripts({ videoAnalysis: true });
+  for (const dependency of ["start-web-with-environment.mjs", "prepare-runtime-configuration.mjs", "analyzer-environment-bridge.mjs", "analyzer_local_runtime.py", "prepare_analyzer_models.py", "install-collector.ps1", "analyzer-collector-runtime.ps1"])
+    assert.ok(names.includes("scripts/" + dependency), `Missing environment dependency: ${dependency}`);
+  for (const dependency of ["scripts/analyzer_local_runtime.py", "scripts/prepare_analyzer_models.py", "scripts/install-collector.ps1"])
+    assert.throws(() => verifyDeliveryScripts(names.filter(name => name !== dependency), { videoAnalysis: true }), /runtime inventory/);
+  const modelPreparer = readFileSync(path.join(root, "scripts/prepare_analyzer_models.py"), "utf8");
+  for (const match of modelPreparer.matchAll(/^from ([a-z0-9_]+) import/gm)) {
+    const localFile = "scripts/" + match[1] + ".py";
+    if (existsSync(path.join(root, localFile))) assert.ok(names.includes(localFile), localFile);
   }
 });

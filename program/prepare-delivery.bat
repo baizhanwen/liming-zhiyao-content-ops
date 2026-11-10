@@ -1,6 +1,18 @@
 @echo off
 setlocal
 cd /d "%~dp0"
+if /i "%~1"=="--commercial" goto :commercial
+if not "%~1"=="" (
+  echo [ERROR] Usage: prepare-delivery.bat [--commercial]
+  pause
+  exit /b 2
+)
+echo [Liming Zhiyao] Preparing the GitHub full edition with the method library.
+echo No customer name or activation code is required.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\prepare-delivery.ps1" -Distribution github
+goto :result
+
+:commercial
 set "CUSTOMER_NAME="
 set /p "CUSTOMER_NAME=Customer company name: "
 if not defined CUSTOMER_NAME (
@@ -39,7 +51,9 @@ if not defined METHOD_LIBRARY_MODE (
   pause
   exit /b 1
 )
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\prepare-delivery.ps1" -CustomerName "%CUSTOMER_NAME%" -PlanCode "%PLAN_CODE%" -AuthorizedKnowledge "%METHOD_LIBRARY_MODE%"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\prepare-delivery.ps1" -Distribution commercial -CustomerName "%CUSTOMER_NAME%" -PlanCode "%PLAN_CODE%" -AuthorizedKnowledge "%METHOD_LIBRARY_MODE%"
+
+:result
 if errorlevel 1 (
   echo [ERROR] Delivery package was not created.
   pause

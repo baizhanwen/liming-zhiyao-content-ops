@@ -195,7 +195,8 @@ test("team launch scripts install, migrate, start analysis automatically, stop s
   assert.match(ffmpegInstaller, /Text\.Encoding\]::Default/);
   assert.match(deliveryGuide, /Node\.js 22\.13/);
   assert.match(deliveryGuide, /Windows Package Manager（winget）/);
-  assert.match(deliveryGuide, /不会显示假成功/);
+  assert.match(deliveryGuide, /一键配置环境并启动/);
+  assert.match(deliveryGuide, /显示进度与实际结果/);
   assert.match(deliveryScript, /\.Extension -in @\("\.bat", "\.cmd"\)/);
   assert.match(deliveryScript, /Regex\]::Replace\(\$batchContent, "\\r\?\\n", "`r`n"\)/);
 });

@@ -9,6 +9,8 @@ TRUST_FORWARDED_IDENTITY=0
 
 # 客户交付首次开通配置。普通本地使用保持默认，不需要填写。
 DELIVERY_MODE=0
+# GitHub 下载版由打包程序设为 0，首次只需创建管理员；旧商业交付保持为 1。
+FIRST_RUN_REQUIRE_SETUP_CODE=1
 FIRST_RUN_SETUP_CODE=
 FIRST_RUN_SETUP_CODE_HASH=
 

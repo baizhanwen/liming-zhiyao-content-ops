@@ -27,7 +27,7 @@ echo [OK] Using %NODE_EXE%
 
 if not exist ".dev.vars" (
   copy /Y ".dev.vars.example" ".dev.vars" >nul
-  echo [Liming Zhiyao] Created .dev.vars with local identity enabled.
+  echo [Liming Zhiyao] Created the local runtime configuration.
 ) else (
   echo [Liming Zhiyao] Keeping the existing .dev.vars file.
 )
@@ -51,7 +51,7 @@ if errorlevel 1 goto :failed
 
 echo.
 echo [Liming Zhiyao] Web setup completed.
-echo Run start-local.bat to start the app. Video analysis is installed separately with tools\setup-analyzer.bat.
+echo Run start-local.bat, create your administrator account, then configure models and video analysis in Settings.
 pause
 exit /b 0
 

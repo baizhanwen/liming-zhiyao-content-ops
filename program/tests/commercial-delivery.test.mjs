@@ -73,12 +73,12 @@ test("commercial startup revokes sessions and delivery generation excludes priva
   assert.match(delivery, /foreach \(\$varsName in @\("\.dev\.vars", "\.dev\.vars\.example"\)\)/);
   assert.match(delivery, /\$featureLines/);
   assert.match(delivery, /failedJobAlertThreshold/);
-  assert.match(delivery, /CONTENT_MODEL_API_KEY\|ANALYZER_LLM_API_KEY/);
-  assert.match(delivery, /Compress-Archive -LiteralPath \$packageRoot/);
+  assert.match(delivery, /API_KEY\|LOCAL_RUNTIME_TOKEN\|MODEL_SETTINGS_ENCRYPTION_KEY/);
+  assert.match(delivery, /ZipFile\]::CreateFromDirectory\(\$packageRoot, \$archive/);
   assert.match(delivery, /scripts\\prepare-delivery\.ps1/);
 });
 
-test("delivery plan is chosen before packaging and unlicensed programs are physically removed", () => {
+test("commercial delivery retains package choices and removes unlicensed programs", () => {
   const launcher = read("prepare-delivery.bat");
   const delivery = read("scripts/prepare-delivery.ps1");
   const operationsRoute = read("app/api/operations/route.ts");
@@ -130,4 +130,43 @@ test("every delivery plan retains the lifecycle locks required for setup and rec
   for (const name of ["run-web-guard.ps1", "select-local-port.ps1", "start-lan.ps1"]) {
     assert.match(read(`scripts/${name}`), /local-web-identity\.ps1/);
   }
+});
+
+
+test("GitHub downloads default to the complete edition with methods and no activation credential", () => {
+  const launcher = read("prepare-delivery.bat");
+  const delivery = read("scripts/prepare-delivery.ps1");
+  assert.match(delivery, /ValidateSet\("github", "commercial"\)\]\[string\]\$Distribution = "github"/);
+  const publicDefaults = delivery.slice(delivery.indexOf("if ($isGithubDistribution) {"), delivery.indexOf("$safeName ="));
+  assert.match(publicDefaults, /\$CustomerName = ""/);
+  assert.match(publicDefaults, /\$PlanCode = "scale"/);
+  assert.match(publicDefaults, /\$AuthorizedKnowledge = "include"/);
+  assert.match(delivery, /\$selectedPlan\.name = "开发完整版"/);
+  assert.match(delivery, /distribution = \$Distribution/);
+  assert.match(delivery, /activationRequired = -not \$isGithubDistribution/);
+  assert.match(delivery, /customer = if \(\$isGithubDistribution\) \{ \$null \}/);
+  assert.match(delivery, /\$requireSetupCode = if \(\$isGithubDistribution\) \{ "0" \} else \{ "1" \}/);
+  assert.match(delivery, /FIRST_RUN_REQUIRE_SETUP_CODE=\$requireSetupCode/);
+  const credential = delivery.indexOf('$credential = @(');
+  const commercialGuard = delivery.lastIndexOf('if (-not $isGithubDistribution) {', credential);
+  assert.ok(commercialGuard > delivery.indexOf('$buildId ='), "Only the commercial channel may write a customer credential");
+  assert.match(launcher, /--commercial[\s\S]*goto :commercial/);
+  const defaultLaunch = launcher.slice(0, launcher.indexOf("\r\n:commercial\r\n"));
+  assert.match(defaultLaunch, /-Distribution github/);
+  assert.doesNotMatch(defaultLaunch, /set \/p/);
+  assert.match(launcher, /-Distribution commercial -CustomerName/);
+});
+
+test("delivery includes only the reviewed environment plugin and preserves the Python lock", () => {
+  const delivery = read("scripts/prepare-delivery.ps1");
+  assert.match(delivery, /\$allowedBuildFiles = @\("build\\analyzer-environment-plugin\.ts"\)/);
+  assert.match(delivery, /\$allowedBuildFiles -cnotcontains \$relative/);
+  assert.doesNotMatch(delivery, /"services\\analyzer\\uv\.lock"/);
+  assert.match(delivery, /ReparsePoint/);
+  assert.match(delivery, /\.dev\\\.vars/);
+  const privatePatterns = [...delivery.matchAll(/\$relative -match '([^']+)'/g)].map(([, pattern]) => new RegExp(pattern.replace(/^\(\?i\)/, ""), "i"));
+  for (const filename of ["services/analyzer/.env", "resources/.dev.vars", "app/data.sqlite", "services/analyzer/node_modules/cache.json", "services/analyzer/cookies.txt", "public/.local/debug.log"])
+    assert.ok(privatePatterns.some(pattern => pattern.test(filename.replaceAll("/", "\\"))), filename);
+  for (const filename of ["app/page.tsx", "services/analyzer/uv.lock", "resources/authorized/methods/atoms.jsonl", "build/analyzer-environment-plugin.ts"])
+    assert.equal(privatePatterns.some(pattern => pattern.test(filename.replaceAll("/", "\\"))), false, filename);
 });
