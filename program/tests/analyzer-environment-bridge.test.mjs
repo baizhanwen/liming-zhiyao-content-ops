@@ -2,15 +2,18 @@ import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
 import { PassThrough } from "node:stream";
 import { request } from "node:http";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { createAnalyzerEnvironmentBridge, runRuntimeCommand } from "../scripts/analyzer-environment-bridge.mjs";
 
 const token = "synthetic-runtime-token-00000000000000000000";
 const key = "synthetic-provider-key-must-not-leak";
+const privateRoot = path.resolve(os.tmpdir(), "synthetic-private-checkout");
 
 async function bridge(t, run) {
   const server = createAnalyzerEnvironmentBridge({
-    root: "/synthetic-private-checkout", persist: false,
+    root: privateRoot, persist: false,
     configuration: () => ({ LOCAL_RUNTIME_TOKEN: token, ANALYZER_LLM_API_KEY: key }), run,
   });
   server.listen(0, "127.0.0.1");
@@ -25,7 +28,7 @@ async function bridge(t, run) {
 }
 
 function status() {
-  return { code: 0, result: { ready: true, workerRunning: false, checks: [{ id: "fixture", label: "合成运行条件", status: "ready" }], modelCache: "/synthetic-private-checkout/private-cache", pid: 999 } };
+  return { code: 0, result: { ready: true, workerRunning: false, checks: [{ id: "fixture", label: "合成运行条件", status: "ready" }], modelCache: path.join(privateRoot, "private-cache"), pid: 999 } };
 }
 
 test("loopback environment control rejects missing credentials, browser origins and foreign Hosts", async t => {
@@ -62,7 +65,7 @@ test("synthetic long-running setup admits one job, exposes real state transition
   const f = await bridge(t, async (action, options) => {
     calls.push(action);
     if (action === "status") return status();
-    options.onLine(`private-key=${key} Bearer ${token} /synthetic-private-checkout/model-cache`);
+    options.onLine(`private-key=${key} Bearer ${token} ${path.join(privateRoot, "model-cache")}`);
     await pending;
     return { code: 0, result: { ready: true } };
   });
@@ -71,6 +74,7 @@ test("synthetic long-running setup admits one job, exposes real state transition
   const running = await started.json();
   assert.equal(running.job.status, "running");
   assert.match(running.job.logTail[0], /已隐藏/);
+  assert.match(running.job.logTail[0], /\[本项目\]/);
   assert.doesNotMatch(JSON.stringify(running), /synthetic-provider-key|synthetic-runtime-token|synthetic-private-checkout/);
   assert.equal((await f.post({ action: "setup" })).status, 409);
   assert.equal(calls.filter(action => action === "setup").length, 1);
@@ -122,7 +126,7 @@ test("runtime subprocesses force UTF-8 and preserve split Chinese progress packe
   const lines = [];
   const children = new Set();
   const result = await runRuntimeCommand("status", {
-    root: "/synthetic-private-checkout", children, onLine: line => lines.push(line),
+    root: privateRoot, children, onLine: line => lines.push(line),
     spawnProcess(command, args, options) {
       observed = { command, args, options };
       const child = new EventEmitter();

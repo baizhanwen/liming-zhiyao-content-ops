@@ -1,0 +1,27 @@
+name: Check Windows runtime
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: program
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.19.0"
+          cache: npm
+          cache-dependency-path: program/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - name: Verify Windows entry points and transfer fixtures
+        run: node --test tests/analyzer-collector-runtime.test.mjs tests/analyzer-environment-bridge.test.mjs tests/local-port-isolation.test.mjs tests/runtime-configuration-startup.test.mjs tests/material-transfer-roundtrip.test.mjs

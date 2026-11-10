@@ -64,9 +64,13 @@ test("production startup forwards all web arguments and closes its own bridge af
   writeFileSync(path.join(root, "node_modules/vinext/dist/cli.js"), "require('node:fs').writeFileSync('web-args.json',JSON.stringify(process.argv.slice(2)));setTimeout(()=>process.exit(7),300);\n");
   const args = ["--port", "31999", "--hostname", "127.0.0.1"];
   const launched = await startWebWithEnvironment({ root, args, listenSignals: false });
+  const bridgeClosed = once(launched.bridge, "close");
   assert.equal(await launched.done, 7);
-  if (launched.bridge.exitCode === null && launched.bridge.signalCode === null) await once(launched.bridge, "close");
+  await bridgeClosed;
   assert.deepEqual(JSON.parse(readFileSync(path.join(root, "web-args.json"), "utf8")), ["start", ...args]);
   assert.equal(launched.bridge.killed, true);
-  assert.equal(readFileSync(path.join(root, "bridge-stopped.txt"), "utf8"), "stopped");
+  assert.ok(launched.bridge.exitCode !== null || launched.bridge.signalCode !== null, "The owned bridge must actually exit after the web child closes");
+  // Windows terminates a child for SIGTERM without running its JS handler.
+  // Both platforms must observe child closure; POSIX also proves graceful handling.
+  if (process.platform !== "win32") assert.equal(readFileSync(path.join(root, "bridge-stopped.txt"), "utf8"), "stopped");
 });

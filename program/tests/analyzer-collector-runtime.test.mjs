@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,7 +28,9 @@ test("the collector ships its own locked runtime and provenance without the sour
 });
 
 test("Windows runtime selection isolates browser cache and keeps upload analysis available when collection is missing", { skip: process.platform !== "win32" }, () => {
-  const temporary = mkdtempSync(path.join(os.tmpdir(), "liming-collector-runtime-"));
+  // Windows runner TEMP can use an 8.3 profile alias (RUNNER~1), while
+  // PowerShell expands it to the long path. Compare one canonical installation.
+  const temporary = realpathSync(mkdtempSync(path.join(os.tmpdir(), "liming-collector-runtime-")));
   try {
     const fixture = path.join(temporary, "services/analyzer/liming_analyzer/douyin_collector/node");
     mkdirSync(fixture, { recursive: true });
