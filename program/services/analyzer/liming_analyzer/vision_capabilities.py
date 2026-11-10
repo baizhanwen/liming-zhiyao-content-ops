@@ -70,6 +70,15 @@ def resolve_vision_capability(
     model_name = model.strip()
     key = api_key.strip()
 
+    # The current official M3.1 API accepts image_url content directly. An
+    # explicit model/endpoint takes precedence over historical key-prefix routing.
+    if (provider_key == "minimax" and model_name == "MiniMax-M3.1-Flash" and key
+            and urlsplit(base_url).hostname in {"api.minimax.cn", "api.minimaxi.com", "api.minimax.io"}):
+        return VisionCapability(
+            "openai_compatible", True, provider.strip(), model_name, base_url.strip(),
+            "使用 MiniMax-M3.1-Flash 官方 OpenAI 兼容图片输入接口。",
+        )
+
     if is_minimax_token_plan_key(key):
         allowed = VISION_CAPABILITY_REGISTRY["minimax_token_plan_mcp"]["providers"]
         if provider_key and provider_key not in allowed:
@@ -87,7 +96,7 @@ def resolve_vision_capability(
             "MiniMax Token Plan",
             "understand_image",
             normalize_minimax_token_plan_host(base_url),
-            "使用官方 MiniMax Coding Plan MCP 的 understand_image，不调用 MiniMax-M3 文本聊天接口。",
+            "使用官方 MiniMax Coding Plan MCP 的 understand_image 图片入口。",
         )
 
     if provider_key in VISION_CAPABILITY_REGISTRY["minimax_token_plan_mcp"]["providers"]:
@@ -97,7 +106,7 @@ def resolve_vision_capability(
             "MiniMax",
             model_name or "未填写",
             normalize_minimax_token_plan_host(base_url),
-            "MiniMax-M3 是文本模型，不能作为当前图片理解入口；需要 sk-cp 开头的 Token Plan Key。",
+            "该配置未启用本项目的直接图片适配器；可选择 MiniMax-M3.1-Flash，或配置原 Token Plan 的 understand_image 入口。",
         )
 
     required = (provider_key, model_name, key, base_url.strip())

@@ -2,9 +2,9 @@ export type VisionProbeMetadata = {
   status: "passed" | "failed";
   checkedAt: string;
   fingerprint: string;
-  provider: "MiniMax Token Plan";
-  model: "understand_image";
-  adapter: "understand_image_api_preflight";
+  provider: string;
+  model: string;
+  adapter: "understand_image_api_preflight" | "openai_compatible_image_preflight";
   endpointConnected: boolean;
   imageTestPassed: boolean;
   observationCount: number;
@@ -42,6 +42,21 @@ export function isMiniMaxTokenPlanKey(candidate: unknown) {
   return typeof candidate === "string" && /^sk-cp(?:[-_]|$)/i.test(candidate.trim());
 }
 
+export function isMiniMaxFlashVisionConfiguration(runtime: Runtime) {
+  return value(runtime, "ANALYZER_VISION_PROVIDER").toLowerCase() === "minimax"
+    && value(runtime, "ANALYZER_VISION_MODEL").toLowerCase() === "minimax-m3.1-flash";
+}
+
+export function isMiniMaxOpenAiVisionRuntime(runtime: Runtime) {
+  if (!isMiniMaxFlashVisionConfiguration(runtime)) return false;
+  try {
+    const endpoint = new URL(value(runtime, "ANALYZER_VISION_BASE_URL"));
+    return endpoint.protocol === "https:" && ["api.minimax.cn", "api.minimax.io"].includes(endpoint.hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
 export function normalizeMiniMaxTokenPlanHost(candidate: unknown) {
   const fallback = "https://api.minimaxi.com";
   if (typeof candidate !== "string" || !candidate.trim()) return fallback;
@@ -57,7 +72,9 @@ export function normalizeMiniMaxTokenPlanHost(candidate: unknown) {
 export function visionConfigurationFingerprint(runtime: Runtime) {
   const source = [
     value(runtime, "ANALYZER_VISION_PROVIDER").toLowerCase(),
-    normalizeMiniMaxTokenPlanHost(value(runtime, "ANALYZER_VISION_BASE_URL")),
+    !isMiniMaxFlashVisionConfiguration(runtime) && isMiniMaxTokenPlanKey(value(runtime, "ANALYZER_VISION_API_KEY"))
+      ? normalizeMiniMaxTokenPlanHost(value(runtime, "ANALYZER_VISION_BASE_URL"))
+      : value(runtime, "ANALYZER_VISION_BASE_URL").replace(/\/+$/, ""),
     value(runtime, "ANALYZER_VISION_MODEL").toLowerCase(),
     value(runtime, "ANALYZER_VISION_API_KEY"),
   ].join("\u001f");
@@ -77,9 +94,9 @@ export function parseVisionProbeMetadata(candidate: unknown): VisionProbeMetadat
     status: row.status,
     checkedAt: row.checkedAt,
     fingerprint: row.fingerprint,
-    provider: "MiniMax Token Plan",
-    model: "understand_image",
-    adapter: "understand_image_api_preflight",
+    provider: typeof row.provider === "string" ? safeMessage(row.provider) : "MiniMax Token Plan",
+    model: typeof row.model === "string" ? safeMessage(row.model) : "understand_image",
+    adapter: row.adapter === "openai_compatible_image_preflight" ? "openai_compatible_image_preflight" : "understand_image_api_preflight",
     endpointConnected: row.endpointConnected === true,
     imageTestPassed: row.imageTestPassed === true,
     observationCount: typeof row.observationCount === "number" ? row.observationCount : 0,

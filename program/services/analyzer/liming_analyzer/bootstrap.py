@@ -5,12 +5,13 @@ import shutil
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypeVar
 
 from .api_client import AnalyzerApiClient
-from .cookie_snapshot import inspect_browser_authentication
 from .artifacts import ApiArtifactStore
+from .faster_whisper_asr import FasterWhisperSpeechRecognizer
 from .ffmpeg import FfmpegMediaProcessor
 from .minimax_vision import MiniMaxTokenPlanMcpVisionEngine
 from .pipeline import AnalysisPipeline
@@ -21,7 +22,7 @@ from .providers import (
     PySceneDetectFrameExtractor,
     SparseTailFallbackSpeechRecognizer,
 )
-from .sources import PlatformSourceProvider, YtDlpPublicVideoResolver
+from .sources import PlatformSourceProvider, SkillCollectPublicVideoResolver
 from .vision_capabilities import resolve_vision_capability
 from .visual import KeyframeVisualAnalyzer, OpenAiCompatibleVisionEngine
 
@@ -124,6 +125,8 @@ class AnalyzerSettings:
     vision_provider: str = ""
     vision_concurrency: int = 2
     asr_model: str = "paraformer-zh"
+    asr_engine: str = "funasr"
+    asr_language: str = "zh"
     asr_fallback_model: str = "iic/SenseVoiceSmall"
     asr_device: str = "cpu"
     paddle_ocr_detection_model: str = "PP-OCRv5_mobile_det"
@@ -141,15 +144,23 @@ class AnalyzerSettings:
             "base_url": "ANALYZER_BASE_URL",
             "service_token": "ANALYZER_SERVICE_TOKEN",
             "worker_id": "ANALYZER_WORKER_ID",
-            "llm_api_key": "ANALYZER_LLM_API_KEY",
-            "llm_base_url": "ANALYZER_LLM_BASE_URL",
-            "llm_model": "ANALYZER_LLM_MODEL",
-            "llm_provider": "ANALYZER_LLM_PROVIDER",
         }
         values = {field: os.environ.get(key, "").strip() for field, key in required.items()}
         missing = [required[field] for field, value in values.items() if not value]
         if missing:
             raise RuntimeError(f"missing analyzer settings: {', '.join(missing)}")
+        # The worker can register and wait without cloud credentials. Each
+        # claimed job retrieves its own organization-scoped model snapshot;
+        # model_configuration() validates those credentials before processing.
+        values.update({
+            field: os.environ.get(key, "").strip()
+            for field, key in {
+                "llm_api_key": "ANALYZER_LLM_API_KEY",
+                "llm_base_url": "ANALYZER_LLM_BASE_URL",
+                "llm_model": "ANALYZER_LLM_MODEL",
+                "llm_provider": "ANALYZER_LLM_PROVIDER",
+            }.items()
+        })
         vision_concurrency_value = os.environ.get(
             "ANALYZER_VISION_CONCURRENCY",
             "2",
@@ -168,6 +179,8 @@ class AnalyzerSettings:
             vision_provider=os.environ.get("ANALYZER_VISION_PROVIDER", "").strip(),
             vision_concurrency=vision_concurrency,
             asr_model=os.environ.get("ANALYZER_ASR_MODEL", "paraformer-zh").strip(),
+            asr_engine=os.environ.get("ANALYZER_ASR_ENGINE", "funasr").strip(),
+            asr_language=os.environ.get("ANALYZER_ASR_LANGUAGE", "zh").strip(),
             asr_fallback_model=os.environ.get(
                 "ANALYZER_ASR_FALLBACK_MODEL", "iic/SenseVoiceSmall"
             ).strip(),
@@ -215,9 +228,11 @@ def build_client(settings: AnalyzerSettings) -> AnalyzerApiClient:
         settings.base_url,
         settings.service_token,
         settings.worker_id,
-        browser_auth_probe=lambda: inspect_browser_authentication(
-            settings.yt_dlp_cookies_from_browser
-        ),
+        browser_auth_probe=lambda: {
+            "status": "disabled", "browser": None,
+            "checkedAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "message": "使用 Skill Collect 独立匿名 Chromium 采集，无需个人浏览器登录态或 Cookie。",
+        },
     )
 
 
@@ -320,25 +335,25 @@ def build_pipeline(settings: AnalyzerSettings, client: AnalyzerApiClient) -> Ana
     resolved_ffmpeg = _resolve_media_executable(settings.ffmpeg, "ffmpeg")
     resolved_ffprobe = _resolve_media_executable(settings.ffprobe, "ffprobe")
     media = FfmpegMediaProcessor(resolved_ffmpeg, resolved_ffprobe)
-    primary_speech = _initialize_model_with_cache_repair(
-        "FunASR speech recognition",
-        lambda: FunAsrSpeechRecognizer(
-            settings.asr_model,
-            device=settings.asr_device,
-        ),
-        model_cache / "modelscope",
-        _FUNASR_CACHE_PATHS,
-    )
-    speech = primary_speech
-    if settings.asr_fallback_model and settings.asr_fallback_model != settings.asr_model:
-        speech = SparseTailFallbackSpeechRecognizer(
-            primary_speech,
-            lambda: FunAsrSpeechRecognizer(
-                settings.asr_fallback_model,
-                device=settings.asr_device,
-                punc_model=None,
-            ),
+    if settings.asr_engine == "faster-whisper":
+        speech = FasterWhisperSpeechRecognizer(
+            settings.asr_model, model_cache=model_cache,
+            language=settings.asr_language, device=settings.asr_device,
         )
+    elif settings.asr_engine == "funasr":
+        primary_speech = _initialize_model_with_cache_repair(
+            "FunASR speech recognition",
+            lambda: FunAsrSpeechRecognizer(settings.asr_model, device=settings.asr_device),
+            model_cache / "modelscope", _FUNASR_CACHE_PATHS,
+        )
+        speech = primary_speech
+        if settings.asr_fallback_model and settings.asr_fallback_model != settings.asr_model:
+            speech = SparseTailFallbackSpeechRecognizer(
+                primary_speech,
+                lambda: FunAsrSpeechRecognizer(settings.asr_fallback_model, device=settings.asr_device, punc_model=None),
+            )
+    else:
+        raise RuntimeError("Unsupported ANALYZER_ASR_ENGINE; choose faster-whisper or funasr.")
     vision_values = (
         settings.vision_api_key,
         settings.vision_base_url,
@@ -398,12 +413,10 @@ def build_pipeline(settings: AnalyzerSettings, client: AnalyzerApiClient) -> Ana
     pipeline = AnalysisPipeline(
         PlatformSourceProvider(
             client,
-            YtDlpPublicVideoResolver(
-                cookies_from_browser=settings.yt_dlp_cookies_from_browser,
-                cookie_file=settings.yt_dlp_cookie_file,
-                ffmpeg_location=resolved_ffmpeg,
+            SkillCollectPublicVideoResolver(
+                ffmpeg=resolved_ffmpeg,
+                ffprobe=resolved_ffprobe,
             ),
-            cookie_file=settings.yt_dlp_cookie_file,
         ),
         media,
         speech,

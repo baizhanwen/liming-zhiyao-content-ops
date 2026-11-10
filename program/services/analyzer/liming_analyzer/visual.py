@@ -10,6 +10,7 @@ from typing import Any, Protocol
 from .adapters import Keyframe, NormalizedMedia, VisualObservation, VisualOutput
 from .evidence import deduplicate_timed_rows, is_useful_ocr
 from .ffmpeg import FfmpegFrameExtractor
+from .model_compat import completion_options, is_minimax_flash
 
 
 class OcrEngine(Protocol):
@@ -132,8 +133,7 @@ class OpenAiCompatibleVisionEngine:
         kwargs: dict[str, Any] = {
             "model": self.model,
             "temperature": 0.1,
-            "max_tokens": self.max_output_tokens,
-            "response_format": {"type": "json_object"},
+            **completion_options(self.provider, self.model, self.max_output_tokens),
             "messages": [
                 {
                     "role": "system",
@@ -145,6 +145,8 @@ class OpenAiCompatibleVisionEngine:
                 {"role": "user", "content": content},
             ],
         }
+        if not is_minimax_flash(self.provider, self.model):
+            kwargs["response_format"] = {"type": "json_object"}
         if self.provider.strip().lower() == "deepseek":
             kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
         response = self.client.chat.completions.create(**kwargs)

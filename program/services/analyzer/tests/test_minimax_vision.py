@@ -242,13 +242,13 @@ class MiniMaxVisionTests(unittest.TestCase):
         self.assertEqual(capability.adapter, "minimax_token_plan_mcp")
         self.assertEqual(capability.model, "understand_image")
         self.assertEqual(capability.api_host, "https://api.minimaxi.com")
-        self.assertIn("不调用 MiniMax-M3", capability.reason)
+        self.assertIn("understand_image", capability.reason)
         self.assertEqual(
             normalize_minimax_token_plan_host("https://unknown.invalid/v1"),
             "https://api.minimaxi.com",
         )
 
-    def test_minimax_text_key_is_explicitly_rejected_as_visual_input(self):
+    def test_unregistered_minimax_model_is_explicitly_rejected_as_visual_input(self):
         capability = resolve_vision_capability(
             provider="minimax",
             model="MiniMax-M3",
@@ -257,7 +257,7 @@ class MiniMaxVisionTests(unittest.TestCase):
         )
         self.assertFalse(capability.supported)
         self.assertIsNone(capability.adapter)
-        self.assertIn("文本模型", capability.reason)
+        self.assertIn("图片适配器", capability.reason)
 
 
 if __name__ == "__main__":

@@ -1,2 +1,5 @@
 *.bat text eol=crlf
 *.cmd text eol=crlf
+
+# Preserve upstream license bytes, including original CRLF line endings.
+program/services/analyzer/liming_analyzer/douyin_collector/LICENSES/*.txt -text whitespace=cr-at-eol

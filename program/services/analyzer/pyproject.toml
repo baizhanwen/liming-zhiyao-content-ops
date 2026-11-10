@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Deterministic media and performance analysis service for Liming Zhiyao"
 requires-python = ">=3.11,<3.12"
 dependencies = [
+  "httpx==0.28.1",
   "instructor>=1.15,<2",
   "openai>=2.8,<3",
   "pydantic>=2.12,<3",
@@ -28,8 +29,10 @@ media = [
   # PaddleX already uses the contrib build. Installing another OpenCV wheel beside it
   # overwrites the same cv2 package and makes Windows installations order-dependent.
   "opencv-contrib-python==4.10.0.84",
+  "faster-whisper>=1.1,<2",
+  "av==16.1.0",
 ]
-dev = ["ruff>=0.12,<1"]
+dev = ["ruff>=0.12,<1", "pytest>=9.1,<10", "cryptography>=47,<51"]
 
 [build-system]
 requires = ["setuptools>=77,<82"]
@@ -38,3 +41,10 @@ build-backend = "setuptools.build_meta"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[tool.setuptools.packages.find]
+include = ["liming_analyzer*"]
+exclude = ["*.node_modules*", "*.tests*"]
+
+[tool.setuptools.package-data]
+"liming_analyzer.douyin_collector" = ["node/*.mjs", "node/*.json", "LICENSES/*.txt", "README.md", "SOURCE.json"]

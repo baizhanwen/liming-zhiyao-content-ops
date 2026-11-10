@@ -7,11 +7,11 @@
 ## 当前生产组合
 
 - FFmpeg / ffprobe：媒体探测、16 kHz 单声道音轨和图片提取；
-- FunASR：使用 `paraformer-zh` 完成中文语音转写、句级时间轴、VAD 与标点；
+- 本地转写：支持 faster-whisper 的独立模型缓存与真实片段时间轴；本次本机部署沿用原 lmzy 的 `small / zh / auto`。原 FunASR `paraformer-zh`、VAD 与标点路径继续兼容；
 - PaddleOCR：使用 `PP-OCRv5_mobile_det/rec` 识别短视频字幕和场景文字；
 - PySceneDetect：按镜头变化选择关键帧，无法检出镜头时退回定时抽帧；
 - Instructor + Pydantic：约束 DeepSeek、GLM 等 OpenAI 兼容模型的报告结构并自动重试；
-- yt-dlp：实验性的公开视频解析适配器；平台规则变化时允许失败，上传文件始终是可靠入口。
+- Skill Collect 视频采集适配器：先解析官方公开页面，再按需使用独立匿名 Chromium 取得完整原片，保留目标 ID、完整字节覆盖、哈希、轨道与时长校验；平台限制导致获取失败时可上传文件。
 
 具体模型通过适配器注入。统计数字不交给大模型估算，模型证据必须逐字引用 ASR 或 OCR 原文。
 
@@ -26,9 +26,22 @@ python -m pip install -e ".[media]"
 
 系统还需安装 `ffmpeg` 和 `ffprobe`。FunASR、PaddleOCR 的模型文件会在首次使用时下载；生产环境应固定模型版本并预热缓存。
 
+Windows 推荐从 `program` 目录运行 `tools\setup-analyzer.bat`，它会安装采集器独立锁定的 Node 依赖、配套 Chromium，并实际启动浏览器验证。仅修复采集运行环境可运行 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-collector.ps1`。采集浏览器缓存位于当前项目的 `.local/collector-browsers`，不会复用另一个项目的运行目录；启动脚本从本项目 `.local/node.path` 还原 Node 路径。
+
+macOS/Linux 在分析服务目录中安装采集运行环境：
+
+```sh
+npm --prefix liming_analyzer/douyin_collector/node ci --omit=dev
+export PLAYWRIGHT_BROWSERS_PATH="$PWD/.local/collector-browsers"
+npm --prefix liming_analyzer/douyin_collector/node run install-browser
+node liming_analyzer/douyin_collector/node/capture-douyin.mjs --doctor
+```
+
+Node.js 需为 22.13 或更新版本；Linux 还需准备 Chromium 系统库。后续启动分析服务时应保留同一个 `PLAYWRIGHT_BROWSERS_PATH`。单个采集视频限制为 100 MiB、1200 秒；无音轨会保留限制，不能视为已获得原音。采集失败不会尝试登录、导入 Cookie 或处理验证码。
+
 ## 配置
 
-Worker 需要以下环境变量：
+Worker 启动只需本项目的 `ANALYZER_BASE_URL`、`ANALYZER_SERVICE_TOKEN`、`ANALYZER_WORKER_ID`。云模型可直接在网页“设置”中保存；每个已领取任务会读取并校验所属公司的最新模型配置，无需把密钥写入环境文件才能启动服务。下列 `ANALYZER_LLM_*`、`ANALYZER_VISION_*` 保留为旧配置兼容入口：
 
 - `ANALYZER_BASE_URL`
 - `ANALYZER_SERVICE_TOKEN`
@@ -37,19 +50,23 @@ Worker 需要以下环境变量：
 - `ANALYZER_LLM_BASE_URL`
 - `ANALYZER_LLM_MODEL`
 - `ANALYZER_LLM_PROVIDER`
-- `ANALYZER_VISION_API_KEY`：MiniMax Token Plan Key（`sk-cp` 开头），与其他文本模型密钥隔离
-- `ANALYZER_VISION_BASE_URL`：国内 Token Plan 使用 `https://api.minimaxi.com`，不要附加 `/v1`
-- `ANALYZER_VISION_MODEL`：固定填写 `understand_image`；旧的 `MiniMax-M3` 会被识别为文本模型并改走 Token Plan MCP
-- `ANALYZER_VISION_PROVIDER`：推荐 `minimax-token-plan`；Worker 通过官方 MCP stdio 服务处理带帧号和时间码的联系表，OCR 不会冒充画面理解
+- `ANALYZER_VISION_API_KEY`：当前视觉模型密钥，可在网页按公司单独保存，不回显。
+- `ANALYZER_VISION_BASE_URL`：当前与 lmzy 一致为 `https://api.minimax.cn/v1`。
+- `ANALYZER_VISION_MODEL`：当前默认 `MiniMax-M3.1-Flash`，通过 OpenAI 兼容图片接口调用；显式模型与地址优先于历史密钥前缀判断。
+- `ANALYZER_VISION_PROVIDER`：当前为 `minimax`。原 `minimax-token-plan` / `understand_image` 的 MCP 路径仍兼容，使用原来对应的 `https://api.minimaxi.com` 配置；OCR 继续独立执行。
 - `ANALYZER_VISION_CONCURRENCY`：视觉批次并发数，默认 `2`，允许 `1`～`3`；建议稳定运行后再从 `2` 调到 `3`
-- `ANALYZER_YTDLP_COOKIES_FROM_BROWSER`：可选，公开视频链接建议设置为 `edge`、`chrome` 或 `firefox`；也可使用 `edge:Default` 指定配置文件。Worker 只在本机读取浏览器 Cookie，不会把 Cookie 上传到网站或数据库。
-- `ANALYZER_ASR_MODEL`，默认 `paraformer-zh`；可切换 `iic/SenseVoiceSmall`
+- `PLAYWRIGHT_BROWSERS_PATH`：macOS/Linux 可指定本项目专用 Chromium 缓存；Windows 启动脚本固定使用当前 `program/.local/collector-browsers`。
+- `ANALYZER_ASR_ENGINE`：`faster-whisper` 或兼容的 `funasr`（代码缺省值保持 `funasr`）；
+- `ANALYZER_ASR_MODEL`：本次部署为 faster-whisper `small`；FunASR 路径默认 `paraformer-zh`；
+- `ANALYZER_ASR_LANGUAGE`：本次部署为 `zh`，faster-whisper 可选 `auto`；
 - ANALYZER_ASR_FALLBACK_MODEL，默认 iic/SenseVoiceSmall；仅在末尾转写异常稀疏且能找回更多文字时延迟调用，设为空可关闭
 - `ANALYZER_ASR_DEVICE`，默认 `cpu`
 - `ANALYZER_PADDLE_OCR_DETECTION_MODEL`，默认 `PP-OCRv5_mobile_det`
 - `ANALYZER_PADDLE_OCR_RECOGNITION_MODEL`，默认 `PP-OCRv5_mobile_rec`
 - `ANALYZER_PADDLE_MODEL_SOURCE`，默认 `bos`（Paddle 官方 BOS 模型源，Windows 本地交付推荐）
 - `ANALYZER_MODEL_CACHE`，建议指向 Worker 的持久化模型卷；Windows 未配置时自动使用纯英文的 `%LOCALAPPDATA%/LimingZhiyao/model-cache`
+
+原来的 `ANALYZER_YTDLP_COOKIES_FROM_BROWSER` 和 Cookie 快照不参与当前匿名视频采集。已有上传与分析接口保持原有数据约定。
 
 Windows 下 Paddle 原生推理层可能无法读取含中文字符的模型路径，因此模型缓存不要放在中文目录。CPU 推理默认关闭 oneDNN，以规避当前 PaddlePaddle 对 PP-OCRv5 PIR 模型的算子兼容问题。
 
@@ -65,6 +82,22 @@ python -m liming_analyzer --once
 python -m liming_analyzer
 ```
 
+## 本机环境与服务控制
+
+设置页的环境面板可以准备/检查环境，并启动或停止当前项目的分析服务。依赖安装在本项目 `services/analyzer/.venv`，模型在 `.local/model-cache`，Chromium 在 `.local/collector-browsers`。不会读取其他项目的配置或使用其虚拟环境。
+
+维护命令（均在 `program` 下执行）：
+
+```sh
+services/analyzer/.venv/bin/python scripts/analyzer_local_runtime.py status
+services/analyzer/.venv/bin/python scripts/analyzer_local_runtime.py check
+services/analyzer/.venv/bin/python scripts/analyzer_local_runtime.py setup
+services/analyzer/.venv/bin/python scripts/analyzer_local_runtime.py start
+services/analyzer/.venv/bin/python scripts/analyzer_local_runtime.py stop
+```
+
+`setup` 在环境已就绪时直接复用，不会重复安装或打断运行服务。缺少 uv 时会把安装工具准备到本项目 `.local/installer-tools`。FFmpeg/FFprobe 优先使用本机已可运行的工具；缺少时从锁定的官方 npm registry 包安装到本项目 `.local/media-tools`，Windows 设置页通过 `install-ffmpeg.ps1 -ProjectOnly` 进入同一隔离路径。工具目录记录到 `.local/ffmpeg.path`，后续启动会自动恢复，无需重启网页进程或修改系统 PATH。当前模型验收记录在 `.local/verification/media-runtime/result.json`；运行日志在 `.local/logs/analyzer-local.log`。
+
 ## 数据与安全边界
 
 - Worker 只能使用独立服务令牌访问内部接口；
@@ -77,6 +110,10 @@ python -m liming_analyzer
 
 ```powershell
 python -m unittest discover -s tests -v
+
+# 安装开发测试依赖后，覆盖迁入的采集 pytest 用例
+python -m pip install -e ".[dev]"
+python -m pytest tests/collector tests/test_skill_collect_source.py -q
 ```
 
 自动测试使用注入的假模型，不下载大模型。正式验收仍需使用有授权的真实短视频样片和有效的模型密钥。

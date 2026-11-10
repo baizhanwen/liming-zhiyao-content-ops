@@ -39,6 +39,10 @@ if not exist "services\analyzer\.venv\Scripts\python.exe" (
 call :install_analyzer_dependencies
 if errorlevel 1 goto :failed
 
+echo [Liming Zhiyao] Preparing the anonymous video collector and Chromium...
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%PROJECT_ROOT%\scripts\install-collector.ps1" -ProjectRoot "%PROJECT_ROOT%"
+if errorlevel 1 goto :failed
+
 echo [OK] Analyzer environment setup completed.
 call :start_analyzer_if_app_is_running
 pause

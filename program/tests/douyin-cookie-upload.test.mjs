@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("Douyin cookies can be refreshed from the analysis workspace without exposing their contents", async () => {
+test("legacy Douyin cookie endpoints remain compatible without configuring anonymous collection", async () => {
   const { sanitizeDouyinCookieSnapshot } = await import("../lib/douyin-cookie-snapshot.ts");
   const input = [
     "# Netscape HTTP Cookie File",
@@ -35,6 +35,8 @@ test("Douyin cookies can be refreshed from the analysis workspace without exposi
   const videosRoute = await readFile(new URL("../app/api/videos/route.ts", import.meta.url), "utf8");
   const readiness = await readFile(new URL("../lib/analyzer-readiness.ts", import.meta.url), "utf8");
   assert.match(videosRoute, /canManageCookies: canWriteProjectAccess\(access\)/);
-  assert.match(readiness, /publicLinkAuthenticationMode = cookieFileConfigured \? "cookie_file".*browserLoginDetected/s);
+  assert.match(readiness, /publicLinkAuthenticationMode = "anonymous"/);
+  assert.doesNotMatch(readiness, /getMediaBucket|ANALYZER_YTDLP_COOKIE_FILE/);
+  assert.match(workspace, /service\.canManageCookies && !anonymousCollection/);
   assert.match(workerClient, /download_cookie_snapshot/);
 });

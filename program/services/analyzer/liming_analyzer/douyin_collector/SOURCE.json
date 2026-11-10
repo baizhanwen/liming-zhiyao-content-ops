@@ -1,0 +1,84 @@
+{
+  "source": "Skill Collect local public source (MIT)",
+  "date": "2026-11-09",
+  "files": {
+    "backend/media.py": "5b77e9ca31b23a083bda51dfd7ba1f190a20bb3863a08f5063f3244ae6e3b2c1",
+    "backend/browser_capture.py": "64d7f8f8ae03671b727789bf52deb16d512ca903e5cc58926544e58f32730286",
+    "backend/security.py": "ab12e9f280bdbcbe15b765b4602d27a618f91dbf1a172d4b5cb6c887e28e840c",
+    "frontend/scripts/capture-douyin.mjs": "8c3f0d63d7472d84787b0835ea164c9b6958a2da11c774694751059dc0c60235",
+    "LICENSE": "aaecffabad076234d4d1466dddb2aa071dc0fd6b500e83b79084f599272d17db",
+    "frontend/package-lock.json": "9461e450b9789cc9083621e0b0637df8cb6fa253e9f4bd4b86ea0505d834dd9b"
+  },
+  "excluded": [
+    "Vault",
+    "databases",
+    "configuration",
+    "credentials",
+    "cookies",
+    "private media",
+    "business modules"
+  ],
+  "playwright_seccomp": {
+    "version": "1.64.1",
+    "source": "https://raw.githubusercontent.com/microsoft/playwright/v1.64.1/utils/docker/seccomp_profile.json",
+    "checked_at": "2026-11-09",
+    "sha256": "cc3e61cabda6bbc1e53e54d27ba4d55a9d3be829b6dd1a596f4a7b31b1cc7849",
+    "license": "Apache-2.0"
+  },
+  "runtime_seccomp": {
+    "base_source": "https://raw.githubusercontent.com/moby/profiles/main/seccomp/default.json",
+    "base_sha256": "6416b47770785a41ac59073cdc77d9fe98517df2799dc83ef207e622de3053f6",
+    "checked_at": "2026-11-09",
+    "vendored_and_frozen": true,
+    "added_syscalls": [
+      "clone",
+      "setns",
+      "unshare"
+    ],
+    "reason": "Current Docker default plus documented browser user namespaces; legacy Playwright profile cannot start Docker 29 containers.",
+    "sha256": "30dc83d6cf95eababc183510ee6501db7f2fccea6a6753d0b1105b6c3aaae66b",
+    "license": "Apache-2.0"
+  },
+  "lmzy_adapter_migration": {
+    "date": "2026-11-10",
+    "source_directory": "lmzy/adapters/douyin_collector",
+    "target_repository": "https://github.com/baizhanwen/liming-zhiyao-content-ops",
+    "target_base_commit": "522ed2af240e07df70c08ec962df9cd85037a420",
+    "source_files_sha256": {
+      "requirements.txt": "84a869ce0ab453cbdb7dbf81622ea2bc4eaddcc182528fbaacba09365df9446d",
+      "uv.lock": "6aa21af120746cc16cd2c5593eac1a3183fc0fe5d559c8af0b2cc21a98fa1d50",
+      "SOURCE.json": "a74a67299437e5d9b2527f44c32baa89daac42bcb8d8bbf9d4daf42fc040a705",
+      "adapter.py": "a0bccceccfb2c7d11bc21ae1722ca2b1331388747503a307789a7df60d3de6ca",
+      "pyproject.toml": "3c077156649f220a32032369d4f64be15f43e9fc1817857e572eba26761ddf8d",
+      "__init__.py": "70ffe263539212fe8e45af52186bc86cb3986bfb6a00107e1864f20d3315356c",
+      "README.md": "99bf674b4cb6d44c88d598e60b9a70926a10d00a45960c778d016ebe09d3a1eb",
+      "LICENSES/playwright-Apache-2.0.txt": "45873d00a0dd243596deb4aa23b2493b3d1f0671921bf2538ea431d7380220eb",
+      "LICENSES/skill-collect-MIT.txt": "aaecffabad076234d4d1466dddb2aa071dc0fd6b500e83b79084f599272d17db",
+      "LICENSES/moby-Apache-2.0.txt": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "python/media.py": "65ef7ee19ff10b220bcabd7db047898d1e7a2fd01084384976722478ee3c55e1",
+      "python/security.py": "e4e24661be283be85d85077e86d25303e0f016ae29f3bd436f3b755605123c7f",
+      "python/__init__.py": "4a920e8ebffb70948cfb73dbbaf623a883975e2955b9469b8c8e1727ca7b5a66",
+      "python/browser_capture.py": "151da5a87edcfd4c455cfd03d9e56500844617940fd74a32f5112881316defd7",
+      "node/capture-douyin.mjs": "fafb6a3e1772068ed0775547c68d3dbc1ce2ed263fbe5d0a75ea9aa39a2e1a19",
+      "node/seccomp_profile.json": "30dc83d6cf95eababc183510ee6501db7f2fccea6a6753d0b1105b6c3aaae66b",
+      "node/package-lock.json": "b8ac33dd3c982c3eb5b278c13824236ad6b1447adc755470aee5de9979f9f99d",
+      "node/package.json": "73eadaad94d493b052be26e4794ac4bf3bc3279337675757125be6e8cfd56ab9",
+      "node/seccomp_playwright_1.64.1.json": "cc3e61cabda6bbc1e53e54d27ba4d55a9d3be829b6dd1a596f4a7b31b1cc7849"
+    },
+    "adaptations": [
+      "Vendored as liming_analyzer.douyin_collector; relative Python/Node layout retained.",
+      "Added task-local configured FFmpeg/FFprobe paths; browser workers propagate this context.",
+      "Original collector validation, anonymous browser, network restrictions, provenance and licenses retained."
+    ],
+    "excluded": [
+      "node_modules",
+      "virtual environments",
+      "application configuration",
+      "credentials",
+      "cookies",
+      "private media",
+      "databases",
+      "historical live evidence"
+    ]
+  }
+}

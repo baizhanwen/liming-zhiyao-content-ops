@@ -34,6 +34,12 @@ export const organizations = sqliteTable("organizations", {
   createdBy: text("created_by").notNull(), ...timestamps,
 }, (table) => [uniqueIndex("idx_organizations_slug").on(table.slug)]);
 
+export const organizationModelSettings = sqliteTable("organization_model_settings", {
+  organizationId: text("organization_id").primaryKey().references(() => organizations.id),
+  version: integer("version").notNull().default(1), settingsJson: text("settings_json").notNull(),
+  updatedBy: text("updated_by").notNull().references(() => users.id), updatedAt: text("updated_at").notNull(),
+});
+
 export const organizationSettings = sqliteTable("organization_settings", {
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id),
   planCode: text("plan_code", { enum: ["starter", "team", "scale"] }).notNull().default("team"),

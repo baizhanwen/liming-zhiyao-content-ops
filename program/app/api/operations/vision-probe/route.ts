@@ -1,8 +1,8 @@
-import { env } from "cloudflare:workers";
+import { probeSavedModelConfiguration, readEffectiveModelRuntime } from "../../../../lib/model-settings";
 import { z } from "zod";
 import { ensureUser, getD1, getOrganizationAccess } from "../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../lib/api-response";
-import { probeMiniMaxTokenPlanVision } from "../../../../lib/minimax-vision";
+import { isMiniMaxFlashVisionConfiguration, isMiniMaxTokenPlanKey, probeMiniMaxTokenPlanVision, visionConfigurationFingerprint, type VisionProbeMetadata } from "../../../../lib/minimax-vision";
 import { readRequestIdentity } from "../../../../lib/request-auth";
 
 const requestSchema = z.object({ organizationId: z.string().uuid() });
@@ -22,8 +22,25 @@ export async function POST(request: Request) {
     if (latest?.created_at && Date.now() - new Date(latest.created_at).getTime() < 60_000) {
       return apiError("VISION_PROBE_COOLDOWN", "图片预检每分钟最多执行一次，请稍后再试。", 429);
     }
-    const runtime = env as unknown as Record<string, unknown>;
-    const probe = await probeMiniMaxTokenPlanVision(runtime);
+    const runtime = await readEffectiveModelRuntime(organizationId);
+    let probe: VisionProbeMetadata;
+    if (!isMiniMaxFlashVisionConfiguration(runtime) && isMiniMaxTokenPlanKey(runtime.ANALYZER_VISION_API_KEY)) {
+      probe = await probeMiniMaxTokenPlanVision(runtime);
+    } else {
+      const checked = await probeSavedModelConfiguration(organizationId, "visualUnderstanding");
+      const passed = checked.status === "passed";
+      probe = {
+        status: checked.status, checkedAt: checked.checkedAt,
+        fingerprint: checked.fingerprint || visionConfigurationFingerprint(runtime),
+        provider: runtime.ANALYZER_VISION_PROVIDER || "OpenAI compatible",
+        model: runtime.ANALYZER_VISION_MODEL || "未配置",
+        adapter: "openai_compatible_image_preflight",
+        endpointConnected: passed, imageTestPassed: passed,
+        observationCount: passed ? 1 : 0,
+        httpStatus: checked.httpStatus ?? null, responseType: "application/json",
+        requestId: null, providerCode: null, message: checked.message,
+      };
+    }
     const now = new Date().toISOString();
     await db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, NULL, ?, 'model.vision_probe', 'model_service', 'visualUnderstanding', ?, ?)")
       .bind(crypto.randomUUID(), organizationId, user.id, JSON.stringify(probe), now).run();

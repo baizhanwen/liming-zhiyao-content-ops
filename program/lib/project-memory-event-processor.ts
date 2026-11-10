@@ -195,7 +195,7 @@ export async function processProjectMemoryEventWithDb(
       sourceId: event.source_id || event.id,
       quote: null,
     };
-    const invoke = input.invoke ?? invokeProjectAssistantModel;
+    const invoke: InvocationFunction = input.invoke ?? ((modelInput) => invokeProjectAssistantModel({ ...modelInput, organizationId: input.organizationId }));
     const invocation = await invoke({
       system: memorySystemPrompt(),
       user: JSON.stringify({

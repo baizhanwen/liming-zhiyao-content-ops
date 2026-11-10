@@ -1,5 +1,6 @@
 param(
-    [string]$Version = "3.11.9"
+    [string]$Version = "3.11.9",
+    [string]$TargetDirectory = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -68,12 +69,23 @@ $arguments = @(
     "Include_test=0",
     "SimpleInstall=1"
 )
+if ($TargetDirectory) {
+    $TargetDirectory = [IO.Path]::GetFullPath($TargetDirectory)
+    # A checkout-owned interpreter must not replace the user's PATH or launcher.
+    $arguments = @($arguments | ForEach-Object {
+        if ($_ -eq "PrependPath=1") { "PrependPath=0" }
+        elseif ($_ -eq "Include_launcher=1") { "Include_launcher=0" }
+        else { $_ }
+    })
+    $arguments += @("AssociateFiles=0", "Shortcuts=0")
+    $arguments += "TargetDir=`"$TargetDirectory`""
+}
 $process = Start-Process -FilePath $installerPath -ArgumentList $arguments -Wait -PassThru
 if ($process.ExitCode -notin @(0, 3010)) {
     throw "The Python installer returned exit code $($process.ExitCode)."
 }
 
-$pythonPath = Join-Path $env:LocalAppData "Programs\Python\Python311\python.exe"
+$pythonPath = if ($TargetDirectory) { Join-Path $TargetDirectory "python.exe" } else { Join-Path $env:LocalAppData "Programs\Python\Python311\python.exe" }
 if (-not (Test-Path -LiteralPath $pythonPath)) {
     throw "Python installation completed, but python.exe was not found at $pythonPath."
 }

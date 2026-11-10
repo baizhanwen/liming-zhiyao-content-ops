@@ -34,7 +34,7 @@ export async function POST(request: Request, context: { params: Promise<{ conver
         conversationId,
         userId: user.id,
         question,
-        invoke: invokeProjectAssistantModel,
+        invoke: (modelInput) => invokeProjectAssistantModel({ ...modelInput, organizationId }),
       },
     );
     return Response.json(result, { status: 201 });

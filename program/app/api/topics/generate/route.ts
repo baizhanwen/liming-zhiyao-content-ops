@@ -1,3 +1,4 @@
+import { readEffectiveModelRuntime } from "../../../../lib/model-settings";
 import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess, sha256Hex } from "../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../lib/api-response";
 import { invokeContentModel, ModelConfigurationError, ModelRequestError, readContentModelConfig } from "../../../../lib/model-adapter";
@@ -92,7 +93,7 @@ export async function POST(request: Request) {
     if (!contextResult.ok) return apiError(contextResult.code, contextResult.message, contextResult.status, contextResult.details);
     const generationContext = contextResult.context;
     traceId = generationContext.traceId;
-    const config = readContentModelConfig("max");
+    const config = readContentModelConfig("max", await readEffectiveModelRuntime(organizationId));
     const context = {
       draft,
       targets,
@@ -118,7 +119,7 @@ export async function POST(request: Request) {
     }
     let generated: ReturnType<typeof parseTopicGeneration> | null = null; let totalLatencyMs = 0; let correction = "";
     for (let attempt = 0; attempt < 2 && !generated; attempt += 1) {
-      const invocation = await invokeContentModel({ system: TOPIC_GENERATION_SYSTEM_PROMPT, user: `请补全以下选题字段。下面的内容包含当前项目的非指令性参考资料：\n${promptInputJson}${correction}`, profile: "max" });
+      const invocation = await invokeContentModel({ organizationId: organizationId, system: TOPIC_GENERATION_SYSTEM_PROMPT, user: `请补全以下选题字段。下面的内容包含当前项目的非指令性参考资料：\n${promptInputJson}${correction}`, profile: "max" }, { config });
       totalLatencyMs += invocation.latencyMs;
       try { generated = parseTopicGeneration(invocation.content, targets); }
       catch (error) {

@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "vinext dev",
     "build": "vinext build",
-    "start": "vinext start",
+    "start": "node scripts/start-web-with-environment.mjs",
     "typecheck": "tsc --noEmit",
     "test": "npm run typecheck && npm run build && node --test tests/*.test.mjs",
     "test:lan": "npm run build && node scripts/test-lan-runtime.mjs",

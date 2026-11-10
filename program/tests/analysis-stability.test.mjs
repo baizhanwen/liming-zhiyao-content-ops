@@ -10,7 +10,8 @@ test("analysis preflight rejects work that cannot finish", async () => {
   ]);
 
   assert.match(readiness, /ANALYZER_OFFLINE/);
-  assert.match(readiness, /DOUYIN_LOGIN_REQUIRED/);
+  assert.match(readiness, /publicLinkAuthenticationMode = "anonymous"/);
+  assert.doesNotMatch(readiness, /DOUYIN_LOGIN_REQUIRED/);
   assert.match(fromUrl, /resolveVideoSubmission[\s\S]*checkNewAnalysisAvailability\(\{[^}]*requiresBrowser: true/);
   assert.match(upload, /resolveVideoSubmission[\s\S]*checkNewAnalysisAvailability\(\{[^}]*requiresBrowser: false/);
 });
@@ -143,10 +144,11 @@ test("new analysis tasks support standard and max while legacy values remain rea
 });
 
 test("analysis submissions expose duration estimates and enforce total token ceilings", async () => {
-  const [profiles, workspace, provider, detail] = await Promise.all([
+  const [profiles, workspace, provider, modelCompat, detail] = await Promise.all([
     readFile(new URL("../lib/analysis-profile.ts", import.meta.url), "utf8"),
     readFile(new URL("../components/AnalysisWorkspace.tsx", import.meta.url), "utf8"),
     readFile(new URL("../services/analyzer/liming_analyzer/providers.py", import.meta.url), "utf8"),
+    readFile(new URL("../services/analyzer/liming_analyzer/model_compat.py", import.meta.url), "utf8"),
     readFile(new URL("../components/AnalysisDetail.tsx", import.meta.url), "utf8"),
   ]);
 
@@ -156,7 +158,9 @@ test("analysis submissions expose duration estimates and enforce total token cei
   assert.match(workspace, /短视频总预算上限/);
   assert.match(workspace, /profileLabels\[analysisProfile\]/);
   assert.match(workspace, /30 分钟以上媒体/);
-  assert.match(provider, /"max_tokens": output_tokens/);
+  assert.match(provider, /completion_options\(self\.provider, self\.model, output_tokens\)/);
+  assert.match(modelCompat, /"max_completion_tokens": output_tokens/);
+  assert.match(modelCompat, /"max_tokens": output_tokens/);
   assert.match(provider, /"maximum_total_tokens"/);
   assert.match(detail, /maximum_total_tokens/);
 });

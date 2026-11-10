@@ -1,3 +1,4 @@
+import { readEffectiveModelRuntime } from "../../../../../lib/model-settings";
 import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess, sha256Hex } from "../../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../../lib/api-response";
 import { parseModelJson } from "../../../../../lib/content-production";
@@ -53,13 +54,13 @@ async function invokeTrackedModel(input: {
 }) {
   const quota = await checkOrganizationQuota(input.organizationId, input.userId, "modelCalls", 1);
   if (!quota.allowed) throw new RewriteContractError("当前月度模型调用额度已用完，未继续产生新的调用。", "MODEL_QUOTA_EXCEEDED", { current: quota.current, limit: quota.limit });
-  const db = getD1(); const config = readContentModelConfig("max"); const id = crypto.randomUUID(); const now = new Date().toISOString();
+  const db = getD1(); const config = readContentModelConfig("max", await readEffectiveModelRuntime(input.organizationId)); const id = crypto.randomUUID(); const now = new Date().toISOString();
   const userJson = JSON.stringify(input.payload); const inputJson = JSON.stringify({ runId: input.runId, payload: input.payload }); const inputHash = await sha256Hex(new TextEncoder().encode(`${input.system}\n${userJson}`));
   await db.prepare(`INSERT INTO model_calls (id, organization_id, project_id, topic_id, prompt_template_id, task_type, provider, model_name, model_profile, prompt_version, status, input_hash, input_json, created_by, created_at) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, 'max', ?, 'started', ?, ?, ?, ?)`).bind(id, input.organizationId, input.projectId, input.taskType, config.provider, config.model, SCRIPT_REWRITE_PROMPT_VERSION, inputHash, inputJson, input.userId, now).run();
   let accumulatedLatencyMs = 0;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const invocation = await invokeContentModel({ system: input.system, user: userJson, profile: "max", nativeJson: attempt === 0, temperature: input.temperature, maxTokens: input.maxTokens });
+      const invocation = await invokeContentModel({ organizationId: input.organizationId, system: input.system, user: userJson, profile: "max", nativeJson: attempt === 0, temperature: input.temperature, maxTokens: input.maxTokens }, { config });
       accumulatedLatencyMs += invocation.latencyMs;
       let json: unknown;
       try {
@@ -808,7 +809,7 @@ export async function POST(request: Request, context: { params: Promise<{ rewrit
       const retryRun = await db.prepare("SELECT id FROM script_rewrite_runs WHERE id = ? AND organization_id = ? AND project_id = ? AND workspace_id = ? AND variant = ?").bind(retryOfRunId, organizationId, projectId, rewriteId, variants[0]).first();
       if (!retryRun) return apiError("REWRITE_RETRY_NOT_FOUND", "要重试的运行记录不存在。", 404);
     }
-    readContentModelConfig("max");
+    readContentModelConfig("max", await readEffectiveModelRuntime(organizationId));
     const estimate = estimateRewriteUsage(workspace.source_text, variants); const user = await ensureUser(identity);
     const quota = await checkOrganizationQuota(organizationId, user.id, "modelCalls", estimate.callCount);
     if (!quota.allowed) return apiError("MODEL_QUOTA_EXCEEDED", `本次预计调用 ${estimate.callCount} 次模型，当前月度剩余额度不足。`, 429, { usage: quota.current, limit: quota.limit, requested: estimate.callCount });

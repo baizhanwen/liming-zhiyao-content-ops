@@ -1,4 +1,4 @@
-import { env } from "cloudflare:workers";
+import { readEffectiveModelRuntime } from "../../../lib/model-settings";
 import { z } from "zod";
 import { ensureUser, getD1, getOrganizationAccess } from "../../../db/runtime";
 import { apiError, errorResponse } from "../../../lib/api-response";
@@ -60,7 +60,7 @@ export async function GET(request: Request) {
     ] as const;
     for (const [code, label, current, limit] of quotaPairs) if (limit > 0 && current / limit >= 0.8) alerts.push({ code, severity: current >= limit ? "critical" : "warning", title: `${label}接近配额`, message: `已使用 ${current} / ${limit}，请清理数据或联系软件提供方升级授权。` });
 
-    const runtime = env as typeof env & { ANALYZER_SERVICE_TOKEN?: string };
+    const runtime = await readEffectiveModelRuntime(organizationId);
     let visualProbe: unknown = null;
     if (latestVisionProbe?.metadata_json) {
       try { visualProbe = JSON.parse(latestVisionProbe.metadata_json); } catch { visualProbe = null; }

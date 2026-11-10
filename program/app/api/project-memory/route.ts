@@ -1,3 +1,4 @@
+import { readEffectiveModelRuntime } from "../../../lib/model-settings";
 import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess } from "../../../db/runtime";
 import { apiError, errorResponse } from "../../../lib/api-response";
 import { projectAssistantConfigurationStatus } from "../../../lib/project-assistant-model";
@@ -73,7 +74,7 @@ export async function GET(request: Request) {
     return Response.json({
       items,
       canWrite: canWriteProjectAccess(access),
-      configuration: projectAssistantConfigurationStatus(),
+      configuration: projectAssistantConfigurationStatus(await readEffectiveModelRuntime(organizationId)),
       events,
       repair,
       mode: "structured_archive",

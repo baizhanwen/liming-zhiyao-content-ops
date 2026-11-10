@@ -22,3 +22,11 @@
 **/delivery-credential.txt
 **/cookies.txt
 **/douyin-cookies.txt
+
+# Private local handoff notes and runtime files are not source deliverables.
+/视频采集替换说明.md
+*.sqlite*
+*.db
+*.log
+**/.cache/
+**/model-cache/

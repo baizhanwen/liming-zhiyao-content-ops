@@ -159,6 +159,22 @@ class AnalyzerApiClient:
         updated = response["job"]
         return replace(job, status=str(updated["status"]), progress=int(updated["progress"]), version=int(updated["version"]))
 
+    def model_configuration(self, job: ClaimedJob) -> Mapping[str, str]:
+        """Retrieve only this leased job's organization model snapshot."""
+        response = self._post(f"/api/internal/analysis-jobs/{job.id}/model-settings", {
+            "workerId": self.worker_id, "version": job.version,
+        })
+        configuration = response.get("configuration") if response else None
+        allowed = {"llm_provider", "llm_base_url", "llm_model", "llm_api_key",
+                   "vision_provider", "vision_base_url", "vision_model", "vision_api_key"}
+        if not isinstance(configuration, dict) or any(
+            key not in allowed or not isinstance(value, str) for key, value in configuration.items()
+        ):
+            raise AnalyzerApiError(200, "INVALID_RESPONSE", "model configuration response is malformed")
+        if not all(configuration.get(key) for key in ("llm_provider", "llm_base_url", "llm_model", "llm_api_key")):
+            raise AnalyzerApiError(409, "ANALYZER_MODEL_REQUIRED", "请在设置页保存完整的分析文本模型配置。")
+        return configuration
+
     def save_checkpoint(self, job: ClaimedJob, stage: str, checkpoint: Mapping[str, Any]) -> Mapping[str, Any]:
         if stage not in {"evidence_ready", "segment_progress"}:
             raise ValueError("unsupported analysis checkpoint stage")

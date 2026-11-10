@@ -49,6 +49,8 @@ if ($BaseUrl) { $env:ANALYZER_BASE_URL = $BaseUrl.TrimEnd('/') }
 try {
     . (Join-Path $PSScriptRoot "analyzer-media-runtime.ps1")
     $mediaRuntime = Import-AnalyzerMediaRuntime $projectRoot
+    . (Join-Path $PSScriptRoot "analyzer-collector-runtime.ps1")
+    $collectorRuntime = Import-AnalyzerCollectorRuntime $projectRoot -AllowUnavailable
 }
 catch {
     Write-AnalyzerStartError $_.Exception.Message
@@ -56,8 +58,7 @@ catch {
 }
 
 $required = @(
-    "ANALYZER_SERVICE_TOKEN", "ANALYZER_BASE_URL", "ANALYZER_WORKER_ID",
-    "ANALYZER_LLM_API_KEY", "ANALYZER_LLM_BASE_URL", "ANALYZER_LLM_MODEL", "ANALYZER_LLM_PROVIDER"
+    "ANALYZER_SERVICE_TOKEN", "ANALYZER_BASE_URL", "ANALYZER_WORKER_ID"
 )
 $missing = @($required | Where-Object {
     [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_, [EnvironmentVariableTarget]::Process))
@@ -66,6 +67,8 @@ if ($missing.Count -gt 0) {
     Write-AnalyzerStartError "Video analyzer configuration is incomplete: $($missing -join ', ')"
     exit 2
 }
+# Cloud models can be saved in the Settings page. The worker retrieves the
+# organization-scoped model configuration only after it claims a valid job.
 $requestedBaseUrl = $env:ANALYZER_BASE_URL.TrimEnd('/')
 $statusUrl = "$requestedBaseUrl/api/internal/analyzer/status?workerId=$([Uri]::EscapeDataString($env:ANALYZER_WORKER_ID))"
 $statusHeaders = @{ Authorization = "Bearer $($env:ANALYZER_SERVICE_TOKEN)" }

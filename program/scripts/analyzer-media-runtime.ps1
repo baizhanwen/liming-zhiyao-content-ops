@@ -50,7 +50,7 @@ function Import-AnalyzerMediaRuntime([string]$ProjectRoot) {
     if (-not $ffmpeg -or -not $ffprobe) {
         throw "FFmpeg or ffprobe is not available to the video analyzer. Run tools\setup-analyzer.bat to repair the media runtime."
     }
-    # yt-dlp and other third-party media helpers do not read the analyzer's
+    # The video collector and third-party media helpers do not read the analyzer's
     # explicit variables. They discover FFmpeg through PATH, so restore the
     # resolved binary directories in this process before the Python worker is
     # launched. This is intentionally process-scoped and does not mutate the
