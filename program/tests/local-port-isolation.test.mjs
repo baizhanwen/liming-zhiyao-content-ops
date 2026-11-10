@@ -65,7 +65,10 @@ server.listen(0, '127.0.0.1', () => writeFileSync(new URL('../../../.local/port'
   writeFileSync(path.join(current, "scripts/open-lan.ps1"), "param([string]$Url, [string]$HealthUrl)\n");
   const probe = path.join(current, "scripts/probe.ps1");
   writeFileSync(probe, `
-function Get-NetIPConfiguration { return [pscustomobject]@{ IPv4Address=@([pscustomobject]@{IPAddress='192.168.50.10'}); IPv4DefaultGateway='synthetic'; NetAdapter=[pscustomobject]@{Status='Up'}; InterfaceDescription='Synthetic fixture'; InterfaceAlias='Ethernet' } }
+# Port inspection auto-loads NetTCPIP, whose exports include Get-NetIPConfiguration.
+# Load it before defining the mock so auto-loading cannot replace this boundary.
+Import-Module NetTCPIP -ErrorAction Stop
+function Get-NetIPConfiguration { [IO.File]::WriteAllText((Join-Path (Split-Path $PSScriptRoot) '.local/lan-network-probe'), 'fixture'); return [pscustomobject]@{ IPv4Address=@([pscustomobject]@{IPAddress='192.168.50.10'}); IPv4DefaultGateway='synthetic'; NetAdapter=[pscustomobject]@{Status='Up'}; InterfaceDescription='Synthetic fixture'; InterfaceAlias='Ethernet' } }
 function npm.cmd { [IO.File]::WriteAllText((Join-Path (Split-Path $PSScriptRoot) '.local/lan-start'), $env:LAN_ACCESS_ORIGIN); $global:LASTEXITCODE=0 }
 & (Join-Path $PSScriptRoot 'start-lan.ps1')
 exit $LASTEXITCODE
@@ -73,6 +76,7 @@ exit $LASTEXITCODE
   const entry = spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", probe], { windowsHide: true, encoding: "utf8", timeout: 25000 });
   const entryOutput = [entry.error?.message, entry.stderr, entry.stdout].filter(Boolean).join("\n");
   assert.equal(entry.status, 0, entryOutput);
+  assert.ok(existsSync(path.join(current, ".local/lan-network-probe")), `LAN entry did not use its controlled network fixture:\n${entryOutput}`);
   assert.ok(existsSync(path.join(current, ".local/lan-start")), `LAN entry did not reach its controlled npm boundary:\n${entryOutput}`);
   assert.notEqual(Number(new URL(readFileSync(path.join(current, ".local/lan-start"), "utf8")).port), occupied);
   writeFileSync(path.join(dir, "report.json"), JSON.stringify({ synthetic: true, foreignHealthyPortSkipped: true, lanForeignPortSkipped: true, ownHealthyPortReused: true, unhealthyOwnedInstanceBlocked: true, invalidPortIgnored: true, actualLanEntryForeignInstanceSkipped: true }, null, 2));

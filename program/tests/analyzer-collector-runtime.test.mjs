@@ -29,8 +29,9 @@ test("the collector ships its own locked runtime and provenance without the sour
 
 test("Windows runtime selection isolates browser cache and keeps upload analysis available when collection is missing", { skip: process.platform !== "win32" }, () => {
   // Windows runner TEMP can use an 8.3 profile alias (RUNNER~1), while
-  // PowerShell expands it to the long path. Compare one canonical installation.
-  const temporary = realpathSync(mkdtempSync(path.join(os.tmpdir(), "liming-collector-runtime-")));
+  // PowerShell expands it to the long path. Native realpath also resolves 8.3
+  // aliases, which the JavaScript realpath implementation can retain.
+  const temporary = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "liming-collector-runtime-")));
   try {
     const fixture = path.join(temporary, "services/analyzer/liming_analyzer/douyin_collector/node");
     mkdirSync(fixture, { recursive: true });
