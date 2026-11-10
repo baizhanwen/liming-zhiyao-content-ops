@@ -71,7 +71,26 @@ try {
   await page.goto(new URL(`/login?returnTo=${encodeURIComponent(target)}`, origin).href);
   await page.locator('input[name="email"]').fill("ecommerce@example.invalid"); await page.locator('input[name="password"]').fill(password);
   await page.getByRole("button", { name: "登录", exact: true }).click(); await page.waitForURL("**/content/ecommerce?**");
+  const openTool = async label => {
+    const menu = page.locator("nav.ec-tabs details.ec-extra-nav");
+    if (await menu.getAttribute("open") === null) await menu.locator("summary").click();
+    await menu.getByRole("button", { name: label, exact: true }).click();
+  };
+  const fillProductAnswer = async (label, value) => {
+    await page.getByLabel(label, { exact: true }).selectOption({ label: "自行填写具体内容" });
+    await page.getByLabel(`${label}具体内容`, { exact: true }).fill(value);
+  };
+  const fillTaskAnswer = async (label, value) => {
+    const question = page.getByRole("group", { name: label, exact: true });
+    await question.getByRole("radio", { name: "自行填写", exact: true }).check();
+    await question.getByLabel(`填写${label}`, { exact: true }).fill(value);
+  };
   await page.getByText("电商素材未启用", { exact: true }).waitFor();
+  await page.getByRole("heading", { name: "制作第一条商品视频", exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "启用并开始制作", exact: true }).isEnabled(), true);
+  assert.equal(await page.getByLabel("商品名称 *", { exact: true }).count(), 0, "未启用时默认展示向导，不铺开不可编辑的长表单");
+  await page.getByRole("button", { name: "商品资料", exact: true }).click();
+  await page.getByLabel("商品名称 *", { exact: true }).waitFor();
   assert.equal(await page.getByLabel("商品名称 *", { exact: true }).isDisabled(), true);
   await page.getByText("空间设置", { exact: true }).click();
   await page.getByLabel("启用当前空间电商素材").check(); await page.getByRole("button", { name: "保存设置", exact: true }).click();
@@ -79,11 +98,11 @@ try {
 
   await page.getByLabel("商品名称 *", { exact: true }).fill("合成验收杯（非真实商品）");
   await page.getByLabel("SKU *", { exact: true }).fill("SYNTHETIC-BROWSER");
-  await page.getByLabel("商品品类", { exact: true }).fill("日用品");
+  await fillProductAnswer("商品品类", "日用品");
   await page.getByLabel("规格", { exact: true }).fill("容量350毫升");
-  await page.getByLabel("谁使用", { exact: true }).fill("日常喝水的人");
-  await page.getByLabel("谁决定购买", { exact: true }).fill("使用者本人");
-  await page.getByLabel("商品使用场景", { exact: true }).fill("日常桌面喝水");
+  await fillProductAnswer("谁使用", "日常喝水的人");
+  await page.getByLabel("谁决定购买", { exact: true }).selectOption({ label: "使用者本人" });
+  await fillProductAnswer("商品使用场景", "日常桌面喝水");
   await page.getByLabel("不能说的内容", { exact: true }).fill("不宣称保温、防漏或健康功效");
   await page.getByText("内部经营资料", { exact: true }).click();
   await page.getByLabel("毛利说明", { exact: true }).fill("PRIVATE_BROWSER_MARGIN");
@@ -93,10 +112,10 @@ try {
   await page.getByText("＋ 添加证据", { exact: true }).click();
   await page.getByLabel("证据标题 *", { exact: true }).fill("合成规格说明");
   page.once("dialog", dialog => dialog.dismiss());
-  await page.getByRole("button", { name: "素材组件", exact: true }).click();
+  await openTool("视频方法库");
   assert.equal(await page.getByLabel("证据标题 *", { exact: true }).inputValue(), "合成规格说明");
   await page.getByRole("button", { name: "保存商品新版本", exact: true }).click();
-  await page.getByText("请先保存或清空下方证据草稿，再保存商品。", { exact: true }).waitFor();
+  await page.getByText("请先保存或清空证据草稿，再保存商品。", { exact: true }).waitFor();
   checks.push("未保存证据不会被切页或商品保存静默丢弃");
   await page.getByLabel("原始证据正文 *", { exact: true }).fill("合成验收杯容量350毫升。此资料仅用于软件测试。");
   await page.getByLabel("来源与精确位置 *", { exact: true }).fill("合成测试说明第1条，无真实业务含义");
@@ -105,6 +124,7 @@ try {
   await evidence.locator("summary").click(); await evidence.getByRole("button", { name: "确认此证据", exact: true }).click();
   await evidence.getByText("已确认", { exact: true }).waitFor(); checks.push("证据保存与人工确认");
 
+  await page.getByText("主卖点及事实依据", { exact: true }).click();
   await page.getByRole("button", { name: "＋ 添加卖点", exact: true }).click();
   await page.getByLabel("卖点表述 *", { exact: true }).fill("容量350毫升");
   await page.getByLabel("允许使用的表达范围 *", { exact: true }).fill("仅可描述容量350毫升");
@@ -115,7 +135,7 @@ try {
   await page.locator(".ec-list-item.selected").getByText("已确认", { exact: true }).waitFor();
   await page.screenshot({ path: path.join(runDir, "products-desktop.png"), fullPage: true }); checks.push("关联证据后确认商品新版本");
 
-  await page.getByRole("button", { name: "素材组件", exact: true }).click();
+  await openTool("视频方法库");
   await page.getByRole("button", { name: "查看基础方法", exact: true }).click();
   await page.getByRole("button", { name: "确认并导入 12 张", exact: true }).click();
   await page.locator(".ec-list-item").filter({ hasText: "使用场景提问" }).click();
@@ -135,7 +155,7 @@ try {
   await page.setViewportSize({ width: 1440, height: 1000 });
 
 
-  await page.getByRole("button", { name: "参考案例", exact: true }).click();
+  await openTool("参考案例");
   await page.getByLabel("选择当前空间的对标分析 *", { exact: true }).selectOption("ec-reference:ec-analysis");
   await page.getByLabel("参考分析与转写原文", { exact: true }).waitFor();
   assert.match(await page.getByLabel("参考分析与转写原文", { exact: true }).inputValue(), /先展示商品规格/);
@@ -157,15 +177,15 @@ try {
   assert.equal((await db.prepare("SELECT COUNT(*) n FROM ecommerce_case_profiles").first()).n, 1);
   checks.push("关联已有分析原文、确认与编辑案例，修改后重新确认且不复制原视频");
 
-  await page.getByRole("button", { name: "任务与装配", exact: true }).click();
+  await page.getByRole("button", { name: "视频任务", exact: true }).click();
   await page.getByLabel("任务名称 *", { exact: true }).fill("合成杯规格浏览器验收");
   const productVersion = await page.getByLabel("商品版本 *", { exact: true }).locator("option").filter({ hasText: "v2（当前）" }).getAttribute("value");
   await page.getByLabel("商品版本 *", { exact: true }).selectOption(productVersion);
-  await page.getByLabel("主要购买障碍", { exact: true }).fill("不清楚容量规格");
+  await fillTaskAnswer("主要购买障碍", "不清楚容量规格");
   await page.getByLabel("本次只讲一个卖点", { exact: true }).selectOption({ label: "容量350毫升" });
   await page.getByRole("checkbox", { name: "合成规格说明", exact: true }).check();
-  await page.getByLabel("目标时长（秒）", { exact: true }).fill("30");
-  await page.getByLabel("承接位置与动作", { exact: true }).fill("当前商品卡查看规格");
+  await page.getByRole("group", { name: "目标时长", exact: true }).getByRole("radio", { name: "30 秒 · 推荐起步", exact: true }).check();
+  await fillTaskAnswer("承接位置与动作", "当前商品卡查看规格");
   await page.getByRole("checkbox", { name: "可拍实物", exact: true }).check();
   await page.getByRole("button", { name: "保存任务草稿", exact: true }).click();
   const generateButton = page.getByRole("button", { name: "生成电商素材", exact: true });

@@ -110,9 +110,9 @@ function StrategyCard({ strategy, canManage = false, onActivate, busy = false, a
   </article>;
 }
 
-export function KnowledgeWorkspace({ initialOrganizationId = "", initialProjectId = "" }: { initialOrganizationId?: string; initialProjectId?: string }) {
+export function KnowledgeWorkspace({ initialOrganizationId = "", initialProjectId = "", initialTab = "knowledge" }: { initialOrganizationId?: string; initialProjectId?: string; initialTab?: "knowledge" | "strategy" }) {
   const [organizations, setOrganizations] = useState<Organization[]>([]); const [organizationId, setOrganizationId] = useState("");
-  const [projects, setProjects] = useState<Project[]>([]); const [projectId, setProjectId] = useState(""); const [tab, setTab] = useState<"knowledge" | "strategy" | "method">("knowledge");
+  const [projects, setProjects] = useState<Project[]>([]); const [projectId, setProjectId] = useState(""); const [tab, setTab] = useState<"knowledge" | "strategy" | "method">(initialTab);
   const [items, setItems] = useState<KnowledgeItem[]>([]); const [strategies, setStrategies] = useState<Strategy[]>([]); const [canWrite, setCanWrite] = useState(false); const [canManage, setCanManage] = useState(false); const [knowledgeHistory, setKnowledgeHistory] = useState<KnowledgeVersion[] | null>(null);
   const [organizationRole, setOrganizationRole] = useState<"admin" | "member">("member"); const [strategyScope, setStrategyScope] = useState<"organization" | "project">("project"); const [strategySpaces, setStrategySpaces] = useState<StrategySpace[]>([]); const [strategyOverviewLoading, setStrategyOverviewLoading] = useState(false);
   const [knowledgeAction, setKnowledgeAction] = useState("");

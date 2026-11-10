@@ -78,5 +78,91 @@
 .ec-table td small { display: block; }
 .ec-superseded { color: var(--muted); }
 .ec-source-text { width: 100%; border: 1px solid var(--line); padding: 12px; border-radius: 8px; font: inherit; line-height: 1.65; resize: vertical; }
+.ec-settings-compact { padding: 12px 18px; }
+.ec-settings-compact .ec-panel-head > div > p { font-size: 11px; }
+.ec-settings-compact details { min-width: 0; border: 0; padding: 0; }
+.ec-settings-compact details[open] { min-width: min(360px, 100%); }
+.ec-settings-compact details > summary { color: var(--muted); font-size: 12px; }
+.ec-primary-tabs { align-items: center; font-size: 13px; }
+.ec-workspace details.ec-extra-nav { position: relative; border: 0; padding: 0; margin-left: auto; }
+.ec-extra-nav > summary { padding: 9px 12px; color: var(--muted); font-size: 12px; }
+.ec-workspace .ec-extra-nav[open] > summary { margin: 0; }
+.ec-extra-nav > div { position: absolute; z-index: 4; top: calc(100% + 7px); right: 0; min-width: 160px; display: grid; gap: 4px; padding: 7px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); box-shadow: var(--shadow); }
+.ec-extra-nav > div > button { width: 100%; text-align: left; white-space: nowrap; }
+.ec-guide { display: grid; gap: 14px; min-width: 0; }
+.ec-guide-intro { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 20px; }
+.ec-guide-intro h2 { font-size: 19px; margin: 3px 0 5px; }
+.ec-guide-kicker { font-size: 11px; font-weight: 650; color: var(--brand); letter-spacing: .04em; }
+.ec-guide-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); list-style: none; padding: 0; margin: 0; gap: 8px; }
+.ec-guide-steps li { min-width: 0; }
+.ec-guide-steps button { width: 100%; height: 100%; padding: 13px 14px; display: flex; gap: 11px; align-items: flex-start; text-align: left; background: var(--surface); }
+.ec-guide-steps button[aria-current=step] { border-color: var(--brand); background: var(--brand-soft); }
+.ec-guide-number { width: 24px; height: 24px; display: grid; place-items: center; flex: 0 0 24px; border-radius: 50%; border: 1px solid var(--line); background: var(--surface-soft); color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.ec-guide-steps [aria-current=step] .ec-guide-number { color: white; background: var(--brand); border-color: var(--brand); }
+.ec-guide-steps [data-state=complete] .ec-guide-number { color: var(--success); background: var(--success-soft); border-color: transparent; }
+.ec-guide-steps strong { font-size: 13px; font-weight: 650; display: block; margin-top: 2px; }
+.ec-guide-steps small { font-size: 11px; color: var(--muted); display: block; line-height: 1.6; margin-top: 4px; }
+.ec-guide-welcome { padding: 22px; }
+.ec-guide-welcome > p { max-width: 680px; margin-top: 9px; color: var(--muted); font-size: 13px; }
+.ec-guide-product { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 12px; padding: 13px 16px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); }
+.ec-guide-product > .ec-field { flex: 1; min-width: min(300px, 100%); margin: 0; }
+.ec-guide-instruction { padding: 15px 18px; }
+.ec-guide-instruction > p { margin-top: 5px; }
+.ec-guide-missing { margin: 10px 0 0; padding-left: 18px; color: var(--warning); font-size: 12px; line-height: 1.8; }
+.ec-guide-footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 8px 0; }
+.ec-guide-footer > p { font-size: 12px; color: var(--muted); }
+.ec-guide-preparation { padding: 17px 19px; }
+.ec-guide-preparation .ec-panel-head { margin-bottom: 12px; }
+.ec-guide-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.ec-guide-checks > div { display: flex; gap: 10px; align-items: flex-start; }
+.ec-guide-checks strong { font-size: 13px; }
+.ec-guide-checks .ec-actions { gap: 7px; }
+.ec-guide-check { display: grid; place-items: center; width: 21px; height: 21px; flex: 0 0 21px; border: 1px solid var(--line); border-radius: 50%; color: var(--muted); }
+.ec-guide-check.ready { color: var(--success); background: var(--success-soft); border-color: transparent; }
+.ec-guide-starter { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
+.ec-guide-starter > p { margin: 5px 0 11px; }
+.ec-guide-starter-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.ec-guide-starter-grid > label { display: flex; align-items: flex-start; gap: 8px; border: 1px solid var(--line); border-radius: 7px; padding: 10px; font-size: 12px; cursor: pointer; }
+.ec-guide-starter-grid input { margin-top: 3px; accent-color: var(--brand); }
+.ec-guide-starter-grid small { display: block; font-size: 11px; color: var(--muted); margin-top: 3px; }
+.ec-guide-outcome { display: grid; gap: 4px; padding: 13px 16px; border: 1px solid var(--line); border-left: 3px solid var(--brand); border-radius: 8px; background: var(--surface); font-size: 13px; }
+.ec-guide-outcome span { color: var(--muted); font-size: 12px; }
+.ec-question { min-width: 0; margin: 0 0 17px; padding: 0; border: 0; }
+.ec-question > legend { padding: 0 0 8px; font-weight: 550; font-size: 13px; }
+.ec-question-options { display: flex; flex-wrap: wrap; gap: 7px; }
+.ec-question-option { display: flex; align-items: center; gap: 6px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px; color: var(--muted); background: var(--surface); font-size: 12px; cursor: pointer; }
+.ec-question-option:has(input:checked) { border-color: var(--brand); color: var(--brand-deep); background: var(--brand-soft); }
+.ec-question-option input { accent-color: var(--brand); margin: 0; }
+.ec-question-custom { display: grid; gap: 6px; margin-top: 9px; font-size: 12px; color: var(--muted); }
+.ec-question-custom > :is(input, textarea) { width: 100%; min-width: 0; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 7px; padding: 10px; font: inherit; }
+.ec-question > .ec-muted { margin-top: 6px; font-size: 11px; }
+.ec-question-options > .ec-question-option:focus-within { outline: 3px solid rgb(63 77 143 / 20%); outline-offset: 2px; }
+@media (max-width: 760px) {
+  .ec-guide-intro { align-items: flex-start; padding: 16px; }
+  .ec-guide-intro h2 { font-size: 17px; }
+  .ec-guide-steps { gap: 5px; }
+  .ec-guide-steps button { flex-direction: column; padding: 10px; gap: 5px; }
+  .ec-guide-steps strong { font-size: 12px; }
+  .ec-guide-steps small { font-size: 10px; }
+  .ec-guide-footer { flex-wrap: wrap; }
+  .ec-guide-checks, .ec-guide-starter-grid { grid-template-columns: 1fr; }
+  .ec-guide-product > .ec-field { min-width: 100%; }
+  .ec-workspace .ec-extra-nav { margin-left: 0; }
+}
 @media (max-width: 1100px) { .ec-split { grid-template-columns: 220px minmax(0, 1fr); } .ec-grid, .ec-card-grid { grid-template-columns: 1fr; } .ec-panel { padding: 17px; } }
 @media (max-width: 760px) { .ec-scope { flex-wrap: wrap; padding: 14px; } .ec-scope .ec-field { flex-basis: 40%; } .ec-split { grid-template-columns: 1fr; } .ec-list { max-height: 300px; } .ec-panel-head { flex-wrap: wrap; } .ec-settings details { width: 100%; min-width: 0; } .ec-workspace { gap: 12px; } .ec-actions { align-items: stretch; } }
+
+.ec-page-heading { margin-bottom: 18px; }
+.ec-scope { padding: 10px 16px; align-items: center; gap: 14px; }
+.ec-scope .ec-field { display: flex; align-items: center; gap: 9px; }
+.ec-scope .ec-field > label { white-space: nowrap; }
+.ec-scope .ec-field > select { flex: 1; width: 0; padding: 8px 10px; }
+.ec-scope .ec-back { font-size: 12px; padding: 8px 0; }
+.ec-settings-compact .ec-panel-head > div { display: flex; align-items: baseline; flex-wrap: wrap; gap: 5px 12px; }
+.ec-settings-compact .ec-panel-head > div > p { margin-top: 0; }
+@media (max-width: 760px) {
+  .ec-scope .ec-field { flex-basis: 100%; }
+  .ec-scope .ec-field > label { min-width: 52px; }
+  .ec-settings-compact .ec-panel-head > div { display: block; }
+  .ec-settings-compact .ec-panel-head > div > p { margin-top: 4px; }
+}
