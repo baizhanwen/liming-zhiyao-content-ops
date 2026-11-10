@@ -1,3 +1,4 @@
+import { safeProgressObservation } from "./analysis-task-progress";
 import { isLeasedAnalysisStatus } from "./analysis-jobs";
 import { analysisJobStatuses, canTransitionAnalysisJob, type AnalysisJobStatus } from "./analysis-jobs";
 import { isPlainRecord, normalizeLeaseSeconds, normalizeWorkerId } from "./service-auth";
@@ -8,6 +9,7 @@ const SAFE_CODE = /^[A-Z][A-Z0-9_]{2,63}$/;
 export type WorkerJobRow = {
   id: string; organization_id: string; project_id: string; video_id: string; status: AnalysisJobStatus; progress: number; current_stage: string | null;
   lease_owner: string | null; lease_expires_at: string | null; attempt_count: number; version: number; result_key: string | null;
+  progress_json?: string | null; stage_started_at?: string | null; last_progress_at?: string | null;
   checkpoint_stage?: string | null; checkpoint_json?: string | null; checkpoint_updated_at?: string | null; resume_count?: number;
 };
 
@@ -41,7 +43,7 @@ export function parseHeartbeatPayload(value: unknown) {
   const workerId = normalizeWorkerId(value.workerId); const status = readStatus(value.status); const progress = readProgress(value.progress); const stage = readStage(value.stage);
   const version = typeof value.version === "number" && Number.isInteger(value.version) && value.version >= 0 ? value.version : null;
   if (!workerId || !status || !isLeasedAnalysisStatus(status) || progress === null || !stage || version === null) return null;
-  return { workerId, status, progress, stage, version, leaseSeconds: normalizeLeaseSeconds(value.leaseSeconds), browserAuth: parseAnalyzerBrowserAuth(value.browserAuth) };
+  return { workerId, status, progress, stage, version, leaseSeconds: normalizeLeaseSeconds(value.leaseSeconds), observation: safeProgressObservation(value.observation), browserAuth: parseAnalyzerBrowserAuth(value.browserAuth) };
 }
 
 export function parseCheckpointPayload(value: unknown) {

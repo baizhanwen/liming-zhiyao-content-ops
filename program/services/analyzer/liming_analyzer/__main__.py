@@ -9,6 +9,7 @@ from dataclasses import replace
 from .api_client import AnalyzerApiClient, AnalyzerApiError, ClaimedJob, Processor
 from .bootstrap import AnalyzerSettings, build_client, build_pipeline
 from .worker import process_once, run_forever
+from .task_progress import observe
 
 
 def build_lazy_processor(settings: AnalyzerSettings, client: AnalyzerApiClient) -> Processor:
@@ -23,6 +24,7 @@ def build_lazy_processor(settings: AnalyzerSettings, client: AnalyzerApiClient) 
         if pipeline is None or pipeline_settings != active_settings:
             warm_status = "analyzing" if job.checkpoint_stage in {"evidence_ready", "segment_progress"} else "downloading"
             warm_message = "正在初始化本地分析模型（首次使用可能需要下载）"
+            observe(heartbeat, "loading_models")
             current_job = heartbeat(warm_status, max(2, job.progress), warm_message)
             stop_heartbeat = threading.Event()
             heartbeat_error: list[Exception] = []

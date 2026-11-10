@@ -146,11 +146,16 @@ class AnalyzerApiClient:
             resume_count=int(job.get("resume_count") or 0),
         )
 
-    def heartbeat(self, job: ClaimedJob, status: str, progress: int, stage: str, lease_seconds: int = 300) -> ClaimedJob:
+    def heartbeat(self, job: ClaimedJob, status: str, progress: int, stage: str, lease_seconds: int = 300, observation: Mapping[str, Any] | None = None) -> ClaimedJob:
         payload: dict[str, Any] = {
             "workerId": self.worker_id, "version": job.version, "status": status, "progress": progress,
             "stage": stage, "leaseSeconds": lease_seconds,
         }
+        if observation is not None:
+            from .task_progress import safe_observation
+            safe = safe_observation(observation)
+            if safe is not None:
+                payload["observation"] = safe
         browser_auth = self._browser_auth()
         if browser_auth is not None:
             payload["browserAuth"] = browser_auth

@@ -247,6 +247,7 @@ td small { display: block; margin-top: 2px; color: var(--subtle); }
 .list-empty { padding: 46px 24px; color: var(--muted); text-align: center; }
 .analysis-row { min-height: 100px; display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: start; gap: 13px; padding: 16px 18px; border-top: 1px solid var(--line); }
 .analysis-row:first-child { border-top: 0; }
+.analysis-task-progress { grid-column: 2 / -1; min-width: 0; }
 .media-kind { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 10px; color: var(--brand); background: var(--brand-soft); font-size: 11px; font-weight: 750; }.media-kind.upload { color: var(--success); background: var(--success-soft); }
 .analysis-copy { min-width: 0; }.analysis-copy > strong, .analysis-copy > small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.analysis-copy > strong { font-weight: 650; }.analysis-copy > small { margin-top: 3px; color: var(--subtle); font-size: 11px; }
 .analysis-copy > p { margin: 7px 0 0; color: var(--danger); font-size: 11px; }

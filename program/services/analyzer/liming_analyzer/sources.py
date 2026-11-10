@@ -55,6 +55,11 @@ class PlatformSourceProvider:
         self.public_video = public_video
         self.cookie_file = Path(cookie_file).expanduser().resolve() if cookie_file else None
 
+    def set_progress(self, callback) -> None:
+        setter = getattr(self.public_video, "set_progress", None)
+        if callable(setter):
+            setter(callback)
+
     def acquire(self, job: ClaimedJob, destination: Path) -> AcquiredSource:
         if job.source_type == "upload":
             return AcquiredSource(self.client.download_upload_source(job, destination))
@@ -102,6 +107,9 @@ class SkillCollectPublicVideoResolver:
         self._browser_timeout = browser_timeout
         self._progress = progress
         self._cancelled = cancelled
+
+    def set_progress(self, callback) -> None:
+        self._progress = callback
 
     def download(self, url: str, destination: Path, *, cookie_file: Path | None = None) -> AcquiredSource:
         from .douyin_collector import CollectorError

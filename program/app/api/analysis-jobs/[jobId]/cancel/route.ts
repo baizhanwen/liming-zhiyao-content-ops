@@ -18,9 +18,9 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     const user = await ensureUser(identity); const now = new Date().toISOString();
     const result = await db.prepare(`
       UPDATE analysis_jobs SET status = 'cancelled', current_stage = '任务已取消', lease_owner = NULL,
-        lease_expires_at = NULL, last_heartbeat_at = NULL, result_key = NULL, version = version + 1,
+        lease_expires_at = NULL, completed_at = ?, last_progress_at = ?, result_key = NULL, version = version + 1,
         updated_by = ?, updated_at = ? WHERE id = ? AND status = ? AND version = ?
-    `).bind(user.id, now, jobId, job.status, job.version).run();
+    `).bind(now, now, user.id, now, jobId, job.status, job.version).run();
     if (!result.meta.changes) return apiError("JOB_STATE_CHANGED", "任务状态已经变化，请刷新后再试。", 409);
     await db.batch([
       db.prepare("INSERT INTO analysis_job_events (id, organization_id, project_id, job_id, video_id, event_type, from_status, to_status, progress, details_json, created_at) VALUES (?, ?, ?, ?, ?, 'stage_changed', ?, 'cancelled', ?, ?, ?)")

@@ -1,3 +1,4 @@
+import { taskProgressSnapshot } from "../../../lib/analysis-task-progress";
 import { ACTIVE_ANALYSIS_STATUSES_SQL } from "../../../lib/analysis-jobs";
 import { canWriteProjectAccess, getD1, getProjectAccess } from "../../../db/runtime";
 import { readAnalyzerReadiness } from "../../../lib/analyzer-readiness";
@@ -36,7 +37,7 @@ export async function GET(request: Request) {
         ) ORDER BY created_at DESC LIMIT 100
       `).bind(organizationId, projectId, organizationId, projectId).all(),
       db.prepare(`
-        SELECT id, video_id, status, analysis_profile, progress, current_stage, error_code, error_message, retry_count, lease_expires_at, checkpoint_stage, checkpoint_json, checkpoint_updated_at, resume_count, created_at, updated_at
+        SELECT id, video_id, status, analysis_profile, progress, current_stage, error_code, error_message, retry_count, lease_expires_at, checkpoint_stage, checkpoint_json, checkpoint_updated_at, resume_count, attempt_count, started_at, stage_started_at, last_progress_at, progress_json, last_heartbeat_at, lease_owner, completed_at, created_at, updated_at
         FROM analysis_jobs
         WHERE organization_id = ? AND (project_id = ? OR video_id IN (
           SELECT library.source_video_id FROM project_video_references refs
@@ -68,7 +69,7 @@ export async function GET(request: Request) {
         WHERE j.status IN (${ACTIVE_ANALYSIS_STATUSES_SQL})
       `).bind(queueNow, queueNow).first<{ waiting_count: number; running_count: number }>(),
     ]);
-    const safeJobs = jobs.results.map((job) => ({ ...job, checkpoint_json: undefined, segment_progress: summarizeSegmentProgress(job.checkpoint_json) }));
+    const safeJobs = jobs.results.map((job) => ({ ...job, checkpoint_json: undefined, progress_json: undefined, lease_owner: undefined, taskProgress: taskProgressSnapshot(job as Parameters<typeof taskProgressSnapshot>[0], queueNow), segment_progress: summarizeSegmentProgress(job.checkpoint_json) }));
     return Response.json({
       videos: videos.results, jobs: safeJobs, canWrite: canWriteProjectAccess(access),
       queue: { sampleCount: queueStats?.sample_count ?? 0, averageSeconds: queueStats?.average_seconds ?? null, waitingCount: sharedQueue?.waiting_count ?? 0, runningCount: sharedQueue?.running_count ?? 0 },

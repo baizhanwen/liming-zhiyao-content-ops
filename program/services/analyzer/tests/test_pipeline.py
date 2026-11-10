@@ -69,7 +69,7 @@ class PipelineTests(unittest.TestCase):
         })
 
         self.assertEqual(progress, 61)
-        self.assertEqual(detail, "关键帧 45/67 · 视觉批次 8/12")
+        self.assertEqual(detail, "候选画面 45/67 · 视觉批次 8/12")
 
     def test_blocking_stages_keep_worker_presence_alive(self):
         class SlowSource(Source):
@@ -96,6 +96,40 @@ class PipelineTests(unittest.TestCase):
         self.assertGreaterEqual(sum(status == "downloading" for status, *_ in stages), 3)
         self.assertGreaterEqual(sum(status == "analyzing" for status, *_ in stages), 3)
 
+    def test_observations_distinguish_candidate_checks_from_completed_ocr(self):
+        class SlowSpeech(Speech):
+            def transcribe(self, audio):
+                time.sleep(0.025)
+                return super().transcribe(audio)
+
+        class ObservedVisual(Visual):
+            def progress_snapshot(self):
+                return {"phase": "ocr", "keyframes_completed": 5, "keyframes_total": 8, "sampled_frames": 1, "ocr_completed": 1}
+
+            def analyze(self, media, output_dir):
+                time.sleep(0.05)
+                return super().analyze(media, output_dir)
+
+        job = ClaimedJob("job-counters", "org-1", "project-1", "video-1", "upload", "queued", 1, 2, {})
+        events = []
+
+        def heartbeat(status, progress, stage):
+            return replace(job, status=status, progress=progress)
+
+        heartbeat.observe = events.append
+        AnalysisPipeline(Source(), Media(), SlowSpeech(), ObservedVisual(), Structure(), heartbeat_seconds=0.01).process(job, heartbeat)
+        visual_events = [event for event in events if event["phase"] == "model_vision"]
+        self.assertTrue(visual_events)
+        for event in visual_events:
+            self.assertEqual(event["candidates_checked"], 5)
+            self.assertEqual(event["candidates_total"], 8)
+            self.assertEqual(event["ocr_completed"], 1)
+            self.assertEqual(event["sampled_frames"], 1)
+            self.assertNotIn("ocr_total", event)
+            self.assertNotIn("total_frames", event)
+        self.assertTrue(any(row.get("transcribed_chunks") == 0 for row in visual_events))
+        self.assertTrue(any(row.get("transcribed_chunks") == 1 for row in visual_events))
+
     def test_pipeline_preserves_evidence_and_emits_legal_stage_order(self):
         job = ClaimedJob("job-1", "org-1", "project-1", "video-1", "upload", "queued", 1, 2, {}, analysis_profile="max")
         structure = Structure(); visual = Visual(); stages = []
@@ -105,7 +139,7 @@ class PipelineTests(unittest.TestCase):
             return job
 
         result = AnalysisPipeline(Source(), Media(), Speech(), visual, structure).process(job, heartbeat)
-        self.assertEqual([item[0] for item in stages], ["downloading", "processing", "transcribing", "extracting", "analyzing"])
+        self.assertEqual([status for index, (status, *_rest) in enumerate(stages) if index == 0 or status != stages[index - 1][0]], ["downloading", "processing", "transcribing", "extracting", "analyzing"])
         self.assertEqual(result.transcript.segments[0]["start_ms"], 0)
         self.assertEqual(result.report["evidence"][0]["text"], "先提出问题")
         self.assertEqual(result.confidence, 91)

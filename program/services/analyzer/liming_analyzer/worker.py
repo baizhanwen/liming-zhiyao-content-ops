@@ -8,6 +8,7 @@ from collections.abc import Callable
 
 from .api_client import AnalysisResult, AnalyzerApiClient, AnalyzerApiError, ClaimedJob, Processor
 from .source_errors import SourceDownloadError
+from .task_progress import ProgressObservations
 
 logger = logging.getLogger(__name__)
 
@@ -53,13 +54,16 @@ def process_once(client: AnalyzerApiClient, processor: Processor) -> bool:
     if job is None:
         return False
     current = job
+    observations = ProgressObservations()
     logger.info("Analysis task claimed: job=%s source=%s", job.id, job.source_type)
 
     def heartbeat(status: str, progress: int, stage: str) -> ClaimedJob:
         nonlocal current
-        current = client.heartbeat(current, status, progress, stage)
+        observation = observations.snapshot()
+        current = client.heartbeat(current, status, progress, stage, observation=observation) if observation is not None else client.heartbeat(current, status, progress, stage)
         return current
 
+    heartbeat.observe = observations.update
     result_key = f"result:{job.id}:{uuid.uuid4().hex}"
     try:
         result: AnalysisResult = processor(job, heartbeat)

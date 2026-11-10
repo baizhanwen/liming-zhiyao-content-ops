@@ -1,0 +1,53 @@
+/* Layout adapted from Skill Collect TaskProgress (MIT); colors follow this app. */
+.card { min-width: 0; margin: 0; padding: 15px 17px; border: 1px solid var(--line); border-radius: 9px; color: var(--ink); background: var(--surface); overflow-wrap: anywhere; }
+.heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.headingCopy { min-width: 0; }
+.eyebrow { display: block; margin-bottom: 5px; color: var(--muted); font-size: 10px; }
+.card h2 { display: flex; align-items: center; gap: 7px; margin: 0; color: var(--ink); font-size: 14px; font-weight: 650; line-height: 1.5; }
+.dot { display: inline-block; flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+.dot.active { background: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft); animation: task-status-pulse 2s ease-in-out infinite; }
+.buttons { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 6px; }
+.buttons button { min-height: 29px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--muted); font-size: 11px; font-weight: 500; line-height: 1.4; cursor: pointer; }
+.buttons button:hover:not(:disabled), .buttons button:focus-visible { border-color: var(--brand); color: var(--brand); }
+.buttons button:disabled { opacity: .6; cursor: wait; }
+.clock { display: flex; flex-wrap: wrap; gap: 5px 19px; margin-top: 8px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.clock strong { margin-left: 3px; color: var(--ink); font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.detail { margin: 7px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.detail strong { color: var(--ink); font-weight: 500; }
+.worker, .wait, .snapshot { margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.metrics { display: flex; flex-wrap: wrap; gap: 5px; margin: 7px 0 0; padding: 0; list-style: none; }
+.metrics li { padding: 2px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface-soft); color: var(--muted); font-size: 10px; line-height: 1.5; font-variant-numeric: tabular-nums; }
+.connection { margin-top: 7px; color: var(--muted); font-size: 11px; }
+.connection p { margin: 0; line-height: 1.6; }
+.connection [role=alert] { padding: 7px 9px; border: 1px solid #e8cfc8; border-radius: 5px; background: #fff5f2; color: var(--danger); }
+.slow { margin: 7px 0 0; padding: 6px 8px; border-left: 2px solid #c4b28b; background: #fbf8f1; color: #806b45; font-size: 11px; line-height: 1.6; }
+.freshness { display: flex; flex-wrap: wrap; gap: 3px 16px; margin-top: 7px; color: var(--muted); }
+.freshness small { font-size: 10px; line-height: 1.6; }
+.children { margin-top: 6px; }
+.children:empty { display: none; }
+.children p { margin: 4px 0 0; font-size: 11px; line-height: 1.5; }
+.information { margin-top: 9px; padding-top: 7px; border-top: 1px solid var(--line); }
+.compact { padding: 9px 12px; border-radius: 7px; background: var(--surface-soft); }
+.compact h2 { font-size: 12px; line-height: 1.5; }
+.compact .buttons button { min-height: 26px; padding: 2px 7px; background: var(--surface); font-size: 10px; }
+.compact .clock { gap: 4px 15px; margin-top: 3px; font-size: 10px; }
+.compact .clock strong { font-size: 13px; }
+.compact .detail { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; margin-top: 5px; font-size: 11px; line-height: 1.5; }
+.compact .metrics { gap: 4px; margin-top: 5px; }
+.compact .metrics li { background: var(--surface); font-size: 10px; }
+.more { margin-top: 5px; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.more summary { width: fit-content; cursor: pointer; }
+.more summary:hover, .more summary:focus-visible { color: var(--brand); }
+.moreContent { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); }
+.moreContent .detail { display: block; overflow: visible; }
+.card :is(h2, p, strong, small, li) { min-width: 0; overflow-wrap: anywhere; }
+@keyframes task-status-pulse { 50% { box-shadow: 0 0 0 4px var(--surface-soft); } }
+@media (max-width: 640px) {
+  .card { padding: 12px; }
+  .heading { align-items: flex-start; }
+  .buttons { max-width: 45%; justify-content: flex-end; }
+  .clock { gap: 4px 12px; }
+  .compact { padding: 8px 10px; }
+  .compact .buttons button { min-height: 26px; }
+}
+@media (prefers-reduced-motion: reduce) { .dot.active { animation: none; } }
