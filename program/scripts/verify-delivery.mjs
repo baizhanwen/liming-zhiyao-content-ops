@@ -137,9 +137,9 @@ try {
     await run(process.execPath, ["scripts/prepare-runtime-configuration.mjs"]);
     const variables = readFileSync(path.join(installRoot, ".dev.vars"), "utf8");
     for (const name of ["MODEL_SETTINGS_ENCRYPTION_KEY", "LOCAL_RUNTIME_TOKEN", "ANALYZER_SERVICE_TOKEN"])
-      assert.match(variables, new RegExp(`^${name}=[a-f0-9]{64}$`, "m"));
+      assert.ok(new RegExp(`^${name}=[a-f0-9]{64}$`, "m").test(variables), `Missing installation-owned secret: ${name}`);
     await run(process.execPath, ["scripts/prepare-runtime-configuration.mjs"]);
-    assert.equal(readFileSync(path.join(installRoot, ".dev.vars"), "utf8"), variables, "Restart must preserve this installation's generated secrets");
+    assert.equal(sha(path.join(installRoot, ".dev.vars")), createHash("sha256").update(variables).digest("hex"), "Restart must preserve this installation's generated secrets");
   });
   let syntheticVars = readFileSync(path.join(installRoot, ".dev.vars"), "utf8");
   if (!githubDistribution) syntheticVars = syntheticVars.replace(/^FIRST_RUN_SETUP_CODE_HASH=.*$/m, `FIRST_RUN_SETUP_CODE_HASH=${createHash("sha256").update(setupCode).digest("hex")}`);
@@ -175,7 +175,7 @@ try {
       for (const table of before) assert.equal(JSON.stringify(legacy.prepare(table.query).all()), table.rows, table.query);
       assert.equal(legacy.prepare("SELECT COUNT(*) AS n FROM analysis_model_calls").get().n, 0);
     } finally { legacy.close(); }
-    assert.equal(readFileSync(path.join(installRoot, ".dev.vars"), "utf8"), syntheticVars);
+    assert.equal(sha(path.join(installRoot, ".dev.vars")), createHash("sha256").update(syntheticVars).digest("hex"), "Legacy configuration must remain unchanged");
   });
   const npmCli = process.env.npm_execpath || path.join(path.dirname(process.execPath), "node_modules/npm/bin/npm-cli.js");
   assert.ok(existsSync(npmCli), "npm CLI must be installed alongside Node.js");
@@ -206,7 +206,7 @@ try {
   });
   if (manifest.license.features.videoAnalysis && process.env.DELIVERY_TEST_PYTHON_ENV) await check("analyzer-empty-queue-concurrent-start-and-supervisor-recovery", async () => {
     await run("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(sourceRoot, "scripts/verify-analyzer-delivery.ps1"), "-InstallRoot", installRoot, "-PythonEnvironment", process.env.DELIVERY_TEST_PYTHON_ENV, "-BaseUrl", origin]);
-    assert.equal(readFileSync(path.join(installRoot, ".dev.vars"), "utf8"), syntheticVars, "Existing configuration was modified by analyzer startup");
+    assert.equal(sha(path.join(installRoot, ".dev.vars")), createHash("sha256").update(syntheticVars).digest("hex"), "Existing configuration was modified by analyzer startup");
   });
   let projectId;
   await check("customer-project-write-and-restart-persistence", async () => {

@@ -74,3 +74,56 @@ test("production startup forwards all web arguments and closes its own bridge af
   // Both platforms must observe child closure; POSIX also proves graceful handling.
   if (process.platform !== "win32") assert.equal(readFileSync(path.join(root, "bridge-stopped.txt"), "utf8"), "stopped");
 });
+
+
+for (const [name, eol] of [["LF", "\n"], ["CRLF", "\r\n"]]) {
+  test(`${name} bootstrap preserves comments, blank lines and line endings across restarts`, async t => {
+    const root = fixture(t);
+    const lines = [
+      "# 分析服务通信配置", "\tANALYZER_SERVICE_TOKEN = local-change-me-before-using-analyzer", "",
+      "# 已保存模型的加密配置", "  MODEL_SETTINGS_ENCRYPTION_KEY =", "\tLOCAL_RUNTIME_TOKEN =", "",
+      "# 模型 API 设置保持原值", "ANALYZER_LLM_API_KEY=synthetic-model-key-preserve",
+    ];
+    writeFileSync(path.join(root, ".dev.vars.example"), lines.join(eol) + eol);
+    await prepareRuntimeConfiguration(root);
+    const target = path.join(root, ".dev.vars");
+    const first = readFileSync(target, "utf8");
+    const configured = readLocalRuntimeConfiguration(root);
+    for (const setting of ["MODEL_SETTINGS_ENCRYPTION_KEY", "LOCAL_RUNTIME_TOKEN", "ANALYZER_SERVICE_TOKEN"])
+      assert.equal(/^[a-f\d]{64}$/u.test(configured[setting]), true, `Missing generated ${setting}`);
+    assert.equal(configured.ANALYZER_LLM_API_KEY, "synthetic-model-key-preserve");
+    assert.equal(configured.LOCAL_RUNTIME_URL, "http://127.0.0.1:3001");
+    const outputLines = first.split(eol);
+    assert.equal(outputLines.includes("# 分析服务通信配置"), true);
+    assert.equal(outputLines.includes("# 已保存模型的加密配置"), true);
+    assert.equal(outputLines.filter(line => line === "").length, 3, "Blank lines and final newline must survive insertion");
+    if (eol === "\r\n") {
+      assert.equal(/\r(?!\n)|(?<!\r)\n/u.test(first), false, "CRLF must stay complete when settings are replaced or appended");
+    } else assert.equal(first.includes("\r"), false);
+    const restarted = await prepareRuntimeConfiguration(root);
+    assert.equal(restarted.updated, false);
+    assert.equal(readFileSync(target, "utf8") === first, true, "Restart must preserve the full generated configuration");
+  });
+}
+
+test("legacy bare-CR settings preserve existing encryption and service keys during repair", async t => {
+  const root = fixture(t), target = path.join(root, ".dev.vars");
+  const encryptionKey = "c".repeat(64), runtimeToken = "d".repeat(64), serviceToken = "e".repeat(64);
+  const original = `# 旧版 Windows 注释\rMODEL_SETTINGS_ENCRYPTION_KEY=${encryptionKey}\r\n# 通信配置\rLOCAL_RUNTIME_TOKEN=${runtimeToken}\rANALYZER_SERVICE_TOKEN=${serviceToken}\rANALYZER_LLM_API_KEY=synthetic-existing-model-key\r`;
+  writeFileSync(target, original);
+  await prepareRuntimeConfiguration(root);
+  const configured = readLocalRuntimeConfiguration(root);
+  assert.equal(configured.MODEL_SETTINGS_ENCRYPTION_KEY, encryptionKey);
+  assert.equal(configured.LOCAL_RUNTIME_TOKEN, runtimeToken);
+  assert.equal(configured.ANALYZER_SERVICE_TOKEN, serviceToken);
+  assert.equal(configured.ANALYZER_LLM_API_KEY, "synthetic-existing-model-key");
+  assert.equal(configured.LOCAL_RUNTIME_URL, "http://127.0.0.1:3001");
+  const repaired = readFileSync(target, "utf8");
+  assert.equal(repaired.startsWith(original), true, "Adding a missing URL must preserve existing bare-CR keys");
+  assert.equal((await prepareRuntimeConfiguration(root)).updated, false);
+  assert.equal(readFileSync(target, "utf8") === repaired, true);
+  const invalid = original.replace(encryptionKey, "invalid-existing-key-preserve");
+  writeFileSync(target, invalid);
+  await assert.rejects(prepareRuntimeConfiguration(root), /has been preserved/);
+  assert.equal(readFileSync(target, "utf8") === invalid, true, "An invalid existing key must never be silently replaced");
+});

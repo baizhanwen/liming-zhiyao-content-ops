@@ -46,9 +46,16 @@ export async function prepareRuntimeConfiguration(root = defaultRoot) {
     let content = readFileSync(created ? template : target, "utf8");
     const existing = parseLocalRuntimeConfiguration(content);
     let updated = created;
+    const lineEnding = content.includes("\r\n") ? "\r\n" : content.includes("\n") ? "\n" : content.includes("\r") ? "\r" : "\n";
     const set = (name, value) => {
-      const pattern = new RegExp(`^\\s*${name}\\s*=.*$`, "mu");
-      content = pattern.test(content) ? content.replace(pattern, `${name}=${value}`) : `${content.replace(/\s*$/u, "")}\n${name}=${value}\n`;
+      // Multiline ^ can match between CR and LF. A \s prefix would consume
+      // that LF and join the setting to its preceding comment on Windows.
+      const pattern = new RegExp(`^[ \\t]*${name}[ \\t]*=[^\\r\\n]*`, "mu");
+      if (pattern.test(content)) content = content.replace(pattern, `${name}=${value}`);
+      else {
+        const separator = content && !/[\r\n]$/u.test(content) ? lineEnding : "";
+        content = `${content}${separator}${name}=${value}${lineEnding}`;
+      }
       updated = true;
     };
     const encryptionKey = existing.MODEL_SETTINGS_ENCRYPTION_KEY?.trim() ?? "";

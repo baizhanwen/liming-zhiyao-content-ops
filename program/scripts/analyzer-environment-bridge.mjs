@@ -12,7 +12,7 @@ const actions = new Set(["setup", "start", "stop", "check"]);
 
 export function parseLocalRuntimeConfiguration(content) {
   const values = {};
-    for (const line of content.split(/\r?\n/u)) {
+    for (const line of content.split(/\r\n|\n|\r/u)) {
       const match = /^\s*([A-Z][A-Z0-9_]*)\s*=\s*(.*?)\s*$/u.exec(line);
       if (!match) continue;
       let value = match[2];
