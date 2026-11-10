@@ -34,7 +34,7 @@ export const claimSchema = z.object({
 }).strict();
 
 export const productPublicSchema = z.object({
-  category: text(300).default(""), specification: text(1000).default(""),
+  category: text(300).default(""), specification: text(1000).default(""), sellingPoints: text(3000).default(""),
   audience: audienceSchema, scenarios: text(2000).default(""),
   claims: z.array(claimSchema).max(30).refine(values => new Set(values.map(v => v.id)).size === values.length, "卖点 ID 重复"),
   prohibited: text(3000).default(""), purchaseConcerns: text(2000).default(""),
@@ -56,8 +56,6 @@ export const productSchema = scopeSchema.extend({
   const p = value.publicData;
   if (!p.category || !p.audience.user || !p.audience.buyer || !p.scenarios || !p.prohibited)
     ctx.addIssue({ code: "custom", message: "确认商品前请补齐品类、购买与使用人群、场景及表达禁区", path: ["publicData"] });
-  if (!p.claims.some(c => c.status === "confirmed" && c.evidenceIds.length))
-    ctx.addIssue({ code: "custom", message: "至少需要一条有证据的已确认卖点", path: ["publicData", "claims"] });
 });
 
 export const evidenceSchema = scopeSchema.extend({
@@ -89,7 +87,9 @@ export const caseSchema = scopeSchema.extend({
   if (v.hasSalesData === true && !v.salesDataSource) ctx.addIssue({ code: "custom", message: "成交数据须注明可核验来源", path: ["salesDataSource"] });
 });
 
+export const benchmarkReferenceSchema = z.object({ referenceId: id, analysisId: id, transcriptId: id.nullable().default(null) }).strict();
 export const taskBriefSchema = z.object({
+  referenceMode: z.enum(["method", "benchmark"]).optional(), benchmark: benchmarkReferenceSchema.nullable().default(null),
   audience: audienceSchema, scene: text(2000).default(""), barrier: text(1000).default(""),
   claimId: text(100).default(""), evidenceIds: ids.default([]), platform: platformSchema.default("douyin"),
   traffic: z.enum(["organic", "paid"]).default("organic"), target: targetSchema.default("product_click"),
@@ -106,7 +106,7 @@ export const taskSchema = scopeSchema.extend({
 
 export const segmentSchema = z.object({
   id, role: z.enum(["hook", "problem", "claim", "evidence", "transition", "cta"]),
-  script: required(2000), visual: required(2000), durationSec: z.number().int().min(1).max(180),
+  script: required(2000), visual: text(2000).default(""), durationSec: z.number().int().min(1).max(180),
   componentIds: ids, claimIds: ids, evidenceIds: ids, knowledgeIds: ids.default([]), caseIds: ids.default([]),
 }).strict();
 export const applicationSchema = z.object({
@@ -116,7 +116,7 @@ export const applicationSchema = z.object({
 }).strict();
 export const packSchema = z.object({
   title: required(300), segments: z.array(segmentSchema).min(2).max(20),
-  applications: z.array(applicationSchema).max(100), filmingChecklist: z.array(required(1000)).min(1).max(30),
+  applications: z.array(applicationSchema).max(100), filmingChecklist: z.array(required(1000)).max(30).default([]),
   pendingConfirmations: z.array(required(1000)).max(30), target: targetSchema,
 }).strict();
 
@@ -154,6 +154,8 @@ export const metricsSchema = scopeSchema.extend({
 export type ProductPublic = z.infer<typeof productPublicSchema>;
 export type ProductInput = z.infer<typeof productSchema>;
 export type TaskBrief = z.infer<typeof taskBriefSchema>;
+/** Old tasks with explicitly selected profiles retain their reference workflow. */
+export const taskReferenceMode = (brief: Pick<TaskBrief, "referenceMode" | "benchmark" | "caseIds">) => brief.referenceMode ?? (brief.benchmark || brief.caseIds.length ? "benchmark" : "method");
 export type ComponentInput = z.infer<typeof componentSchema>;
 export type EcommercePack = z.infer<typeof packSchema>;
 export type MetricInput = z.infer<typeof metricsSchema>;

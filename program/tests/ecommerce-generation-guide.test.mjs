@@ -7,7 +7,7 @@ import { scriptBudget, scriptCharacterCount } from "../lib/ecommerce/generation-
 test("course failure repair gets exact character counts, method bindings and user instructions", async t => {
   const f = await ecommerceGenerationFixture(t, { respond: ({ stage, result, payload }) => {
     if (stage === "draft") {
-      const missing = payload.plan.choices.filter(c => ["structure", "sop"].includes(c.kind)).map(c => c.componentId);
+      const missing = payload.plan.choices.filter(c => c.kind === "structure").map(c => c.componentId);
       for (const segment of result.segments) segment.componentIds = segment.componentIds.filter(id => !missing.includes(id));
       result.segments[0].script += "需要检查输出。".repeat(40);
       for (const application of result.applications.filter(a => missing.includes(a.sourceId))) application.draftQuote = "拼接片段……无法定位。";
@@ -25,19 +25,19 @@ test("course failure repair gets exact character counts, method bindings and use
   assert.ok(repair.generationGuide.observed.totalCharacters > 210);
   assert.ok(repair.generationGuide.observed.referenceBindings.some(b => b.reportedSegmentIds.length && !b.actualSegmentIds.length));
   assert.match(repair.errors.join("；"), /当前 \d+ 字/);
-  assert.equal(repair.generationGuide.selectedMethods.length, 4);
+  assert.deepEqual(repair.generationGuide.selectedMethods.map(method => method.kind).sort(), ["hook", "structure"]);
   assert.equal(repair.generationGuide.sourceRegister.length, repair.context.sources.length);
   const pack = (await response.json()).version.pack;
   assert.ok(scriptCharacterCount(pack.segments.map(s => s.script).join("")) <= 210);
   const byKind = Object.fromEntries(repair.plan.choices.map(c => [c.kind, c.componentId]));
-  for (const kind of ["structure", "sop"]) assert.ok(pack.segments.some(s => s.componentIds.includes(byKind[kind])));
+  for (const kind of ["hook", "structure"]) assert.ok(pack.segments.some(s => s.componentIds.includes(byKind[kind])));
 });
 
 test("unrepaired method bindings are rejected instead of silently claiming adoption", async t => {
   const f = await ecommerceGenerationFixture(t, { respond: ({ stage, result, payload }) => {
     if (["draft", "repair"].includes(stage)) {
-      const sop = payload.plan.choices.find(c => c.kind === "sop").componentId;
-      for (const segment of result.segments) segment.componentIds = segment.componentIds.filter(id => id !== sop);
+      const structure = payload.plan.choices.find(c => c.kind === "structure").componentId;
+      for (const segment of result.segments) segment.componentIds = segment.componentIds.filter(id => id !== structure);
     }
     return result;
   } });

@@ -7,7 +7,7 @@ async function fixture(t, operation) {
   const f = await ecommerceGenerationFixture(t), generated = await f.generate();
   assert.equal(generated.status, 201, await generated.clone().text());
   const versionId = (await generated.json()).version.id, params = { params: Promise.resolve({ taskId: f.task.id }) };
-  const review = action => f.route("tasks/[taskId]/review").POST(f.request("POST", { revision: 1, versionId, action, confirmations: ["facts", "filming", "destination"], note: "合成审核意见" }), params);
+  const review = action => f.route("tasks/[taskId]/review").POST(f.request("POST", { revision: 1, versionId, action, confirmations: ["facts", "destination"], note: "合成审核意见" }), params);
   const accountId = f.seed("social_accounts", { platform: "douyin", account_type: "owned", display_name: "合成账号" });
   const publishedAt = new Date(Date.now() - 3600000).toISOString(), observedAt = new Date().toISOString();
   const publish = () => f.route("tasks/[taskId]/publications").POST(f.request("POST", { versionId, accountId, platform: "douyin", externalUrl: "https://example.invalid/mutation-test", publishedAt, traffic: "organic" }), params);

@@ -32,8 +32,8 @@ function productSummary(row: ProductRow, evidence: EvidenceRow[], now: number): 
     if (claim.status !== "confirmed" || !notExpired(claim.validUntil, now)) return false;
     const backing = available.filter(item => claim.evidenceIds.includes(item.id));
     if (!backing.length) return false;
-    return claim.kind !== "offer" || publicData.priceCents !== null && publicData.offerValidUntil !== null
-      && notExpired(publicData.offerValidUntil, now) && backing.some(item => item.kind === "offer");
+    return claim.kind !== "offer" || publicData.priceCents !== null && notExpired(publicData.offerValidUntil, now)
+      && (!publicData.offer.trim() || publicData.offerValidUntil !== null) && backing.some(item => item.kind === "offer");
   }).map(claim => claim.id) ?? [];
   const problems: string[] = [];
   if (!publicData) problems.push("商品资料格式失效，请重新保存商品");
@@ -84,12 +84,10 @@ export async function GET(request: Request) {
         CASE WHEN json_type(v.pack_json,'$.pendingConfirmations')='array' THEN json_array_length(v.pack_json,'$.pendingConfirmations') ELSE NULL END AS pending_count,
         CASE WHEN json_type(v.pack_json,'$.segments')='array' AND json_array_length(v.pack_json,'$.segments') BETWEEN 2 AND 20
           AND json_type(v.pack_json,'$.applications')='array' AND json_type(v.pack_json,'$.pendingConfirmations')='array'
-          AND json_type(v.pack_json,'$.filmingChecklist')='array' AND json_array_length(v.pack_json,'$.filmingChecklist') > 0
           AND json_type(v.pack_json,'$.title')='text' AND length(trim(json_extract(v.pack_json,'$.title'))) > 0
           AND NOT EXISTS (SELECT 1 FROM json_each(v.pack_json,'$.segments') segment WHERE CASE WHEN segment.type != 'object' THEN 1
             WHEN COALESCE(json_type(segment.value,'$.script'),'') != 'text' OR length(trim(json_extract(segment.value,'$.script'))) = 0
-              OR COALESCE(json_type(segment.value,'$.visual'),'') != 'text' OR length(trim(json_extract(segment.value,'$.visual'))) = 0 THEN 1 ELSE 0 END = 1)
-          AND NOT EXISTS (SELECT 1 FROM json_each(v.pack_json,'$.filmingChecklist') item WHERE item.type != 'text' OR length(trim(item.value)) = 0)
+              THEN 1 ELSE 0 END = 1)
           THEN 1 ELSE 0 END AS pack_present
         FROM ecommerce_tasks t LEFT JOIN ecommerce_versions v ON v.task_id=t.id AND v.version=t.current_version
           AND v.product_id=t.product_id AND v.product_version_id=t.product_version_id AND v.organization_id=t.organization_id AND v.project_id=t.project_id

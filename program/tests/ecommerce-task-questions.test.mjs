@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { productPublicSchema, taskBriefSchema } from "../lib/ecommerce/contracts.ts";
-import { firstVideoTaskTitle, initialTaskDraft, taskBriefForProduct, taskQuestionOptions, taskQuestionSelection } from "../lib/ecommerce/task-question-options.ts";
+import { firstVideoTaskTitle, productCopyTaskTitle, initialTaskDraft, taskBriefForProduct, taskQuestionOptions, taskQuestionSelection } from "../lib/ecommerce/task-question-options.ts";
 
 const product = productPublicSchema.parse({
   audience: { user: "康复训练者", buyer: "本人或护理家属", source: "已确认的访谈记录", status: "confirmed" },
@@ -24,6 +24,23 @@ test("first-video defaults use only a selected product version available in this
   const foreign = initialTaskDraft({ products, initialProductVersionId: "another-space-version", guided: true });
   assert.equal(foreign.versionId, "");
   assert.equal(foreign.brief.audience.user, "");
+});
+
+test("selected products prepare bounded copy titles while foreign versions stay unselected", () => {
+  const draft = initialTaskDraft({ products, initialProductVersionId: "current-scope-version" });
+  assert.equal(draft.title, "测试用品 · 文案");
+  assert.equal(draft.versionId, products[0].version_id);
+  assert.equal(draft.brief.audience.user, product.audience.user);
+  assert.equal(draft.brief.claimId, "");
+  assert.deepEqual(draft.brief.evidenceIds, []);
+  const foreign = initialTaskDraft({ products, initialProductVersionId: "another-space-version" });
+  assert.equal(foreign.title, "");
+  assert.equal(foreign.versionId, "");
+  assert.equal(foreign.brief.audience.user, "");
+  const title = productCopyTaskTitle("😀".repeat(200));
+  assert.ok(title.length <= 300);
+  assert.ok(title.endsWith(" · 文案"));
+  assert.doesNotMatch(title, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/u);
 });
 
 test("guide defaults never replace a saved task's custom answers or advanced selections", () => {

@@ -33,7 +33,8 @@ test("no eligible methods returns missing categories without starting a model ca
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.equal(body.ready, false);
-  for (const kind of ["钩子", "卖点可视化", "素材结构", "拍摄 SOP"]) assert.ok(body.missing.some(value => value.includes(kind)));
+  for (const kind of ["开头", "文案结构"]) assert.ok(body.missing.some(value => value.includes(kind)));
+  assert.equal(body.missing.some(value => /可视化|拍摄/.test(value)), false);
   assert.equal((await f.generate()).status, 409);
   assert.equal(f.calls.length, 0);
 });
@@ -76,7 +77,7 @@ test("sales figures in an external case cannot become facts about the selected p
   const created = await f.route("cases").POST(f.request("POST", { referenceId, analysisId, title: "合成外部案例", audience: "日常使用者", target: "product_click", hook: "使用问题", structure: "先演示再引导", evidenceMethod: "动作演示", cta: "查看规格", transferable: "演示结构", nonTransferable: "原作者身份及99999件销量", sourceQuote, status: "confirmed" }));
   assert.equal(created.status, 201);
   const caseId = (await created.json()).case.id;
-  f.sqlite.prepare("UPDATE ecommerce_tasks SET brief_json=? WHERE id=?").run(JSON.stringify({ ...f.brief, caseIds: [caseId] }), f.task.id);
+  f.sqlite.prepare("UPDATE ecommerce_tasks SET brief_json=? WHERE id=?").run(JSON.stringify({ ...f.brief, referenceMode: "benchmark", caseIds: [caseId] }), f.task.id);
   const response = await f.generate();
   assert.equal(response.status, 409);
   assert.match((await response.json()).error.message, /没有资料依据的数字：99999/);

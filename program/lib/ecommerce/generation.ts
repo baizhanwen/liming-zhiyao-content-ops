@@ -6,10 +6,10 @@ import { checkOrganizationQuota } from "../operations";
 import { readEffectiveModelRuntime } from "../model-settings";
 import { invokeContentModel, readContentModelConfig, ModelConfigurationError } from "../model-adapter";
 import { authorize, auditStatement, enabledGuard, EcommerceError, requireChanged, type EcommerceAccess } from "./access";
-import { buildEcommerceContext } from "./context";
+import { buildEcommerceContext, generationSourceDocument } from "./context";
 import { generationActorGuard, generationSourceGuard } from "./source-guard";
 import { packSchema, runSchema, type EcommercePack } from "./contracts";
-import { ECOMMERCE_PROMPT_VERSION, ECOMMERCE_SYSTEM, mergeEcommercePatch, patchSchema, planIssues, planSchema, reviewIssues, reviewSchema, validateEcommercePack, type EcommercePlan } from "./generation-contract";
+import { ECOMMERCE_PROMPT_VERSION, ECOMMERCE_SYSTEM, copyDraftForModel, copyPackSchema, copyPatchSchema, copyReviewSchema, mergeEcommercePatch, patchSchema, planIssues, planSchema, reviewIssues, validateEcommercePack, type EcommercePlan } from "./generation-contract";
 import { hashJson } from "./products";
 import { activeRunPredicate } from "./runs";
 import { ecommerceGenerationGuide } from "./generation-guide";
@@ -149,38 +149,38 @@ export async function generateEcommerce(request: Request, access: EcommerceAcces
     if (input.replace && base) {
       const basePack = packSchema.parse(JSON.parse(base.pack_json));
       const response = await invokeRecorded(request, access, runId, "patch", {
-        context: context.input, operation: input.replace, instructions: input.instructions, base: basePack,
+        context: context.input, operation: input.replace, instructions: input.instructions, base: copyDraftForModel(basePack, context),
         generationGuide: ecommerceGenerationGuide(context, undefined, basePack),
         requirements: "只返回指定 role 的段落，保持原 ID、role、数量。返回完整更新后的应用报告。其他段落由服务器原样保留；若新要求影响其他段落，报告依赖冲突，不擅自修改。",
-      }, z.toJSONSchema(patchSchema));
-      const patch = patchSchema.safeParse(response);
+      }, z.toJSONSchema(copyPatchSchema));
+      const patch = copyPatchSchema.safeParse(response);
       if (!patch.success) throw new EcommerceError("PATCH_INVALID", "局部替换格式无效。", 502);
-      try { pack = mergeEcommercePatch(basePack, patch.data, input.replace); }
+      try { pack = mergeEcommercePatch(basePack, patchSchema.parse(patch.data), input.replace); }
       catch { throw new EcommerceError("PATCH_SCOPE_CONFLICT", "局部修改超出指定段落，请调整任务或改为完整生成。", 409); }
     } else {
-      const response = await invokeRecorded(request, access, runId, "plan", { context: context.input, instructions: input.instructions, generationGuide: ecommerceGenerationGuide(context), requirements: "从候选中每类选一个；只规划段落功能，不编造商品事实。按口播字数预算安排内容，短视频只讲一个例子，不试图讲完整大纲。若账号策略与本次任务明显冲突，在 strategyConflict 指明；已明确的 strategyException 可以记录为本次例外。" }, z.toJSONSchema(planSchema));
+      const response = await invokeRecorded(request, access, runId, "plan", { context: context.input, instructions: input.instructions, generationGuide: ecommerceGenerationGuide(context), requirements: context.input.task.brief.referenceMode === "benchmark" ? "参考视频模式：choices 必须为空数组，只分析唯一所选对标文案的叙事顺序、开头、论证与行动引导机制，规划用本商品事实替换后的文案功能段。不复制参考作者身份、经历、销量、效果或承诺；不要求方法卡。" : "从候选中分别选择一个开头方法和一个文案结构方法；只规划段落功能，不编造商品事实。按口播字数预算安排内容，短视频只讲一个例子，不试图讲完整大纲。若账号策略与本次任务明显冲突，在 strategyConflict 指明；已明确的 strategyException 可以记录为本次例外。" }, z.toJSONSchema(planSchema));
       const parsed = planSchema.safeParse(response);
       if (!parsed.success) throw new EcommerceError("PLAN_INVALID", "模型结构计划格式无效。", 502);
       plan = parsed.data;
       const problems = planIssues(plan, context);
       if (problems.length) throw new EcommerceError("PLAN_REJECTED", problems.join("；"), 409);
-      const draft = await invokeRecorded(request, access, runId, "draft", { context: context.input, plan, instructions: input.instructions, generationGuide: ecommerceGenerationGuide(context, plan), requirements: "逐段执行计划和字数预算；依据 generationGuide.sourceRegister 完整记录每个来源采用与否。先写段落来源关联，再汇总应用说明；四类方法都必须有真实段落关联。引用只复制连续原句。主张与证据段绑定本商品主卖点及有效证据。" }, z.toJSONSchema(packSchema));
-      const parsedPack = packSchema.safeParse(draft);
+      const draft = await invokeRecorded(request, access, runId, "draft", { context: context.input, plan, instructions: input.instructions, generationGuide: ecommerceGenerationGuide(context, plan), requirements: "逐段执行计划和字数预算；依据 generationGuide.sourceRegister 完整记录每个来源采用与否。先写段落来源关联，再汇总应用说明；方法论模式下开头与文案结构两类方法都必须有真实段落关联；参考视频模式下必须在实际借用结构的段落绑定所选 caseId 并说明不迁移的事实。只输出文案，不输出分镜或拍摄清单。引用只复制连续原句。主张与证据段绑定本商品主卖点及有效证据。" }, z.toJSONSchema(copyPackSchema));
+      const parsedPack = copyPackSchema.safeParse(draft);
       if (!parsedPack.success) throw new EcommerceError("DRAFT_INVALID", "模型稿件结构不完整。", 502);
-      pack = parsedPack.data;
+      pack = packSchema.parse(parsedPack.data);
     }
-    let validation = validateEcommercePack(pack, context, plan);
+    let validation = validateEcommercePack(pack, context, plan, input.replace && base ? packSchema.parse(JSON.parse(base.pack_json)) : undefined);
     // One targeted repair keeps total plan/draft/repair/review calls within the five-call budget.
     if (!validation.ok && !input.replace) {
-      const fixed = await invokeRecorded(request, access, runId, "repair", { context: context.input, plan, instructions: input.instructions, generationGuide: ecommerceGenerationGuide(context, plan, pack), previousDraft: pack, errors: validation.issues, requirements: "按 observed 中的实际字数与关联差异逐项修复。超长时删减口播，不能只改时长数字；关联缺失时明确方法实际应用在哪些段落并同步两处ID；拼接引文改为一个关联段落内连续存在的原句。保留事实限制，不编造依据，不放宽验收条件。" }, z.toJSONSchema(packSchema));
-      const parsed = packSchema.safeParse(fixed);
+      const fixed = await invokeRecorded(request, access, runId, "repair", { context: context.input, plan, instructions: input.instructions, generationGuide: ecommerceGenerationGuide(context, plan, pack), previousDraft: copyDraftForModel(pack, context), errors: validation.issues, requirements: "按 observed 中的实际字数与关联差异逐项修复。超长时删减口播，不能只改时长数字；关联缺失时明确方法实际应用在哪些段落并同步两处ID；拼接引文改为一个关联段落内连续存在的原句。保留事实限制，不编造依据，不放宽验收条件。" }, z.toJSONSchema(copyPackSchema));
+      const parsed = copyPackSchema.safeParse(fixed);
       if (!parsed.success) throw new EcommerceError("REPAIR_INVALID", "修订结果仍不完整，已保留原稿。", 502);
-      pack = parsed.data; validation = validateEcommercePack(pack, context, plan);
+      pack = packSchema.parse(parsed.data); validation = validateEcommercePack(pack, context, plan);
     }
     if (!validation.ok) throw new EcommerceError("DRAFT_REJECTED", validation.issues.join("；"), 409);
-    const reviewRaw = await invokeRecorded(request, access, runId, "review", { context: context.input, draft: pack,
-      requirements: "独立逐句检查全部口播及画面。为每个商品事实列出 claimChecks，statement 必须是稿件原句，sourceIds 仅限真实商品主张、证据、明确选择的知识。检查无引用段落是否偷偷添加数字、效果、销量、身份或承诺。检查引用是否真正支持主张而不只是存在；不支持时 supported=false 并定位段落。检查 CTA、拍摄可行性与策略冲突。" }, z.toJSONSchema(reviewSchema));
-    const review = reviewSchema.safeParse(reviewRaw);
+    const reviewRaw = await invokeRecorded(request, access, runId, "review", { context: context.input, draft: copyDraftForModel(pack, context),
+      requirements: "独立逐句检查全部文案。为每个商品事实列出 claimChecks，statement 必须是稿件原句，sourceIds 仅限真实商品主张、证据、明确选择的知识。检查无引用段落是否偷偷添加数字、效果、销量、身份或承诺。检查引用是否真正支持主张而不只是存在；不支持时 supported=false 并定位段落。检查 CTA 与策略冲突，不评估拍摄可行性。" }, z.toJSONSchema(copyReviewSchema));
+    const review = copyReviewSchema.safeParse(reviewRaw);
     if (!review.success) throw new EcommerceError("REVIEW_INVALID", "独立校对未返回完整结果。", 502);
     const reviewProblems = reviewIssues(review.data, pack, context);
     if (reviewProblems.length) throw new EcommerceError("REVIEW_REJECTED", reviewProblems.join("；"), 409);
@@ -192,10 +192,10 @@ export async function generateEcommerce(request: Request, access: EcommerceAcces
     const saved = await db.batch([
       db.prepare(`WITH expected AS (SELECT ? AS doc) UPDATE ecommerce_tasks SET current_version=current_version+1,status='draft',updated_by=?,updated_at=? WHERE id=? AND organization_id=? AND project_id=? AND revision=? AND current_version=? AND status!='archived'
         AND ${enabledGuard} AND EXISTS(SELECT 1 FROM ecommerce_generation_runs WHERE id=? AND status='running') AND ${generationSourceGuard} AND ${generationActorGuard}`)
-        .bind(JSON.stringify(context.input), access.userId, completedAt, taskId, ...scope, input.revision, input.baseVersion, ...scope, runId, access.userId),
+        .bind(JSON.stringify(generationSourceDocument(context)), access.userId, completedAt, taskId, ...scope, input.revision, input.baseVersion, ...scope, runId, access.userId),
       db.prepare(`INSERT INTO ecommerce_versions (id,organization_id,project_id,task_id,product_id,product_version_id,version,parent_version_id,run_id,mode,pack_json,input_snapshot_json,input_hash,source_manifest_json,validation_json,change_summary,prompt_version,created_by,created_at)
         SELECT ?,organization_id,project_id,id,product_id,product_version_id,current_version,?,?,?,?,?,?,?,?,?,?,?,? FROM ecommerce_tasks WHERE id=? AND organization_id=? AND project_id=? AND changes()=1`)
-        .bind(versionId, base?.id ?? null, runId, input.replace ? "patch" : "ai", JSON.stringify(pack), JSON.stringify(snapshot), context.inputHash, JSON.stringify(context.manifest), JSON.stringify({ ...validation, review: review.data, humanReviewRequired: true, unchangedSegments: input.replace && base ? await unchangedSegmentHashes(packSchema.parse(JSON.parse(base.pack_json)), input.replace) : [] }), input.replace ? `替换 ${input.replace} 段落` : "电商素材完整生成", ECOMMERCE_PROMPT_VERSION, access.userId, completedAt, taskId, ...scope),
+        .bind(versionId, base?.id ?? null, runId, input.replace ? "patch" : "ai", JSON.stringify(pack), JSON.stringify(snapshot), context.inputHash, JSON.stringify(context.manifest), JSON.stringify({ ...validation, review: review.data, humanReviewRequired: true, unchangedSegments: input.replace && base ? await unchangedSegmentHashes(packSchema.parse(JSON.parse(base.pack_json)), input.replace) : [] }), input.replace ? `替换 ${input.replace} 段落` : "电商文案完整生成", ECOMMERCE_PROMPT_VERSION, access.userId, completedAt, taskId, ...scope),
       auditStatement(access, "ecommerce.version.created", taskId, { versionId, runId }),
       db.prepare("UPDATE ecommerce_generation_runs SET status='completed',result_version_id=?,completed_at=? WHERE id=? AND organization_id=? AND project_id=? AND status='running' AND EXISTS(SELECT 1 FROM ecommerce_versions WHERE id=? AND run_id=?)")
         .bind(versionId, completedAt, runId, ...scope, versionId, runId),

@@ -5,6 +5,8 @@ import type { CoreContentStrategy } from "../../lib/content-strategy-policy";
 
 export type { TaskRow };
 export type ProductOption = { id: string; name: string; sku: string; status: string; current_version: number; version_id: string; version: number; public_json: string; confirmed_at: string | null };
+export type BenchmarkReference = { reference_id: string; analysis_id: string; video_id: string; title: string; analyzed_at: string };
+export type TaskCaseOption = { id: string; title: string; referenceId?: string; analysisId?: string; transcriptId?: string | null };
 export type TaskOptions = { products: ProductOption[]; knowledge: { id: string; title: string; body: string; current_version: number }[]; accounts: Account[]; strategy: CoreContentStrategy | null };
 export type Account = { id: string; display_name: string; handle: string; platform: string; profile_url: string | null };
 export type Version = { id: string; version: number; mode: string; pack_json: string; input_snapshot_json: string; validation_json: string; source_manifest_json: string; created_at: string; change_summary: string; product_version_id: string };
@@ -14,9 +16,10 @@ export type TaskDetail = { task: TaskRow; versions: Version[]; runs: Run[]; publ
 export type Recommendation = { ready: boolean; missing: string[]; candidates: Candidate[]; rejected: { id: string; name: string; reasons: string[] }[]; cases: CaseSource[]; strategy: CoreContentStrategy | null; inputHash: string; caseNotice: string };
 export type SourceSnapshot = { sources: ContextSource[]; product: { id: string; name: string; sku: string; versionId: string; claim: ProductPublic["claims"][number] }; strategy: CoreContentStrategy | null; taskRevision: number; candidates: Candidate[] };
 export type Snapshot = { id: string; publication_id: string; version_id: string; task_id: string; product_id: string; product_version_id: string; source_manifest_json: string; body_json: string; observed_at: string; superseded: number; created_at: string; summary: { roas: number | null; completionRate: number | null; productClickRate: number | null; stayRate: number | null; attributionNotice: string } };
-export const taskStates: Record<string, string> = { draft: "草稿", internal_review: "待审核", publish_ready: "可发布", published: "已发布", reviewed: "已复盘", archived: "已归档" };
-export const roles = { hook: "开头钩子", problem: "购买顾虑", claim: "主卖点", evidence: "证据演示", transition: "衔接", cta: "行动引导" };
-export const sourceTypes = { component: "方法组件", case: "参考案例", claim: "商品卖点", evidence: "商品证据", knowledge: "品牌知识" };
+export const taskStates: Record<string, string> = { draft: "草稿", internal_review: "待审核", publish_ready: "已审核", published: "已发布", reviewed: "已复盘", archived: "已归档" };
+export const roles = { hook: "开头钩子", problem: "购买顾虑", claim: "主卖点", evidence: "事实依据", transition: "衔接", cta: "行动引导" };
+export const writingKinds = { hook: "开头钩子", structure: "文案结构" };
+export const sourceTypes = { component: "文案方法", case: "参考案例", claim: "商品卖点", evidence: "商品证据", knowledge: "品牌知识" };
 export const metricLabels: Partial<Record<keyof MetricInput, string>> = { impressions: "曝光", views: "播放", stayedViews: "停留播放", completedViews: "完播", productClicks: "商品点击", liveEntries: "直播进房", carts: "加购", orders: "成交订单", refundOrders: "退款订单" };
 export function scriptText(pack: EcommercePack) { return pack.segments.map(s => s.script).join("\n\n"); }
 

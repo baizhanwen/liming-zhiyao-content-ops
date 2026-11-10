@@ -64,7 +64,7 @@ test("case edits need reconfirmation and preserve historical generated snapshots
   const created = await f.route("cases").POST(f.request("POST", c.input)); assert.equal(created.status, 201);
   const id = (await created.json()).case.id;
   assert.equal((await f.route("cases").POST(f.request("POST", c.input))).status, 409);
-  f.sqlite.prepare("UPDATE ecommerce_tasks SET brief_json=? WHERE id=?").run(JSON.stringify({ ...f.brief, caseIds: [id] }), f.task.id);
+  f.sqlite.prepare("UPDATE ecommerce_tasks SET brief_json=? WHERE id=?").run(JSON.stringify({ ...f.brief, referenceMode: "benchmark", caseIds: [id] }), f.task.id);
   assert.equal((await f.generate()).status, 201);
   const snapshot = f.sqlite.prepare("SELECT input_snapshot_json FROM ecommerce_versions").get().input_snapshot_json;
   const changed = { ...c.input, id, revision: 1, status: "draft", structure: "修订后的结构说明" };

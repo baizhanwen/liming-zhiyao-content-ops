@@ -7,7 +7,7 @@ async function fixture(t) {
   assert.equal(generated.status, 201, await generated.clone().text());
   const versionId = (await generated.json()).version.id;
   const params = { params: Promise.resolve({ taskId: f.task.id }) };
-  const review = (action, extra = {}) => f.route("tasks/[taskId]/review").POST(f.request("POST", { revision: 1, versionId, action, confirmations: ["facts", "filming", "destination"], ...extra }), params);
+  const review = (action, extra = {}) => f.route("tasks/[taskId]/review").POST(f.request("POST", { revision: 1, versionId, action, confirmations: ["facts", "destination"], ...extra }), params);
   const accountId = f.seed("social_accounts", { platform: "douyin", account_type: "owned", display_name: "合成测试账号" });
   const publishedAt = new Date(Date.now() - 3600000).toISOString();
   const publicationInput = { versionId, accountId, platform: "douyin", externalUrl: "https://example.invalid/synthetic-video", publishedAt, traffic: "organic" };
@@ -43,7 +43,7 @@ test("end-to-end generation, review, publication and result backfill bind the or
   const traceRequest = new Request(`http://localhost/api/ecommerce/publications?${new URLSearchParams({ ...f.scope, publicationId: publication.id })}`);
   const { trace } = await (await f.route("publications").GET(traceRequest)).json();
   assert.equal(trace.versionId, f.versionId); assert.equal(trace.version, 1);
-  assert.equal(trace.applications.filter(a => a.sourceType === "component").length, 4);
+  assert.equal(trace.applications.filter(a => a.sourceType === "component").length, 2);
   assert.equal(trace.applications.every(a => a.used && a.source.text.includes(a.sourceQuote)), true);
   assert.doesNotMatch(JSON.stringify(trace), /PRIVATE_TEST_ONLY|PRIVATE_REFUNDS|internal_json|costCents/);
   f.identity.allowed = false;

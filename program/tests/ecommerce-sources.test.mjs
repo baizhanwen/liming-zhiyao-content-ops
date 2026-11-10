@@ -18,19 +18,26 @@ test("source selection keeps explicit knowledge and excludes memory and publicat
   assert.equal(queries.some(q => /FROM (project_memory_items|published_copy_records|video_knowledge_atoms)/.test(q)), false);
 });
 
-test("hard filtering rejects wrong platform and missing filming conditions with reasons", async t => {
+test("copy method filtering rejects wrong platforms and skips saved shooting methods", async t => {
   const f = await ecommerceGenerationFixture(t);
-  const extra = { name: "不适配测试", kind: "hook", instruction: "测试", problem: "旋盖", platforms: ["xiaohongshu"], targets: ["product_click"], requiredFilming: ["location"], inputContract: "测试", outputContract: "测试", sourceLocator: "synthetic fixture", sourceVersion: "2", authorization: "测试", status: "confirmed" };
+  const extra = { name: "不适配测试", kind: "hook", instruction: "测试", problem: "旋盖", platforms: ["xiaohongshu"], targets: ["product_click"], requiredFilming: [], inputContract: "测试", outputContract: "测试", sourceLocator: "synthetic fixture", sourceVersion: "2", authorization: "测试", status: "confirmed" };
   const added = await f.route("components").POST(f.request("POST", extra)); assert.equal(added.status, 201);
   const id = (await added.json()).component.id;
   const request = new Request(`http://localhost?${new URLSearchParams(f.scope)}`), params = { params: Promise.resolve({ taskId: f.task.id }) };
   const result = await (await f.route("tasks/[taskId]/recommendations").GET(request, params)).json();
   assert.equal(result.ready, true);
   assert.equal(result.candidates.some(c => c.id === id), false);
-  assert.deepEqual(result.rejected.find(c => c.id === id).reasons, ["平台不匹配", "拍摄条件不足"]);
+  assert.deepEqual(result.rejected.find(c => c.id === id).reasons, ["平台不匹配"]);
   f.sqlite.prepare("UPDATE ecommerce_tasks SET brief_json=? WHERE id=?").run(JSON.stringify({ ...f.brief, componentIds: [id] }), f.task.id);
   assert.equal((await f.route("tasks/[taskId]/recommendations").GET(request, params)).status, 409);
   assert.equal(f.calls.length, 0);
+  const revised = await f.route("components").POST(f.request("POST", { ...extra, id, revision: 1, platforms: ["douyin"], requiredFilming: ["location"] }));
+  assert.equal(revised.status, 200, await revised.clone().text());
+  const eligible = await (await f.route("tasks/[taskId]/recommendations").GET(request, params)).json();
+  assert.equal(eligible.ready, true);
+  assert.equal(eligible.candidates.some(c => c.id === id), false, "shooting instructions must not enter the copy context");
+  assert.deepEqual(eligible.rejected.find(c => c.id === id).reasons, ["拍摄方法不用于文案"]);
+  assert.deepEqual(JSON.parse(f.sqlite.prepare("SELECT brief_json FROM ecommerce_tasks WHERE id=?").get(f.task.id).brief_json).componentIds, [id], "saved historical method selection is preserved");
 });
 
 test("case import binds actual report text and only current-space video references", async t => {
@@ -43,7 +50,7 @@ test("case import binds actual report text and only current-space video referenc
   const created = await f.route("cases").POST(f.request("POST", input)); assert.equal(created.status, 201, await created.clone().text());
   const id = (await created.json()).case.id;
   assert.equal((await f.route("cases").POST(f.request("POST", { ...input, sourceQuote: "没有出现过的销量保证" }))).status, 409);
-  f.sqlite.prepare("UPDATE ecommerce_tasks SET brief_json=? WHERE id=?").run(JSON.stringify({ ...f.brief, caseIds: [id] }), f.task.id);
+  f.sqlite.prepare("UPDATE ecommerce_tasks SET brief_json=? WHERE id=?").run(JSON.stringify({ ...f.brief, referenceMode: "benchmark", caseIds: [id] }), f.task.id);
   const response = await f.generate(); assert.equal(response.status, 201, await response.clone().text());
   const planInput = f.calls.find(c => c.stage === "plan").payload.context;
   assert.equal(planInput.cases[0].id, id); assert.match(planInput.cases[0].nonTransferable, /销量/);

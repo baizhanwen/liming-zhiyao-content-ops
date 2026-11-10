@@ -61,7 +61,7 @@ test("reimport preserves edited private cards and their revision history without
   assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS n FROM audit_logs WHERE action='ecommerce.component.starter_imported'").get().n, 1);
 });
 
-test("starter methods can supply all four task stages with evidence and filming hard filters", async t => {
+test("starter catalog can supply writing methods without requiring real filming conditions", async t => {
   const f = await ecommerceGenerationFixture(t);
   f.sqlite.prepare("DELETE FROM ecommerce_component_versions").run();
   f.sqlite.prepare("DELETE FROM ecommerce_components").run();
@@ -70,9 +70,10 @@ test("starter methods can supply all four task stages with evidence and filming 
   const recommendations = await f.route("tasks/[taskId]/recommendations").GET(f.request("GET"), { params: Promise.resolve({ taskId: f.task.id }) });
   assert.equal(recommendations.status, 200, await recommendations.clone().text());
   const body = await recommendations.json(); assert.equal(body.ready, true);
-  assert.deepEqual([...new Set(body.candidates.map(c => c.card.kind))].sort(), ["hook", "sop", "structure", "visual"]);
+  assert.deepEqual([...new Set(body.candidates.map(c => c.card.kind))].sort(), ["hook", "structure"]);
   const names = body.candidates.map(c => c.card.name);
-  assert.ok(names.includes("手部操作演示")); assert.ok(!names.includes("已核实权益开头")); assert.ok(!names.includes("规格与实物细节"));
-  for (const kind of ["hook", "visual", "structure", "sop"]) assert.ok(body.candidates.filter(c => c.card.kind === kind).length <= 5);
+  assert.ok(names.includes("使用场景提问")); assert.ok(!names.includes("已核实权益开头"));
+  assert.ok(!names.includes("手部操作演示")); assert.ok(!names.includes("规格与实物细节"));
+  for (const kind of ["hook", "structure"]) assert.ok(body.candidates.filter(c => c.card.kind === kind).length <= 5);
   assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS n FROM knowledge_items").get().n, 0);
 });

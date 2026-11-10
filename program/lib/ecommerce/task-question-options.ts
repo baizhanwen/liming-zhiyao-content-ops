@@ -23,6 +23,16 @@ export function firstVideoTaskTitle(name: string) {
   return prefix + suffix;
 }
 
+export function productCopyTaskTitle(name: string) {
+  const suffix = " · 文案";
+  let prefix = "";
+  for (const character of name) {
+    if (prefix.length + character.length + suffix.length > 300) break;
+    prefix += character;
+  }
+  return prefix + suffix;
+}
+
 export function taskBriefForProduct(brief: TaskBrief, product: ProductPublic | null): TaskBrief {
   return {
     ...brief,
@@ -42,7 +52,7 @@ export function initialTaskDraft({ row, products, initialProductVersionId = "", 
   const product = products.find(item => item.version_id === initialProductVersionId);
   const empty = taskBriefSchema.parse({ audience: {} });
   return {
-    title: guided && product ? firstVideoTaskTitle(product.name) : "",
+    title: product ? guided ? firstVideoTaskTitle(product.name) : productCopyTaskTitle(product.name) : "",
     versionId: product?.version_id ?? "",
     brief: product ? taskBriefForProduct(empty, JSON.parse(product.public_json) as ProductPublic) : empty,
   };

@@ -12,7 +12,7 @@ const visual = "module.analysis.language-visual.v1", boundary = "rule.content.no
 // These are production methods, not performance-proven templates or product facts.
 const definitions: StarterDefinition[] = [
   { key: "scene-question", name: "使用场景提问", kind: "hook", methodIds: [hook],
-    instruction: "用任务中一个具体使用场景提出问题，让观众知道接下来会演示什么；正文必须回答，不虚构用户原话。", problem: "用户不知道商品是否适合自己的使用场景" },
+    instruction: "用任务中一个具体使用场景提出问题，让读者知道正文将解释什么；正文必须回答，不虚构用户原话。", problem: "用户不知道商品是否适合自己的使用场景" },
   { key: "barrier-first", name: "先说购买顾虑", kind: "hook", methodIds: [hook],
     instruction: "开头说清本次任务中一个购买顾虑，再指向将展示的商品证据；未确认的人群判断用条件句，不声称所有人都有此问题。", problem: "购买顾虑没有被回应" },
   { key: "action-first", name: "操作动作前置", kind: "hook", methodIds: [hook, visual],
@@ -43,13 +43,14 @@ export const ECOMMERCE_STARTER_CARDS = definitions.map(({ key, methodIds, ...def
     if (!method) throw new Error(`Missing authorized methodology: ${id}`);
     return { id: method.id, version: method.version, source: method.source };
   });
+  const writing = ["hook", "structure"].includes(definition.kind) && !definition.requiredFilming?.length;
   const parsed = componentSchema.omit({ organizationId: true, projectId: true, id: true, revision: true }).parse({
     platforms: ["douyin", "wechat_channels", "xiaohongshu", "other"], targets: ["product_click", "live_entry", "purchase"],
-    inputContract: "本次人群、场景、购买障碍、一个已确认主卖点及证据、拍摄条件与承接目标。",
-    outputContract: "本组件对应段落或镜头、适配理由、来源原句与稿件片段；不能充当商品事实来源。",
+    inputContract: writing ? "本次人群、场景、购买障碍、一个已确认主卖点及证据、承接目标。" : "本次人群、场景、购买障碍、一个已确认主卖点及证据、拍摄条件与承接目标。",
+    outputContract: writing ? "本方法对应的文案段落、适配理由、来源原句与文案片段；不能充当商品事实来源。" : "本组件对应段落或镜头、适配理由、来源原句与稿件片段；不能充当商品事实来源。",
     sourceLocator: methods.map(m => `${m.source.package}/${m.source.document}#${m.id}`).join("\n"),
-    sourceVersion: `${ECOMMERCE_STARTER_VERSION}; catalog=${AUTHORIZED_METHODOLOGY_CATALOG_VERSION}; ${methods.map(m => `${m.id}@${m.version}`).join("; ")}`,
-    authorization: "源自项目现有授权方法目录，电商适配仅用于当前空间的结构和拍摄指导；未经真实投放或成交验证。",
+    sourceVersion: `${ECOMMERCE_STARTER_VERSION}${writing ? "; writing=2026.11.10-v2" : ""}; catalog=${AUTHORIZED_METHODOLOGY_CATALOG_VERSION}; ${methods.map(m => `${m.id}@${m.version}`).join("; ")}`,
+    authorization: writing ? "源自项目现有授权方法目录，电商适配仅用于当前空间的文案结构与表达；未经真实投放或成交验证。" : "源自项目现有授权方法目录，电商适配仅用于当前空间的结构和拍摄指导；未经真实投放或成交验证。",
     status: "confirmed", ...definition,
   });
   return { key, methods, card: parsed };
