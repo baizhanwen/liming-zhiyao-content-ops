@@ -468,7 +468,7 @@ export function ProjectMemoryWorkspace({ initialOrganizationId = "", initialProj
       <button type="button" className={selectedView === "candidate" ? "active" : ""} onClick={() => setSelectedView("candidate")}><span>待采纳</span><strong>{currentItems.filter((item) => item.status === "candidate").length}</strong></button>
       <button type="button" className={selectedView === "confirmed" ? "active" : ""} onClick={() => setSelectedView("confirmed")}><span>已采纳</span><strong>{currentItems.filter((item) => item.status === "confirmed").length}</strong></button>
     </section>
-    <div className="automatic-memory-layout">
+    <div className="automatic-memory-layout" style={{ gridTemplateColumns: "minmax(0, 1fr)" }}>
       <section className="panel knowledge-list-panel">
         <div className="panel-heading"><div><p className="section-kicker">候选由系统提取 · 人工决定</p><h2>{selectedView === "candidate" ? "待采纳候选" : selectedView === "confirmed" ? "已采纳记忆" : "项目记忆"}</h2></div><span>已采纳记忆仅用于灵感对话，不直接进入选题补全和正文生成</span></div>
         {visibleItems.length ? <div className="knowledge-list memory-auto-list">{visibleItems.map((item) => {
@@ -500,7 +500,7 @@ export function ProjectMemoryWorkspace({ initialOrganizationId = "", initialProj
         })}</div> : <div className="list-empty"><strong>{selectedView === "candidate" ? "没有待采纳候选" : selectedView === "confirmed" ? "还没有已采纳记忆" : "当前没有项目记忆"}</strong><p>系统提取候选后，由管理员决定采纳或不采纳。</p></div>}
       </section>
 
-      <aside className="memory-automation-aside">
+      <aside hidden style={{ display: "none" }} className="memory-automation-aside">
         <section className="panel assistant-config-card memory-config-card">
           <p className="section-kicker">候选提取助手</p><h2>{configuration?.configured ? "辅助识别已开启" : "辅助识别未配置"}</h2>
           <dl><div><dt>隔离状态</dt><dd>独立 API · 无隐式回退</dd></div><div><dt>提供方</dt><dd>{configuration?.provider || "未配置"}</dd></div><div><dt>模型</dt><dd>{configuration?.model || "未配置"}</dd></div></dl>
