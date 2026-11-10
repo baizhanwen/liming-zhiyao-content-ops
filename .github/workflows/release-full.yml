@@ -1,0 +1,87 @@
+name: Build full Windows download
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "full-v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: full-windows-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CI: "1"
+      WRANGLER_SEND_METRICS: "false"
+      DELIVERY_VERIFY_ENVIRONMENT_BRIDGE: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: program/package-lock.json
+      - name: Install development dependencies
+        working-directory: program
+        run: npm ci --no-audit --no-fund
+      - name: Check source and run regression tests
+        working-directory: program
+        run: npm test
+      - name: Build and verify isolated full package
+        run: |
+          & ./program/scripts/prepare-delivery.ps1 -Distribution github -DestinationRoot "$env:RUNNER_TEMP/full-package"
+          if ($LASTEXITCODE -ne 0) { throw 'Full package verification failed.' }
+      - name: Collect verified release assets
+        run: |
+          $archives = @(Get-ChildItem "$env:RUNNER_TEMP/full-package" -Filter '*.zip' -File)
+          if ($archives.Count -ne 1) { throw 'Expected one verified package.' }
+          $assets = "$env:RUNNER_TEMP/release-assets"
+          New-Item -ItemType Directory -Force $assets | Out-Null
+          $zip = Join-Path $assets 'LimingZhiyao-Windows-Full.zip'
+          Copy-Item -LiteralPath $archives[0].FullName -Destination $zip
+          $candidate = $archives[0].FullName.Substring(0, $archives[0].FullName.Length - 4)
+          $report = Join-Path $candidate 'LimingZhiyao/delivery-validation.json'
+          $validation = Get-Content -Raw -LiteralPath $report | ConvertFrom-Json
+          if (-not $validation.passed) { throw 'Package validation report is not passed.' }
+          Copy-Item -LiteralPath $report -Destination (Join-Path $assets 'delivery-validation.json')
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText("$zip.sha256", "$hash  LimingZhiyao-Windows-Full.zip`n")
+      - name: Retain verified download
+        uses: actions/upload-artifact@v4
+        with:
+          name: LimingZhiyao-Windows-Full
+          path: ${{ runner.temp }}/release-assets/*
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish GitHub download
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { 'full-v' + (Get-Date -Format 'yyyyMMdd') + '.' + $env:GITHUB_RUN_NUMBER }
+          $notes = @'
+          默认开发完整版，包含内置方法库，无需交付激活码。
+
+          下载 `LimingZhiyao-Windows-Full.zip` 并完整解压，依次运行 `setup-local.bat`、`start-local.bat`。
+          首次在主机电脑创建公司和管理员；登录后到系统设置填写自己的模型 API Key，并一键配置视频分析环境。
+
+          下载包不含开发者密钥、本地业务数据或环境缓存。首次安装需要联网下载依赖和分析模型。
+          附带的验证报告覆盖独立 Windows 安装目录的自动检查；真实视频、模型调用和多台电脑验收另行进行。
+          '@
+          $notesFile = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          [IO.File]::WriteAllText($notesFile, $notes)
+          $assets = @(Get-ChildItem "$env:RUNNER_TEMP/release-assets" -File | ForEach-Object FullName)
+          gh release create $tag @assets --target $env:GITHUB_SHA --title '利明智耀工作台 · 开发完整版' --notes-file $notesFile --latest
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub Release publication failed.' }
