@@ -47,7 +47,7 @@ function Get-AnalyzerSourceSignature([string]$ProjectRoot) {
     try {
         # Do not rely on Get-FileHash/module auto-loading in a Windows PS 5.1
         # child started by another PowerShell installation.
-        [string[]]$files = @([IO.Directory]::GetFiles($source, '*.py', [IO.SearchOption]::AllDirectories))
+        [string[]]$files = @([IO.Directory]::GetFiles($source, '*.py', [IO.SearchOption]::AllDirectories)) + @(Join-Path $source 'resources\video-taxonomy.v1.json')
         [Array]::Sort($files, [System.Collections.IComparer][StringComparer]::Ordinal)
         $lines = [Collections.Generic.List[string]]::new()
         foreach ($filename in $files) {

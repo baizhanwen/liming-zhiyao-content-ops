@@ -5,6 +5,7 @@ import { isPlainRecord, requireAnalyzerService } from "../../../../../../lib/ser
 import { extractVideoKnowledgeAtoms } from "../../../../../../lib/video-knowledge-atoms";
 import { enqueueBenchmarkVideoAnalysisMemoryEventsWithDb } from "../../../../../../lib/benchmark-memory-events";
 import type { ProjectAssistantDatabase } from "../../../../../../lib/project-memory-events";
+import { assessAnalysisQuality } from "../../../../../../lib/analysis-quality";
 
 export const dynamic = "force-dynamic";
 
@@ -33,18 +34,13 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     const report = JSON.parse(payload.analysis.reportJson) as unknown;
     const analysisMeta = isPlainRecord(report) && isPlainRecord(report.analysis_meta) ? report.analysis_meta : null;
     const qualityAudit = analysisMeta && isPlainRecord(analysisMeta.quality_audit) ? analysisMeta.quality_audit : null;
-    const auditPassed = qualityAudit?.status === "passed"
-      && qualityAudit?.acceptance_passed === true
-      && qualityAudit?.completion_status === "complete";
-    const isQualityGatedReport = payload.analysis.schemaVersion === "analysis.v7";
-    const finalStatus: "completed" | "partial" = isQualityGatedReport && !auditPassed ? "partial" : "completed";
-    const qualityIssues = Array.isArray(qualityAudit?.issues)
-      ? qualityAudit.issues.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
-      : [];
+    const quality = assessAnalysisQuality(payload.analysis.schemaVersion, report);
+    const finalStatus: "completed" | "partial" = quality.accepted ? "completed" : "partial";
+    const qualityIssues = quality.issues;
     const partialMessage = finalStatus === "partial"
       ? qualityIssues.length > 0
         ? `报告已生成，但有质量项未通过：${qualityIssues.slice(0, 3).join("；")}`
-        : "报告已生成，但 analysis.v7 质量审计缺失或未通过。"
+        : "报告已生成，但质量审计或契约校验未通过。"
       : null;
     let partialCheckpointStage: "evidence_ready" | "segment_progress" | null = null;
     let partialCheckpointJson: string | null = null;
@@ -130,12 +126,12 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     if (!results[0].meta.changes) return apiError("JOB_STATE_CHANGED", "任务状态已变化，结果未写入。", 409);
     if (finalStatus === "completed") {
       try {
-        await extractVideoKnowledgeAtoms({ organizationId: job.organization_id, videoId: job.video_id, analysisId, reportJson: payload.analysis.reportJson, now: nowIso });
+        await extractVideoKnowledgeAtoms({ organizationId: job.organization_id, videoId: job.video_id, analysisId, schemaVersion: payload.analysis.schemaVersion, reportJson: payload.analysis.reportJson, now: nowIso });
       } catch {
         /* Atom extraction is recoverable and does not invalidate an accepted report. */
       }
     }
-    try {
+    if (finalStatus === "completed") try {
       await enqueueBenchmarkVideoAnalysisMemoryEventsWithDb(db as unknown as ProjectAssistantDatabase, {
         organizationId: job.organization_id,
         analysisId,

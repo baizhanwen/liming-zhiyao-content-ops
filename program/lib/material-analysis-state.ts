@@ -1,7 +1,8 @@
 import { activeAnalysisStatuses } from "./analysis-jobs";
+import { assessAnalysisQuality, projectedAnalysisNeedsReview } from "./analysis-quality";
+export { hasPassedQualityAudit } from "./analysis-quality";
 
 const record = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
-export const hasPassedQualityAudit = (audit: Record<string, unknown> | null) => audit?.status === "passed" && audit.acceptance_passed === true && audit.completion_status === "complete";
 
 export function importedAnalysisState(analyses: Record<string, unknown>[], now: string) {
   if (!analyses.length) return { videoStatus: "pending", jobStatus: null, stage: "已迁入素材，尚未分析", errorCode: null, message: "迁移包未包含分析报告，请打开素材详情核对来源后主动重新分析。" };
@@ -9,10 +10,10 @@ export function importedAnalysisState(analyses: Record<string, unknown>[], now: 
   let body: Record<string, unknown> | null = null;
   try { body = record(typeof latest.report_json === "string" ? JSON.parse(latest.report_json) : latest.report_json); } catch { /* Manifest validation reports invalid JSON before writes. */ }
   const audit = record(record(body?.analysis_meta)?.quality_audit);
-  const partial = latest.schema_version === "analysis.v7" && !hasPassedQualityAudit(audit);
+  const partial = !assessAnalysisQuality(latest.schema_version, body).accepted;
   const issues = Array.isArray(audit?.issues) ? audit.issues.filter((item): item is string => typeof item === "string" && Boolean(item.trim())).slice(0,3).map(item => item.trim().slice(0,500)) : [];
   return { videoStatus: "ready", jobStatus: partial ? "partial" : "completed", stage: partial ? "已迁入部分报告" : "已迁入分析报告", errorCode: partial ? "ANALYSIS_PARTIAL" : null,
-    message: partial ? issues.length ? `报告已迁入，但有质量项未通过：${issues.join("；")}` : "报告已迁入，但 analysis.v7 质量审计缺失或未通过。" : null };
+    message: partial ? issues.length ? `报告已迁入，但有质量项未通过：${issues.join("；")}` : "报告已迁入，但质量审计或契约校验未通过。" : null };
 }
 
 // Both library queries join latest_analysis and j. Return only small audit
@@ -31,6 +32,6 @@ export function materialCardState(entry: { analysis_id?: string | null; analysis
   if (entry.job_status === "failed" || entry.job_status === "cancelled") return { label: hasReport ? entry.job_status === "failed" ? "已有报告 · 最近分析失败" : "已有报告 · 任务已取消" : entry.job_status === "failed" ? "分析失败" : "已取消", tone: entry.job_status === "failed" ? "danger" : "neutral", hint: "打开详情查看原因；已有报告会保留。" };
   if (!hasReport && entry.job_status === "partial") return { label: "报告待核对", tone: "warning", hint: "任务标为部分完成，但未找到报告，请先在详情中核对。" };
   if (!hasReport) return { label: "尚未分析", tone: "neutral", hint: "尚无分析报告，可打开详情核对来源后主动分析。" };
-  if (entry.job_status === "partial" || entry.analysis_schema_version === "analysis.v7" && !(entry.analysis_quality_status === "passed" && (entry.analysis_acceptance_passed === 1 || entry.analysis_acceptance_passed === true) && entry.analysis_completion_status === "complete")) return { label: "报告部分完成", tone: "warning", hint: "报告可查看，但质量检查未完整通过。" };
+  if (entry.job_status === "partial" || projectedAnalysisNeedsReview(entry.analysis_schema_version, { status: entry.analysis_quality_status, acceptance_passed: entry.analysis_acceptance_passed === 1 || entry.analysis_acceptance_passed === true, completion_status: entry.analysis_completion_status })) return { label: "报告部分完成", tone: "warning", hint: "报告可查看，但质量检查未完整通过。" };
   return { label: entry.is_imported_job ? "已迁入报告" : "分析完成", tone: "success", hint: "" };
 }

@@ -1,0 +1,3230 @@
+{
+  "version": "video-taxonomy.v1",
+  "schema_version": "content-analysis.v1",
+  "states": [
+    "known",
+    "unknown",
+    "not_acquired",
+    "not_applicable"
+  ],
+  "modules": [
+    "text_topic_structure_audience",
+    "text_expression_value",
+    "visual",
+    "synthesis"
+  ],
+  "excluded_modalities": [
+    "voice_quality",
+    "audio_emotion",
+    "background_music",
+    "sound_effects",
+    "audio_volume",
+    "audio_beats",
+    "silence_analysis"
+  ],
+  "rules": {
+    "stable_ids": true,
+    "none_exclusive": true,
+    "known_empty_means_absent": true,
+    "unknown_requires_reason": true,
+    "primary_must_be_selected": true,
+    "known_requires_evidence": true,
+    "temporal_requires_ordered_frames": 3,
+    "model_must_not_estimate_statistics": true,
+    "open_text_segment_kinds": [
+      "topic_subject",
+      "topic_problem",
+      "audience_use_case",
+      "content_template",
+      "hook_first_sentence",
+      "hook_first_3s",
+      "structure",
+      "cta",
+      "emotion",
+      "repetition"
+    ],
+    "time_unit": "milliseconds",
+    "temporal_max_gap_ms": 750
+  },
+  "budgets": {
+    "standard": {
+      "input_token_limit": 6000,
+      "sdk_schema_reserve_tokens": 800,
+      "token_estimate_method": "cjk_one_other_four.v1",
+      "initial_output_tokens": 2048,
+      "max_api_attempts_per_module": 2,
+      "modules": {
+        "text_topic_structure_audience": 3500,
+        "text_expression_value": 4500,
+        "visual": 3500,
+        "synthesis": 1800
+      }
+    },
+    "max": {
+      "input_token_limit": 12000,
+      "sdk_schema_reserve_tokens": 800,
+      "token_estimate_method": "cjk_one_other_four.v1",
+      "initial_output_tokens": 4096,
+      "max_api_attempts_per_module": 2,
+      "modules": {
+        "text_topic_structure_audience": 4500,
+        "text_expression_value": 6000,
+        "visual": 4500,
+        "synthesis": 2600
+      }
+    }
+  },
+  "dimensions": [
+    {
+      "id": "topic.category",
+      "label": "选题赛道",
+      "module": "text_topic_structure_audience",
+      "cardinality": "single",
+      "primary_required": true,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "topic.category.education",
+          "label": "教育学习"
+        },
+        {
+          "id": "topic.category.career",
+          "label": "职场成长"
+        },
+        {
+          "id": "topic.category.business",
+          "label": "商业经营"
+        },
+        {
+          "id": "topic.category.technology",
+          "label": "科技数码"
+        },
+        {
+          "id": "topic.category.ai_tools",
+          "label": "AI工具"
+        },
+        {
+          "id": "topic.category.finance_consumption",
+          "label": "财经消费"
+        },
+        {
+          "id": "topic.category.life_skills",
+          "label": "生活技巧"
+        },
+        {
+          "id": "topic.category.relationships",
+          "label": "情感关系"
+        },
+        {
+          "id": "topic.category.family",
+          "label": "亲子家庭"
+        },
+        {
+          "id": "topic.category.health_fitness",
+          "label": "健康运动"
+        },
+        {
+          "id": "topic.category.beauty_fashion",
+          "label": "美妆穿搭"
+        },
+        {
+          "id": "topic.category.food",
+          "label": "美食"
+        },
+        {
+          "id": "topic.category.travel",
+          "label": "旅行"
+        },
+        {
+          "id": "topic.category.local_life",
+          "label": "本地生活"
+        },
+        {
+          "id": "topic.category.automotive",
+          "label": "汽车"
+        },
+        {
+          "id": "topic.category.home",
+          "label": "家居"
+        },
+        {
+          "id": "topic.category.agriculture",
+          "label": "三农"
+        },
+        {
+          "id": "topic.category.culture_history",
+          "label": "文化历史"
+        },
+        {
+          "id": "topic.category.social_issues",
+          "label": "社会议题"
+        },
+        {
+          "id": "topic.category.entertainment",
+          "label": "娱乐搞笑"
+        },
+        {
+          "id": "topic.category.gaming",
+          "label": "游戏"
+        },
+        {
+          "id": "topic.category.other",
+          "label": "其他"
+        }
+      ]
+    },
+    {
+      "id": "topic.problem",
+      "label": "问题类型",
+      "module": "text_topic_structure_audience",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "topic.problem.definition",
+          "label": "不知道是什么"
+        },
+        {
+          "id": "topic.problem.execution",
+          "label": "不会做"
+        },
+        {
+          "id": "topic.problem.choice",
+          "label": "不知怎么选"
+        },
+        {
+          "id": "topic.problem.cost",
+          "label": "成本太高"
+        },
+        {
+          "id": "topic.problem.efficiency",
+          "label": "效率太低"
+        },
+        {
+          "id": "topic.problem.poor_result",
+          "label": "效果不好"
+        },
+        {
+          "id": "topic.problem.pitfalls",
+          "label": "容易踩坑"
+        },
+        {
+          "id": "topic.problem.information_gap",
+          "label": "信息不对称"
+        },
+        {
+          "id": "topic.problem.misconception",
+          "label": "认知误区"
+        },
+        {
+          "id": "topic.problem.emotional",
+          "label": "情绪困扰"
+        },
+        {
+          "id": "topic.problem.relationship",
+          "label": "关系困扰"
+        }
+      ]
+    },
+    {
+      "id": "topic.purpose",
+      "label": "内容目的",
+      "module": "text_topic_structure_audience",
+      "cardinality": "multiple",
+      "primary_required": true,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "topic.purpose.explain",
+          "label": "知识解释"
+        },
+        {
+          "id": "topic.purpose.teach",
+          "label": "方法教学"
+        },
+        {
+          "id": "topic.purpose.diagnose",
+          "label": "问题诊断"
+        },
+        {
+          "id": "topic.purpose.warn",
+          "label": "避坑提醒"
+        },
+        {
+          "id": "topic.purpose.decision",
+          "label": "决策参考"
+        },
+        {
+          "id": "topic.purpose.case_review",
+          "label": "案例复盘"
+        },
+        {
+          "id": "topic.purpose.trend",
+          "label": "趋势解读"
+        },
+        {
+          "id": "topic.purpose.opinion",
+          "label": "观点表达"
+        },
+        {
+          "id": "topic.purpose.experience",
+          "label": "经历分享"
+        },
+        {
+          "id": "topic.purpose.companionship",
+          "label": "情绪陪伴"
+        },
+        {
+          "id": "topic.purpose.entertainment",
+          "label": "娱乐消遣"
+        },
+        {
+          "id": "topic.purpose.product_service",
+          "label": "产品/服务介绍"
+        }
+      ]
+    },
+    {
+      "id": "topic.angle",
+      "label": "切入角度",
+      "module": "text_topic_structure_audience",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "topic.angle.beginner",
+          "label": "新手入门"
+        },
+        {
+          "id": "topic.angle.advanced",
+          "label": "进阶提升"
+        },
+        {
+          "id": "topic.angle.mistake",
+          "label": "常见误区"
+        },
+        {
+          "id": "topic.angle.counterintuitive",
+          "label": "反常识纠偏"
+        },
+        {
+          "id": "topic.angle.cost_benefit",
+          "label": "成本收益"
+        },
+        {
+          "id": "topic.angle.efficiency",
+          "label": "效率优化"
+        },
+        {
+          "id": "topic.angle.before_after",
+          "label": "前后对比"
+        },
+        {
+          "id": "topic.angle.comparison",
+          "label": "横向测评"
+        },
+        {
+          "id": "topic.angle.personal_test",
+          "label": "亲身实测"
+        },
+        {
+          "id": "topic.angle.failure",
+          "label": "失败复盘"
+        },
+        {
+          "id": "topic.angle.success_path",
+          "label": "成功路径"
+        },
+        {
+          "id": "topic.angle.behind_scenes",
+          "label": "幕后揭秘"
+        },
+        {
+          "id": "topic.angle.event",
+          "label": "事件切入"
+        },
+        {
+          "id": "topic.angle.controversy",
+          "label": "争议辨析"
+        },
+        {
+          "id": "topic.angle.niche",
+          "label": "小众细分"
+        }
+      ]
+    },
+    {
+      "id": "topic.granularity",
+      "label": "选题粒度",
+      "module": "text_topic_structure_audience",
+      "cardinality": "single",
+      "primary_required": true,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "topic.granularity.broad",
+          "label": "宽泛话题"
+        },
+        {
+          "id": "topic.granularity.problem",
+          "label": "具体问题"
+        },
+        {
+          "id": "topic.granularity.scenario",
+          "label": "具体场景"
+        },
+        {
+          "id": "topic.granularity.case",
+          "label": "具体案例"
+        },
+        {
+          "id": "topic.granularity.single_action",
+          "label": "单一动作/技巧"
+        }
+      ]
+    },
+    {
+      "id": "structure.type",
+      "label": "整体结构",
+      "module": "text_topic_structure_audience",
+      "cardinality": "multiple",
+      "primary_required": true,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "structure.type.problem_solution",
+          "label": "问题解决"
+        },
+        {
+          "id": "structure.type.conclusion_explanation",
+          "label": "结论解释"
+        },
+        {
+          "id": "structure.type.list_tutorial",
+          "label": "清单教程"
+        },
+        {
+          "id": "structure.type.story",
+          "label": "故事叙事"
+        },
+        {
+          "id": "structure.type.mystery",
+          "label": "悬念揭秘"
+        },
+        {
+          "id": "structure.type.comparison",
+          "label": "对比评测"
+        },
+        {
+          "id": "structure.type.case_review",
+          "label": "案例复盘"
+        },
+        {
+          "id": "structure.type.interview",
+          "label": "访谈问答"
+        },
+        {
+          "id": "structure.type.process",
+          "label": "过程记录"
+        },
+        {
+          "id": "structure.type.product",
+          "label": "产品介绍"
+        },
+        {
+          "id": "structure.type.weak",
+          "label": "弱结构"
+        }
+      ]
+    },
+    {
+      "id": "structure.role",
+      "label": "段落功能",
+      "module": "text_topic_structure_audience",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "structure.role.hook",
+          "label": "Hook"
+        },
+        {
+          "id": "structure.role.background",
+          "label": "背景"
+        },
+        {
+          "id": "structure.role.pain",
+          "label": "痛点"
+        },
+        {
+          "id": "structure.role.question",
+          "label": "问题"
+        },
+        {
+          "id": "structure.role.reason",
+          "label": "原因"
+        },
+        {
+          "id": "structure.role.opinion",
+          "label": "观点"
+        },
+        {
+          "id": "structure.role.method",
+          "label": "方法"
+        },
+        {
+          "id": "structure.role.step",
+          "label": "步骤"
+        },
+        {
+          "id": "structure.role.example",
+          "label": "例子"
+        },
+        {
+          "id": "structure.role.evidence",
+          "label": "证据"
+        },
+        {
+          "id": "structure.role.conflict",
+          "label": "冲突"
+        },
+        {
+          "id": "structure.role.turn",
+          "label": "转折"
+        },
+        {
+          "id": "structure.role.result",
+          "label": "结果"
+        },
+        {
+          "id": "structure.role.summary",
+          "label": "总结"
+        },
+        {
+          "id": "structure.role.cta",
+          "label": "CTA"
+        }
+      ]
+    },
+    {
+      "id": "structure.order",
+      "label": "信息顺序",
+      "module": "text_topic_structure_audience",
+      "cardinality": "multiple",
+      "primary_required": true,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "structure.order.answer_first",
+          "label": "答案先行"
+        },
+        {
+          "id": "structure.order.sequential",
+          "label": "顺序展开"
+        },
+        {
+          "id": "structure.order.flashback",
+          "label": "倒叙回溯"
+        },
+        {
+          "id": "structure.order.progressive",
+          "label": "递进揭示"
+        },
+        {
+          "id": "structure.order.parallel",
+          "label": "并列展开"
+        },
+        {
+          "id": "structure.order.interleaved",
+          "label": "交叉叙事"
+        }
+      ]
+    },
+    {
+      "id": "structure.ending",
+      "label": "结尾方式",
+      "module": "text_topic_structure_audience",
+      "cardinality": "multiple",
+      "primary_required": true,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "structure.ending.summary",
+          "label": "总结收束"
+        },
+        {
+          "id": "structure.ending.result",
+          "label": "结果兑现"
+        },
+        {
+          "id": "structure.ending.memorable_opinion",
+          "label": "观点金句"
+        },
+        {
+          "id": "structure.ending.emotion",
+          "label": "情绪落点"
+        },
+        {
+          "id": "structure.ending.question",
+          "label": "互动提问"
+        },
+        {
+          "id": "structure.ending.preview",
+          "label": "下一集预告"
+        },
+        {
+          "id": "structure.ending.callback",
+          "label": "首尾呼应"
+        },
+        {
+          "id": "structure.ending.loop",
+          "label": "循环衔接"
+        },
+        {
+          "id": "structure.ending.action",
+          "label": "行动引导"
+        },
+        {
+          "id": "structure.ending.natural",
+          "label": "自然结束"
+        },
+        {
+          "id": "structure.ending.abrupt",
+          "label": "突然截断"
+        }
+      ]
+    },
+    {
+      "id": "audience.role",
+      "label": "人群身份",
+      "module": "text_topic_structure_audience",
+      "cardinality": "multiple",
+      "primary_required": true,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "audience.role.student",
+          "label": "学生"
+        },
+        {
+          "id": "audience.role.job_seeker",
+          "label": "求职者"
+        },
+        {
+          "id": "audience.role.new_worker",
+          "label": "职场新人"
+        },
+        {
+          "id": "audience.role.professional",
+          "label": "专业从业者"
+        },
+        {
+          "id": "audience.role.manager",
+          "label": "管理者"
+        },
+        {
+          "id": "audience.role.entrepreneur",
+          "label": "创业者"
+        },
+        {
+          "id": "audience.role.merchant",
+          "label": "商家"
+        },
+        {
+          "id": "audience.role.creator",
+          "label": "内容创作者"
+        },
+        {
+          "id": "audience.role.parent",
+          "label": "家长"
+        },
+        {
+          "id": "audience.role.consumer",
+          "label": "消费者"
+        },
+        {
+          "id": "audience.role.enthusiast",
+          "label": "兴趣爱好者"
+        },
+        {
+          "id": "audience.role.other",
+          "label": "其他明确群体"
+        }
+      ]
+    },
+    {
+      "id": "audience.stage",
+      "label": "人群阶段",
+      "module": "text_topic_structure_audience",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "audience.stage.beginner",
+          "label": "入门"
+        },
+        {
+          "id": "audience.stage.trying",
+          "label": "尝试"
+        },
+        {
+          "id": "audience.stage.proficient",
+          "label": "熟练"
+        },
+        {
+          "id": "audience.stage.advanced",
+          "label": "进阶"
+        },
+        {
+          "id": "audience.stage.transition",
+          "label": "转型"
+        },
+        {
+          "id": "audience.stage.exam",
+          "label": "备考"
+        },
+        {
+          "id": "audience.stage.job_seeking",
+          "label": "求职"
+        },
+        {
+          "id": "audience.stage.onboarding",
+          "label": "入职"
+        },
+        {
+          "id": "audience.stage.promotion",
+          "label": "晋升"
+        },
+        {
+          "id": "audience.stage.other",
+          "label": "其他具体阶段"
+        }
+      ]
+    },
+    {
+      "id": "audience.context",
+      "label": "人群处境",
+      "module": "text_topic_structure_audience",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "audience.context.time_pressure",
+          "label": "时间紧"
+        },
+        {
+          "id": "audience.context.limited_budget",
+          "label": "预算有限"
+        },
+        {
+          "id": "audience.context.few_resources",
+          "label": "资源少"
+        },
+        {
+          "id": "audience.context.inexperienced",
+          "label": "经验不足"
+        },
+        {
+          "id": "audience.context.choice_difficulty",
+          "label": "选择困难"
+        },
+        {
+          "id": "audience.context.bottleneck",
+          "label": "遇到瓶颈"
+        },
+        {
+          "id": "audience.context.risk",
+          "label": "面临风险"
+        },
+        {
+          "id": "audience.context.low_mood",
+          "label": "情绪低落"
+        },
+        {
+          "id": "audience.context.relationship_conflict",
+          "label": "关系冲突"
+        },
+        {
+          "id": "audience.context.seeking_change",
+          "label": "寻求变化"
+        }
+      ]
+    },
+    {
+      "id": "audience.need",
+      "label": "核心需求",
+      "module": "text_topic_structure_audience",
+      "cardinality": "multiple",
+      "primary_required": true,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "audience.need.learn",
+          "label": "学会"
+        },
+        {
+          "id": "audience.need.improve",
+          "label": "做好"
+        },
+        {
+          "id": "audience.need.efficiency",
+          "label": "提效"
+        },
+        {
+          "id": "audience.need.save_money",
+          "label": "省钱"
+        },
+        {
+          "id": "audience.need.avoid_pitfalls",
+          "label": "避坑"
+        },
+        {
+          "id": "audience.need.choose",
+          "label": "选择"
+        },
+        {
+          "id": "audience.need.growth",
+          "label": "增长"
+        },
+        {
+          "id": "audience.need.recognition",
+          "label": "获得认同"
+        },
+        {
+          "id": "audience.need.companionship",
+          "label": "获得陪伴"
+        },
+        {
+          "id": "audience.need.relax",
+          "label": "放松娱乐"
+        }
+      ]
+    },
+    {
+      "id": "audience.use_case",
+      "label": "使用场景",
+      "module": "text_topic_structure_audience",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "audience.use_case.learning",
+          "label": "学习前/复习时"
+        },
+        {
+          "id": "audience.use_case.working",
+          "label": "工作操作中"
+        },
+        {
+          "id": "audience.use_case.before_decision",
+          "label": "决策购买前"
+        },
+        {
+          "id": "audience.use_case.after_problem",
+          "label": "问题发生后"
+        },
+        {
+          "id": "audience.use_case.leisure",
+          "label": "休闲浏览"
+        },
+        {
+          "id": "audience.use_case.before_local_consumption",
+          "label": "线下消费前"
+        },
+        {
+          "id": "audience.use_case.other",
+          "label": "其他具体场景"
+        }
+      ]
+    },
+    {
+      "id": "audience.knowledge",
+      "label": "认知门槛",
+      "module": "text_topic_structure_audience",
+      "cardinality": "single",
+      "primary_required": true,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "audience.knowledge.none",
+          "label": "零基础"
+        },
+        {
+          "id": "audience.knowledge.basic",
+          "label": "需要基础知识"
+        },
+        {
+          "id": "audience.knowledge.professional",
+          "label": "需要专业背景"
+        }
+      ]
+    },
+    {
+      "id": "audience.targeting",
+      "label": "人群指向方式",
+      "module": "text_topic_structure_audience",
+      "cardinality": "multiple",
+      "primary_required": true,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "audience.targeting.explicit",
+          "label": "明确点名"
+        },
+        {
+          "id": "audience.targeting.scenario",
+          "label": "具体场景暗示"
+        },
+        {
+          "id": "audience.targeting.terminology",
+          "label": "术语/问题暗示"
+        },
+        {
+          "id": "audience.targeting.general",
+          "label": "泛人群"
+        }
+      ]
+    },
+    {
+      "id": "hook.type",
+      "label": "开头Hook",
+      "module": "text_expression_value",
+      "cardinality": "multiple",
+      "primary_required": true,
+      "requires": "any",
+      "allow_empty": true,
+      "none_tag_id": "hook.type.none",
+      "tags": [
+        {
+          "id": "hook.type.question",
+          "label": "提问"
+        },
+        {
+          "id": "hook.type.counterintuitive",
+          "label": "反常识"
+        },
+        {
+          "id": "hook.type.benefit",
+          "label": "利益承诺"
+        },
+        {
+          "id": "hook.type.identity",
+          "label": "身份点名"
+        },
+        {
+          "id": "hook.type.scenario",
+          "label": "场景代入"
+        },
+        {
+          "id": "hook.type.pain",
+          "label": "痛点直击"
+        },
+        {
+          "id": "hook.type.risk",
+          "label": "风险提醒"
+        },
+        {
+          "id": "hook.type.conflict",
+          "label": "冲突开场"
+        },
+        {
+          "id": "hook.type.curiosity_gap",
+          "label": "悬念缺口"
+        },
+        {
+          "id": "hook.type.result_first",
+          "label": "结果前置"
+        },
+        {
+          "id": "hook.type.contrast",
+          "label": "对比反差"
+        },
+        {
+          "id": "hook.type.number_list",
+          "label": "数字清单"
+        },
+        {
+          "id": "hook.type.challenge",
+          "label": "实测挑战"
+        },
+        {
+          "id": "hook.type.evidence_first",
+          "label": "证据先行"
+        },
+        {
+          "id": "hook.type.experience_authority",
+          "label": "经验/身份背书"
+        },
+        {
+          "id": "hook.type.story_start",
+          "label": "故事起点"
+        },
+        {
+          "id": "hook.type.empathy",
+          "label": "情绪共鸣"
+        },
+        {
+          "id": "hook.type.event_reference",
+          "label": "事件引用"
+        },
+        {
+          "id": "hook.type.opinion",
+          "label": "观点宣言"
+        },
+        {
+          "id": "hook.type.instruction",
+          "label": "直接指令"
+        },
+        {
+          "id": "hook.type.visual_action",
+          "label": "视觉/动作刺激",
+          "requires": "visual"
+        },
+        {
+          "id": "hook.type.sound",
+          "label": "声音刺激",
+          "disabled": true,
+          "excluded_reason": "auditory_out_of_scope"
+        },
+        {
+          "id": "hook.type.none",
+          "label": "无明显Hook"
+        }
+      ]
+    },
+    {
+      "id": "hook.channel",
+      "label": "Hook呈现渠道",
+      "module": "text_expression_value",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "any",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "hook.channel.spoken_text",
+          "label": "口播文案"
+        },
+        {
+          "id": "hook.channel.on_screen_text",
+          "label": "画面文字"
+        },
+        {
+          "id": "hook.channel.visual",
+          "label": "视觉/动作",
+          "requires": "visual"
+        }
+      ]
+    },
+    {
+      "id": "emotion.expressed",
+      "label": "内容呈现的情绪",
+      "module": "text_expression_value",
+      "cardinality": "multiple",
+      "primary_required": true,
+      "requires": "any",
+      "allow_empty": true,
+      "none_tag_id": "emotion.expressed.none",
+      "tags": [
+        {
+          "id": "emotion.expressed.curiosity",
+          "label": "好奇"
+        },
+        {
+          "id": "emotion.expressed.surprise",
+          "label": "惊讶"
+        },
+        {
+          "id": "emotion.expressed.anticipation",
+          "label": "期待"
+        },
+        {
+          "id": "emotion.expressed.tension",
+          "label": "紧张"
+        },
+        {
+          "id": "emotion.expressed.anxiety",
+          "label": "焦虑"
+        },
+        {
+          "id": "emotion.expressed.worry",
+          "label": "担忧"
+        },
+        {
+          "id": "emotion.expressed.anger",
+          "label": "愤怒"
+        },
+        {
+          "id": "emotion.expressed.dissatisfaction",
+          "label": "不满"
+        },
+        {
+          "id": "emotion.expressed.aggrieved",
+          "label": "委屈"
+        },
+        {
+          "id": "emotion.expressed.sadness",
+          "label": "悲伤"
+        },
+        {
+          "id": "emotion.expressed.regret",
+          "label": "遗憾"
+        },
+        {
+          "id": "emotion.expressed.moved",
+          "label": "感动"
+        },
+        {
+          "id": "emotion.expressed.warmth",
+          "label": "温暖"
+        },
+        {
+          "id": "emotion.expressed.reassurance",
+          "label": "安心"
+        },
+        {
+          "id": "emotion.expressed.hope",
+          "label": "希望"
+        },
+        {
+          "id": "emotion.expressed.pride",
+          "label": "自豪"
+        },
+        {
+          "id": "emotion.expressed.excitement",
+          "label": "兴奋"
+        },
+        {
+          "id": "emotion.expressed.pleasure",
+          "label": "愉悦"
+        },
+        {
+          "id": "emotion.expressed.satisfaction",
+          "label": "爽感"
+        },
+        {
+          "id": "emotion.expressed.humor",
+          "label": "搞笑"
+        },
+        {
+          "id": "emotion.expressed.nostalgia",
+          "label": "怀旧"
+        },
+        {
+          "id": "emotion.expressed.awe",
+          "label": "敬畏"
+        },
+        {
+          "id": "emotion.expressed.calm",
+          "label": "平静"
+        },
+        {
+          "id": "emotion.expressed.none",
+          "label": "无明显情绪"
+        }
+      ]
+    },
+    {
+      "id": "emotion.intended",
+      "label": "试图唤起的情绪（推断）",
+      "module": "text_expression_value",
+      "cardinality": "multiple",
+      "primary_required": true,
+      "requires": "any",
+      "allow_empty": true,
+      "none_tag_id": "emotion.intended.none",
+      "tags": [
+        {
+          "id": "emotion.intended.curiosity",
+          "label": "好奇"
+        },
+        {
+          "id": "emotion.intended.surprise",
+          "label": "惊讶"
+        },
+        {
+          "id": "emotion.intended.anticipation",
+          "label": "期待"
+        },
+        {
+          "id": "emotion.intended.tension",
+          "label": "紧张"
+        },
+        {
+          "id": "emotion.intended.anxiety",
+          "label": "焦虑"
+        },
+        {
+          "id": "emotion.intended.worry",
+          "label": "担忧"
+        },
+        {
+          "id": "emotion.intended.anger",
+          "label": "愤怒"
+        },
+        {
+          "id": "emotion.intended.dissatisfaction",
+          "label": "不满"
+        },
+        {
+          "id": "emotion.intended.aggrieved",
+          "label": "委屈"
+        },
+        {
+          "id": "emotion.intended.sadness",
+          "label": "悲伤"
+        },
+        {
+          "id": "emotion.intended.regret",
+          "label": "遗憾"
+        },
+        {
+          "id": "emotion.intended.moved",
+          "label": "感动"
+        },
+        {
+          "id": "emotion.intended.warmth",
+          "label": "温暖"
+        },
+        {
+          "id": "emotion.intended.reassurance",
+          "label": "安心"
+        },
+        {
+          "id": "emotion.intended.hope",
+          "label": "希望"
+        },
+        {
+          "id": "emotion.intended.pride",
+          "label": "自豪"
+        },
+        {
+          "id": "emotion.intended.excitement",
+          "label": "兴奋"
+        },
+        {
+          "id": "emotion.intended.pleasure",
+          "label": "愉悦"
+        },
+        {
+          "id": "emotion.intended.satisfaction",
+          "label": "爽感"
+        },
+        {
+          "id": "emotion.intended.humor",
+          "label": "搞笑"
+        },
+        {
+          "id": "emotion.intended.nostalgia",
+          "label": "怀旧"
+        },
+        {
+          "id": "emotion.intended.awe",
+          "label": "敬畏"
+        },
+        {
+          "id": "emotion.intended.calm",
+          "label": "平静"
+        },
+        {
+          "id": "emotion.intended.none",
+          "label": "无明显情绪"
+        }
+      ],
+      "inferred": true
+    },
+    {
+      "id": "emotion.connection",
+      "label": "情感连接",
+      "module": "text_expression_value",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "any",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "emotion.connection.understood",
+          "label": "被理解"
+        },
+        {
+          "id": "emotion.connection.acknowledged",
+          "label": "被认同"
+        },
+        {
+          "id": "emotion.connection.belonging",
+          "label": "归属感"
+        },
+        {
+          "id": "emotion.connection.companionship",
+          "label": "陪伴感"
+        },
+        {
+          "id": "emotion.connection.identity",
+          "label": "身份认同"
+        },
+        {
+          "id": "emotion.connection.aspiration",
+          "label": "向往"
+        },
+        {
+          "id": "emotion.connection.resonance",
+          "label": "共鸣"
+        }
+      ]
+    },
+    {
+      "id": "emotion.trajectory",
+      "label": "情绪路径",
+      "module": "text_expression_value",
+      "cardinality": "single",
+      "primary_required": true,
+      "requires": "any",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "emotion.trajectory.steady",
+          "label": "单一平稳"
+        },
+        {
+          "id": "emotion.trajectory.intensifying",
+          "label": "持续增强"
+        },
+        {
+          "id": "emotion.trajectory.easing",
+          "label": "持续缓和"
+        },
+        {
+          "id": "emotion.trajectory.negative_positive",
+          "label": "负向→正向"
+        },
+        {
+          "id": "emotion.trajectory.positive_negative",
+          "label": "正向→负向"
+        },
+        {
+          "id": "emotion.trajectory.fluctuating",
+          "label": "反复起伏"
+        },
+        {
+          "id": "emotion.trajectory.ending_reversal",
+          "label": "结尾反转"
+        }
+      ]
+    },
+    {
+      "id": "emotion.trigger",
+      "label": "情绪触发方式",
+      "module": "text_expression_value",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "any",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "emotion.trigger.scenario",
+          "label": "处境代入"
+        },
+        {
+          "id": "emotion.trigger.character",
+          "label": "人物遭遇"
+        },
+        {
+          "id": "emotion.trigger.loss",
+          "label": "损失提醒"
+        },
+        {
+          "id": "emotion.trigger.suspense",
+          "label": "悬念"
+        },
+        {
+          "id": "emotion.trigger.conflict",
+          "label": "冲突"
+        },
+        {
+          "id": "emotion.trigger.contrast",
+          "label": "反差"
+        },
+        {
+          "id": "emotion.trigger.encouragement",
+          "label": "认可鼓励"
+        },
+        {
+          "id": "emotion.trigger.vision",
+          "label": "愿景展示"
+        },
+        {
+          "id": "emotion.trigger.humor",
+          "label": "幽默"
+        },
+        {
+          "id": "emotion.trigger.memory",
+          "label": "回忆唤起"
+        },
+        {
+          "id": "emotion.trigger.result",
+          "label": "结果兑现"
+        }
+      ]
+    },
+    {
+      "id": "value.type",
+      "label": "价值类型",
+      "module": "text_expression_value",
+      "cardinality": "multiple",
+      "primary_required": true,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "value.type.knowledge",
+          "label": "知识认知"
+        },
+        {
+          "id": "value.type.method",
+          "label": "具体方法"
+        },
+        {
+          "id": "value.type.skill",
+          "label": "操作技能"
+        },
+        {
+          "id": "value.type.decision",
+          "label": "决策参考"
+        },
+        {
+          "id": "value.type.risk_reduction",
+          "label": "避坑省损"
+        },
+        {
+          "id": "value.type.efficiency",
+          "label": "效率提升"
+        },
+        {
+          "id": "value.type.resource",
+          "label": "资源/工具"
+        },
+        {
+          "id": "value.type.aesthetics",
+          "label": "审美体验"
+        },
+        {
+          "id": "value.type.emotional_support",
+          "label": "情绪支持"
+        },
+        {
+          "id": "value.type.entertainment",
+          "label": "娱乐体验"
+        },
+        {
+          "id": "value.type.social_currency",
+          "label": "社交谈资"
+        },
+        {
+          "id": "value.type.identity",
+          "label": "身份认同"
+        }
+      ]
+    },
+    {
+      "id": "value.information_type",
+      "label": "信息点类型",
+      "module": "text_expression_value",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "value.information_type.concept",
+          "label": "新概念"
+        },
+        {
+          "id": "value.information_type.reason",
+          "label": "原因解释"
+        },
+        {
+          "id": "value.information_type.conclusion",
+          "label": "关键结论"
+        },
+        {
+          "id": "value.information_type.step",
+          "label": "行动步骤"
+        },
+        {
+          "id": "value.information_type.criterion",
+          "label": "判断标准"
+        },
+        {
+          "id": "value.information_type.example",
+          "label": "例子/案例"
+        },
+        {
+          "id": "value.information_type.data",
+          "label": "数据陈述"
+        },
+        {
+          "id": "value.information_type.resource",
+          "label": "工具资源"
+        },
+        {
+          "id": "value.information_type.boundary",
+          "label": "适用边界"
+        },
+        {
+          "id": "value.information_type.risk",
+          "label": "风险提醒"
+        }
+      ]
+    },
+    {
+      "id": "value.actionability",
+      "label": "可操作程度",
+      "module": "text_expression_value",
+      "cardinality": "single",
+      "primary_required": true,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "value.actionability.direct",
+          "label": "可直接执行"
+        },
+        {
+          "id": "value.actionability.conditional",
+          "label": "需补充条件后执行"
+        },
+        {
+          "id": "value.actionability.framework",
+          "label": "提供判断框架"
+        },
+        {
+          "id": "value.actionability.opinion_only",
+          "label": "仅提供观点/感受"
+        }
+      ]
+    },
+    {
+      "id": "value.evidence_form",
+      "label": "证据呈现形式",
+      "module": "text_expression_value",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "any",
+      "allow_empty": true,
+      "none_tag_id": "value.evidence_form.none",
+      "tags": [
+        {
+          "id": "value.evidence_form.none",
+          "label": "无明确证据"
+        },
+        {
+          "id": "value.evidence_form.experience",
+          "label": "个人经历"
+        },
+        {
+          "id": "value.evidence_form.case",
+          "label": "具体案例"
+        },
+        {
+          "id": "value.evidence_form.demonstration",
+          "label": "现场演示"
+        },
+        {
+          "id": "value.evidence_form.before_after",
+          "label": "前后对比"
+        },
+        {
+          "id": "value.evidence_form.data_record",
+          "label": "数据记录"
+        },
+        {
+          "id": "value.evidence_form.citation",
+          "label": "来源引用"
+        },
+        {
+          "id": "value.evidence_form.mixed",
+          "label": "多种证据"
+        }
+      ]
+    },
+    {
+      "id": "value.repetition",
+      "label": "重复内容",
+      "module": "text_expression_value",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": "value.repetition.none",
+      "tags": [
+        {
+          "id": "value.repetition.none",
+          "label": "无明显重复"
+        },
+        {
+          "id": "value.repetition.necessary",
+          "label": "必要重申"
+        },
+        {
+          "id": "value.repetition.paraphrase",
+          "label": "同义反复"
+        },
+        {
+          "id": "value.repetition.preview",
+          "label": "预告重复"
+        },
+        {
+          "id": "value.repetition.irrelevant_setup",
+          "label": "无关铺垫"
+        }
+      ]
+    },
+    {
+      "id": "technique.retention",
+      "label": "留人话术",
+      "module": "text_expression_value",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "technique.retention.question",
+          "label": "提问"
+        },
+        {
+          "id": "technique.retention.information_gap",
+          "label": "信息缺口"
+        },
+        {
+          "id": "technique.retention.suspense_delay",
+          "label": "悬念延迟"
+        },
+        {
+          "id": "technique.retention.result_preview",
+          "label": "结果预告"
+        },
+        {
+          "id": "technique.retention.progress",
+          "label": "进度提示"
+        },
+        {
+          "id": "technique.retention.stage_reward",
+          "label": "阶段回报"
+        },
+        {
+          "id": "technique.retention.reversal",
+          "label": "反转提示"
+        },
+        {
+          "id": "technique.retention.callback",
+          "label": "首尾呼应"
+        },
+        {
+          "id": "technique.retention.stay_instruction",
+          "label": "直接留人指令"
+        }
+      ]
+    },
+    {
+      "id": "technique.understanding",
+      "label": "帮助理解",
+      "module": "text_expression_value",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "technique.understanding.quantification",
+          "label": "数字量化"
+        },
+        {
+          "id": "technique.understanding.list",
+          "label": "分点清单"
+        },
+        {
+          "id": "technique.understanding.steps",
+          "label": "步骤拆分"
+        },
+        {
+          "id": "technique.understanding.analogy",
+          "label": "类比"
+        },
+        {
+          "id": "technique.understanding.metaphor",
+          "label": "比喻"
+        },
+        {
+          "id": "technique.understanding.example",
+          "label": "举例"
+        },
+        {
+          "id": "technique.understanding.scenario",
+          "label": "场景化"
+        },
+        {
+          "id": "technique.understanding.contrast",
+          "label": "对照解释"
+        },
+        {
+          "id": "technique.understanding.overview_details",
+          "label": "先总后分"
+        },
+        {
+          "id": "technique.understanding.rephrase",
+          "label": "换句话说"
+        }
+      ]
+    },
+    {
+      "id": "technique.trust",
+      "label": "背书与边界说明",
+      "module": "text_expression_value",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "technique.trust.experience",
+          "label": "亲身经历"
+        },
+        {
+          "id": "technique.trust.demonstration",
+          "label": "操作演示"
+        },
+        {
+          "id": "technique.trust.evidence",
+          "label": "证据引用"
+        },
+        {
+          "id": "technique.trust.open_process",
+          "label": "过程公开"
+        },
+        {
+          "id": "technique.trust.limitations",
+          "label": "承认限制"
+        },
+        {
+          "id": "technique.trust.conditions",
+          "label": "适用条件说明"
+        },
+        {
+          "id": "technique.trust.counterexample",
+          "label": "反例说明"
+        },
+        {
+          "id": "technique.trust.authority",
+          "label": "身份/经验背书"
+        }
+      ]
+    },
+    {
+      "id": "technique.persuasion",
+      "label": "观点说服",
+      "module": "text_expression_value",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "technique.persuasion.causality",
+          "label": "因果解释"
+        },
+        {
+          "id": "technique.persuasion.cost_benefit",
+          "label": "成本收益"
+        },
+        {
+          "id": "technique.persuasion.before_after",
+          "label": "前后对比"
+        },
+        {
+          "id": "technique.persuasion.pros_cons",
+          "label": "正反对照"
+        },
+        {
+          "id": "technique.persuasion.anticipate_question",
+          "label": "预判疑问"
+        },
+        {
+          "id": "technique.persuasion.objection",
+          "label": "回应反对意见"
+        },
+        {
+          "id": "technique.persuasion.concession",
+          "label": "让步转折"
+        },
+        {
+          "id": "technique.persuasion.criteria",
+          "label": "选择标准"
+        },
+        {
+          "id": "technique.persuasion.scarcity",
+          "label": "稀缺表达"
+        },
+        {
+          "id": "technique.persuasion.urgency",
+          "label": "紧迫表达"
+        }
+      ]
+    },
+    {
+      "id": "technique.memory",
+      "label": "强化记忆",
+      "module": "text_expression_value",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "technique.memory.memorable_line",
+          "label": "金句"
+        },
+        {
+          "id": "technique.memory.parallelism",
+          "label": "排比"
+        },
+        {
+          "id": "technique.memory.antithesis",
+          "label": "对偶"
+        },
+        {
+          "id": "technique.memory.keywords",
+          "label": "重复关键词"
+        },
+        {
+          "id": "technique.memory.short_restatement",
+          "label": "短句重申"
+        },
+        {
+          "id": "technique.memory.catchphrase",
+          "label": "口头禅"
+        },
+        {
+          "id": "technique.memory.mnemonic",
+          "label": "口诀"
+        },
+        {
+          "id": "technique.memory.named_concept",
+          "label": "命名概念"
+        }
+      ]
+    },
+    {
+      "id": "technique.interaction",
+      "label": "互动引导",
+      "module": "text_expression_value",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "technique.interaction.question",
+          "label": "直接提问"
+        },
+        {
+          "id": "technique.interaction.choice",
+          "label": "二选一/多选一"
+        },
+        {
+          "id": "technique.interaction.experience",
+          "label": "经历征集"
+        },
+        {
+          "id": "technique.interaction.advice",
+          "label": "求建议"
+        },
+        {
+          "id": "technique.interaction.comment_supplement",
+          "label": "评论补充"
+        },
+        {
+          "id": "technique.interaction.discussion",
+          "label": "观点讨论"
+        },
+        {
+          "id": "technique.interaction.correction",
+          "label": "邀请纠错"
+        }
+      ]
+    },
+    {
+      "id": "cta.action",
+      "label": "行动引导",
+      "module": "text_expression_value",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": "cta.action.none",
+      "tags": [
+        {
+          "id": "cta.action.none",
+          "label": "无"
+        },
+        {
+          "id": "cta.action.follow",
+          "label": "关注"
+        },
+        {
+          "id": "cta.action.like",
+          "label": "点赞"
+        },
+        {
+          "id": "cta.action.favorite",
+          "label": "收藏"
+        },
+        {
+          "id": "cta.action.share",
+          "label": "转发"
+        },
+        {
+          "id": "cta.action.comment_discussion",
+          "label": "评论讨论"
+        },
+        {
+          "id": "cta.action.comment_keyword",
+          "label": "评论关键词"
+        },
+        {
+          "id": "cta.action.profile_collection",
+          "label": "看合集/主页"
+        },
+        {
+          "id": "cta.action.next_video",
+          "label": "看下一条"
+        },
+        {
+          "id": "cta.action.download_claim",
+          "label": "下载/领取"
+        },
+        {
+          "id": "cta.action.private_consultation",
+          "label": "私信咨询"
+        },
+        {
+          "id": "cta.action.register",
+          "label": "报名"
+        },
+        {
+          "id": "cta.action.live_entry",
+          "label": "进入直播"
+        },
+        {
+          "id": "cta.action.purchase",
+          "label": "购买"
+        },
+        {
+          "id": "cta.action.visit_store",
+          "label": "到店"
+        },
+        {
+          "id": "cta.action.practice",
+          "label": "立即实践"
+        }
+      ]
+    },
+    {
+      "id": "cta.position",
+      "label": "CTA出现位置",
+      "module": "text_expression_value",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "cta.position.opening",
+          "label": "开头"
+        },
+        {
+          "id": "cta.position.middle",
+          "label": "中段"
+        },
+        {
+          "id": "cta.position.ending",
+          "label": "结尾"
+        },
+        {
+          "id": "cta.position.throughout",
+          "label": "贯穿多段"
+        }
+      ]
+    },
+    {
+      "id": "language.register",
+      "label": "语言语体",
+      "module": "text_expression_value",
+      "cardinality": "multiple",
+      "primary_required": true,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "language.register.colloquial",
+          "label": "日常口语"
+        },
+        {
+          "id": "language.register.professional",
+          "label": "专业讲解"
+        },
+        {
+          "id": "language.register.written",
+          "label": "书面表达"
+        },
+        {
+          "id": "language.register.story",
+          "label": "故事叙述"
+        },
+        {
+          "id": "language.register.conversation",
+          "label": "聊天对话"
+        },
+        {
+          "id": "language.register.internet",
+          "label": "网络表达"
+        },
+        {
+          "id": "language.register.regional",
+          "label": "方言/地域表达"
+        },
+        {
+          "id": "language.register.mixed",
+          "label": "混合"
+        }
+      ]
+    },
+    {
+      "id": "language.tone",
+      "label": "文本文风",
+      "module": "text_expression_value",
+      "cardinality": "multiple",
+      "primary_required": true,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "language.tone.equal",
+          "label": "平等交流"
+        },
+        {
+          "id": "language.tone.gentle",
+          "label": "温和陪伴"
+        },
+        {
+          "id": "language.tone.direct",
+          "label": "直接建议"
+        },
+        {
+          "id": "language.tone.coaching",
+          "label": "教练督促"
+        },
+        {
+          "id": "language.tone.rational",
+          "label": "理性分析"
+        },
+        {
+          "id": "language.tone.authoritative",
+          "label": "权威陈述"
+        },
+        {
+          "id": "language.tone.complaining",
+          "label": "吐槽调侃"
+        },
+        {
+          "id": "language.tone.self_deprecating",
+          "label": "自嘲"
+        },
+        {
+          "id": "language.tone.debating",
+          "label": "质疑辩论"
+        },
+        {
+          "id": "language.tone.emotional",
+          "label": "煽情抒发"
+        }
+      ]
+    },
+    {
+      "id": "language.person",
+      "label": "人称与称呼",
+      "module": "text_expression_value",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": "language.person.none",
+      "tags": [
+        {
+          "id": "language.person.first",
+          "label": "第一人称"
+        },
+        {
+          "id": "language.person.second",
+          "label": "第二人称"
+        },
+        {
+          "id": "language.person.third",
+          "label": "第三人称"
+        },
+        {
+          "id": "language.person.group",
+          "label": "群体称呼"
+        },
+        {
+          "id": "language.person.role",
+          "label": "角色称呼"
+        },
+        {
+          "id": "language.person.none",
+          "label": "无人称"
+        }
+      ]
+    },
+    {
+      "id": "language.sentence",
+      "label": "句式",
+      "module": "text_expression_value",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "language.sentence.short",
+          "label": "短句密集"
+        },
+        {
+          "id": "language.sentence.long",
+          "label": "长句解释"
+        },
+        {
+          "id": "language.sentence.rhetorical_question",
+          "label": "设问自答"
+        },
+        {
+          "id": "language.sentence.successive_questions",
+          "label": "连续追问"
+        },
+        {
+          "id": "language.sentence.imperative",
+          "label": "祈使句"
+        },
+        {
+          "id": "language.sentence.exclamation",
+          "label": "感叹句"
+        },
+        {
+          "id": "language.sentence.parallelism",
+          "label": "排比句"
+        },
+        {
+          "id": "language.sentence.dialogue",
+          "label": "对话式"
+        },
+        {
+          "id": "language.sentence.question_answer",
+          "label": "一问一答"
+        }
+      ]
+    },
+    {
+      "id": "language.vocabulary",
+      "label": "词汇",
+      "module": "text_expression_value",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "language.vocabulary.plain",
+          "label": "通俗词"
+        },
+        {
+          "id": "language.vocabulary.technical",
+          "label": "专业术语"
+        },
+        {
+          "id": "language.vocabulary.jargon",
+          "label": "行业黑话"
+        },
+        {
+          "id": "language.vocabulary.internet",
+          "label": "网络用语"
+        },
+        {
+          "id": "language.vocabulary.regional",
+          "label": "地域词"
+        },
+        {
+          "id": "language.vocabulary.numbers",
+          "label": "数字密集"
+        },
+        {
+          "id": "language.vocabulary.imagery",
+          "label": "比喻意象"
+        }
+      ]
+    },
+    {
+      "id": "language.text_pattern",
+      "label": "文本表达节奏",
+      "module": "text_expression_value",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "language.text_pattern.continuous",
+          "label": "连续展开"
+        },
+        {
+          "id": "language.text_pattern.repeated_emphasis",
+          "label": "重复强调"
+        },
+        {
+          "id": "language.text_pattern.relaxed_conversation",
+          "label": "松弛聊天"
+        }
+      ],
+      "definition": "仅根据文字组织判断；不涉及停顿、重音、音色或快慢。"
+    },
+    {
+      "id": "language.memory_marker",
+      "label": "记忆标识",
+      "module": "text_expression_value",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "text",
+      "allow_empty": true,
+      "none_tag_id": "language.memory_marker.none",
+      "tags": [
+        {
+          "id": "language.memory_marker.fixed_opening",
+          "label": "固定开场"
+        },
+        {
+          "id": "language.memory_marker.fixed_ending",
+          "label": "固定结尾"
+        },
+        {
+          "id": "language.memory_marker.catchphrase",
+          "label": "口头禅"
+        },
+        {
+          "id": "language.memory_marker.special_address",
+          "label": "专属称呼"
+        },
+        {
+          "id": "language.memory_marker.repeated_syntax",
+          "label": "重复句式"
+        },
+        {
+          "id": "language.memory_marker.signature_metaphor",
+          "label": "标志性比喻"
+        },
+        {
+          "id": "language.memory_marker.none",
+          "label": "无明显标识"
+        }
+      ]
+    },
+    {
+      "id": "visual.first_frame_style",
+      "label": "首帧样式",
+      "module": "visual",
+      "cardinality": "multiple",
+      "primary_required": true,
+      "requires": "visual",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "visual.first_frame_style.person_title",
+          "label": "人物+标题"
+        },
+        {
+          "id": "visual.first_frame_style.large_text",
+          "label": "大字报"
+        },
+        {
+          "id": "visual.first_frame_style.result",
+          "label": "结果展示"
+        },
+        {
+          "id": "visual.first_frame_style.before_after",
+          "label": "前后对比"
+        },
+        {
+          "id": "visual.first_frame_style.product",
+          "label": "产品展示"
+        },
+        {
+          "id": "visual.first_frame_style.drama",
+          "label": "剧情画面"
+        },
+        {
+          "id": "visual.first_frame_style.atmosphere",
+          "label": "场景氛围"
+        },
+        {
+          "id": "visual.first_frame_style.chart",
+          "label": "图表信息"
+        },
+        {
+          "id": "visual.first_frame_style.collage",
+          "label": "拼贴合集"
+        },
+        {
+          "id": "visual.first_frame_style.blank",
+          "label": "黑场/空白"
+        }
+      ]
+    },
+    {
+      "id": "visual.first_frame_information",
+      "label": "首帧信息",
+      "module": "visual",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "visual",
+      "allow_empty": true,
+      "none_tag_id": "visual.first_frame_information.none",
+      "tags": [
+        {
+          "id": "visual.first_frame_information.theme",
+          "label": "主题说明"
+        },
+        {
+          "id": "visual.first_frame_information.question",
+          "label": "问题悬念"
+        },
+        {
+          "id": "visual.first_frame_information.benefit",
+          "label": "利益承诺"
+        },
+        {
+          "id": "visual.first_frame_information.number_list",
+          "label": "数字清单"
+        },
+        {
+          "id": "visual.first_frame_information.identity",
+          "label": "身份点名"
+        },
+        {
+          "id": "visual.first_frame_information.conflict",
+          "label": "冲突观点"
+        },
+        {
+          "id": "visual.first_frame_information.result",
+          "label": "结果展示"
+        },
+        {
+          "id": "visual.first_frame_information.none",
+          "label": "无明确信息"
+        }
+      ]
+    },
+    {
+      "id": "visual.opening",
+      "label": "前3秒画面",
+      "module": "visual",
+      "cardinality": "multiple",
+      "primary_required": true,
+      "requires": "visual",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "visual.opening.direct_gaze",
+          "label": "人物直视"
+        },
+        {
+          "id": "visual.opening.ongoing_action",
+          "label": "动作进行中",
+          "requires": "temporal"
+        },
+        {
+          "id": "visual.opening.conflict",
+          "label": "冲突现场"
+        },
+        {
+          "id": "visual.opening.result_first",
+          "label": "结果先展示"
+        },
+        {
+          "id": "visual.opening.before_after",
+          "label": "前后对比"
+        },
+        {
+          "id": "visual.opening.object_closeup",
+          "label": "实物特写"
+        },
+        {
+          "id": "visual.opening.screen_demo",
+          "label": "屏幕演示"
+        },
+        {
+          "id": "visual.opening.text_suspense",
+          "label": "字卡悬念"
+        },
+        {
+          "id": "visual.opening.empty_scene",
+          "label": "场景空镜"
+        },
+        {
+          "id": "visual.opening.montage",
+          "label": "快速蒙太奇",
+          "requires": "temporal"
+        }
+      ]
+    },
+    {
+      "id": "content.form",
+      "label": "内容表现形式",
+      "module": "visual",
+      "cardinality": "multiple",
+      "primary_required": true,
+      "requires": "visual",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "content.form.talking_head",
+          "label": "真人口播"
+        },
+        {
+          "id": "content.form.voiceover_material",
+          "label": "文案旁述+素材"
+        },
+        {
+          "id": "content.form.drama",
+          "label": "剧情短剧"
+        },
+        {
+          "id": "content.form.interview",
+          "label": "访谈对谈"
+        },
+        {
+          "id": "content.form.street_interview",
+          "label": "街采"
+        },
+        {
+          "id": "content.form.documentary",
+          "label": "实拍记录"
+        },
+        {
+          "id": "content.form.tutorial",
+          "label": "教程演示"
+        },
+        {
+          "id": "content.form.screen_recording",
+          "label": "屏幕录制"
+        },
+        {
+          "id": "content.form.review_unboxing",
+          "label": "测评开箱"
+        },
+        {
+          "id": "content.form.animation",
+          "label": "动画图解"
+        },
+        {
+          "id": "content.form.image_carousel",
+          "label": "图文轮播"
+        },
+        {
+          "id": "content.form.mixed",
+          "label": "混合形式"
+        }
+      ],
+      "definition": "仅依据可见画面与文本判断形式；不推断声音来源。"
+    },
+    {
+      "id": "visual.scene",
+      "label": "场景",
+      "module": "visual",
+      "cardinality": "multiple",
+      "primary_required": true,
+      "requires": "visual",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "visual.scene.home",
+          "label": "家居"
+        },
+        {
+          "id": "visual.scene.office",
+          "label": "办公室"
+        },
+        {
+          "id": "visual.scene.campus",
+          "label": "校园"
+        },
+        {
+          "id": "visual.scene.store",
+          "label": "门店"
+        },
+        {
+          "id": "visual.scene.worksite",
+          "label": "工厂/作业现场"
+        },
+        {
+          "id": "visual.scene.street",
+          "label": "户外街头"
+        },
+        {
+          "id": "visual.scene.nature",
+          "label": "自然环境"
+        },
+        {
+          "id": "visual.scene.studio",
+          "label": "演播室"
+        },
+        {
+          "id": "visual.scene.solid_background",
+          "label": "纯色背景"
+        },
+        {
+          "id": "visual.scene.virtual",
+          "label": "虚拟场景"
+        }
+      ]
+    },
+    {
+      "id": "visual.person_count",
+      "label": "人物数量",
+      "module": "visual",
+      "cardinality": "single",
+      "primary_required": true,
+      "requires": "visual",
+      "allow_empty": true,
+      "none_tag_id": "visual.person_count.none",
+      "tags": [
+        {
+          "id": "visual.person_count.none",
+          "label": "无人"
+        },
+        {
+          "id": "visual.person_count.one",
+          "label": "单人"
+        },
+        {
+          "id": "visual.person_count.two",
+          "label": "双人"
+        },
+        {
+          "id": "visual.person_count.many",
+          "label": "多人"
+        }
+      ]
+    },
+    {
+      "id": "visual.person_role",
+      "label": "人物角色",
+      "module": "visual",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "visual",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "visual.person_role.explainer",
+          "label": "讲解者"
+        },
+        {
+          "id": "visual.person_role.experiencer",
+          "label": "体验者"
+        },
+        {
+          "id": "visual.person_role.interviewer",
+          "label": "采访者"
+        },
+        {
+          "id": "visual.person_role.interviewee",
+          "label": "受访者"
+        },
+        {
+          "id": "visual.person_role.character",
+          "label": "剧情角色"
+        },
+        {
+          "id": "visual.person_role.observer",
+          "label": "旁观者"
+        }
+      ]
+    },
+    {
+      "id": "visual.broll",
+      "label": "辅助画面",
+      "module": "visual",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "visual",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "visual.broll.demonstration",
+          "label": "操作演示"
+        },
+        {
+          "id": "visual.broll.result_evidence",
+          "label": "结果证据"
+        },
+        {
+          "id": "visual.broll.case",
+          "label": "案例素材"
+        },
+        {
+          "id": "visual.broll.detail",
+          "label": "细节特写"
+        },
+        {
+          "id": "visual.broll.environment",
+          "label": "环境交代"
+        },
+        {
+          "id": "visual.broll.chart",
+          "label": "数据图表"
+        },
+        {
+          "id": "visual.broll.animation",
+          "label": "概念动画"
+        },
+        {
+          "id": "visual.broll.emotion",
+          "label": "情绪氛围"
+        },
+        {
+          "id": "visual.broll.decoration",
+          "label": "装饰空镜"
+        }
+      ]
+    },
+    {
+      "id": "visual.text_function",
+      "label": "画面文字",
+      "module": "visual",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "visual",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "visual.text_function.subtitles",
+          "label": "对白字幕"
+        },
+        {
+          "id": "visual.text_function.keyword",
+          "label": "关键词高亮"
+        },
+        {
+          "id": "visual.text_function.title",
+          "label": "标题条"
+        },
+        {
+          "id": "visual.text_function.steps",
+          "label": "步骤清单"
+        },
+        {
+          "id": "visual.text_function.data",
+          "label": "数据标注"
+        },
+        {
+          "id": "visual.text_function.annotation",
+          "label": "解释注释"
+        },
+        {
+          "id": "visual.text_function.speech_bubble",
+          "label": "对话气泡"
+        },
+        {
+          "id": "visual.text_function.bullet_comments",
+          "label": "弹幕"
+        },
+        {
+          "id": "visual.text_function.brand",
+          "label": "品牌标识"
+        },
+        {
+          "id": "visual.text_function.action",
+          "label": "行动提示"
+        }
+      ]
+    },
+    {
+      "id": "visual.shot_size",
+      "label": "景别",
+      "module": "visual",
+      "cardinality": "multiple",
+      "primary_required": true,
+      "requires": "visual",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "visual.shot_size.extreme_closeup",
+          "label": "大特写"
+        },
+        {
+          "id": "visual.shot_size.closeup",
+          "label": "特写"
+        },
+        {
+          "id": "visual.shot_size.medium_closeup",
+          "label": "近景"
+        },
+        {
+          "id": "visual.shot_size.medium",
+          "label": "中景"
+        },
+        {
+          "id": "visual.shot_size.full",
+          "label": "全景"
+        },
+        {
+          "id": "visual.shot_size.long",
+          "label": "远景"
+        }
+      ]
+    },
+    {
+      "id": "visual.composition",
+      "label": "构图",
+      "module": "visual",
+      "cardinality": "multiple",
+      "primary_required": true,
+      "requires": "visual",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "visual.composition.center",
+          "label": "居中"
+        },
+        {
+          "id": "visual.composition.thirds",
+          "label": "三分"
+        },
+        {
+          "id": "visual.composition.symmetry",
+          "label": "对称"
+        },
+        {
+          "id": "visual.composition.negative_space",
+          "label": "留白"
+        },
+        {
+          "id": "visual.composition.split_screen",
+          "label": "分屏"
+        },
+        {
+          "id": "visual.composition.picture_in_picture",
+          "label": "画中画"
+        },
+        {
+          "id": "visual.composition.information_full",
+          "label": "满屏信息"
+        },
+        {
+          "id": "visual.composition.person_side_info",
+          "label": "人物+侧边信息"
+        }
+      ]
+    },
+    {
+      "id": "visual.camera_motion",
+      "label": "镜头运动",
+      "module": "visual",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "temporal",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "visual.camera_motion.static",
+          "label": "固定"
+        },
+        {
+          "id": "visual.camera_motion.push",
+          "label": "推近"
+        },
+        {
+          "id": "visual.camera_motion.pull",
+          "label": "拉远"
+        },
+        {
+          "id": "visual.camera_motion.translate",
+          "label": "横移"
+        },
+        {
+          "id": "visual.camera_motion.pan",
+          "label": "摇镜"
+        },
+        {
+          "id": "visual.camera_motion.tracking",
+          "label": "跟拍"
+        },
+        {
+          "id": "visual.camera_motion.orbit",
+          "label": "环绕"
+        },
+        {
+          "id": "visual.camera_motion.digital_zoom",
+          "label": "数字缩放"
+        }
+      ]
+    },
+    {
+      "id": "visual.camera_angle",
+      "label": "拍摄角度",
+      "module": "visual",
+      "cardinality": "multiple",
+      "primary_required": true,
+      "requires": "visual",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "visual.camera_angle.eye_level",
+          "label": "平视"
+        },
+        {
+          "id": "visual.camera_angle.high",
+          "label": "俯拍"
+        },
+        {
+          "id": "visual.camera_angle.low",
+          "label": "仰拍"
+        },
+        {
+          "id": "visual.camera_angle.top_down",
+          "label": "顶视"
+        },
+        {
+          "id": "visual.camera_angle.tilted",
+          "label": "倾斜视角"
+        }
+      ]
+    },
+    {
+      "id": "visual.stability",
+      "label": "镜头稳定性",
+      "module": "visual",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "temporal",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "visual.stability.stable_static",
+          "label": "稳定固定"
+        },
+        {
+          "id": "visual.stability.smooth_motion",
+          "label": "平稳移动"
+        },
+        {
+          "id": "visual.stability.slight_handheld",
+          "label": "手持轻晃"
+        },
+        {
+          "id": "visual.stability.shaky",
+          "label": "明显抖动"
+        }
+      ]
+    },
+    {
+      "id": "visual.color",
+      "label": "色彩与质感",
+      "module": "visual",
+      "cardinality": "multiple",
+      "primary_required": true,
+      "requires": "visual",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "visual.color.bright",
+          "label": "明亮清爽"
+        },
+        {
+          "id": "visual.color.warm",
+          "label": "暖色生活"
+        },
+        {
+          "id": "visual.color.cool",
+          "label": "冷色科技"
+        },
+        {
+          "id": "visual.color.dark_contrast",
+          "label": "暗调高对比"
+        },
+        {
+          "id": "visual.color.low_saturation",
+          "label": "低饱和纪实"
+        },
+        {
+          "id": "visual.color.high_saturation",
+          "label": "鲜艳高饱和"
+        },
+        {
+          "id": "visual.color.monochrome",
+          "label": "黑白"
+        },
+        {
+          "id": "visual.color.retro",
+          "label": "复古"
+        }
+      ]
+    },
+    {
+      "id": "visual.medium",
+      "label": "画面媒介",
+      "module": "visual",
+      "cardinality": "multiple",
+      "primary_required": true,
+      "requires": "visual",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "visual.medium.live_action",
+          "label": "实拍"
+        },
+        {
+          "id": "visual.medium.animation",
+          "label": "动画"
+        },
+        {
+          "id": "visual.medium.mixed",
+          "label": "混合媒介"
+        }
+      ]
+    },
+    {
+      "id": "visual.transition",
+      "label": "转场",
+      "module": "visual",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "temporal",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "visual.transition.cut",
+          "label": "直接切换"
+        },
+        {
+          "id": "visual.transition.action_match",
+          "label": "动作匹配"
+        },
+        {
+          "id": "visual.transition.visual_match",
+          "label": "相似画面匹配"
+        },
+        {
+          "id": "visual.transition.occlusion",
+          "label": "遮挡转场"
+        },
+        {
+          "id": "visual.transition.zoom",
+          "label": "推拉/缩放"
+        },
+        {
+          "id": "visual.transition.dissolve",
+          "label": "叠化"
+        },
+        {
+          "id": "visual.transition.black",
+          "label": "黑场"
+        },
+        {
+          "id": "visual.transition.split_screen",
+          "label": "分屏切换"
+        },
+        {
+          "id": "visual.transition.effect",
+          "label": "特效转场"
+        }
+      ]
+    },
+    {
+      "id": "visual.cut_pattern",
+      "label": "镜头切换模式",
+      "module": "visual",
+      "cardinality": "multiple",
+      "primary_required": true,
+      "requires": "temporal",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "visual.cut_pattern.long_take",
+          "label": "长镜头为主"
+        },
+        {
+          "id": "visual.cut_pattern.uniform",
+          "label": "均匀切换"
+        },
+        {
+          "id": "visual.cut_pattern.dense",
+          "label": "密集快切"
+        },
+        {
+          "id": "visual.cut_pattern.local_acceleration",
+          "label": "局部加速"
+        },
+        {
+          "id": "visual.cut_pattern.alternating",
+          "label": "快慢交替"
+        }
+      ],
+      "definition": "需有真实镜头检测或适当时序帧证据；不得用关键帧/场景候选数量代替镜头数。"
+    },
+    {
+      "id": "synthesis.visual_text_relation",
+      "label": "画面与文案配合",
+      "requires_text": true,
+      "module": "synthesis",
+      "cardinality": "multiple",
+      "primary_required": true,
+      "requires": "visual",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "synthesis.visual_text_relation.demonstration",
+          "label": "同步演示"
+        },
+        {
+          "id": "synthesis.visual_text_relation.evidence",
+          "label": "证据补充"
+        },
+        {
+          "id": "synthesis.visual_text_relation.visualization",
+          "label": "概念可视化"
+        },
+        {
+          "id": "synthesis.visual_text_relation.complement",
+          "label": "信息补充"
+        },
+        {
+          "id": "synthesis.visual_text_relation.emotion",
+          "label": "情绪烘托"
+        },
+        {
+          "id": "synthesis.visual_text_relation.contrast",
+          "label": "刻意反差"
+        },
+        {
+          "id": "synthesis.visual_text_relation.decoration",
+          "label": "装饰性填充"
+        },
+        {
+          "id": "synthesis.visual_text_relation.mismatch",
+          "label": "画面文案不匹配"
+        }
+      ]
+    },
+    {
+      "id": "synthesis.retention",
+      "label": "留人设计",
+      "module": "synthesis",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "any",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "synthesis.retention.suspense",
+          "label": "持续悬念"
+        },
+        {
+          "id": "synthesis.retention.staged_reveal",
+          "label": "分段揭晓"
+        },
+        {
+          "id": "synthesis.retention.progress",
+          "label": "进度提示"
+        },
+        {
+          "id": "synthesis.retention.stage_benefit",
+          "label": "阶段性收益"
+        },
+        {
+          "id": "synthesis.retention.case_switch",
+          "label": "案例切换"
+        },
+        {
+          "id": "synthesis.retention.reversal",
+          "label": "反转"
+        },
+        {
+          "id": "synthesis.retention.information_upgrade",
+          "label": "信息升级"
+        },
+        {
+          "id": "synthesis.retention.text_visual_rhythm",
+          "label": "文本/画面节奏变化"
+        },
+        {
+          "id": "synthesis.retention.emotion_change",
+          "label": "情绪变化"
+        }
+      ]
+    },
+    {
+      "id": "synthesis.opening_fulfillment",
+      "label": "开头与正文对应",
+      "module": "synthesis",
+      "cardinality": "single",
+      "primary_required": true,
+      "requires": "any",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "synthesis.opening_fulfillment.fulfilled",
+          "label": "已展开"
+        },
+        {
+          "id": "synthesis.opening_fulfillment.partial",
+          "label": "部分展开"
+        },
+        {
+          "id": "synthesis.opening_fulfillment.unfulfilled",
+          "label": "未展开"
+        }
+      ]
+    },
+    {
+      "id": "synthesis.problem",
+      "label": "主要内容问题",
+      "module": "synthesis",
+      "cardinality": "multiple",
+      "primary_required": false,
+      "requires": "any",
+      "allow_empty": true,
+      "none_tag_id": null,
+      "tags": [
+        {
+          "id": "synthesis.problem.vague_audience",
+          "label": "人群指向模糊"
+        },
+        {
+          "id": "synthesis.problem.broad_topic",
+          "label": "选题宽泛"
+        },
+        {
+          "id": "synthesis.problem.delayed_opening",
+          "label": "开头拖延"
+        },
+        {
+          "id": "synthesis.problem.unclear_gap",
+          "label": "信息缺口不清"
+        },
+        {
+          "id": "synthesis.problem.long_setup",
+          "label": "铺垫过长"
+        },
+        {
+          "id": "synthesis.problem.repetition",
+          "label": "重复啰嗦"
+        },
+        {
+          "id": "synthesis.problem.missing_evidence",
+          "label": "论据缺失"
+        },
+        {
+          "id": "synthesis.problem.unexplained_terms",
+          "label": "术语未解释"
+        },
+        {
+          "id": "synthesis.problem.visual_text_mismatch",
+          "label": "画面文案不匹配"
+        },
+        {
+          "id": "synthesis.problem.unfulfilled_opening",
+          "label": "开头预告未展开"
+        },
+        {
+          "id": "synthesis.problem.cta_disconnect",
+          "label": "CTA与内容脱节"
+        }
+      ]
+    }
+  ]
+}

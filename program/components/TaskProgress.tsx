@@ -17,7 +17,7 @@ export default function TaskProgress({task, connection, snapshotAt, onRefresh, o
   children?: ReactNode;
   className?: string;
 }) {
-  const [now, setNow] = useState(Date.now());
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {const timer = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(timer);}, [task.id]);
   const view = taskProgressView(task, connection, snapshotAt, now);
   const refreshLabel = snapshotAt == null ? "尚未成功读取本任务状态"

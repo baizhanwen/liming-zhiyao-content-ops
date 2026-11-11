@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("analysis v9 exposes an evidence-backed CTA contract and keeps conversion compatibility", async () => {
+test("analysis v10 exposes an evidence-backed CTA contract and keeps v9 conversion compatibility", async () => {
   const provider = await readFile(
     new URL("../services/analyzer/liming_analyzer/providers.py", import.meta.url),
     "utf8",
   );
 
-  assert.match(provider, /prompt_version: str = "video-analysis\.v9-cta-v1"/);
+  assert.match(provider, /prompt_version: str = "video-analysis\.v10-content-v1"/);
   assert.match(provider, /"analysis\.v9"/);
   for (const field of [
     "cta_type",

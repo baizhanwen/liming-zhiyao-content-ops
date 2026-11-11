@@ -8,6 +8,18 @@ from liming_analyzer.ffmpeg import FfmpegMediaProcessor, MediaProcessingError
 
 
 class FfmpegTests(unittest.TestCase):
+    def test_probe_preserves_rotation_and_sample_aspect_ratio(self):
+        def runner(command, **kwargs):
+            payload = {"streams": [{"codec_type": "video", "codec_name": "h264", "width": 1440, "height": 1080,
+                                    "sample_aspect_ratio": "4:3", "display_aspect_ratio": "16:9",
+                                    "tags": {"rotate": "0"}, "side_data_list": [{"rotation": -90}]}],
+                       "format": {"duration": "4"}}
+            return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+        info = FfmpegMediaProcessor(runner=runner).probe(Path("fixture.mp4"))
+        self.assertEqual(info.rotation_degrees, -90)
+        self.assertEqual(info.sample_aspect_ratio, "4:3")
+        self.assertEqual(info.display_aspect_ratio, "16:9")
+
     def test_prepare_uses_argument_lists_and_fixed_asr_audio_format(self):
         commands = []
 

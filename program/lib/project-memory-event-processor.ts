@@ -18,6 +18,7 @@ import { analysisReportSourceText } from "./content-production.ts";
 import { createRecordedProjectAssistantInvoker } from "./recorded-project-assistant-model.ts";
 import { projectWriteAccessBindings, projectWriteAccessCondition, ProjectWriteAccessChangedError } from "./project-write-access.ts";
 import { assertMemoryAttempt, ProjectMemoryAttemptChangedError } from "./project-memory-write.ts";
+import { assessAnalysisQuality } from "./analysis-quality.ts";
 
 export const PROJECT_MEMORY_EXTRACTION_PROMPT_VERSION = "project-memory.v2-content-and-methods";
 
@@ -62,6 +63,9 @@ async function loadEventSource(
     report_json: string;
   }>();
   if (!analysis) return { payload, sourceUnavailable: true };
+  let report: unknown = null;
+  try { report = JSON.parse(analysis.report_json); } catch { /* Stored invalid reports remain historical and do not trigger a model call. */ }
+  if (!assessAnalysisQuality(analysis.schema_version, report).accepted) return { payload, sourceUnavailable: true };
   const corpusRows = await db.prepare(`
     SELECT atoms.analysis_id, atoms.atom_type, atoms.title, atoms.content, atoms.confidence
     FROM video_knowledge_atoms atoms
@@ -83,7 +87,17 @@ async function loadEventSource(
     analysisId: string;
     observations: Array<{ type: string; title: string; content: string; confidence: number | null }>;
   }>();
+  const acceptedCorpus = new Map<string, boolean>([[analysis.id, true]]);
   for (const row of corpusRows.results) {
+    if (!acceptedCorpus.has(row.analysis_id)) {
+      const candidate = await db.prepare(`SELECT a.schema_version, a.report_json FROM video_analyses a
+        JOIN videos v ON v.id=a.video_id AND v.organization_id=a.organization_id AND v.deleted_at IS NULL
+        WHERE a.id=? AND a.organization_id=? LIMIT 1`).bind(row.analysis_id, event.organization_id).first<{ schema_version: string; report_json: string }>();
+      let candidateReport: unknown = null;
+      try { candidateReport = candidate ? JSON.parse(candidate.report_json) : null; } catch { /* Historical atoms remain stored but cannot bypass report acceptance. */ }
+      acceptedCorpus.set(row.analysis_id, Boolean(candidate && assessAnalysisQuality(candidate.schema_version, candidateReport).accepted));
+    }
+    if (!acceptedCorpus.get(row.analysis_id)) continue;
     const item = corpusByAnalysis.get(row.analysis_id) ?? { analysisId: row.analysis_id, observations: [] };
     item.observations.push({
       type: row.atom_type,

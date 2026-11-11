@@ -52,7 +52,7 @@ test("result submission is idempotent and scopes artifacts through the job tenan
   assert.match(complete, /INNER JOIN videos v ON v\.id = j\.video_id AND v\.organization_id = j\.organization_id AND v\.project_id = j\.project_id/);
   assert.match(complete, /INSERT INTO video_analyses/);
   assert.match(complete, /finalStatus: "completed" \| "partial"/);
-  assert.match(complete, /qualityAudit\?\.completion_status/);
+  assert.match(complete, /assessAnalysisQuality\(payload\.analysis\.schemaVersion, report\)/);
   assert.match(retry, /scriptVersion/);
   assert.match(retry, /previous_spoken_script_set/);
   assert.match(fail, /job\.result_key === payload\.resultKey/);

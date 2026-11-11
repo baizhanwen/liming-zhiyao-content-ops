@@ -2,11 +2,13 @@ import {
   enqueueProjectMemoryEventWithDb,
   type ProjectAssistantDatabase,
 } from "./project-memory-events.ts";
+import { assessAnalysisQuality } from "./analysis-quality.ts";
 
 type AnalysisRow = {
   id: string;
   video_id: string;
   schema_version: string;
+  report_json: string;
   created_at: string;
 };
 
@@ -30,11 +32,11 @@ export async function enqueueBenchmarkVideoAnalysisMemoryEventsWithDb(
   let analysis: AnalysisRow | null | undefined;
   if (input.analysisId) {
     analysis = await db.prepare(
-      "SELECT id, video_id, schema_version, created_at FROM video_analyses WHERE id = ? AND organization_id = ? LIMIT 1",
+      "SELECT id, video_id, schema_version, report_json, created_at FROM video_analyses WHERE id = ? AND organization_id = ? LIMIT 1",
     ).bind(input.analysisId, input.organizationId).first<AnalysisRow>();
   } else if (input.libraryEntryId) {
     analysis = await db.prepare(`
-      SELECT analysis.id, analysis.video_id, analysis.schema_version, analysis.created_at
+      SELECT analysis.id, analysis.video_id, analysis.schema_version, analysis.report_json, analysis.created_at
       FROM video_library_entries library
       INNER JOIN video_analyses analysis ON analysis.id = (
         SELECT latest.id FROM video_analyses latest
@@ -46,10 +48,13 @@ export async function enqueueBenchmarkVideoAnalysisMemoryEventsWithDb(
     `).bind(input.libraryEntryId, input.organizationId).first<AnalysisRow>();
   } else if (input.videoId) {
     analysis = await db.prepare(
-      "SELECT id, video_id, schema_version, created_at FROM video_analyses WHERE organization_id = ? AND video_id = ? ORDER BY created_at DESC LIMIT 1",
+      "SELECT id, video_id, schema_version, report_json, created_at FROM video_analyses WHERE organization_id = ? AND video_id = ? ORDER BY created_at DESC LIMIT 1",
     ).bind(input.organizationId, input.videoId).first<AnalysisRow>();
   }
   if (!analysis) return { analysisId: null, created: 0, references: 0 };
+  let report: unknown = null;
+  try { report = JSON.parse(analysis.report_json); } catch { /* Invalid or partial reports never seed new memory. */ }
+  if (!assessAnalysisQuality(analysis.schema_version, report).accepted) return { analysisId: analysis.id, created: 0, references: 0 };
 
   const projectClause = input.targetProjectId ? " AND refs.project_id = ?" : "";
   const bindings = [input.organizationId, analysis.video_id];

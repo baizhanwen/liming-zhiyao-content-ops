@@ -1,8 +1,9 @@
 import { apiError } from "./api-response";
 import { assertProjectWriteAccess, projectWriteAccessBindings, projectWriteAccessCondition, type ProjectWriteScope } from "./project-write-access";
 import { prepareProjectMemoryEventWithDb, type ProjectAssistantDatabase } from "./project-memory-events";
+import { assessAnalysisQuality } from "./analysis-quality";
 
-type Snapshot = { entryId: string; id: string; status: string | null; revokedAt: string | null; creator: string; analysisId: string | null; videoId: string; schemaVersion: string | null; analysisCreatedAt: string | null };
+type Snapshot = { entryId: string; id: string; status: string | null; revokedAt: string | null; creator: string; analysisId: string | null; videoId: string; schemaVersion: string | null; analysisCreatedAt: string | null; analysisAccepted?: boolean };
 
 /** The first audit statement is a guarded transaction marker. Every dependent
  * reference/event checks that marker; any database failure rolls the batch back. */
@@ -20,6 +21,15 @@ export async function importBenchmarkReferences(db: D1Database, scope: ProjectWr
       analysisId: row.analysis_id ? String(row.analysis_id) : null, videoId: String(row.video_id), schemaVersion: row.schema_version ? String(row.schema_version) : null, analysisCreatedAt: row.analysis_created_at ? String(row.analysis_created_at) : null };
   });
   const actions = snapshots.map(s => ({ id: s.id, action: !s.status ? "created" : s.status === "revoked" ? "reactivated" : "already_active" }));
+  // Read and release one report at a time; importing 100 references must not
+  // materialize 100 full report bodies together merely to decide event eligibility.
+  for (const snapshot of snapshots) {
+    if (!snapshot.analysisId) continue;
+    const analysis = await db.prepare("SELECT schema_version, CASE WHEN length(report_json)<=1000000 THEN report_json ELSE NULL END AS report_json FROM video_analyses WHERE id=? AND organization_id=? AND video_id=?").bind(snapshot.analysisId, scope.organizationId, snapshot.videoId).first<{ schema_version: string; report_json: string | null }>();
+    let report: unknown = null;
+    try { report = analysis?.report_json ? JSON.parse(analysis.report_json) : null; } catch { /* Reference import remains allowed, automatic memory does not. */ }
+    snapshot.analysisAccepted = Boolean(analysis && analysis.schema_version === snapshot.schemaVersion && assessAnalysisQuality(analysis.schema_version, report).accepted);
+  }
   const marker = crypto.randomUUID(), now = new Date().toISOString(), stateJson = JSON.stringify(snapshots);
   const markerExists = "EXISTS(SELECT 1 FROM audit_logs WHERE id=? AND organization_id=? AND project_id=? AND actor_user_id=? AND action='video_library.imported')";
   const markerBindings = [marker, scope.organizationId, scope.projectId, scope.userId];
@@ -39,7 +49,7 @@ export async function importBenchmarkReferences(db: D1Database, scope: ProjectWr
       SELECT ?,?,?,?,'benchmark','active',?,? WHERE ${markerExists}
       ON CONFLICT(project_id,library_entry_id,purpose) DO UPDATE SET status='active',revoked_by=NULL,revoked_at=NULL,revoke_reason=NULL`)
       .bind(snapshot.id, scope.organizationId, scope.projectId, snapshot.entryId, scope.userId, now, ...markerBindings));
-    if (snapshot.analysisId) {
+    if (snapshot.analysisId && snapshot.analysisAccepted) {
       const event = await prepareProjectMemoryEventWithDb(db as unknown as ProjectAssistantDatabase, { ...scope, userId: snapshot.creator, eventType: "video_analysis_completed", sourceType: "video_analysis", sourceId: snapshot.analysisId,
         payload: { analysisId: snapshot.analysisId, videoId: snapshot.videoId, schemaVersion: snapshot.schemaVersion, analysisCreatedAt: snapshot.analysisCreatedAt, benchmarkReferenceId: snapshot.id, libraryEntryId: snapshot.entryId } }, { sql: markerExists, bindings: markerBindings });
       statements.push(event.statement as D1PreparedStatement);

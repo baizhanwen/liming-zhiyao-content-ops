@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -54,7 +55,28 @@ class FfmpegMediaProcessor:
             video = next((item for item in streams if item.get("codec_type") == "video"), None)
             audio = next((item for item in streams if item.get("codec_type") == "audio"), None)
             duration_ms = max(0, round(float(media_format.get("duration", 0)) * 1000))
-            return MediaInfo(duration_ms, video.get("width") if video else None, video.get("height") if video else None, video.get("codec_name") if video else None, audio.get("codec_name") if audio else None)
+            rotation = 0.0
+            if video:
+                tags = video.get("tags") or {}
+                raw_rotation = tags.get("rotate", 0)
+                for side_data in video.get("side_data_list") or []:
+                    if isinstance(side_data, dict) and side_data.get("rotation") is not None:
+                        raw_rotation = side_data["rotation"]
+                        break
+                try:
+                    rotation = float(raw_rotation)
+                    if not math.isfinite(rotation):
+                        rotation = 0.0
+                except (TypeError, ValueError):
+                    rotation = 0.0
+            return MediaInfo(
+                duration_ms, video.get("width") if video else None,
+                video.get("height") if video else None,
+                video.get("codec_name") if video else None,
+                audio.get("codec_name") if audio else None,
+                rotation, str(video["sample_aspect_ratio"]) if video and video.get("sample_aspect_ratio") else None,
+                str(video["display_aspect_ratio"]) if video and video.get("display_aspect_ratio") else None,
+            )
         except (TypeError, ValueError, json.JSONDecodeError) as error:
             raise MediaProcessingError("ffprobe returned invalid metadata") from error
 

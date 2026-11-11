@@ -22,7 +22,7 @@ test("source typecheck ignores generated delivery copies", () => {
   assert.ok(tsconfig.exclude.includes("deliveries"));
 });
 
-test("commercial delivery disables localhost bypass and provides guarded first-run setup", () => {
+test("full delivery disables localhost bypass and retains guarded legacy first-run setup", () => {
   const auth = read("lib/request-auth.ts");
   const firstRun = read("lib/first-run.ts");
   const route = read("app/api/first-run/route.ts");
@@ -39,7 +39,7 @@ test("commercial delivery disables localhost bypass and provides guarded first-r
   assert.match(form, /建立首家公司与管理员/);
 });
 
-test("commercial startup revokes sessions and delivery generation excludes private state", () => {
+test("full delivery revokes startup sessions and excludes private state", () => {
   const startup = read("scripts/prepare-login-startup.mjs");
   const startupSql = read("resources/delivery/revoke-startup-sessions.sql");
   const local = read("start-local.bat");
@@ -78,37 +78,36 @@ test("commercial startup revokes sessions and delivery generation excludes priva
   assert.match(delivery, /scripts\\prepare-delivery\.ps1/);
 });
 
-test("commercial delivery retains package choices and removes unlicensed programs", () => {
+test("full delivery fixes supported features and preserves legacy method readers", () => {
   const launcher = read("prepare-delivery.bat");
   const delivery = read("scripts/prepare-delivery.ps1");
+  const parameters = delivery.slice(0, delivery.indexOf('$ErrorActionPreference'));
   const operationsRoute = read("app/api/operations/route.ts");
   const operationsUi = read("components/SystemOperations.tsx");
-  assert.match(launcher, /PLAN_CODE=starter/);
-  assert.match(launcher, /PLAN_CODE=team/);
-  assert.match(launcher, /PLAN_CODE=scale/);
-  assert.match(launcher, /METHOD_LIBRARY_MODE=include/);
-  assert.match(launcher, /METHOD_LIBRARY_MODE=exclude/);
-  assert.match(delivery, /ValidateSet\("starter", "team", "scale"\)/);
-  assert.match(delivery, /ValidateSet\("include", "exclude"\)/);
-  assert.match(delivery, /Remove-PackagePath "resources\\authorized"/);
-  assert.match(delivery, /authorizedKnowledge/);
+  assert.match(parameters, /\[CmdletBinding\(\)\]/);
+  assert.match(parameters, /ValidateSet\("github"\)/);
+  assert.doesNotMatch(parameters, /CustomerName|PlanCode|AuthorizedKnowledge/);
+  assert.match(delivery, /\$PlanCode = "scale"/);
+  assert.match(delivery, /name = "完整开发版"; videoAnalysis = \$true; wechatImages = \$false; insights = \$true/);
+  assert.match(delivery, /\$includeAuthorizedKnowledge = \$true/);
+  assert.doesNotMatch(launcher, /set \/p|PLAN_CODE|METHOD_LIBRARY_MODE|:commercial/);
+  assert.match(launcher, /if not "%~1"==""/);
+  assert.match(launcher, /exit \/b 2/);
   assert.match(delivery, /LICENSE-NOTICE\.txt/);
   assert.match(delivery, /buildId = \$buildId/);
   assert.match(delivery, /packageFormat = 2/);
-  assert.match(delivery, /LEGACY_AUTHORIZED_KNOWLEDGE_SOURCE_IDS = \[\] as const/);
-  assert.match(delivery, /const LEGACY_SOURCE_IDS = \[\]/);
-  assert.match(delivery, /八、授权商业套餐/);
-  assert.match(delivery, /Remove-PackagePath/);
-  for (const path of ["app\\analysis", "services\\analyzer", "app\\wechat-images", "app\\insights"]) assert.match(delivery, new RegExp(path.replaceAll("\\", "\\\\")));
-  assert.match(delivery, /install-cookie-export-extension\.bat/);
-  assert.match(delivery, /lib\\delivery-entitlements\.ts/);
-  assert.match(delivery, /unlicensed modules were removed/);
+  assert.match(delivery, /八、完整开发版/);
+  assert.doesNotMatch(delivery, /LEGACY_AUTHORIZED_KNOWLEDGE_SOURCE_IDS = \[\]|const LEGACY_SOURCE_IDS = \[\]/);
+  assert.doesNotMatch(delivery, /Remove-PackagePath "(?:resources\\authorized|app\\analysis|services\\analyzer|app\\insights)"/);
+  assert.match(read("lib/authorized-knowledge.ts"), /LEGACY_AUTHORIZED_KNOWLEDGE_SOURCE_IDS = \["dbskill"\]/);
+  assert.match(read("lib/authorized-knowledge.ts"), /normalizedTag\.startsWith\("dbs-"\)/);
+  assert.match(read("scripts/sync-authorized-knowledge.mjs"), /const LEGACY_SOURCE_IDS = \["dbskill"\]/);
   assert.match(delivery, /app\\wechat-images\\design-preview/);
   assert.match(delivery, /components\\WechatPosterDesignPreview\.tsx/);
   assert.doesNotMatch(operationsRoute, /planCode: z\./);
   assert.doesNotMatch(operationsRoute, /UPDATE organization_settings SET plan_code = \?/);
-  assert.doesNotMatch(operationsUi, /name="planCode"/);
-  assert.match(operationsUi, /授权由交付包固定/);
+  assert.doesNotMatch(operationsUi, /name="planCode"|升级套餐/);
+  assert.match(operationsUi, /公司与运行版本/);
 });
 
 test("factory reset backs up before replacing local state", () => {
@@ -120,7 +119,7 @@ test("factory reset backs up before replacing local state", () => {
   assert.match(reset, /db:local:migrate/);
 });
 
-test("every delivery plan retains the lifecycle locks required for setup and recovery", () => {
+test("full delivery retains the lifecycle locks required for setup and recovery", () => {
   const delivery = read("scripts/prepare-delivery.ps1");
   assert.doesNotMatch(delivery, /Remove-PackagePath "scripts\\analyzer-instance-lock\.ps1"/);
   for (const name of ["run-web-guard.ps1", "run-migration-guard.ps1", "local-state-maintenance.ps1"]) {
@@ -133,28 +132,20 @@ test("every delivery plan retains the lifecycle locks required for setup and rec
 });
 
 
-test("GitHub downloads default to the complete edition with methods and no activation credential", () => {
+test("the only download edition includes methods without customer activation credentials", () => {
   const launcher = read("prepare-delivery.bat");
   const delivery = read("scripts/prepare-delivery.ps1");
-  assert.match(delivery, /ValidateSet\("github", "commercial"\)\]\[string\]\$Distribution = "github"/);
-  const publicDefaults = delivery.slice(delivery.indexOf("if ($isGithubDistribution) {"), delivery.indexOf("$safeName ="));
-  assert.match(publicDefaults, /\$CustomerName = ""/);
-  assert.match(publicDefaults, /\$PlanCode = "scale"/);
-  assert.match(publicDefaults, /\$AuthorizedKnowledge = "include"/);
-  assert.match(delivery, /\$selectedPlan\.name = "开发完整版"/);
   assert.match(delivery, /distribution = \$Distribution/);
-  assert.match(delivery, /activationRequired = -not \$isGithubDistribution/);
-  assert.match(delivery, /customer = if \(\$isGithubDistribution\) \{ \$null \}/);
-  assert.match(delivery, /\$requireSetupCode = if \(\$isGithubDistribution\) \{ "0" \} else \{ "1" \}/);
+  assert.match(delivery, /activationRequired = \$false/);
+  assert.match(delivery, /customer = \$null/);
+  assert.match(delivery, /\$requireSetupCode = "0"/);
   assert.match(delivery, /FIRST_RUN_REQUIRE_SETUP_CODE=\$requireSetupCode/);
-  const credential = delivery.indexOf('$credential = @(');
-  const commercialGuard = delivery.lastIndexOf('if (-not $isGithubDistribution) {', credential);
-  assert.ok(commercialGuard > delivery.indexOf('$buildId ='), "Only the commercial channel may write a customer credential");
-  assert.match(launcher, /--commercial[\s\S]*goto :commercial/);
-  const defaultLaunch = launcher.slice(0, launcher.indexOf("\r\n:commercial\r\n"));
-  assert.match(defaultLaunch, /-Distribution github/);
-  assert.doesNotMatch(defaultLaunch, /set \/p/);
-  assert.match(launcher, /-Distribution commercial -CustomerName/);
+  assert.doesNotMatch(delivery, /\$credential\s*=|交付激活码.*WriteAllText/);
+  assert.match(delivery, /\$buildId = "github-\$PlanCode-\$timestamp"/);
+  assert.match(delivery, /included = \$includeAuthorizedKnowledge/);
+  assert.match(delivery, /if \(\$methodAtomCount -eq 0\)/);
+  assert.match(launcher, /-Distribution github/);
+  assert.doesNotMatch(launcher, /-Distribution commercial|-CustomerName|-PlanCode|-AuthorizedKnowledge|set \/p/);
 });
 
 test("delivery includes only the reviewed environment plugin and preserves the Python lock", () => {

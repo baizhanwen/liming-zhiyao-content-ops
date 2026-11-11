@@ -5,9 +5,12 @@ import { readApiError, formatClientDate as dateLabel } from "../lib/client-forma
 import { scopedFetch, rememberCurrentScope } from "../lib/client-scope";
 import { type AnalysisProfile } from "../lib/analysis-profile";
 import { useAnalysisProfile } from "./useAnalysisProfile";
+import { ContentAnalysisPanel } from "./ContentAnalysisPanel";
+import { readContentAnalysis } from "../lib/video-content-analysis";
+import { contentAnalysisMarkdown } from "../lib/content-analysis-presentation";
 
 import Link from "next/link";
-import { hasPassedQualityAudit } from "../lib/material-analysis-state";
+import { assessAnalysisQuality } from "../lib/analysis-quality";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type Video = { id: string; source_type: "url" | "upload"; source_url: string | null; media_url: string | null; title: string | null; author_name: string | null; duration_sec: number | null; status: string; content_type: string | null; filename: string | null; is_shared_reference?: boolean };
@@ -20,7 +23,7 @@ type EventRow = { event_type: string; from_status: string | null; to_status: str
 type Asset = { id: string; analysis_job_id: string | null; kind: "keyframe" | "subtitle" | "report"; filename: string; content_type: string; size_bytes: number; url: string };
 type DetailResponse = { video: Video; job: Job | null; transcript: Transcript | null; analysis: Analysis | null; analyses?: Analysis[]; metrics: Metric[]; ownedPerformance?: OwnedPerformance | null; assets: Asset[]; events: EventRow[]; canWrite: boolean };
 type Segment = { startMs: number; endMs: number; text: string };
-type SpokenScriptVersion = { status: "completed" | "failed"; text: string; paragraphs: string[]; sourceSegmentIds: string[]; error: string | null; provenance: Record<string, unknown> | null; validation: Record<string, unknown> | null; historical: boolean };
+type SpokenScriptVersion = { status: "completed" | "failed" | "not_applicable"; text: string; paragraphs: string[]; sourceSegmentIds: string[]; error: string | null; provenance: Record<string, unknown> | null; validation: Record<string, unknown> | null; historical: boolean };
 type CtaStrength = "weak" | "medium" | "strong" | "unknown";
 type CtaAnalysisItem = {
   ctaType: string;
@@ -267,7 +270,7 @@ function normalizeSpokenScript(report: Record<string, unknown> | null, schemaVer
       : historical
         ? fallback
         : [];
-  const explicitStatus = raw?.status === "completed" || raw?.status === "failed" ? raw.status : null;
+  const explicitStatus = raw?.status === "completed" || raw?.status === "failed" || raw?.status === "not_applicable" ? raw.status : null;
   const status = explicitStatus ?? (paragraphs.length > 0 ? "completed" : "failed");
   const error = typeof raw?.error === "string" && raw.error.trim()
     ? raw.error.trim()
@@ -350,15 +353,15 @@ function RetryableMediaImage({ src, alt, className }: { src: string; alt: string
   />;
 }
 
-export function AnalysisDetail({ videoId, organizationId, projectId, libraryEntryId }: { videoId: string; organizationId: string; projectId: string; libraryEntryId?: string }) {
+export function AnalysisDetail({ videoId, organizationId, projectId, libraryEntryId, initialAnalysisId }: { videoId: string; organizationId: string; projectId: string; libraryEntryId?: string; initialAnalysisId?: string }) {
   const [detail, setDetail] = useState<DetailResponse | null>(null); const [loading, setLoading] = useState(true); const [error, setError] = useState("");
   const [editingTranscript, setEditingTranscript] = useState(false); const [savingTranscript, setSavingTranscript] = useState(false); const [draftSegments, setDraftSegments] = useState<Segment[]>([]); const [editMessage, setEditMessage] = useState("");
   const [copyMessage, setCopyMessage] = useState(""); const [transcriptQuery, setTranscriptQuery] = useState("");
   const [reanalyzing, setReanalyzing] = useState(false);
   const [rerunProfile, updateRerunProfile] = useAnalysisProfile(detail?.job?.analysis_profile === "max" ? "max" : "standard");
-  const [selectedAnalysisId, setSelectedAnalysisId] = useState(""); const [compareAnalysisId, setCompareAnalysisId] = useState("");
+  const [selectedAnalysisId, setSelectedAnalysisId] = useState(initialAnalysisId || ""); const [compareAnalysisId, setCompareAnalysisId] = useState("");
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
-  const requestUrl = useMemo(() => `/api/videos/${encodeURIComponent(videoId)}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}${libraryEntryId ? `&libraryEntryId=${encodeURIComponent(libraryEntryId)}` : ""}`, [organizationId, projectId, videoId, libraryEntryId]);
+  const requestUrl = useMemo(() => `/api/videos/${encodeURIComponent(videoId)}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}${libraryEntryId ? `&libraryEntryId=${encodeURIComponent(libraryEntryId)}` : ""}${initialAnalysisId ? `&analysisId=${encodeURIComponent(initialAnalysisId)}` : ""}`, [organizationId, projectId, videoId, libraryEntryId, initialAnalysisId]);
   const load = useCallback(async () => {
     setLoading(true); setError("");
     try {
@@ -387,6 +390,7 @@ export function AnalysisDetail({ videoId, organizationId, projectId, libraryEntr
   const captionTrack = useMemo(() => `data:text/vtt;charset=utf-8,${encodeURIComponent(transcriptVtt)}`, [transcriptVtt]);
   const visibleSegments = useMemo(() => { const query = transcriptQuery.trim().toLocaleLowerCase("zh-CN"); return query ? segments.filter((segment) => segment.text.toLocaleLowerCase("zh-CN").includes(query)) : segments; }, [segments, transcriptQuery]);
   const report = asRecord(analysis?.report);
+  const structuredContent = useMemo(() => readContentAnalysis(report), [report]);
   const analysisMeta = asRecord(report?.analysis_meta);
   const visualExtraction = asRecord(analysisMeta?.visual_extraction);
   const visualUnderstanding = asRecord(visualExtraction?.visual_understanding);
@@ -398,7 +402,7 @@ export function AnalysisDetail({ videoId, organizationId, projectId, libraryEntr
   const qualityScore = typeof qualityAudit?.score === "number"
     ? Math.min(100, qualityAudit.score + (removedDepthCheck?.passed === false ? 12 : 0))
     : null;
-  const criticalQualityKeys = ["core", "specialists", "required_sections", "spoken_scripts", "evidence", "cta", "links", "required_links", "coverage", "visual_understanding"];
+  const criticalQualityKeys = ["core", "specialists", "required_sections", "spoken_scripts", "evidence", "cta", "links", "required_links", "coverage", "visual_understanding", "content_analysis"];
   const qualityStatus = removedDepthCheck?.passed === false
     && qualityScore !== null
     && qualityScore >= 85
@@ -417,7 +421,7 @@ export function AnalysisDetail({ videoId, organizationId, projectId, libraryEntr
   const scriptModelLabel = [activeScriptVersion.provenance?.model_provider, activeScriptVersion.provenance?.model_name].filter((item): item is string => typeof item === "string" && item.trim().length > 0).join(" / ") || "确定性规则";
   const scriptPromptVersion = typeof activeScriptVersion.provenance?.prompt_version === "string" ? activeScriptVersion.provenance.prompt_version : "—";
   const ctaAnalysis = normalizeCtaAnalysis(report);
-  const independentReportKeys = new Set(["evidence", "analysis_meta", "spoken_script", "spoken_script_set", "insight_evidence", "cta_analysis", "ctaAnalysis", "cta"]);
+  const independentReportKeys = new Set(["evidence", "analysis_meta", "spoken_script", "spoken_script_set", "insight_evidence", "cta_analysis", "ctaAnalysis", "cta", "content_analysis"]);
   const reportSections: Array<[string, unknown]> = [
     ...(report ? Object.entries(report).filter(([key]) => !independentReportKeys.has(key)) : []),
     ...(ctaAnalysis ? [["cta_analysis", ctaAnalysis] as [string, unknown]] : []),
@@ -479,6 +483,7 @@ export function AnalysisDetail({ videoId, organizationId, projectId, libraryEntr
     try {
       const sections = reportSections.map(([key, value]) => `${sectionNames[key] ?? key}\n${key === "cta_analysis" && ctaAnalysis ? ctaExportText(ctaAnalysis) : renderValue(value, key)}`);
       if (spokenScript.length) sections.splice(1, 0, `${spokenScriptHeading}\n${spokenScript.join("\n\n")}`);
+      if (structuredContent) sections.push(contentAnalysisMarkdown(structuredContent));
       await copyText(sections.join("\n\n"));
       setCopyMessage("分析报告已复制，可以直接粘贴到文档或群聊。" );
     } catch { setCopyMessage("复制没有成功，请重新点击一次。" ); }
@@ -487,6 +492,7 @@ export function AnalysisDetail({ videoId, organizationId, projectId, libraryEntr
     const title = detail?.video.title || detail?.video.filename || "视频分析";
     const lines = [`# ${title}`, "", `- 生成时间：${dateLabel(analysis?.created_at ?? null)}`, `- 模型：${[analysis?.model_provider, analysis?.model_name].filter(Boolean).join(" / ") || "规则与适配器"}`];
     if (spokenScript.length) lines.push("", `## ${spokenScriptHeading}`, "", spokenScript.join("\n\n"));
+    if (structuredContent) lines.push("", contentAnalysisMarkdown(structuredContent));
     for (const [key, value] of reportSections) lines.push("", `## ${sectionNames[key] ?? key}`, "", key === "cta_analysis" && ctaAnalysis ? ctaExportText(ctaAnalysis) : renderValue(value, key));
     if (segments.length) { lines.push("", "## 时间轴转写", ""); for (const segment of segments) lines.push(`- [${timeLabel(segment.startMs)}] ${segment.text}`); }
     downloadText(`${safeFilename(title)}-分析报告.md`, `${lines.join("\n")}\n`, "text/markdown"); setCopyMessage("Markdown 报告已下载到浏览器下载目录。" );
@@ -525,7 +531,7 @@ export function AnalysisDetail({ videoId, organizationId, projectId, libraryEntr
   const isAudio = detail.video.content_type?.startsWith("audio/");
   const importedJob = detail.job?.idempotency_key?.startsWith("material-import:");
   const missingReport = !detail.analysis && (!detail.job || importedJob);
-  const effectiveJobStatus = importedJob && analysis?.schema_version === "analysis.v7" && !hasPassedQualityAudit(qualityAudit) ? "partial" : detail.job?.status;
+  const effectiveJobStatus = analysis && (importedJob || detail.job?.status === "completed" || detail.job?.status === "partial") && !assessAnalysisQuality(analysis.schema_version, report).accepted ? "partial" : detail.job?.status;
   return <div className="analysis-detail-layout">
     <nav className="analysis-detail-nav" aria-label="分析结果快捷导航"><a href="#analysis-media">媒体与转写</a><a href="#analysis-report">结构化报告</a><a href="#analysis-trace">处理记录</a></nav>
     <section className="detail-primary">
@@ -552,22 +558,23 @@ export function AnalysisDetail({ videoId, organizationId, projectId, libraryEntr
         {copyMessage && <p className="report-copy-message" role="status">{copyMessage}</p>}
         {analysisVersions.length > 0 && <div className="analysis-version-toolbar"><label><span>当前查看</span><select value={analysis?.id || ""} onChange={(event) => { const id = event.target.value; setSelectedAnalysisId(id); setCompareAnalysisId((current) => current === id ? "" : current); }}>{analysisVersions.map((item) => <option key={item.id} value={item.id}>{analysisVersionLabel(item)}</option>)}</select></label><label><span>对比版本</span><select value={effectiveCompareAnalysisId} onChange={(event) => setCompareAnalysisId(event.target.value)} disabled={analysisVersions.length < 2}><option value="">{analysisVersions.length < 2 ? "重新分析后可对比" : "选择另一份报告"}</option>{analysisVersions.filter((item) => item.id !== analysis?.id).map((item) => <option key={item.id} value={item.id}>{analysisVersionLabel(item)}</option>)}</select></label><p>人工校正时间轴并重新分析后，旧报告会保留在这里，不会被覆盖。</p></div>}
         {analysis && compareAnalysis && compareAnalysis.id !== analysis.id && <section className="analysis-comparison-panel"><div><div><span>版本对比</span><h3>快速核对两个模型或两次分析的差异</h3></div><button type="button" onClick={() => setCompareAnalysisId("")}>关闭对比</button></div><div className="comparison-headings"><strong>{analysisVersionLabel(analysis)}</strong><strong>{analysisVersionLabel(compareAnalysis)}</strong></div>{comparisonKeys.map((key) => <article key={key}><h4>{sectionNames[key] ?? key}</h4><div><p>{report?.[key] === undefined ? "该版本未生成此项" : renderValue(report[key], key)}</p><p>{compareReport?.[key] === undefined ? "该版本未生成此项" : renderValue(compareReport[key], key)}</p></div></article>)}</section>}
-        {effectiveJobStatus === "partial" && qualityStatus !== "passed" && <section className="analysis-partial-banner" role="alert"><strong>这份报告是“部分完成”，不是完整成功</strong><p>{detail.job?.error_message || "至少一项关键能力或质量检查未通过。报告可以查看，但建议按验收项修复后重试。"}</p></section>}
+        {effectiveJobStatus === "partial" && <section className="analysis-partial-banner" role="alert"><strong>这份报告是“部分完成”，不是完整成功</strong><p>{detail.job?.error_message || "至少一项关键能力或质量检查未通过。报告可以查看，但建议按验收项修复后重试。"}</p></section>}
         {visualUnderstanding && <section className={"visual-understanding-status " + String(visualUnderstanding.status || "unavailable")}><div><span>独立视觉模型</span><strong>{visualUnderstanding.status === "completed" ? "真实画面理解已完成" : visualUnderstanding.status === "partial" ? "真实画面理解只完成一部分" : "真实画面理解不可用"}</strong></div><p>{typeof visualUnderstanding.reason === "string" && visualUnderstanding.reason.trim() ? visualUnderstanding.reason : "OCR 只用于识别画面文字，不会被当作人物动作、场景或镜头表达分析。"}</p><small>视觉观察 {typeof visualUnderstanding.observation_count === "number" ? visualUnderstanding.observation_count : 0} 条 · 与 OCR 结果分开记录</small></section>}
         {qualityAudit && <section className={`analysis-quality-audit ${qualityStatus === "passed" ? "passed" : qualityStatus === "degraded" ? "degraded" : "review"}`}><header><div><span>自动质量验收</span><h3>{qualityLabel}</h3></div><strong>{qualityScore ?? "—"}<small>/100</small></strong></header><div className="quality-check-grid">{qualityChecks.map((check, index) => <article className={check.passed === true ? "passed" : "failed"} key={`${String(check.key || "check")}-${index}`}><i aria-hidden="true">{check.passed === true ? "✓" : "!"}</i><span>{String(check.label || "质量检查")}</span><strong>{String(check.value ?? "—")}</strong></article>)}</div>{qualityIssues.length > 0 && <details><summary>查看 {qualityIssues.length} 项需要注意的问题</summary><ul>{qualityIssues.map((issue) => <li key={issue}>{issue}</li>)}</ul></details>}<p>{qualityStatus === "passed" ? "报告结构、来源覆盖和证据追溯达到当前模式的验收要求。" : "报告仍可查看，但系统没有把它静默当作满质量结果；可根据提示校正转写或重新分析。"}</p></section>}
         {analysisMeta && <div className="analysis-cost-summary"><div><small>{typeof analysisMeta.actual_total_tokens === "number" ? "实际模型消耗" : "模型输入预估"}</small><strong>{numberLabel(typeof analysisMeta.actual_total_tokens === "number" ? analysisMeta.actual_total_tokens : typeof analysisMeta.estimated_model_input_tokens === "number" ? analysisMeta.estimated_model_input_tokens : null)} Token</strong>{typeof analysisMeta.actual_total_tokens === "number" && <span>输入 {numberLabel(typeof analysisMeta.actual_input_tokens === "number" ? analysisMeta.actual_input_tokens : null)} · 输出 {numberLabel(typeof analysisMeta.actual_output_tokens === "number" ? analysisMeta.actual_output_tokens : null)}</span>}</div><div><small>分析覆盖率</small><strong>{typeof analysisMeta.coverage_percent === "number" ? `${analysisMeta.coverage_percent}%` : "—"}</strong>{typeof analysisMeta.analyzed_segments === "number" && typeof analysisMeta.source_segments === "number" && <span>{analysisMeta.analyzed_segments} / {analysisMeta.source_segments} 个片段</span>}</div><div><small>长视频处理</small><strong>{analysisMeta.processing_mode === "segmented" ? "分段分析后汇总" : typeof analysisMeta.duration_minutes === "number" ? `${analysisMeta.duration_minutes} 分钟` : "单次分析"}</strong><span>{analysisMeta.processing_mode === "segmented" && typeof analysisMeta.segment_analysis_count === "number" ? `${analysisMeta.segment_analysis_count} 个时间段 · ${analysisMeta.analysis_passes} 次调用` : typeof analysisMeta.chunk_count === "number" ? `${analysisMeta.chunk_count} 个证据窗口` : ""}</span></div><div><small>预算策略</small><strong>{analysisMeta.mode === "budgeted" ? "预算内抽样" : "完整分析"}</strong><span>{analysisProfileNames[String(analysisMeta.analysis_profile)] || "标准模式"}{typeof analysisMeta.maximum_total_tokens === "number" ? ` · 总上限 ${numberLabel(analysisMeta.maximum_total_tokens)}` : typeof analysisMeta.maximum_source_tokens === "number" ? ` · 输入上限 ${numberLabel(analysisMeta.maximum_source_tokens)}` : ""}</span></div></div>}
         {detail.canWrite && !detail.video.is_shared_reference && <div className="analysis-rerun-bar"><div><strong>选择档位重新分析</strong><span>保留原视频；有人工校正版时优先沿用校正版。标准模式成本更低，最高能力保留更密集画面与专项诊断。</span></div><select value={rerunProfile} onChange={(event) => updateRerunProfile(event.target.value as AnalysisProfile)} aria-label="重新分析档位"><option value="standard">标准模式 · 推荐</option><option value="max">最高能力模式</option></select><button type="button" disabled={reanalyzing} onClick={reanalyze}>{reanalyzing ? "正在创建…" : "重新分析"}</button></div>}
+        {report && <ContentAnalysisPanel report={report} assets={keyframes} onLocate={detail.video.media_url || detail.video.source_url ? locateTimepoint : undefined} />}
         {hasSpokenScriptPanel && <section className="spoken-script-panel">
           <div>
-            <div><span>{analysis?.schema_version || "旧版报告"} · {activeScriptVersion.historical ? "历史原稿兼容展示" : "ASR 忠实整理"}</span><h3>原版口播文案</h3></div>
+            <div><span>{analysis?.schema_version || "旧版报告"} · {activeScriptVersion.historical ? "历史原稿兼容展示" : activeScriptVersion.status === "not_applicable" ? "不适用" : "ASR 忠实整理"}</span><h3>原版口播文案</h3></div>
             <button type="button" disabled={activeScriptVersion.status !== "completed" || spokenScript.length === 0} onClick={copySpokenScript}>复制原版文案</button>
           </div>
           <div className={"spoken-script-state " + activeScriptVersion.status}>
-            <strong>{activeScriptVersion.historical ? "这是旧报告的原稿，不代表已由 AI 完成纠错" : activeScriptVersion.status === "completed" ? "已完成错字、语病、标点与断句校正" : spokenScript.length > 0 ? "候选稿未通过验收，内容已保留供核对" : "AI 未返回可用的校正稿"}</strong>
+            <strong>{activeScriptVersion.status === "not_applicable" ? "源视频没有音轨，口播校正不适用。" : activeScriptVersion.historical ? "这是旧报告的原稿，不代表已由 AI 完成纠错" : activeScriptVersion.status === "completed" ? "已完成错字、语病、标点与断句校正" : spokenScript.length > 0 ? "候选稿未通过验收，内容已保留供核对" : "AI 未返回可用的校正稿"}</strong>
             <span>来源：{scriptProvenanceSource} · 模型：{scriptModelLabel} · 提示词：{scriptPromptVersion}</span>
           </div>
           {scriptValidationChecks.length > 0 && <div className="spoken-script-checks">{scriptValidationChecks.map((check, index) => <span className={check.passed === true ? "passed" : "failed"} key={String(check.key || "check") + "-" + index}><i>{check.passed === true ? "✓" : "!"}</i><b>{String(check.label || "校验项")}</b><small>{String(check.value ?? "—")}</small></span>)}</div>}
-          {spokenScript.length > 0
+          {activeScriptVersion.status === "not_applicable" ? <p>画面与内容分类仍可查看。</p> : spokenScript.length > 0
             ? <><article>{spokenScript.map((paragraph, index) => <p key={index + "-" + paragraph.slice(0, 12)}>{paragraph}</p>)}</article>{activeScriptVersion.status === "failed" && <article className="spoken-script-failure" role="alert"><strong>{activeScriptVersion.error || "候选稿未通过自动验收。"}</strong><p>上方保留的是待核对候选稿，不会被标记为校正成功；未通过的来源、篇幅或相似度项目会显示在验收项中。</p></article>}</>
             : <article className="spoken-script-failure" role="alert"><strong>{activeScriptVersion.error || "AI 没有返回可展示的校正稿。"}</strong><p>原始 ASR 仍保留在上方时间轴中，可校正转写后重新分析。</p></article>}
           <small>{activeScriptVersion.historical ? "旧 analysis.v5/v6/v7 报告仅兼容展示当时的完整原稿。" : <>普通分析只做原稿纠错，不再自动消耗 Token 生成微调或重构稿；需要改写时请进入 <Link href="/script-rewrite">文案改写</Link>。</>}</small>

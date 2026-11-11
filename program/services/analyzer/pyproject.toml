@@ -47,4 +47,5 @@ include = ["liming_analyzer*"]
 exclude = ["*.node_modules*", "*.tests*"]
 
 [tool.setuptools.package-data]
+"liming_analyzer" = ["resources/*.json", "resources/*.md"]
 "liming_analyzer.douyin_collector" = ["node/*.mjs", "node/*.json", "LICENSES/*.txt", "README.md", "SOURCE.json"]

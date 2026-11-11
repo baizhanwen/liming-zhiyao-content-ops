@@ -60,6 +60,14 @@ test('memory-event failure rolls back all imported references and audit', async 
   const before = f.snapshot(); f.sqlite.exec("CREATE TRIGGER synthetic_memory_failure BEFORE INSERT ON project_memory_events BEGIN SELECT RAISE(ABORT,'synthetic memory failure'); END");
   assert.equal((await f.importEntries()).status, 500); assert.deepEqual(f.snapshot(), before);
 });
+test('partial and unknown reports can be referenced without queuing automatic memory', async t => {
+  const f = await fixture(t);
+  f.seed('video_analyses', { video_id: f.entries[0].video, schema_version: 'analysis.v9', report_json: '{"summary":"保留部分分析"}' });
+  f.seed('video_analyses', { video_id: f.entries[1].video, schema_version: 'analysis.future', report_json: '{}' });
+  assert.equal((await f.importEntries()).status, 201);
+  assert.equal(f.snapshot().project_video_references.length, 2);
+  assert.equal(f.snapshot().project_memory_events.length, 0);
+});
 test('removal audit failure preserves the active reference', async t => {
   const f = await fixture(t); assert.equal((await f.importEntries([f.entries[0].id])).status, 201);
   const id = f.snapshot().project_video_references[0].id, before = f.snapshot(); f.sqlite.exec("CREATE TRIGGER synthetic_remove_failure BEFORE INSERT ON audit_logs WHEN NEW.action='video_library.removed' BEGIN SELECT RAISE(ABORT,'synthetic audit failure'); END");

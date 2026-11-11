@@ -2,6 +2,12 @@ name: Build full Windows download
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "New full-v release tag (must have matching release notes)"
+        required: true
+        default: "full-v20261111.6"
+        type: string
   push:
     tags:
       - "full-v*"
@@ -45,13 +51,16 @@ jobs:
         run: |
           python -m venv .local/runtime-tests
           $testPython = Join-Path (Get-Location) '.local/runtime-tests/Scripts/python.exe'
-          $testRequirements = & $testPython -c "import tomllib; data = tomllib.load(open('services/analyzer/uv.lock', 'rb')); print('\n'.join(package['name'] + '==' + package['version'] for package in data['package'] if package['name'] in {'pytest', 'httpx'}))"
+          # Offline contract tests need the SDK/schema stack, never the large ASR/media extras.
+          $testRequirements = & $testPython -c "import tomllib; data = tomllib.load(open('services/analyzer/uv.lock', 'rb')); print('\n'.join(package['name'] + '==' + package['version'] for package in data['package'] if package['name'] in {'pytest', 'httpx', 'openai', 'instructor', 'pydantic', 'pillow', 'setuptools'}))"
           if ($LASTEXITCODE -ne 0) { throw 'Cannot read the locked test dependency.' }
           & $testPython -m pip install --disable-pip-version-check @testRequirements
           if ($LASTEXITCODE -ne 0) { throw 'Cannot prepare the isolated runtime tests.' }
           $env:PYTHONPATH = Join-Path (Get-Location) 'services/analyzer'
           & $testPython -m pytest services/analyzer/tests/test_analyzer_local_runtime.py services/analyzer/tests/test_analyzer_windows_control.py services/analyzer/tests/test_prepare_analyzer_models.py services/analyzer/tests/collector/test_adapter.py services/analyzer/tests/test_skill_collect_source.py -q
           if ($LASTEXITCODE -ne 0) { throw 'Python runtime isolation tests failed.' }
+          & $testPython -m pytest services/analyzer/tests/test_content_analysis.py services/analyzer/tests/test_content_metrics.py services/analyzer/tests/test_no_audio_content.py services/analyzer/tests/test_content_provider_integration.py services/analyzer/tests/test_content_packaging.py services/analyzer/tests/test_visual_evidence.py services/analyzer/tests/test_ffmpeg.py services/analyzer/tests/test_minimax_vision.py services/analyzer/tests/test_minimax_flash_compat.py services/analyzer/tests/test_providers.py services/analyzer/tests/test_correction_token_retry.py services/analyzer/tests/test_model_calls.py -q
+          if ($LASTEXITCODE -ne 0) { throw 'Windows v10 content analysis or wheel resource regression failed.' }
       - name: Check source and run regression tests
         working-directory: program
         run: npm test
@@ -89,25 +98,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
         run: |
-          $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { 'full-v' + (Get-Date -Format 'yyyyMMdd') + '.' + $env:GITHUB_RUN_NUMBER }
-          $notes = @'
-          默认开发完整版，包含内置方法库，无需交付激活码。
-
-          本次修复 Windows 分析服务重复启动、旧安装进程识别与抖音原片保存错误；安装、网页启动和采集器共用运行环境选择，没有兼容 Node.js 时在本项目内准备固定版本，不修改全局 Node.js。口播校正因输出上限截断时，提高下一轮额度再重试。
-
-          下载 `LimingZhiyao-Windows-Full.zip` 并完整解压，依次运行 `setup-local.bat`、`start-local.bat`。
-          首次在主机电脑创建公司和管理员；登录后到系统设置填写自己的模型 API Key，并一键配置视频分析环境。
-
-          已有安装请先停止服务并备份；升级前阅读包内 `docs/operations/备份恢复与升级操作.md`，保留原业务数据与 `.dev.vars` 密钥配置，勿将新包当作业务数据备份。
-
-          下载包不含开发者密钥、本地业务数据或环境缓存。首次安装需要联网下载依赖和分析模型。
-          附带的验证报告覆盖独立 Windows 安装目录的自动检查；真实视频、模型调用和多台电脑验收另行进行。
-          '@
-          $notesFile = Join-Path $env:RUNNER_TEMP 'release-notes.md'
-          [IO.File]::WriteAllText($notesFile, $notes)
+          $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { $env:RELEASE_TAG_INPUT }
+          if ($tag -notmatch '^full-v[0-9]{8}\.[0-9]+$') { throw 'A versioned full-v release tag is required.' }
+          $notesFile = Join-Path (Get-Location) ("program/docs/releases/" + $tag + '.md')
+          if (-not (Test-Path -LiteralPath $notesFile -PathType Leaf)) { throw 'Versioned release notes are missing.' }
           $assets = @(Get-ChildItem "$env:RUNNER_TEMP/release-assets" -File | ForEach-Object FullName)
-          gh release create $tag @assets --target $env:GITHUB_SHA --title '利明智耀工作台 · 开发完整版' --notes-file $notesFile --latest
+          gh release create $tag @assets --target $env:GITHUB_SHA --title '利明智耀工作台 · 完整开发版' --notes-file $notesFile --latest
           if ($LASTEXITCODE -ne 0) { throw 'GitHub Release publication failed.' }
       - name: Retain synthetic acceptance diagnostics
         if: failure()

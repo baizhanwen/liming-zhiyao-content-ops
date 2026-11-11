@@ -18,7 +18,7 @@ test("authorized Liming Zhiyao methodology is versioned and used by topic and co
   assert.match(production.CONTENT_SYSTEM_PROMPT, /方法论、对标样本、历史文案和灵感均不能支撑客户事实/);
   assert.match(topics, /TOPIC_CREATION_METHODOLOGY/);
   assert.match(topics, /topic-fields\.v6-core-strategy/);
-  assert.match(analyzer, /video-analysis\.v9-cta-v1/);
+  assert.match(analyzer, /video-analysis\.v10-content-v1/);
 });
 
 test("new production packs expose a visible structured quality review", async () => {

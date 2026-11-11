@@ -1,12 +1,18 @@
 import { getD1, sha256Hex } from "../db/runtime";
 import { extractVideoKnowledgeAtomsFromReport } from "./video-knowledge-atom-state";
 import { ProjectWriteAccessChangedError, type ProjectWriteScope } from "./project-write-access";
+import { assessAnalysisQuality } from "./analysis-quality";
 
 function parse(value: string) { try { return JSON.parse(value) as Record<string, unknown>; } catch { return null; } }
-export async function extractVideoKnowledgeAtoms(input: { organizationId: string; videoId: string; analysisId: string; reportJson: string; reportHash?: string; extractorVersion?: string; now?: string; writeScope?: ProjectWriteScope; assertWriteAccess?: () => Promise<void> }) {
+export async function extractVideoKnowledgeAtoms(input: { organizationId: string; videoId: string; analysisId: string; schemaVersion?: string; reportJson: string; reportHash?: string; extractorVersion?: string; now?: string; writeScope?: ProjectWriteScope; assertWriteAccess?: () => Promise<void> }) {
   const report = parse(input.reportJson);
   if (!report) return { status: "unsupported", count: 0 };
   const db = getD1();
+  const persisted = await db.prepare("SELECT schema_version, report_json FROM video_analyses WHERE id=? AND organization_id=? AND video_id=?").bind(input.analysisId, input.organizationId, input.videoId).first<{ schema_version: string; report_json: string }>();
+  if (!persisted || persisted.report_json !== input.reportJson) return { status: "stale", count: 0 };
+  const schemaVersion = persisted.schema_version;
+  if (input.schemaVersion && input.schemaVersion !== schemaVersion) return { status: "unsupported", count: 0 };
+  if (!assessAnalysisQuality(schemaVersion, report).accepted) return { status: "unsupported", count: 0 };
   const library = await db.prepare("SELECT id FROM video_library_entries WHERE organization_id = ? AND source_video_id = ? LIMIT 1").bind(input.organizationId, input.videoId).first<{ id: string }>();
   if (!library) return { status: "unsupported", count: 0 };
   const reportHash = input.reportHash ?? await sha256Hex(new TextEncoder().encode(input.reportJson));
@@ -16,7 +22,7 @@ export async function backfillProjectBenchmarkKnowledgeAtoms(input: { organizati
   const db = getD1();
   const limit = Math.max(1, Math.min(100, input.limit ?? 100));
   const rows = await db.prepare(`
-    SELECT library.source_video_id AS video_id, analysis.id AS analysis_id, analysis.report_json
+    SELECT library.source_video_id AS video_id, analysis.id AS analysis_id, analysis.schema_version, analysis.report_json
     FROM project_video_references refs
     INNER JOIN video_library_entries library
       ON library.id = refs.library_entry_id AND library.organization_id = refs.organization_id
@@ -35,7 +41,7 @@ export async function backfillProjectBenchmarkKnowledgeAtoms(input: { organizati
       )
     ORDER BY refs.created_at ASC
     LIMIT ?
-  `).bind(input.organizationId, input.projectId, limit).all<{ video_id: string; analysis_id: string; report_json: string }>();
+  `).bind(input.organizationId, input.projectId, limit).all<{ video_id: string; analysis_id: string; schema_version: string; report_json: string }>();
   let extracted = 0;
   let atomCount = 0;
   let failed = 0;
@@ -46,6 +52,7 @@ export async function backfillProjectBenchmarkKnowledgeAtoms(input: { organizati
         organizationId: input.organizationId,
         videoId: row.video_id,
         analysisId: row.analysis_id,
+        schemaVersion: row.schema_version,
         reportJson: row.report_json,
         extractorVersion: "atoms.v2",
         writeScope: input.userId ? { organizationId: input.organizationId, projectId: input.projectId, userId: input.userId } : undefined,

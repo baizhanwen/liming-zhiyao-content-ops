@@ -43,6 +43,8 @@ function copyRuntime(installation) {
   mkdirSync(path.join(installation, "scripts"), { recursive: true });
   mkdirSync(path.join(installation, ".local"), { recursive: true });
   mkdirSync(path.join(installation, "services/analyzer/liming_analyzer"), { recursive: true });
+  mkdirSync(path.join(installation, "services/analyzer/liming_analyzer/resources"), { recursive: true });
+  copyFileSync(path.join(root, "services/analyzer/liming_analyzer/resources/video-taxonomy.v1.json"), path.join(installation, "services/analyzer/liming_analyzer/resources/video-taxonomy.v1.json"));
   for (const name of ["analyzer-windows-control.ps1", "analyzer-windows-identity.ps1", "run-analyzer-supervisor.ps1", "analyzer-instance-lock.ps1", "analyzer-source-runtime.ps1"]) {
     copyFileSync(path.join(root, "scripts", name), path.join(installation, "scripts", name));
   }
@@ -140,9 +142,11 @@ test("Windows source signatures include empty files and content without optional
     $changed = Get-AnalyzerSourceSignature $env:OWNERSHIP_ROOT
     [IO.File]::Delete((Join-Path $env:OWNERSHIP_ROOT 'services/analyzer/liming_analyzer/__init__.py'))
     $removed = Get-AnalyzerSourceSignature $env:OWNERSHIP_ROOT
-    [pscustomobject]@{ valid=($first -match '^[a-f0-9]{64}$'); stable=($first -eq $same); contentChanges=($first -ne $changed); emptyFilesIncluded=($changed -ne $removed) } | ConvertTo-Json -Compress
+    [IO.File]::AppendAllText((Join-Path $env:OWNERSHIP_ROOT 'services/analyzer/liming_analyzer/resources/video-taxonomy.v1.json'), ' ')
+    $taxonomyChanged = Get-AnalyzerSourceSignature $env:OWNERSHIP_ROOT
+    [pscustomobject]@{ valid=($first -match '^[a-f0-9]{64}$'); stable=($first -eq $same); contentChanges=($first -ne $changed); emptyFilesIncluded=($changed -ne $removed); taxonomyIncluded=($removed -ne $taxonomyChanged) } | ConvertTo-Json -Compress
   `, { OWNERSHIP_ROOT: directory });
-  assert.deepEqual(result, { valid: true, stable: true, contentChanges: true, emptyFilesIncluded: true });
+  assert.deepEqual(result, { valid: true, stable: true, contentChanges: true, emptyFilesIncluded: true, taxonomyIncluded: true });
 });
 
 test("Windows service start is idempotent, detects upgraded source, and stops its supervised worker", { skip: !windows, timeout: 240_000 }, async t => {

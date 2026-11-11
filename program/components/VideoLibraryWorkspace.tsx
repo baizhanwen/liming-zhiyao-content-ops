@@ -11,6 +11,7 @@ import { readMaterialArchive, readMaterialResponse, materialManifestFiles } from
 import { MATERIAL_MAX_ARCHIVE_BYTES, MATERIAL_MAX_MANIFEST_BYTES, MATERIAL_MAX_MEDIA_BYTES } from "../lib/material-transfer-limits";
 import { strFromU8, strToU8, zipSync } from "fflate";
 import { Download, FolderInput, Upload } from "lucide-react";
+import { ContentComparisonPanel } from "./ContentComparisonPanel";
 import { preferredOrganizationId, rememberCurrentScope, scopedFetch } from "../lib/client-scope";
 
 type Organization = { id: string; name: string };
@@ -34,6 +35,7 @@ export function VideoLibraryWorkspace({ mode }: { mode: "benchmark" | "assets" }
   const [organizations, setOrganizations] = useState<Organization[]>([]); const [organizationId, setOrganizationId] = useState("");
   const [projects, setProjects] = useState<Project[]>([]); const [projectId, setProjectId] = useState("");
   const [entries, setEntries] = useState<LibraryEntry[]>([]); const [selected, setSelected] = useState<string[]>([]);
+  const [comparisonIds, setComparisonIds] = useState<string[]>([]);
   const [query, setQuery] = useState(""); const [category, setCategory] = useState("");
   const [loading, setLoading] = useState(true); const [working, setWorking] = useState(false); const [error, setError] = useState(""); const [notice, setNotice] = useState("");
   const [canManage, setCanManage] = useState(false); const [canWrite, setCanWrite] = useState(false); const [tagDrafts, setTagDrafts] = useState<Record<string, string>>({}); const [coverFailures, setCoverFailures] = useState<Record<string, boolean>>({});
@@ -49,7 +51,7 @@ export function VideoLibraryWorkspace({ mode }: { mode: "benchmark" | "assets" }
       if (search.trim()) params.set("q", search.trim()); if (filter) params.set("category", filter);
       const response = await scopedFetch(`${base}?${params}`); if (!response.ok) throw new Error(await readError(response));
       const body = await response.json() as { entries: LibraryEntry[]; canManage?: boolean; canWrite?: boolean };
-      setEntries(body.entries); setCanManage(Boolean(body.canManage)); setCanWrite(Boolean(body.canWrite)); setSelected([]); setCoverFailures({});
+      setEntries(body.entries); setCanManage(Boolean(body.canManage)); setCanWrite(Boolean(body.canWrite)); setSelected([]); setComparisonIds([]); setCoverFailures({});
       setTagDrafts(Object.fromEntries(body.entries.map((entry) => [entry.id, entry.tags.join("、")])));
     } catch (reason) { setError(reason instanceof Error ? reason.message : "素材库加载失败。"); setEntries([]); }
     finally { setLoading(false); }
@@ -172,6 +174,7 @@ export function VideoLibraryWorkspace({ mode }: { mode: "benchmark" | "assets" }
         </div>
       </div>
       {error && <div className="inline-alert" role="alert">{error}</div>}{notice && <div className="library-notice" role="status">{notice}</div>}
+      <ContentComparisonPanel key={`${organizationId}:${projectId}:${mode}`} organizationId={organizationId} projectId={projectId} scope={mode === "assets" ? "library" : "benchmark"} entryIds={comparisonIds} onClear={() => setComparisonIds([])} />
       {loading ? <div className="list-empty">正在整理素材库…</div> : entries.length === 0 ? <div className="list-empty">{mode === "assets" ? "公司素材库还没有匹配的分析视频。新分析完成后会自动沉淀到这里。" : "当前项目还没有对标素材。请从素材中心选择并导入。"}</div> : <div className="library-grid">{entries.map((entry) => {
         const checked = selected.includes(entry.id); const analysisState = materialCardState(entry);
         const coverUrl = entry.cover_url ? entry.cover_url + (entry.cover_url.includes("?") ? "&" : "?") + "mediaRetry=" + (coverRetries[entry.id] ?? 0) : null;
@@ -195,7 +198,7 @@ export function VideoLibraryWorkspace({ mode }: { mode: "benchmark" | "assets" }
             <em className={`status ${analysisState.tone}`}>{analysisState.label}</em>
             {mode === "assets" && <label className="library-select"><input type="checkbox" checked={checked} disabled={Boolean(entry.imported_to_project)} onChange={() => setSelected((current) => current.includes(entry.id) ? current.filter((id) => id !== entry.id) : [...current, entry.id])} /><span>{entry.imported_to_project ? "已导入" : "选择"}</span></label>}
           </div>
-          <div className="library-card-body"><div className="library-card-tags"><span>{categoryNames[entry.category] ?? "未分类"}</span><small>{entry.platform === "douyin" ? "抖音" : "本地上传"}</small></div><h3>{entry.title || "待提取视频标题"}</h3><p>{entry.account_name || entry.author_name || "未关联账号"} · 来源：{entry.source_project_name}</p>{analysisState.hint && <p>{analysisState.hint}</p>}<div className="plain-chips">{entry.tags.length ? entry.tags.map((tag) => <span key={tag}>{tag}</span>) : <span>暂无标签</span>}</div>
+          <div className="library-card-body"><label className="content-compare-select"><input type="checkbox" checked={comparisonIds.includes(entry.id)} disabled={!comparisonIds.includes(entry.id) && comparisonIds.length >= 100} onChange={() => setComparisonIds(current => current.includes(entry.id) ? current.filter(id => id !== entry.id) : [...current, entry.id])} /><span>内容对比</span></label><div className="library-card-tags"><span>{categoryNames[entry.category] ?? "未分类"}</span><small>{entry.platform === "douyin" ? "抖音" : "本地上传"}</small></div><h3>{entry.title || "待提取视频标题"}</h3><p>{entry.account_name || entry.author_name || "未关联账号"} · 来源：{entry.source_project_name}</p>{analysisState.hint && <p>{analysisState.hint}</p>}<div className="plain-chips">{entry.tags.length ? entry.tags.map((tag) => <span key={tag}>{tag}</span>) : <span>暂无标签</span>}</div>
             {mode === "assets" && canManage && <div className="library-edit"><select value={entry.category} disabled={working || loading} aria-label="素材分类" onChange={(event) => saveMetadata(entry, event.target.value)}>{categories.filter(([value]) => value).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><input disabled={working || loading} value={tagDrafts[entry.id] ?? ""} onChange={(event) => setTagDrafts((current) => ({ ...current, [entry.id]: event.target.value }))} placeholder="标签用逗号分隔" aria-label="素材标签" /><button type="button" onClick={() => saveMetadata(entry)} disabled={working}>保存</button></div>}
           </div>
           <footer><span>{mode === "assets" ? `已被 ${entry.reference_count ?? 0} 个项目引用` : `来自 ${entry.source_project_name}`}</span><div><Link href={`/analysis/${entry.video_id}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}&libraryEntryId=${encodeURIComponent(entry.id)}`}>查看分析</Link>{analysisState.tone !== "success" && entry.source_project_id === projectId && (mode === "assets" ? canManage : canWrite) && <Link href={`/analysis/${entry.video_id}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`}>进入来源空间分析</Link>}{mode === "benchmark" && canWrite && <button type="button" disabled={working} onClick={() => removeReference(entry)}>移出项目</button>}</div></footer>

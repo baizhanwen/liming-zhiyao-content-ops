@@ -44,12 +44,12 @@ test("material center exports and imports portable archives with media integrity
   assert.equal(JSON.parse(pkg).dependencies.fflate, "^0.7.4");
 });
 
-test("delivery generation independently controls the bundled authorized method library", async () => {
+test("full delivery always bundles the transferable method library and retains old identifiers", async () => {
   const [launcher, delivery] = await Promise.all([read("prepare-delivery.bat"), read("scripts/prepare-delivery.ps1")]);
-  assert.match(launcher, /Authorized method library \[Y\/N/);
-  assert.match(delivery, /AuthorizedKnowledge = "include"/);
-  assert.match(delivery, /Remove-PackagePath "resources\\authorized"/);
-  assert.match(delivery, /AUTHORIZED_METHODOLOGY_ENABLED = false/);
+  assert.doesNotMatch(launcher, /Authorized method library \[Y\/N|METHOD_LIBRARY_MODE/);
+  assert.match(delivery, /\$includeAuthorizedKnowledge = \$true/);
+  assert.doesNotMatch(delivery, /Remove-PackagePath "resources\\authorized"|AUTHORIZED_METHODOLOGY_ENABLED = false/);
+  assert.doesNotMatch(delivery, /LEGACY_AUTHORIZED_KNOWLEDGE_SOURCE_IDS = \[\]|const LEGACY_SOURCE_IDS = \[\]/);
   assert.match(delivery, /resources\\authorized\\liming-zhiyao/);
   assert.match(delivery, /"liming-method-/);
   assert.match(delivery, /importSupported = \$true/);

@@ -1,48 +1,24 @@
-﻿param(
-    [ValidateSet("github", "commercial")][string]$Distribution = "github",
-    [string]$CustomerName = "",
-    [ValidateSet("starter", "team", "scale")][string]$PlanCode = "team",
-    [ValidateSet("include", "exclude")][string]$AuthorizedKnowledge = "include",
+﻿[CmdletBinding()]
+param(
+    [ValidateSet("github")][string]$Distribution = "github",
     [string]$DestinationRoot = ""
 )
 
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $projectRoot
+$Distribution = "github"
 
-$isGithubDistribution = $Distribution -eq "github"
-if ($isGithubDistribution) {
-    # Public downloads always contain the current complete feature set and
-    # method library. They are not licensed to an individual customer.
-    $CustomerName = ""
-    $PlanCode = "scale"
-    $AuthorizedKnowledge = "include"
+# One complete development distribution. The legacy scale code is retained only
+# for existing entitlement readers; it is not a selectable package tier.
+$PlanCode = "scale"
+$safeName = "LimingZhiyao-Full-Windows"
+$selectedPlan = [ordered]@{
+    name = "完整开发版"; videoAnalysis = $true; wechatImages = $false; insights = $true
+    projectQuota = 100; memberQuota = 250; monthlyAnalysisQuota = 5000; monthlyModelCallQuota = 20000
+    storageQuotaBytes = 200 * 1024 * 1024 * 1024; retentionDays = 730; failedJobAlertThreshold = 10
 }
-
-$safeName = ($CustomerName.Trim() -replace '[^\p{L}\p{N}._-]+', '-') -replace '^-+|-+$', ''
-if ($isGithubDistribution) { $safeName = "LimingZhiyao-Full-Windows" }
-elseif (-not $safeName) { throw "CustomerName must contain letters or numbers for a commercial delivery." }
-
-$plans = @{
-    starter = [ordered]@{
-        name = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("5Z+656GA5Y2P5L2c54mI")); videoAnalysis = $false; wechatImages = $false; insights = $false
-        projectQuota = 3; memberQuota = 10; monthlyAnalysisQuota = 0; monthlyModelCallQuota = 100
-        storageQuotaBytes = 0; retentionDays = 90; failedJobAlertThreshold = 1
-    }
-    team = [ordered]@{
-        name = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("5pm66IO955Sf5Lqn54mI")); videoAnalysis = $true; wechatImages = $false; insights = $false
-        projectQuota = 20; memberQuota = 50; monthlyAnalysisQuota = 500; monthlyModelCallQuota = 2000
-        storageQuotaBytes = 20 * 1024 * 1024 * 1024; retentionDays = 365; failedJobAlertThreshold = 3
-    }
-    scale = [ordered]@{
-        name = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("5YWo5Yqf6IO957uP6JCl54mI")); videoAnalysis = $true; wechatImages = $false; insights = $true
-        projectQuota = 100; memberQuota = 250; monthlyAnalysisQuota = 5000; monthlyModelCallQuota = 20000
-        storageQuotaBytes = 200 * 1024 * 1024 * 1024; retentionDays = 730; failedJobAlertThreshold = 10
-    }
-}
-$selectedPlan = $plans[$PlanCode]
-if ($isGithubDistribution) { $selectedPlan.name = "开发完整版" }
-$includeAuthorizedKnowledge = $AuthorizedKnowledge -eq "include"
+$includeAuthorizedKnowledge = $true
 $scriptPolicyPath = Join-Path $projectRoot 'resources\delivery\runtime-scripts.json'
 $scriptPolicy = Get-Content -Raw -Encoding UTF8 -LiteralPath $scriptPolicyPath | ConvertFrom-Json
 if ($scriptPolicy.version -ne 1) { throw 'Unsupported runtime script policy.' }
@@ -73,6 +49,9 @@ $deliveryRoot = if ($DestinationRoot) {
 }
 $destination = Join-Path $deliveryRoot "$safeName-$timestamp"
 $packageRoot = Join-Path $destination "LimingZhiyao"
+if ((Test-Path -LiteralPath $destination) -or (Test-Path -LiteralPath "$destination.zip")) {
+    throw "The delivery destination already exists; no existing package will be overwritten."
+}
 New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
 
 # Runtime directories are copied with explicit exclusions; scripts additionally
@@ -218,28 +197,6 @@ export function deliveryFeatureEnabled(feature: DeliveryFeature) {
     Replace-PackageText "vite.config.ts" '(?m)^const \{ d1, r2 \} = hostingConfig;\r?$' "const d1 = `"DB`";`r`nconst r2 = `"MEDIA`";"
     Replace-PackageText "vite.config.ts" '(?m)^\s+sites\(\),\r?\n' ''
 
-    if (-not $selectedPlan.videoAnalysis) {
-        # The lock helper also protects web setup, migrations and backup/restore.
-        # Keep it in every plan even when all video-analysis features are removed.
-        @(
-            "app\analysis", "app\api\analysis-jobs", "app\api\analyzer", "app\api\internal", "app\api\video-library", "app\api\videos",
-            "components\AnalysisDetail.tsx", "components\AnalysisWorkspace.tsx", "components\VideoLibraryWorkspace.tsx", "components\useAnalysisProfile.ts",
-            "lib\analysis-jobs.ts", "lib\analysis-profile.ts", "lib\analysis-worker.ts", "lib\analyzer-readiness.ts", "lib\douyin-cookie-snapshot.ts",
-            "lib\douyin-url.ts", "lib\r2-response.ts", "lib\service-auth.ts", "lib\video-library.ts", "services\analyzer",
-            "scripts\install-python311.ps1", "scripts\install-vcredist.ps1", "scripts\install-ffmpeg.ps1", "scripts\refresh-douyin-cookies.ps1", "scripts\start-analyzer.ps1", "scripts\start-analyzer-background.ps1", "scripts\run-analyzer-supervisor.ps1", "scripts\analyzer-media-runtime.ps1", "scripts\analyzer-collector-runtime.ps1", "scripts\install-collector.ps1", "scripts\check-analyzer.ps1", "scripts\repair-analyzer-models.ps1",
-            "tools\refresh-douyin-cookies.bat", "tools\install-cookie-export-extension.bat", "tools\setup-analyzer.bat", "tools\start-analyzer.bat", "tools\check-analyzer.bat", "tools\repair-analyzer-models.bat", "tools\repair-analyzer-ocr.bat"
-        ) | ForEach-Object { Remove-PackagePath $_ }
-        # The core dashboard survives when video analysis is excluded. Its
-        # active-job count must not import the removed analysis state machine.
-        Replace-PackageText "app\api\dashboard\route.ts" '(?m)^import \{ ACTIVE_ANALYSIS_STATUSES_SQL \} from "\.\./\.\./\.\./lib/analysis-jobs";\r?\n' "const ACTIVE_ANALYSIS_STATUSES_SQL = `"NULL`";`r`n"
-        Replace-PackageText "scripts\open-local.ps1" '(?m)^\s*& "\$PSScriptRoot\\start-analyzer-background\.ps1" -BaseUrl \$Url\r?\n' ''
-        Replace-PackageText "scripts\open-lan.ps1" '(?m)^\s*& "\$PSScriptRoot\\start-analyzer-background\.ps1" -BaseUrl \$HealthUrl\r?\n' ''
-        Replace-PackageText "scripts\open-web.ps1" '(?m)^\s*& "\$PSScriptRoot\\start-analyzer-background\.ps1" -BaseUrl \$HealthUrl\r?\n' ''
-        Replace-PackageText "start-local.bat" 'The browser and video analyzer will start automatically when ready\.' 'The browser will open automatically when ready.'
-        Replace-PackageText "scripts\start-lan.ps1" 'The browser and video analyzer will start automatically\.' 'The browser will open automatically.'
-        Replace-PackageText "setup-local.bat" ' Video analysis is installed separately with tools\\setup-analyzer\.bat\.' ''
-    }
-
     if (-not $selectedPlan.wechatImages) {
         @(
             "app\wechat-images", "app\api\wechat-images", "components\WechatImageWorkspace.tsx", "components\WechatPosterCanvas.tsx",
@@ -254,101 +211,42 @@ export function deliveryFeatureEnabled(feature: DeliveryFeature) {
         "components\WechatPosterDesignPreview.tsx"
     ) | ForEach-Object { Remove-PackagePath $_ }
 
-    if (-not $selectedPlan.insights) {
-        @(
-            "app\insights", "app\api\analytics", "app\api\performance", "app\api\reports",
-            "components\InsightsWorkspace.tsx", "components\EChart.tsx", "lib\performance-analytics.ts", "lib\csv-table.ts"
-        ) | ForEach-Object { Remove-PackagePath $_ }
+    $legacyMethodPath = Join-Path $packageRoot "resources\authorized\dbskill"
+    $brandedMethodPath = Join-Path $packageRoot "resources\authorized\liming-zhiyao"
+    if (Test-Path -LiteralPath $legacyMethodPath) {
+        Move-Item -LiteralPath $legacyMethodPath -Destination $brandedMethodPath
     }
+    Replace-PackageText "scripts\sync-authorized-knowledge.mjs" 'resources/authorized/dbskill/atoms\.jsonl' 'resources/authorized/liming-zhiyao/atoms.jsonl'
+    Replace-PackageText "resources\authorized\liming-zhiyao\atoms.jsonl" '"dbs-' '"liming-method-'
 
-    if (-not $includeAuthorizedKnowledge) {
-        Remove-PackagePath "resources\authorized"
-        $emptyMethodology = @"
-export const AUTHORIZED_METHODOLOGY_SOURCE = {
-  name: "利明智耀授权方法库",
-  revision: "",
-  integratedAt: "",
-} as const;
-
-export const AUTHORIZED_METHODOLOGY_ENABLED = false;
-export const CONTENT_CREATION_METHODOLOGY = "";
-export const TOPIC_CREATION_METHODOLOGY = "";
-"@
-        [System.IO.File]::WriteAllText((Join-Path $packageRoot "lib\authorized-content-methodology.ts"), ($emptyMethodology.TrimEnd() -replace "`r?`n", "`r`n") + "`r`n", $utf8NoBom)
-        # The ecommerce starter pack is adapted from the authorized catalog.
-        # Excluding that catalog must also physically remove these adaptations.
-        $emptyEcommerceCatalog = @'
-import type { ComponentInput } from "./contracts";
-type Card = Omit<ComponentInput, "organizationId" | "projectId" | "id" | "revision">;
-export const ECOMMERCE_STARTER_VERSION = "excluded";
-export const ECOMMERCE_STARTER_CARDS: { key: string; card: Card; methods: { id: string; version: string; source: { document: string; revision: string } }[] }[] = [];
-'@
-        [System.IO.File]::WriteAllText((Join-Path $packageRoot "lib\ecommerce\starter-catalog.ts"), ($emptyEcommerceCatalog.TrimEnd() -replace "`r?`n", "`r`n") + "`r`n", $utf8NoBom)
-        Replace-PackageText "services\analyzer\liming_analyzer\providers.py" '当前分析方法已获授权并参考利明智耀授权方法库。' '当前分析使用通用的短视频结构化分析规则。'
-    } else {
-        $legacyMethodPath = Join-Path $packageRoot "resources\authorized\dbskill"
-        $brandedMethodPath = Join-Path $packageRoot "resources\authorized\liming-zhiyao"
-        if (Test-Path -LiteralPath $legacyMethodPath) {
-            Move-Item -LiteralPath $legacyMethodPath -Destination $brandedMethodPath
-        }
-        Replace-PackageText "scripts\sync-authorized-knowledge.mjs" 'resources/authorized/dbskill/atoms\.jsonl' 'resources/authorized/liming-zhiyao/atoms.jsonl'
-        Replace-PackageText "resources\authorized\liming-zhiyao\atoms.jsonl" '"dbs-' '"liming-method-'
-    }
-
-    # A clean commercial database never contains the historical import IDs.
-    # Keep migration compatibility in the development tree, but do not expose
-    # upstream implementation labels in customer-readable source packages.
-    Replace-PackageText "lib\authorized-knowledge.ts" 'library\. `dbskill` and `dbs-\*` were import-time implementation names and' 'library. Legacy import identifiers were internal implementation details and'
-    Replace-PackageText "lib\authorized-knowledge.ts" 'export const LEGACY_AUTHORIZED_KNOWLEDGE_SOURCE_IDS = \["dbskill"\] as const;' 'export const LEGACY_AUTHORIZED_KNOWLEDGE_SOURCE_IDS = [] as const;'
-    Replace-PackageText "lib\authorized-knowledge.ts" '(?m)^\s*if \(normalizedTag\.startsWith\("dbs-"\)\).*\r?\n' ''
-    Replace-PackageText "scripts\sync-authorized-knowledge.mjs" 'const LEGACY_SOURCE_IDS = \["dbskill"\];' 'const LEGACY_SOURCE_IDS = [];'
-    Replace-PackageText "scripts\sync-authorized-knowledge.mjs" '(?m)^\s*if \(normalizedTag\.startsWith\("dbs-"\)\).*\r?\n' ''
+    # Preserve legacy source/tag readers so upgrading an older installation
+    # retains its existing method references. Branding only affects new assets.
 
     & node (Join-Path $projectRoot "scripts\prune-delivery-dependencies.mjs") $packageRoot $featureVideo $featureWechat $featureInsights
     if ($LASTEXITCODE -ne 0) { throw "Delivery dependency pruning failed with exit code $LASTEXITCODE." }
 
-    $setupCode = ""
-    $setupCodeHash = ""
-    if (-not $isGithubDistribution) {
-        $setupCodeBytes = New-Object byte[] 18
-        [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($setupCodeBytes)
-        $setupCode = ([Convert]::ToBase64String($setupCodeBytes)).TrimEnd('=').Replace('+', 'A').Replace('/', 'B')
-        $setupHasher = [Security.Cryptography.SHA256]::Create()
-        try {
-            $setupCodeHash = [BitConverter]::ToString($setupHasher.ComputeHash([Text.Encoding]::UTF8.GetBytes($setupCode))).Replace('-', '').ToLowerInvariant()
-        } finally {
-            $setupHasher.Dispose()
-        }
-    }
-
     $deliveryVars = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $projectRoot ".dev.vars.example")
     $deliveryVars = $deliveryVars -replace '(?m)^LOCAL_DEV_AUTH=.*$', 'LOCAL_DEV_AUTH=0'
     $deliveryVars = $deliveryVars -replace '(?m)^DELIVERY_MODE=.*$', 'DELIVERY_MODE=1'
-    $requireSetupCode = if ($isGithubDistribution) { "0" } else { "1" }
+    $requireSetupCode = "0"
     if ($deliveryVars -match '(?m)^FIRST_RUN_REQUIRE_SETUP_CODE=') {
         $deliveryVars = $deliveryVars -replace '(?m)^FIRST_RUN_REQUIRE_SETUP_CODE=.*$', "FIRST_RUN_REQUIRE_SETUP_CODE=$requireSetupCode"
     } else { $deliveryVars += "`r`nFIRST_RUN_REQUIRE_SETUP_CODE=$requireSetupCode`r`n" }
     $deliveryVars = $deliveryVars -replace '(?m)^FIRST_RUN_SETUP_CODE=.*$', 'FIRST_RUN_SETUP_CODE='
-    $deliveryVars = $deliveryVars -replace '(?m)^FIRST_RUN_SETUP_CODE_HASH=.*$', "FIRST_RUN_SETUP_CODE_HASH=$setupCodeHash"
-    $serviceToken = ""
-    if (-not $isGithubDistribution) {
-        $serviceTokenBytes = New-Object byte[] 32
-        [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($serviceTokenBytes)
-        $serviceToken = [BitConverter]::ToString($serviceTokenBytes).Replace('-', '').ToLowerInvariant()
-    }
-    $deliveryVars = $deliveryVars -replace '(?m)^ANALYZER_SERVICE_TOKEN=.*$', "ANALYZER_SERVICE_TOKEN=$serviceToken"
+    $deliveryVars = $deliveryVars -replace '(?m)^FIRST_RUN_SETUP_CODE_HASH=.*$', 'FIRST_RUN_SETUP_CODE_HASH='
+    $deliveryVars = $deliveryVars -replace '(?m)^ANALYZER_SERVICE_TOKEN=.*$', 'ANALYZER_SERVICE_TOKEN='
     $deliveryVars = $deliveryVars -replace '(?m)^([A-Z][A-Z0-9_]*API_KEY|LOCAL_RUNTIME_TOKEN|MODEL_SETTINGS_ENCRYPTION_KEY)=.*$', '$1='
     $deliveryVars = $deliveryVars -replace '(?m)^TRUST_FORWARDED_IDENTITY=.*$', 'TRUST_FORWARDED_IDENTITY=0'
-    $commercialVars = ($deliveryVars.TrimEnd() -replace "`r?`n", "`r`n") + "`r`n"
+    $sanitizedVars = ($deliveryVars.TrimEnd() -replace "`r?`n", "`r`n") + "`r`n"
     foreach ($varsName in @(".dev.vars", ".dev.vars.example")) {
-        [System.IO.File]::WriteAllText((Join-Path $packageRoot $varsName), $commercialVars, $utf8NoBom)
+        [System.IO.File]::WriteAllText((Join-Path $packageRoot $varsName), $sanitizedVars, $utf8NoBom)
     }
 
     $guideSource = Join-Path $projectRoot "resources\delivery\DELIVERY-GUIDE.txt"
     Copy-Item -LiteralPath $guideSource -Destination (Join-Path $packageRoot "DELIVERY-GUIDE.txt")
     # Only reviewed customer documentation is copied; internal audit reports and
     # other future docs remain outside the runtime directory allowlist.
-    foreach ($document in @("docs\产品使用手册.html", "docs\产品使用手册.md", "docs\operations\备份恢复与升级操作.md", "docs\电商素材使用说明.md")) {
+    foreach ($document in @("docs\产品使用手册.html", "docs\产品使用手册.md", "docs\operations\备份恢复与升级操作.md", "docs\电商素材使用说明.md", "docs\releases\full-v20261111.6.md")) {
         $documentTarget = Join-Path $packageRoot $document
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $documentTarget) | Out-Null
         Copy-Item -LiteralPath (Join-Path $projectRoot $document) -Destination $documentTarget
@@ -366,57 +264,27 @@ export const ECOMMERCE_STARTER_CARDS: { key: string; card: Card; methods: { id: 
     if ($selectedPlan.wechatImages) { $includedFeatures += "公众号图片生成" }
     if ($selectedPlan.insights) { $includedFeatures += "数据复盘与报告" }
     $featureLines = @($includedFeatures | ForEach-Object { "- $_" })
-    $guideAppendix = if ($isGithubDistribution) {
-        (@("", "八、GitHub 开发完整版", "本下载包默认包含方法库及当前开发版功能：") + $featureLines + @(
-            "无需交付激活码。首次在主机浏览器创建公司与管理员，之后在系统设置配置自己的模型和分析环境。",
-            "每个安装目录首次启动自动生成独立的内部通信密钥；下载包不包含开发者密钥或业务资料。"
-        )) -join "`r`n"
-    } else {
-        (@("", "八、授权商业套餐", "套餐：$($selectedPlan.name) ($PlanCode)", "本交付包仅包含以下已授权模块：") + $featureLines + @(
-            "未授权模块不会进入 ZIP，客户管理员无法在系统内切换套餐；升级时需由利明智耀重新生成已授权交付包。"
-        )) -join "`r`n"
-    }
+    $guideAppendix = (@("", "八、完整开发版", "本下载包固定包含方法库及当前开发版功能：") + $featureLines + @(
+        "无需交付激活码。首次在主机浏览器创建公司与管理员，之后在系统设置配置自己的模型和分析环境。",
+        "每个安装目录首次启动自动生成独立的内部通信密钥；下载包不包含开发者密钥或业务资料。",
+        "本下载包只提供完整开发版；升级前按备份恢复与升级说明保存旧数据及配置。"
+    )) -join "`r`n"
     Add-Content -LiteralPath (Join-Path $packageRoot "DELIVERY-GUIDE.txt") -Value $guideAppendix -Encoding UTF8
 
-    $buildId = "$Distribution-$PlanCode-$timestamp"
-    if (-not $isGithubDistribution) {
-        $credential = @(
-            "Liming Zhiyao AI - delivery credential",
-            "Customer: $CustomerName",
-            "Licensed plan: $($selectedPlan.name) ($PlanCode)",
-            "Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')",
-            "One-time setup code: $setupCode",
-            "",
-            "Send this credential separately from the software package.",
-            "Delete it after the customer's first administrator is created."
-        ) -join "`r`n"
-        [System.IO.File]::WriteAllText((Join-Path $destination "delivery-credential.txt"), $credential + "`r`n", $utf8NoBom)
-        $licenseNotice = @(
-            "利明智耀 AI 本地商业版授权提示",
-            "================================",
-            "授权客户：$CustomerName",
-            "授权套餐：$($selectedPlan.name) ($PlanCode)",
-            "交付构建号：$buildId",
-            "",
-            "本交付包仅供上述客户在已签署合同的组织范围内安装和使用。",
-            "未经书面授权，不得对外转售、转授权、公开上传、发布派生交付包或删除本授权提示。",
-            "本地源码交付不包含技术性 DRM；本提示用于标明授权范围，不替代双方签署的软件授权和服务合同，合同约定优先。"
-        ) -join "`r`n"
-    } else {
-        $licenseNotice = @(
-            "利明智耀 AI · GitHub 开发完整版",
-            "================================",
-            "交付构建号：$buildId",
-            "此下载包不绑定客户，无需激活码，包含当前开发版功能和内置方法库。",
-            "模型服务由使用者在系统设置中自行配置；内部通信密钥在每次独立安装的首次启动生成。"
-        ) -join "`r`n"
-    }
+    $buildId = "github-$PlanCode-$timestamp"
+    $licenseNotice = @(
+        "利明智耀 AI · 完整开发版",
+        "================================",
+        "交付构建号：$buildId",
+        "此下载包不绑定客户，无需激活码，包含当前开发版功能和内置方法库。",
+        "模型服务由使用者在系统设置中自行配置；内部通信密钥在每次独立安装的首次启动生成。"
+    ) -join "`r`n"
     [System.IO.File]::WriteAllText((Join-Path $packageRoot "LICENSE-NOTICE.txt"), $licenseNotice + "`r`n", $utf8NoBom)
 
     $manifest = @{
         distribution = $Distribution
-        activationRequired = -not $isGithubDistribution
-        customer = if ($isGithubDistribution) { $null } else { $CustomerName }
+        activationRequired = $false
+        customer = $null
         buildId = $buildId
         generatedAt = (Get-Date).ToString("o")
         deliveryMode = 1
@@ -437,8 +305,7 @@ export const ECOMMERCE_STARTER_CARDS: { key: string; card: Card; methods: { id: 
     } | ConvertTo-Json
     [System.IO.File]::WriteAllText((Join-Path $packageRoot "delivery-manifest.json"), $manifest + "`r`n", $utf8NoBom)
 
-    # Remove parent folders left empty by plan-specific pruning so customers
-    # only see directories that contain part of their licensed program.
+    # Remove empty runtime directories after excluding unsupported/internal pages.
     Get-ChildItem -LiteralPath $packageRoot -Directory -Recurse | Sort-Object FullName -Descending | ForEach-Object {
         if (-not (Get-ChildItem -LiteralPath $_.FullName -Force | Select-Object -First 1)) {
             Remove-Item -LiteralPath $_.FullName -Force
@@ -470,9 +337,8 @@ export const ECOMMERCE_STARTER_CARDS: { key: string; card: Card; methods: { id: 
     [System.IO.File]::WriteAllText("$archive.sha256", "$archiveHash  $([System.IO.Path]::GetFileName($archive))`r`n", $ascii)
     Write-Host "[OK] Verified candidate delivery package created:" -ForegroundColor Green
     Write-Host $archive
-    Write-Host "[LICENSE] $($selectedPlan.name) ($PlanCode); unlicensed modules were removed from the ZIP."
-    Write-Host "[METHOD LIBRARY] $AuthorizedKnowledge; import and export remain available to administrators."
-    if (-not $isGithubDistribution) { Write-Host "[SECURITY] Send delivery-credential.txt separately from the package." }
+    Write-Host "[EDITION] 完整开发版; all supported development modules and the method library are included."
+    Write-Host "[METHOD LIBRARY] included; import and export remain available to administrators."
 } catch {
     $resolvedDeliveryRoot = [System.IO.Path]::GetFullPath($deliveryRoot).TrimEnd([char[]]"\/") + [System.IO.Path]::DirectorySeparatorChar
     $resolvedDestination = [System.IO.Path]::GetFullPath($destination)

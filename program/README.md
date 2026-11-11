@@ -12,6 +12,10 @@
 
 本次更新增加单条对标仿写与逐段对照，支持按上一稿和逐段字数预算定向修订；普通创作仍支持多素材参考。核心内容策略固定读取，品牌知识按选题明确选择，项目记忆仅辅助灵感，灵感生成和保存不自动创建选题。完整变更见 [更新记录](docs/CHANGELOG.md)。
 
+视频内容分析现使用 v10：原始转写、完整校正口播、旧文字报告与标准化标签/证据同时保留，新增时长、画幅、检测切换和转写字符速率。首帧与前3秒强制取证；运动、稳定性和转场需要时序证据，缺材料时明确保留未知。标准/最高档字段一致，采样密度及预算不同；新增分类和视觉取证会增加调用量，请在创建任务前查看预算。保留ASR，但本轮不分析语调、BGM、音效、静音或音量。详情见 [本版说明](docs/releases/full-v20261111.6.md)。
+
+从旧版升级前，先等待任务结束、停止服务，运行 `tools/backup-local.bat` 并保存 `backups/` 中的业务备份；`.dev.vars` 和Cookie另存受控位置。按 [备份、恢复与升级操作](docs/operations/备份恢复与升级操作.md) 保留原状态与回退路径；旧报告保持可读，升级不自动重跑已完成任务。
+
 
 
 当前支持公司与企业空间隔离、成员分配、视频分析与素材共享、品牌知识和内容策略、灵感与项目记忆、选题、普通创作与单条对标仿写、独立口播改写、审核发布、运营数据导入、员工任务和复盘报告。
@@ -20,7 +24,7 @@
 
 ## 下载与首次安装（Windows）
 
-从 [GitHub Releases](https://github.com/baizhanwen/liming-zhiyao-content-ops/releases/latest) 的 Assets 下载 `LimingZhiyao-Windows-Full.zip`，完整解压后进入 `LimingZhiyao` 文件夹。下载包默认是开发完整版，包含 4,176 条方法原子，无需激活码；仓库已公开，可直接下载。GitHub 的「Source code」压缩包供源码开发使用。
+从 [GitHub Releases](https://github.com/baizhanwen/liming-zhiyao-content-ops/releases/latest) 的 Assets 下载 `LimingZhiyao-Windows-Full.zip`，完整解压后进入 `LimingZhiyao` 文件夹。下载包默认是完整开发版，包含 4,176 条方法原子，无需激活码；仓库已公开，可直接下载。GitHub 的「Source code」压缩包供源码开发使用。
 
 1. 保持联网，双击 `setup-local.bat`，等待网页依赖安装和数据库初始化；安装程序会验证现有 Node.js 与 npm，不兼容时在本项目内准备固定的 64 位 Node.js 22.23.2，不修改电脑的全局 Node；
 2. 双击 `start-local.bat`，保持启动窗口开启；
@@ -52,19 +56,13 @@
 
 下载包已关闭本地主机开发自动登录，无需编辑配置文件。仅源码开发副本显式启用 `LOCAL_DEV_AUTH=1` 时保留自动登录；将源码副本改为正式密码登录前，应先为管理员设置密码，再将该值改为 `0` 并重启。密码登录模式每次启动都会清除旧会话；服务已运行时再次双击 `start-local.bat` 也会要求所有成员重新登录。
 
-## 生成 GitHub 下载包与商业交付包
+## 生成完整开发版下载包
 
-双击本程序目录的 `prepare-delivery.bat`，默认生成开发完整版，包含方法库，无需填写客户名称、选择套餐或分发激活码。输出在被 Git 忽略的 `deliveries/` 中。GitHub Release 工作流使用同一生成器，完成测试、隔离安装和首次设置验证后，发布 `LimingZhiyao-Windows-Full.zip`、SHA256 校验与验证报告。
+双击本程序目录的 `prepare-delivery.bat`，默认生成完整开发版，包含方法库，无需填写客户名称、选择套餐或分发激活码。输出在被 Git 忽略的 `deliveries/` 中。GitHub Release 工作流使用同一生成器，完成测试、隔离安装和首次设置验证后，发布 `LimingZhiyao-Windows-Full.zip`、SHA256 校验与验证报告。
 
 下载包保留账号体系：首次设置仅允许主机本机访问，创建公司和管理员后永久关闭该入口。每次重新启动都需要登录；各安装首次启动时生成各自的模型配置加密密钥和内部服务令牌。生成器排除开发数据库、媒体、Cookie、API Key、Git 历史、缓存、备份、测试和内部研究资料。
 
-旧商业套餐交付仍可显式使用，初始化码流程仅针对该渠道：
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-delivery.ps1 -Distribution commercial -CustomerName "客户名称" -PlanCode team -AuthorizedKnowledge include
-```
-
-商业渠道按套餐裁剪模块，并生成单独的 `delivery-credential.txt`；凭证与软件包分开发送，客户首次输入初始化码后创建管理员。GitHub 默认下载包不需要此凭证。
+生成器只接受完整开发版，不提供客户名称、套餐分档、方法库排除或激活码交付选项。已有安装的业务数据、配置和历史授权记录继续保留；升级按前文的备份恢复步骤操作。
 
 需要清空本安装的全部业务数据时可运行 `factory-reset.bat`。工具要求输入 `FACTORY RESET`，先创建备份，再重建空数据库并恢复首次设置状态；不要在项目运行时执行。
 
@@ -98,7 +96,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-delivery
 - 双击 `tools\backup-local.bat`：备份 D1、R2 和本地运行状态到 `backups/`；
 - 双击 `tools\restore-local.bat`：选择备份并输入 `RESTORE` 确认；恢复前的旧状态会保留为 `.wrangler/state-before-restore-*`，便于回退。
 
-密钥文件 `.dev.vars` 不会进入备份包。系统运营中心位于 `/settings`，可以查看健康状态、告警、用量、套餐配额和最近审计记录。
+密钥文件 `.dev.vars` 不会进入备份包。系统运营中心位于 `/settings`，可以查看健康状态、告警、用量、运行容量和最近审计记录。
 
 ## 命令行开发
 

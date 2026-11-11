@@ -15,6 +15,9 @@ class MediaInfo:
     height: int | None
     video_codec: str | None
     audio_codec: str | None
+    rotation_degrees: float = 0.0
+    sample_aspect_ratio: str | None = None
+    display_aspect_ratio: str | None = None
 
 
 @dataclass(frozen=True)
@@ -74,6 +77,7 @@ class Keyframe:
     ocr_text: str | None = None
     confidence: int | None = None
     asset_id: str | None = None
+    roles: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

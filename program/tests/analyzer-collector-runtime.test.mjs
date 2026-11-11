@@ -24,7 +24,13 @@ test("the collector ships its own locked runtime and provenance without the sour
   assert.ok(delivery.includes('"services",'), "Delivery must include the analyzer package");
   assert.ok(delivery.includes('"services\\analyzer\\liming_analyzer\\douyin_collector\\node\\node_modules"'), "Installed collector dependencies must be excluded from source delivery");
   assert.ok(delivery.includes('"services\\analyzer\\build"'), "Wheel build caches must be excluded from source delivery");
-  assert.ok(delivery.includes('"scripts\\install-collector.ps1"'), "Plans without video analysis must remove the collector installer");
+  assert.match(delivery, /videoAnalysis = \$true/);
+  assert.doesNotMatch(delivery, /Remove-PackagePath "(?:services\\analyzer|scripts\\install-collector\.ps1)"/);
+  const inventory = JSON.parse(readFileSync(path.join(root, "resources/delivery/runtime-scripts.json"), "utf8"));
+  for (const name of ["install-collector.ps1", "analyzer-collector-runtime.ps1"]) {
+    assert.ok(inventory.videoAnalysis.includes(name), `Full delivery must ship ${name}`);
+    assert.ok(existsSync(path.join(root, "scripts", name)));
+  }
 });
 
 test("Windows runtime selection isolates browser cache and keeps upload analysis available when collection is missing", { skip: process.platform !== "win32" }, () => {

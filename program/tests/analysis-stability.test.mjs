@@ -157,7 +157,7 @@ test("analysis submissions expose duration estimates and enforce total token cei
   assert.match(profiles, /estimateMediaSourceTokens/);
   assert.match(profiles, /outputTokens: 12_000/);
   assert.match(workspace, /readMediaDuration/);
-  assert.match(workspace, /短视频总预算上限/);
+  assert.match(workspace, /短视频文字分析预算上限/);
   assert.match(workspace, /profileLabels\[analysisProfile\]/);
   assert.match(workspace, /30 分钟以上媒体/);
   assert.match(provider, /completion_options\(self\.provider, self\.model, output_tokens\)/);
@@ -195,7 +195,7 @@ test("analysis reports produce one faithful AI-corrected script and specialist o
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(provider, /video-analysis\.v9-cta-v1/);
+  assert.match(provider, /video-analysis\.v10-content-v1/);
   assert.match(provider, /DeepCoreReport/);
   assert.match(provider, /DeepInsightReport/);
   assert.match(provider, /dual_pass_full/);
@@ -224,7 +224,7 @@ test("analysis reports produce one faithful AI-corrected script and specialist o
   assert.match(provider, /class CTAAnalysis/);
   assert.match(provider, /cta_analysis: CTAAnalysis/);
   assert.match(provider, /def _normalize_cta_analysis/);
-  assert.match(provider, /"contract_version": "analysis\.v9"/);
+  assert.match(provider, /"contract_version": "analysis\.v10" if self\.generate_content_features else "analysis\.v9"/);
   assert.match(provider, /"cta_validation"/);
   assert.match(provider, /insight_evidence/);
   assert.match(provider, /SegmentReport/);

@@ -6,7 +6,7 @@ import { enqueueBenchmarkVideoAnalysisMemoryEventsWithDb } from "../lib/benchmar
 function database() {
   const sqlite = new DatabaseSync(":memory:");
   sqlite.exec(`
-    CREATE TABLE video_analyses (id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, project_id TEXT NOT NULL, video_id TEXT NOT NULL, schema_version TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE video_analyses (id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, project_id TEXT NOT NULL, video_id TEXT NOT NULL, schema_version TEXT NOT NULL, created_at TEXT NOT NULL, report_json TEXT NOT NULL);
     CREATE TABLE video_library_entries (id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, source_video_id TEXT NOT NULL);
     CREATE TABLE project_video_references (id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, project_id TEXT NOT NULL, library_entry_id TEXT NOT NULL, purpose TEXT NOT NULL, status TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE project_memory_events (id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, project_id TEXT NOT NULL, event_type TEXT NOT NULL, source_type TEXT NOT NULL, source_id TEXT, dedupe_key TEXT NOT NULL, payload_json TEXT NOT NULL, payload_hash TEXT NOT NULL, status TEXT NOT NULL, operation_summary_json TEXT NOT NULL, attempt_count INTEGER NOT NULL, error_code TEXT, error_message TEXT, model_provider TEXT, model_name TEXT, prompt_version TEXT, created_by TEXT NOT NULL, processed_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -24,10 +24,11 @@ function database() {
   };
   return { sqlite, db: { prepare } };
 }
+const passedReport = JSON.stringify({ analysis_meta: { quality_audit: { status: "passed", acceptance_passed: true, completion_status: "complete" } } });
 
 test("video analysis memory events go only to active benchmark reference projects", async () => {
   const { sqlite, db } = database();
-  sqlite.prepare("INSERT INTO video_analyses VALUES (?, ?, ?, ?, ?, ?)").run("analysis-1", "org-1", "source-project", "video-1", "analysis.v8", "2026-08-26T01:00:00Z");
+  sqlite.prepare("INSERT INTO video_analyses VALUES (?, ?, ?, ?, ?, ?, ?)").run("analysis-1", "org-1", "source-project", "video-1", "analysis.v8", "2026-08-26T01:00:00Z", passedReport);
   sqlite.prepare("INSERT INTO video_library_entries VALUES (?, ?, ?)").run("entry-1", "org-1", "video-1");
   const insertReference = sqlite.prepare("INSERT INTO project_video_references VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
   insertReference.run("ref-a", "org-1", "client-a", "entry-1", "benchmark", "active", "user-a", "2026-08-26T02:00:00Z");
@@ -47,8 +48,8 @@ test("video analysis memory events go only to active benchmark reference project
 
 test("adding an analyzed library entry backfills only the selected client project", async () => {
   const { sqlite, db } = database();
-  sqlite.prepare("INSERT INTO video_analyses VALUES (?, ?, ?, ?, ?, ?)").run("analysis-old", "org-1", "source-project", "video-1", "analysis.v7", "2026-08-25T01:00:00Z");
-  sqlite.prepare("INSERT INTO video_analyses VALUES (?, ?, ?, ?, ?, ?)").run("analysis-new", "org-1", "source-project", "video-1", "analysis.v8", "2026-08-26T01:00:00Z");
+  sqlite.prepare("INSERT INTO video_analyses VALUES (?, ?, ?, ?, ?, ?, ?)").run("analysis-old", "org-1", "source-project", "video-1", "analysis.v7", "2026-08-25T01:00:00Z", passedReport);
+  sqlite.prepare("INSERT INTO video_analyses VALUES (?, ?, ?, ?, ?, ?, ?)").run("analysis-new", "org-1", "source-project", "video-1", "analysis.v8", "2026-08-26T01:00:00Z", passedReport);
   sqlite.prepare("INSERT INTO video_library_entries VALUES (?, ?, ?)").run("entry-1", "org-1", "video-1");
   sqlite.prepare("INSERT INTO project_video_references VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run("ref-a", "org-1", "client-a", "entry-1", "benchmark", "active", "user-a", "2026-08-26T02:00:00Z");
   sqlite.prepare("INSERT INTO project_video_references VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run("ref-b", "org-1", "client-b", "entry-1", "benchmark", "active", "user-b", "2026-08-26T02:01:00Z");
@@ -59,5 +60,18 @@ test("adding an analyzed library entry backfills only the selected client projec
   assert.equal(event.project_id, "client-b");
   assert.equal(event.source_id, "analysis-new");
   assert.equal(JSON.parse(event.payload_json).benchmarkReferenceId, "ref-b");
+  sqlite.close();
+});
+
+test("partial, malformed and unknown-version reports do not enqueue benchmark memory", async () => {
+  const { sqlite, db } = database();
+  sqlite.prepare("INSERT INTO video_library_entries VALUES (?, ?, ?)").run("entry-1", "org-1", "video-1");
+  sqlite.prepare("INSERT INTO project_video_references VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run("ref-a", "org-1", "client-a", "entry-1", "benchmark", "active", "user-a", "2026-08-26");
+  for (const [index, schema, report] of [[1, "analysis.v9", "{}"], [2, "analysis.v9", "invalid"], [3, "analysis.future", passedReport], [4, "analysis.v10", passedReport]]) {
+    const id = `rejected-${index}`;
+    sqlite.prepare("INSERT INTO video_analyses VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, "org-1", "source-project", "video-1", schema, "2026-08-26", report);
+    assert.equal((await enqueueBenchmarkVideoAnalysisMemoryEventsWithDb(db, { organizationId: "org-1", analysisId: id })).created, 0);
+  }
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM project_memory_events").get().count, 0);
   sqlite.close();
 });

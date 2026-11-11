@@ -435,7 +435,8 @@ class ProviderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             frames = extractor.extract(media, Path(directory))
         self.assertGreaterEqual(len(frames), 37)
-        self.assertLessEqual(len(frames), 40)
+        self.assertLessEqual(sum("representative" in frame.roles for frame in frames), 40)
+        self.assertLessEqual(len(frames), 40 + 6 + 4 * 6)
         self.assertEqual(frames[0].timestamp_ms, 0)
         self.assertGreaterEqual(frames[-1].timestamp_ms, 1_028_000)
         self.assertEqual(extractor.last_stats["target_count"], 37)
@@ -994,7 +995,7 @@ class ProviderTests(unittest.TestCase):
         self.assertIn("最高能力的专项诊断", FakeCompletions.calls[1]["messages"][0]["content"])
         self.assertEqual(standard.schema_version, "analysis.v9")
         self.assertEqual(maximum.schema_version, "analysis.v9")
-        self.assertEqual(maximum.prompt_version, "video-analysis.v9-cta-v1")
+        self.assertEqual(maximum.prompt_version, "video-analysis.v10-content-v1")
         self.assertEqual(set(maximum.report["spoken_script_set"]), {"corrected_original"})
         self.assertEqual(maximum.report["spoken_script_set"]["corrected_original"]["status"], "failed")
     def test_public_resolver_returns_metadata_and_metrics(self):

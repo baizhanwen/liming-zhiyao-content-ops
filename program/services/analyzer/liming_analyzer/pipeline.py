@@ -110,13 +110,16 @@ def _evidence_checkpoint(media: NormalizedMedia, transcript: TranscriptOutput, v
         "media": {
             "duration_ms": media.info.duration_ms, "width": media.info.width, "height": media.info.height,
             "video_codec": media.info.video_codec, "audio_codec": media.info.audio_codec,
+            "rotation_degrees": media.info.rotation_degrees,
+            "sample_aspect_ratio": media.info.sample_aspect_ratio,
+            "display_aspect_ratio": media.info.display_aspect_ratio,
         },
         "transcript": {
             "language": transcript.language, "confidence": transcript.confidence,
             "segments": [{"start_ms": row.start_ms, "end_ms": row.end_ms, "text": row.text, "confidence": row.confidence} for row in transcript.segments],
         },
         "visuals": {
-            "keyframes": [{"timestamp_ms": row.timestamp_ms, "ocr_text": row.ocr_text, "confidence": row.confidence, "asset_id": row.asset_id} for row in visuals.keyframes],
+            "keyframes": [{"timestamp_ms": row.timestamp_ms, "ocr_text": row.ocr_text, "confidence": row.confidence, "asset_id": row.asset_id, "roles": list(row.roles)} for row in visuals.keyframes],
             "observations": [{"kind": row.kind, "start_ms": row.start_ms, "end_ms": row.end_ms, "text": row.text, "confidence": row.confidence} for row in visuals.observations],
             "stats": dict(visuals.stats),
         },
@@ -138,6 +141,9 @@ def _restore_evidence_checkpoint(job: ClaimedJob, workspace: Path) -> tuple[Norm
             int(media_value["height"]) if media_value.get("height") is not None else None,
             str(media_value["video_codec"]) if media_value.get("video_codec") else None,
             str(media_value["audio_codec"]) if media_value.get("audio_codec") else None,
+            float(media_value.get("rotation_degrees") or 0),
+            str(media_value["sample_aspect_ratio"]) if media_value.get("sample_aspect_ratio") else None,
+            str(media_value["display_aspect_ratio"]) if media_value.get("display_aspect_ratio") else None,
         )
         raw_segments = transcript_value.get("segments")
         if not isinstance(raw_segments, list): return None
@@ -149,7 +155,7 @@ def _restore_evidence_checkpoint(job: ClaimedJob, workspace: Path) -> tuple[Norm
         raw_frames = visuals_value.get("keyframes"); raw_observations = visuals_value.get("observations")
         if not isinstance(raw_frames, list) or not isinstance(raw_observations, list): return None
         visuals = VisualOutput(
-            tuple(Keyframe(int(row["timestamp_ms"]), workspace / f"restored-{index}.jpg", str(row["ocr_text"]) if row.get("ocr_text") else None, int(row["confidence"]) if row.get("confidence") is not None else None, str(row["asset_id"]) if row.get("asset_id") else None) for index, row in enumerate(raw_frames) if isinstance(row, Mapping)),
+            tuple(Keyframe(int(row["timestamp_ms"]), workspace / f"restored-{index}.jpg", str(row["ocr_text"]) if row.get("ocr_text") else None, int(row["confidence"]) if row.get("confidence") is not None else None, str(row["asset_id"]) if row.get("asset_id") else None, tuple(str(role) for role in row.get("roles", []) if isinstance(role, str)) if isinstance(row.get("roles", []), list) else ()) for index, row in enumerate(raw_frames) if isinstance(row, Mapping)),
             tuple(VisualObservation(str(row["kind"]), int(row["start_ms"]), int(row["end_ms"]), str(row["text"]), int(row["confidence"]) if row.get("confidence") is not None else None) for row in raw_observations if isinstance(row, Mapping)),
             dict(visuals_value.get("stats")) if isinstance(visuals_value.get("stats"), Mapping) else {},
         )

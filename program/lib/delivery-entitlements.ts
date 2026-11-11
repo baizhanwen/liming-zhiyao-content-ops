@@ -1,20 +1,20 @@
 export const deliveryPlan = {
   deliveryMode: false,
-  code: "team",
-  name: "开发完整版",
+  code: "scale",
+  name: "完整开发版",
   features: {
     videoAnalysis: true,
     wechatImages: false,
     insights: true,
   },
   quotas: {
-    projectQuota: 20,
-    memberQuota: 50,
-    monthlyAnalysisQuota: 500,
-    monthlyModelCallQuota: 2_000,
-    storageQuotaBytes: 20 * 1024 ** 3,
-    retentionDays: 365,
-    failedJobAlertThreshold: 3,
+    projectQuota: 100,
+    memberQuota: 250,
+    monthlyAnalysisQuota: 5_000,
+    monthlyModelCallQuota: 20_000,
+    storageQuotaBytes: 200 * 1024 ** 3,
+    retentionDays: 730,
+    failedJobAlertThreshold: 10,
   },
 } as const;
 

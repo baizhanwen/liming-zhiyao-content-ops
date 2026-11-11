@@ -58,6 +58,7 @@ export function runtimeFixture(t) {
     const require = name => {
       if (mocks.has(name)) return mocks.get(name);
       if (!name.startsWith(".")) throw new Error(`Unmocked dependency: ${name}`);
+      if (name.endsWith(".json")) { const value = JSON.parse(readFileSync(path.resolve(path.dirname(filename), name), "utf8")); return { ...value, __esModule: true, default: value }; }
       return load(path.resolve(path.dirname(filename), name.endsWith(".ts") ? name : name + ".ts"));
     };
     new Function("require", "module", "exports", source)(require, loaded, loaded.exports);

@@ -13,7 +13,7 @@ export function runtimeInstallationId(root) {
   return createHash("sha256").update(canonical).digest("hex");
 }
 
-// Only executable source participates. Configuration, business data and caches never do.
+// Executable source and its versioned taxonomy participate; private state never does.
 export function runtimeSourceId(root) {
   const hash = createHash("sha256");
   for (const name of [
@@ -30,6 +30,10 @@ export function runtimeSourceId(root) {
     "app/api/health/route.ts", "lib/build-info.ts",
     "services/analyzer/liming_analyzer/douyin_collector/adapter.py",
     "services/analyzer/liming_analyzer/sources.py",
+    "services/analyzer/liming_analyzer/content_analysis.py",
+    "services/analyzer/liming_analyzer/content_metrics.py",
+    "services/analyzer/liming_analyzer/resources/video-taxonomy.v1.json",
+    "lib/video-content-analysis.ts", "lib/analysis-quality.ts", "lib/analysis-profile.ts",
   ]) {
     hash.update(name + "\0");
     try { hash.update(readFileSync(path.join(root, name))); } catch (error) { if (error.code !== "ENOENT") throw error; hash.update("missing"); }

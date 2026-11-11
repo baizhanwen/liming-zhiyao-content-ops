@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import ts from "typescript";
+import * as zod from "zod";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const now = "2026-09-01T00:00:00.000Z";
@@ -86,6 +87,7 @@ function fixture(t) {
     hashInvitationToken: async (value) => runtime.sha256Hex(new TextEncoder().encode(value)),
   };
   const mocks = new Map([
+    ["zod", zod],
     ["cloudflare:workers", { env: { ANALYZER_SERVICE_TOKEN: "test-service-token" } }],
     [path.join(root, "db/runtime.ts"), runtime],
     [path.join(root, "lib/request-auth.ts"), { readRequestIdentity: async (request) => ({ authSubject: request.headers.get("x-test-user") || "user-1" }) }],
@@ -111,6 +113,7 @@ function fixture(t) {
     new Function("require", "module", "exports", code)((specifier) => {
       if (mocks.has(specifier)) return mocks.get(specifier);
       if (!specifier.startsWith(".")) throw new Error(`Unexpected external import: ${specifier}`);
+      if (specifier.endsWith(".json")) { const value = JSON.parse(readFileSync(path.resolve(path.dirname(filename), specifier), "utf8")); return { ...value, __esModule: true, default: value }; }
       return load(path.resolve(path.dirname(filename), specifier.endsWith(".ts") ? specifier : `${specifier}.ts`));
     }, loadedModule, loadedModule.exports);
     return loadedModule.exports;

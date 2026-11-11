@@ -20,7 +20,7 @@ async function fixture(t, hook = () => {}) {
     f.seed("video_library_entries", { id: "entry-" + id, source_video_id: id });
     f.seed("project_video_references", { library_entry_id: "entry-" + id, purpose: "benchmark", status: "active", created_at: createdAt });
     const reportJson = JSON.stringify({ summary: "输入资料与审核标准需要逐项核对。", confidence: 90 });
-    f.seed("video_analyses", { id: "analysis-" + id, video_id: id, schema_version: "synthetic", report_json: reportJson, created_at: createdAt });
+    f.seed("video_analyses", { id: "analysis-" + id, video_id: id, schema_version: "analysis.v1", report_json: reportJson, created_at: createdAt });
     return { organizationId, videoId: id, analysisId: "analysis-" + id, reportJson };
   };
   const extract = input => f.load("lib/video-knowledge-atoms.ts").extractVideoKnowledgeAtoms(input);
@@ -84,14 +84,14 @@ test("concurrent atom extraction of one report completes once without unique-key
 });
 test("a late old report cannot add atoms after a newer report is accepted", async t => {
   const f = await fixture(t), input = f.addVideo();
-  f.seed("video_analyses", { id: "new-analysis", video_id: input.videoId, schema_version: "synthetic", report_json: '{"summary":"这是已经确认的新分析结果。"}', created_at: "2026-10-11T00:00:00Z" });
+  f.seed("video_analyses", { id: "new-analysis", video_id: input.videoId, schema_version: "analysis.v1", report_json: '{"summary":"这是已经确认的新分析结果。"}', created_at: "2026-10-11T00:00:00Z" });
   const result = await f.extract(input); assert.equal(result.status, "stale"); assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM video_knowledge_atoms").get().n, 0);
 });
 test("a newer report arriving just before the atom batch rejects the old snapshot", async t => {
   const f = await fixture(t), input = f.addVideo(), prepare = f.db.prepare, batch = f.db.batch; let injected = false;
   f.db.prepare = sql => { const s = prepare(sql); s.auditSql = sql; return s; };
   f.db.batch = async statements => {
-    if (!injected && statements.some(s => s.auditSql?.startsWith("INSERT INTO video_knowledge_atoms"))) { injected = true; f.seed("video_analyses", { id: "new-analysis", video_id: input.videoId, schema_version: "synthetic", report_json: '{"summary":"新的分析"}', created_at: "2026-10-11T00:00:00Z" }); }
+    if (!injected && statements.some(s => s.auditSql?.startsWith("INSERT INTO video_knowledge_atoms"))) { injected = true; f.seed("video_analyses", { id: "new-analysis", video_id: input.videoId, schema_version: "analysis.v1", report_json: '{"summary":"新的分析"}', created_at: "2026-10-11T00:00:00Z" }); }
     return batch(statements);
   };
   assert.equal((await f.extract(input)).status, "stale"); assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM video_knowledge_atoms").get().n, 0);
@@ -99,13 +99,13 @@ test("a newer report arriving just before the atom batch rejects the old snapsho
 test("old extraction cannot supersede the new winner during a racing replacement", async t => {
   const f = await fixture(t), input = f.addVideo(); await f.extract(input);
   const older = { ...input, analysisId: "analysis-older", reportJson: '{"summary":"较早的修订报告"}' };
-  f.seed("video_analyses", { id: older.analysisId, video_id: input.videoId, schema_version: "synthetic", report_json: older.reportJson, created_at: "2026-10-10T01:00:00Z" });
+  f.seed("video_analyses", { id: older.analysisId, video_id: input.videoId, schema_version: "analysis.v1", report_json: older.reportJson, created_at: "2026-10-10T01:00:00Z" });
   const prepare = f.db.prepare, batch = f.db.batch; let injected = false;
   f.db.prepare = sql => { const s = prepare(sql); s.auditSql = sql; return s; };
   f.db.batch = async statements => {
     if (!injected && statements.some(s => s.auditSql?.startsWith("INSERT INTO video_knowledge_atoms"))) {
       injected = true; const newer = { ...input, analysisId: "analysis-newer", reportJson: '{"summary":"最终确认的新报告"}' };
-      f.seed("video_analyses", { id: newer.analysisId, video_id: input.videoId, schema_version: "synthetic", report_json: newer.reportJson, created_at: "2026-10-10T02:00:00Z" }); await f.extract(newer);
+      f.seed("video_analyses", { id: newer.analysisId, video_id: input.videoId, schema_version: "analysis.v1", report_json: newer.reportJson, created_at: "2026-10-10T02:00:00Z" }); await f.extract(newer);
     }
     return batch(statements);
   };
@@ -122,7 +122,7 @@ test("atom batch failure rolls back new rows and preserves the old active snapsh
   const f = await fixture(t), input = f.addVideo(); await f.extract(input);
   const before = f.sqlite.prepare("SELECT * FROM video_knowledge_atoms").all();
   const next = { ...input, analysisId: "analysis-next", reportJson: '{"summary":"新摘要","hook":"新开头"}' };
-  f.seed("video_analyses", { id: next.analysisId, video_id: input.videoId, schema_version: "synthetic", report_json: next.reportJson, created_at: "2026-10-11T00:00:00Z" });
+  f.seed("video_analyses", { id: next.analysisId, video_id: input.videoId, schema_version: "analysis.v1", report_json: next.reportJson, created_at: "2026-10-11T00:00:00Z" });
   f.sqlite.exec("CREATE TRIGGER fail_atom BEFORE INSERT ON video_knowledge_atoms WHEN NEW.atom_key='hook:0' BEGIN SELECT RAISE(ABORT,'synthetic atom failure'); END");
   await assert.rejects(f.extract(next), /synthetic atom failure/); assert.deepEqual(f.sqlite.prepare("SELECT * FROM video_knowledge_atoms").all(), before);
   f.sqlite.exec("DROP TRIGGER fail_atom"); assert.equal((await f.extract(next)).status, "completed");
@@ -137,6 +137,6 @@ test("report JSON changed on the same analysis id rejects its old contents", asy
 
 test("same-time newer analysis wins deterministically over the old report", async t => {
   const f = await fixture(t), input = f.addVideo();
-  f.seed("video_analyses", { id: "same-time-new", video_id: input.videoId, schema_version: "synthetic", report_json: '{"summary":"同一时刻的后续报告"}', created_at: "2026-10-10T00:00:00Z" });
+  f.seed("video_analyses", { id: "same-time-new", video_id: input.videoId, schema_version: "analysis.v1", report_json: '{"summary":"同一时刻的后续报告"}', created_at: "2026-10-10T00:00:00Z" });
   assert.equal((await f.extract(input)).status, "stale"); assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM video_knowledge_atoms").get().n, 0);
 });

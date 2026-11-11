@@ -10,7 +10,8 @@ function parseStoredJson(value: string | null) {
 
 export async function GET(request: Request, context: { params: Promise<{ videoId: string }> }) {
   const identity = await readRequestIdentity(request); if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再访问分析结果。", 401);
-  const url = new URL(request.url); const organizationId = url.searchParams.get("organizationId")?.trim() ?? ""; const projectId = url.searchParams.get("projectId")?.trim() ?? ""; const requestedLibraryEntryId = url.searchParams.get("libraryEntryId")?.trim() ?? "";
+  const url = new URL(request.url); const organizationId = url.searchParams.get("organizationId")?.trim() ?? ""; const projectId = url.searchParams.get("projectId")?.trim() ?? ""; const requestedLibraryEntryId = url.searchParams.get("libraryEntryId")?.trim() ?? ""; const requestedAnalysisId = url.searchParams.get("analysisId")?.trim() ?? "";
+  if (requestedAnalysisId.length > 200) return apiError("INVALID_ANALYSIS_VERSION", "分析版本无效。", 400);
   if (!organizationId || !projectId) return apiError("PROJECT_SCOPE_REQUIRED", "缺少公司或项目范围。", 400);
   try {
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId); if (!access) return apiError("ACCESS_DENIED", "无权访问该项目的分析结果。", 403);
@@ -42,7 +43,7 @@ export async function GET(request: Request, context: { params: Promise<{ videoId
         FROM project_video_references refs
         INNER JOIN video_library_entries library ON library.id = refs.library_entry_id AND library.organization_id = refs.organization_id
         INNER JOIN videos v ON v.id = library.source_video_id AND v.organization_id = library.organization_id
-        WHERE refs.organization_id = ? AND refs.project_id = ? AND v.id = ? AND v.deleted_at IS NULL
+        WHERE refs.organization_id = ? AND refs.project_id = ? AND refs.status = 'active' AND refs.purpose = 'benchmark' AND v.id = ? AND v.deleted_at IS NULL
         LIMIT 1
       `).bind(organizationId, projectId, videoId).first<{ library_entry_id: string; source_project_id: string }>();
       if (!reference) return apiError("VIDEO_NOT_FOUND", "视频不存在或不属于当前项目。", 404);
@@ -58,11 +59,12 @@ export async function GET(request: Request, context: { params: Promise<{ videoId
     if (!libraryEntryId) {
       libraryEntryId = (await db.prepare("SELECT id FROM video_library_entries WHERE organization_id = ? AND source_video_id = ? LIMIT 1").bind(organizationId, videoId).first<{ id: string }>())?.id ?? null;
     }
+    if (requestedAnalysisId && !await db.prepare("SELECT id FROM video_analyses WHERE id = ? AND organization_id = ? AND project_id = ? AND video_id = ? LIMIT 1").bind(requestedAnalysisId, organizationId, sourceProjectId, videoId).first()) return apiError("ANALYSIS_NOT_FOUND", "指定的分析版本不存在或不在当前可访问的视频中。", 404);
     const canReadOwnedPerformance = !sharedReference || (Boolean(requestedLibraryEntryId) && projectId === sourceProjectId);
     const [job, transcript, analyses, metrics, events, assets, ownedPerformance] = await Promise.all([
       db.prepare("SELECT id, status, analysis_profile, progress, current_stage, error_code, error_message, retry_count, checkpoint_stage, checkpoint_json, checkpoint_updated_at, resume_count, created_at, updated_at, completed_at FROM analysis_jobs WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY created_at DESC LIMIT 1").bind(organizationId, sourceProjectId, videoId).first<Record<string, unknown>>(),
       db.prepare("SELECT id, version, language, source, full_text, segments_json, confidence, created_at, updated_at FROM video_transcripts WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY version DESC LIMIT 1").bind(organizationId, sourceProjectId, videoId).first<{ segments_json: string } & Record<string, unknown>>(),
-      db.prepare("SELECT id, analysis_job_id, schema_version, report_json, confidence, model_provider, model_name, prompt_version, created_at FROM video_analyses WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY created_at DESC LIMIT 8").bind(organizationId, sourceProjectId, videoId).all<{ report_json: string } & Record<string, unknown>>(),
+      db.prepare(`SELECT id, analysis_job_id, schema_version, report_json, confidence, model_provider, model_name, prompt_version, created_at FROM video_analyses WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY ${requestedAnalysisId ? "CASE WHEN id = ? THEN 0 ELSE 1 END, " : ""}created_at DESC LIMIT 8`).bind(organizationId, sourceProjectId, videoId, ...(requestedAnalysisId ? [requestedAnalysisId] : [])).all<{ report_json: string } & Record<string, unknown>>(),
       db.prepare("SELECT source, plays, likes, comments, favorites, shares, followers_gained, collected_at FROM video_metric_snapshots WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY collected_at DESC LIMIT 10").bind(organizationId, sourceProjectId, videoId).all(),
       db.prepare("SELECT event_type, from_status, to_status, progress, details_json, created_at FROM analysis_job_events WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY created_at DESC LIMIT 50").bind(organizationId, sourceProjectId, videoId).all(),
       db.prepare("SELECT id, analysis_job_id, kind, filename, content_type, size_bytes, created_at FROM media_assets WHERE organization_id = ? AND project_id = ? AND video_id = ? AND kind IN ('keyframe', 'subtitle', 'report') AND status = 'active' ORDER BY created_at ASC").bind(organizationId, sourceProjectId, videoId).all(),

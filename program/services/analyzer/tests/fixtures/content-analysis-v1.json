@@ -1,0 +1,979 @@
+{
+  "schema_version": "content-analysis.v1",
+  "taxonomy_version": "video-taxonomy.v1",
+  "profile": "standard",
+  "status": "complete",
+  "evidence_registry": [
+    {
+      "id": "transcript:0001",
+      "source": "transcript",
+      "text": "为什么开完会，还是没人知道下一步做什么？",
+      "start_ms": 0,
+      "end_ms": 2200,
+      "asset_ref": null,
+      "frame_group_id": null
+    },
+    {
+      "id": "transcript:0002",
+      "source": "transcript",
+      "text": "把记录拆成动作、负责人、截止时间，下次开会就照这三项整理。",
+      "start_ms": 3000,
+      "end_ms": 5900,
+      "asset_ref": null,
+      "frame_group_id": null
+    },
+    {
+      "id": "frame:0001",
+      "source": "frame",
+      "text": "",
+      "start_ms": 0,
+      "end_ms": 0,
+      "asset_ref": "synthetic_frame_1",
+      "frame_group_id": "first_frame"
+    },
+    {
+      "id": "ocr:0001",
+      "source": "ocr",
+      "text": "会议待办三要素",
+      "start_ms": 0,
+      "end_ms": 0,
+      "asset_ref": "synthetic_frame_1",
+      "frame_group_id": null
+    },
+    {
+      "id": "frame:0002",
+      "source": "frame",
+      "text": "",
+      "start_ms": 500,
+      "end_ms": 500,
+      "asset_ref": "synthetic_frame_2",
+      "frame_group_id": null
+    },
+    {
+      "id": "frame:0003",
+      "source": "frame",
+      "text": "",
+      "start_ms": 1000,
+      "end_ms": 1000,
+      "asset_ref": "synthetic_frame_3",
+      "frame_group_id": null
+    },
+    {
+      "id": "vision:0001",
+      "source": "vision",
+      "text": "单人居中讲解，画面标题为会议待办，人物位置和背景保持一致。",
+      "start_ms": 0,
+      "end_ms": 0,
+      "asset_ref": null,
+      "frame_group_id": null
+    },
+    {
+      "id": "vision:0002",
+      "source": "vision",
+      "text": "单人居中讲解，画面标题为会议待办，人物位置和背景保持一致。",
+      "start_ms": 500,
+      "end_ms": 500,
+      "asset_ref": null,
+      "frame_group_id": null
+    },
+    {
+      "id": "vision:0003",
+      "source": "vision",
+      "text": "单人居中讲解，画面标题为会议待办，人物位置和背景保持一致。",
+      "start_ms": 1000,
+      "end_ms": 1000,
+      "asset_ref": null,
+      "frame_group_id": null
+    },
+    {
+      "id": "temporal:opening",
+      "source": "temporal",
+      "text": "{\"kind\": \"opening\", \"timestamps_ms\": [0, 500, 1000], \"limitations\": [\"稀疏采样，仅支持这一采样窗口内的判断。\"]}",
+      "start_ms": 0,
+      "end_ms": 1000,
+      "asset_ref": null,
+      "frame_group_id": "opening"
+    }
+  ],
+  "classifications": [
+    {
+      "reason": null,
+      "tags": [
+        "topic.category.career"
+      ],
+      "primary_tag": "topic.category.career",
+      "state": "known",
+      "dimension_id": "topic.category",
+      "evidence_ids": [
+        "transcript:0001"
+      ]
+    },
+    {
+      "reason": null,
+      "tags": [
+        "topic.problem.execution"
+      ],
+      "primary_tag": null,
+      "state": "known",
+      "dimension_id": "topic.problem",
+      "evidence_ids": [
+        "transcript:0001"
+      ]
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "topic.purpose",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "topic.angle",
+      "evidence_ids": []
+    },
+    {
+      "reason": null,
+      "tags": [
+        "topic.granularity.problem"
+      ],
+      "primary_tag": "topic.granularity.problem",
+      "state": "known",
+      "dimension_id": "topic.granularity",
+      "evidence_ids": [
+        "transcript:0001"
+      ]
+    },
+    {
+      "reason": null,
+      "tags": [
+        "structure.type.problem_solution"
+      ],
+      "primary_tag": "structure.type.problem_solution",
+      "state": "known",
+      "dimension_id": "structure.type",
+      "evidence_ids": [
+        "transcript:0001",
+        "transcript:0002"
+      ]
+    },
+    {
+      "reason": null,
+      "tags": [
+        "structure.role.question"
+      ],
+      "primary_tag": null,
+      "state": "known",
+      "dimension_id": "structure.role",
+      "evidence_ids": [
+        "transcript:0001"
+      ]
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "structure.order",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "structure.ending",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "audience.role",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "audience.stage",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "audience.context",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "audience.need",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "audience.use_case",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "audience.knowledge",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "audience.targeting",
+      "evidence_ids": []
+    },
+    {
+      "reason": null,
+      "tags": [
+        "hook.type.question"
+      ],
+      "primary_tag": "hook.type.question",
+      "state": "known",
+      "dimension_id": "hook.type",
+      "evidence_ids": [
+        "transcript:0001"
+      ]
+    },
+    {
+      "reason": null,
+      "tags": [
+        "hook.channel.spoken_text"
+      ],
+      "primary_tag": null,
+      "state": "known",
+      "dimension_id": "hook.channel",
+      "evidence_ids": [
+        "transcript:0001"
+      ]
+    },
+    {
+      "reason": null,
+      "tags": [
+        "emotion.expressed.none"
+      ],
+      "primary_tag": "emotion.expressed.none",
+      "state": "known",
+      "dimension_id": "emotion.expressed",
+      "evidence_ids": [
+        "transcript:0001",
+        "vision:0001"
+      ]
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "emotion.intended",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "emotion.connection",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "emotion.trajectory",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "emotion.trigger",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "value.type",
+      "evidence_ids": []
+    },
+    {
+      "reason": null,
+      "tags": [
+        "value.information_type.step"
+      ],
+      "primary_tag": null,
+      "state": "known",
+      "dimension_id": "value.information_type",
+      "evidence_ids": [
+        "transcript:0002"
+      ]
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "value.actionability",
+      "evidence_ids": []
+    },
+    {
+      "reason": null,
+      "tags": [
+        "value.evidence_form.none"
+      ],
+      "primary_tag": null,
+      "state": "known",
+      "dimension_id": "value.evidence_form",
+      "evidence_ids": [
+        "transcript:0001",
+        "transcript:0002"
+      ]
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "value.repetition",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "technique.retention",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "technique.understanding",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "technique.trust",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "technique.persuasion",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "technique.memory",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "technique.interaction",
+      "evidence_ids": []
+    },
+    {
+      "reason": null,
+      "tags": [
+        "cta.action.practice"
+      ],
+      "primary_tag": null,
+      "state": "known",
+      "dimension_id": "cta.action",
+      "evidence_ids": [
+        "transcript:0002"
+      ]
+    },
+    {
+      "reason": null,
+      "tags": [
+        "cta.position.ending"
+      ],
+      "primary_tag": null,
+      "state": "known",
+      "dimension_id": "cta.position",
+      "evidence_ids": [
+        "transcript:0002"
+      ]
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "language.register",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "language.tone",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "language.person",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "language.sentence",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "language.vocabulary",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "language.text_pattern",
+      "evidence_ids": []
+    },
+    {
+      "reason": null,
+      "tags": [
+        "language.memory_marker.none"
+      ],
+      "primary_tag": null,
+      "state": "known",
+      "dimension_id": "language.memory_marker",
+      "evidence_ids": [
+        "transcript:0001",
+        "transcript:0002"
+      ]
+    },
+    {
+      "reason": null,
+      "tags": [
+        "visual.first_frame_style.person_title"
+      ],
+      "primary_tag": "visual.first_frame_style.person_title",
+      "state": "known",
+      "dimension_id": "visual.first_frame_style",
+      "evidence_ids": [
+        "vision:0001"
+      ]
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "visual.first_frame_information",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "visual.opening",
+      "evidence_ids": []
+    },
+    {
+      "reason": null,
+      "tags": [
+        "content.form.talking_head"
+      ],
+      "primary_tag": "content.form.talking_head",
+      "state": "known",
+      "dimension_id": "content.form",
+      "evidence_ids": [
+        "vision:0001"
+      ]
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "visual.scene",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "visual.person_count",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "visual.person_role",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "visual.broll",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "visual.text_function",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "visual.shot_size",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "visual.composition",
+      "evidence_ids": []
+    },
+    {
+      "reason": null,
+      "tags": [
+        "visual.camera_motion.static"
+      ],
+      "primary_tag": null,
+      "state": "known",
+      "dimension_id": "visual.camera_motion",
+      "evidence_ids": [
+        "vision:0001",
+        "vision:0002",
+        "vision:0003",
+        "temporal:opening"
+      ]
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "visual.camera_angle",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "visual.stability",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "visual.color",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "visual.medium",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "visual.transition",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "visual.cut_pattern",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "synthesis.visual_text_relation",
+      "evidence_ids": []
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "synthesis.retention",
+      "evidence_ids": []
+    },
+    {
+      "reason": null,
+      "tags": [
+        "synthesis.opening_fulfillment.fulfilled"
+      ],
+      "primary_tag": "synthesis.opening_fulfillment.fulfilled",
+      "state": "known",
+      "dimension_id": "synthesis.opening_fulfillment",
+      "evidence_ids": [
+        "transcript:0001",
+        "transcript:0002"
+      ]
+    },
+    {
+      "reason": "合成样本材料不足，保留无法判断。",
+      "tags": null,
+      "primary_tag": null,
+      "state": "unknown",
+      "dimension_id": "synthesis.problem",
+      "evidence_ids": []
+    }
+  ],
+  "segments": [
+    {
+      "id": "segment:text_topic_structure_audience:0001",
+      "kind": "structure",
+      "dimension_id": "structure.role",
+      "tags": [
+        "structure.role.question"
+      ],
+      "start_ms": 0,
+      "end_ms": 2200,
+      "text": "先提出会后缺少行动安排的问题。",
+      "evidence_ids": [
+        "transcript:0001"
+      ]
+    },
+    {
+      "id": "segment:text_topic_structure_audience:0002",
+      "kind": "topic_subject",
+      "dimension_id": "topic.category",
+      "tags": [
+        "topic.category.career"
+      ],
+      "start_ms": null,
+      "end_ms": null,
+      "text": "将会议记录整理成明确的可执行待办。",
+      "evidence_ids": [
+        "transcript:0001",
+        "transcript:0002"
+      ]
+    },
+    {
+      "id": "segment:text_topic_structure_audience:0003",
+      "kind": "topic_problem",
+      "dimension_id": "topic.problem",
+      "tags": [
+        "topic.problem.execution"
+      ],
+      "start_ms": null,
+      "end_ms": null,
+      "text": "会后不知道具体下一步行动。",
+      "evidence_ids": [
+        "transcript:0001"
+      ]
+    },
+    {
+      "id": "segment:text_expression_value:0002",
+      "kind": "cta",
+      "dimension_id": "cta.action",
+      "tags": [
+        "cta.action.practice"
+      ],
+      "start_ms": 3000,
+      "end_ms": 5900,
+      "text": "下次开会就照这三项整理。",
+      "evidence_ids": [
+        "transcript:0002"
+      ]
+    },
+    {
+      "id": "segment:deterministic:hook_first_sentence",
+      "kind": "hook_first_sentence",
+      "dimension_id": null,
+      "tags": [],
+      "start_ms": 0,
+      "end_ms": 2200,
+      "text": "为什么开完会，还是没人知道下一步做什么？",
+      "evidence_ids": [
+        "transcript:0001"
+      ]
+    },
+    {
+      "id": "segment:deterministic:hook_first_3s",
+      "kind": "hook_first_3s",
+      "dimension_id": null,
+      "tags": [],
+      "start_ms": 0,
+      "end_ms": 2200,
+      "text": "为什么开完会，还是没人知道下一步做什么？",
+      "evidence_ids": [
+        "transcript:0001"
+      ]
+    }
+  ],
+  "information_units": [
+    {
+      "id": "unit:text_expression_value:0001",
+      "type_tag": "value.information_type.step",
+      "text": "会后待办明确动作、负责人、截止时间。",
+      "evidence_ids": [
+        "transcript:0002"
+      ],
+      "duplicate_of": null
+    },
+    {
+      "id": "unit:text_expression_value:0002",
+      "type_tag": "value.information_type.step",
+      "text": "会后待办明确动作、负责人、截止时间。",
+      "evidence_ids": [
+        "transcript:0002"
+      ],
+      "duplicate_of": "unit:text_expression_value:0001"
+    }
+  ],
+  "metrics": {
+    "version": "content-metrics.v1",
+    "media": {
+      "status": "measured",
+      "duration_ms": 6000,
+      "duration_seconds": 6.0,
+      "duration_bucket": "under_15s",
+      "encoded_width": 1080,
+      "encoded_height": 1920,
+      "rotation_degrees": 0.0,
+      "sample_aspect_ratio": "1:1",
+      "display_aspect_ratio": "9:16",
+      "aspect_category": "9:16",
+      "aspect_status": "measured",
+      "aspect_reason": null
+    },
+    "shot_detection": {
+      "status": "measured",
+      "method": "ffmpeg_scene_score.v1",
+      "threshold": 0.32,
+      "boundaries_ms": [
+        0,
+        6000
+      ],
+      "segments": [
+        {
+          "start_ms": 0,
+          "end_ms": 6000,
+          "duration_ms": 6000
+        }
+      ],
+      "detected_cut_count": 0,
+      "detected_shot_count": 1,
+      "mean_shot_seconds": 6.0,
+      "cuts_per_minute": 0.0,
+      "limitations": [
+        "场景分数是检测代理指标，闪光、主体运动、渐变可能误检，低反差剪辑可能漏检；不等于人工确认的剪辑数。"
+      ]
+    },
+    "transcript_statistics": {
+      "status": "estimated",
+      "source": "uncorrected_transcript_after_overlap_dedup",
+      "character_count": 43,
+      "character_count_method": "unicode_letters_numbers.v1",
+      "characters_per_video_second": 7.167,
+      "segments": [
+        {
+          "source_segment_id": "transcript:0001",
+          "start_ms": 0,
+          "end_ms": 2200,
+          "character_count": 18,
+          "characters_per_second": 8.182,
+          "status": "estimated"
+        },
+        {
+          "source_segment_id": "transcript:0002",
+          "start_ms": 3000,
+          "end_ms": 5900,
+          "character_count": 25,
+          "characters_per_second": 8.621,
+          "status": "estimated"
+        }
+      ],
+      "limitations": [
+        "只计Unicode字母和数字，排除标点空白；不是语义信息点或跨语言统一词数。",
+        "使用AI纠错前转写；识别错误和重叠识别去重会影响计数。",
+        "全片值包含无口播时段，片段值依赖ASR时间戳，均不是声学发声速度；未计算静音或人声时长占比。"
+      ]
+    },
+    "methodology": {
+      "version": "content-metrics.v1",
+      "time_unit": "milliseconds",
+      "aspect_category_relative_tolerance": 0.01,
+      "character_count_method": "unicode_letters_numbers.v1",
+      "audio_analysis": "out_of_scope",
+      "profile_invariant": true
+    }
+  },
+  "methodology": {
+    "transcript_source": "asr",
+    "sampling_strategy_id": "content-frames.v2",
+    "sampling_config": {
+      "opening_interval_ms": 500,
+      "temporal_interval_ms": 500
+    },
+    "evidence_version": "visual-evidence.v2",
+    "temporal_min_frames": 3
+  },
+  "module_status": {
+    "text_topic_structure_audience": {
+      "status": "completed",
+      "reason": null,
+      "validation": {
+        "passed": true,
+        "issues": []
+      },
+      "source_coverage": {
+        "complete": true,
+        "included_evidence_count": 3,
+        "available_evidence_count": 3,
+        "required_opening_complete": null,
+        "temporal_groups_available": [
+          "temporal:opening"
+        ],
+        "temporal_groups_included": [],
+        "input_token_limit": 6000,
+        "estimated_payload_tokens": 3297
+      }
+    },
+    "text_expression_value": {
+      "status": "completed",
+      "reason": null,
+      "validation": {
+        "passed": true,
+        "issues": []
+      },
+      "source_coverage": {
+        "complete": true,
+        "included_evidence_count": 7,
+        "available_evidence_count": 7,
+        "required_opening_complete": true,
+        "temporal_groups_available": [
+          "temporal:opening"
+        ],
+        "temporal_groups_included": [
+          "temporal:opening"
+        ],
+        "input_token_limit": 6000,
+        "estimated_payload_tokens": 5164
+      }
+    },
+    "visual": {
+      "status": "completed",
+      "reason": null,
+      "validation": {
+        "passed": true,
+        "issues": []
+      },
+      "source_coverage": {
+        "complete": true,
+        "included_evidence_count": 8,
+        "available_evidence_count": 8,
+        "required_opening_complete": true,
+        "temporal_groups_available": [
+          "temporal:opening"
+        ],
+        "temporal_groups_included": [
+          "temporal:opening"
+        ],
+        "input_token_limit": 6000,
+        "estimated_payload_tokens": 3408
+      }
+    },
+    "synthesis": {
+      "status": "completed",
+      "reason": null,
+      "validation": {
+        "passed": true,
+        "issues": []
+      },
+      "source_coverage": {
+        "complete": true,
+        "included_evidence_count": 7,
+        "available_evidence_count": 7,
+        "required_opening_complete": null,
+        "temporal_groups_available": [
+          "temporal:opening"
+        ],
+        "temporal_groups_included": [
+          "temporal:opening"
+        ],
+        "input_token_limit": 6000,
+        "estimated_payload_tokens": 2073
+      }
+    }
+  },
+  "validation": {
+    "passed": true,
+    "issues": []
+  }
+}

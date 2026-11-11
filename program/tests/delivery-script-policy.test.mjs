@@ -6,7 +6,7 @@ import test from "node:test";
 import { expectedDeliveryScripts, verifyDeliveryScripts } from "../scripts/delivery-script-policy.mjs";
 const root = fileURLToPath(new URL("..", import.meta.url));
 
-test("all customer plans retain complete install, startup and maintenance entry points", () => {
+test("current and historical feature manifests retain install, startup and maintenance entry points", () => {
   for (const videoAnalysis of [false, true]) {
     const names = expectedDeliveryScripts({ videoAnalysis });
     for (const name of ["install-node22.ps1", "prepare-local-web.ps1", "prepare-login-startup.mjs", "run-local-migrations.mjs", "run-migration-guard.ps1", "sql-statements.mjs", "run-startup-guard.ps1", "run-web-guard.ps1", "local-web-identity.ps1", "analyzer-instance-lock.ps1", "local-state-maintenance.ps1", "verify-state-databases.mjs", "backup-local.ps1", "restore-local.ps1", "recover-performance-imports.ps1", "recover-performance-imports.mjs", "start-lan.ps1", "stop-local.ps1", "sync-authorized-knowledge.mjs"])
@@ -15,13 +15,13 @@ test("all customer plans retain complete install, startup and maintenance entry 
   }
 });
 
-test("video plans retain media installers, supervisor, diagnostics and recovery dependencies", () => {
+test("full video feature inventory retains installers, supervisor, diagnostics and recovery dependencies", () => {
   const names = expectedDeliveryScripts({ videoAnalysis: true });
   for (const filename of ["analyzer-source-runtime.ps1", "analyzer-media-runtime.ps1", "run-analyzer-supervisor.ps1", "start-analyzer-background.ps1", "install-python311.ps1", "install-ffmpeg.ps1", "install-vcredist.ps1", "check-analyzer.ps1", "repair-analyzer-models.ps1", "refresh-douyin-cookies.ps1", "repair-media-buckets.mjs"]) assert.ok(names.includes("scripts/" + filename), filename);
   assert.equal(verifyDeliveryScripts(names, { videoAnalysis: true }).approvedScripts, names.length);
 });
 
-test("starter plan rejects video-specific maintenance tools", () => {
+test("legacy non-video manifests reject video-specific maintenance tools", () => {
   const names = expectedDeliveryScripts({ videoAnalysis: false });
   assert.throws(() => verifyDeliveryScripts([...names, "scripts/repair-media-buckets.mjs"], { videoAnalysis: false }), /runtime inventory/);
 });

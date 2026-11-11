@@ -15,6 +15,7 @@ from typing import Any
 
 from .adapters import Keyframe, VisualObservation
 from .vision_capabilities import normalize_minimax_token_plan_host
+from .visual import VISUAL_EVIDENCE_INSTRUCTIONS, temporal_groups_in_batch, vision_batch_indices
 
 _SECRET_PATTERN = re.compile(r"sk-cp[-_A-Za-z0-9]{8,}", re.IGNORECASE)
 _TRACE_PATTERN = re.compile(r"(?:trace[-_ ]?id|request[-_ ]?id)\s*[:=]\s*([A-Za-z0-9._:-]+)", re.IGNORECASE)
@@ -305,7 +306,7 @@ class MiniMaxTokenPlanMcpVisionEngine:
         batch_size: int = 6,
         concurrency: int = 2,
         coverage_threshold: float = 0.85,
-        prompt_version: str = "minimax-contact-sheet.v1",
+        prompt_version: str = "minimax-contact-sheet.v2",
         runner: Any | None = None,
     ) -> None:
         if not api_key.strip() and runner is None:
@@ -386,6 +387,7 @@ class MiniMaxTokenPlanMcpVisionEngine:
                 "label": f"F{local_index:02d}",
                 "timestamp_ms": frame.timestamp_ms,
                 "timecode": _time_label(frame.timestamp_ms),
+                "roles": list(frame.roles),
             }
             for local_index, (_, frame) in enumerate(refs, start=1)
         ]
@@ -397,8 +399,11 @@ class MiniMaxTokenPlanMcpVisionEngine:
             "\"people_actions\":\"\",\"scene\":\"\",\"camera_expression\":\"\","
             "\"visual_role\":\"\",\"confidence\":90}]}。"
             "composition 写构图和主体位置；people_actions 写人物、动作或明确无人物；"
-            "scene 写环境与场景；camera_expression 写景别、机位、切换或运动感；"
+            "scene 写环境与场景；camera_expression 只写可见景别、机位；"
             "visual_role 写该画面对视频表达的作用。每格必须恰好一条 observation。"
+            + VISUAL_EVIDENCE_INSTRUCTIONS
+            + " temporal_groups=" + json.dumps(temporal_groups_in_batch([frame for _, frame in refs]), ensure_ascii=False)
+            +
             f"当前为第 {batch_index}/{batch_count} 张联系表，manifest="
             + json.dumps(manifest, ensure_ascii=False, separators=(",", ":"))
         )
@@ -470,6 +475,7 @@ class MiniMaxTokenPlanMcpVisionEngine:
             if not isinstance(raw_observations, Sequence) or isinstance(raw_observations, (str, bytes)):
                 raise TypeError("observations must be an array")
             observations: dict[int, VisualObservation] = {}
+            temporal_groups = temporal_groups_in_batch([frame for _, frame in batch.refs])
             for raw in raw_observations:
                 if not isinstance(raw, Mapping):
                     continue
@@ -483,7 +489,15 @@ class MiniMaxTokenPlanMcpVisionEngine:
                     ("场景", raw.get("scene")),
                     ("镜头表达", raw.get("camera_expression")),
                     ("视觉作用", raw.get("visual_role")),
+                    ("内容形式与媒介", raw.get("content_form")),
+                    ("画面文字呈现", raw.get("screen_text")),
+                    ("色彩与质感", raw.get("color_texture")),
                 ]
+                if "first_frame" in frame.roles or "opening" in frame.roles:
+                    fields.append(("首帧与开头", raw.get("opening")))
+                frame_groups = [group for group in temporal_groups if f"temporal:{group}" in frame.roles]
+                if frame_groups:
+                    fields.append(("时序观察（有序抽样非全帧跟踪）", raw.get("temporal")))
                 description = "；".join(
                     f"{label}：{str(value).strip()}"
                     for label, value in fields
@@ -493,11 +507,12 @@ class MiniMaxTokenPlanMcpVisionEngine:
                     description = f"画面：{str(raw['description']).strip()}"
                 if not description:
                     continue
+                scope = ("时序组=" + ",".join(frame_groups)) if frame_groups else "单帧证据；运动/稳定性/转场无法判断"
                 observations[global_index] = VisualObservation(
                     "vision",
                     frame.timestamp_ms,
                     frame.timestamp_ms,
-                    description[:1_000],
+                    ("证据范围：" + scope + "；" + description)[:1_000],
                     _normalized_confidence(raw.get("confidence")),
                 )
             missing_count = len(batch.refs) - len(observations)
@@ -591,7 +606,7 @@ class MiniMaxTokenPlanMcpVisionEngine:
             return ()
 
         refs = list(enumerate(frames))
-        initial_groups = [refs[index:index + self.batch_size] for index in range(0, len(refs), self.batch_size)]
+        initial_groups = [[refs[index] for index in indices] for indices in vision_batch_indices(frames, self.batch_size)]
         initial = self._prepare(initial_groups, attempt=1)
         observations: dict[int, VisualObservation] = {}
         records: list[dict[str, Any]] = []

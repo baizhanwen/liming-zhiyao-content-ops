@@ -2,7 +2,7 @@
 
 [下载最新 Windows 完整版](https://github.com/baizhanwen/liming-zhiyao-content-ops/releases/latest)
 
-在 Release 的 Assets 中下载 `LimingZhiyao-Windows-Full.zip`。默认包含当前开发完整版功能和 4,176 条方法原子，无需激活码。首次打开时创建公司和管理员账号，之后用邮箱、密码登录；模型服务的 API Key 由使用者在设置中填写。
+在 Release 的 Assets 中下载 `LimingZhiyao-Windows-Full.zip`。默认包含当前完整开发版功能和 4,176 条方法原子，无需激活码。首次打开时创建公司和管理员账号，之后用邮箱、密码登录；模型服务的 API Key 由使用者在设置中填写。
 
 ## 安装与使用
 
@@ -15,6 +15,12 @@
 日常使用双击 `start-local.bat`，停止使用 `stop-local.bat`；团队协作使用 `start-lan.bat`。首次安装及模型下载需要网络，这个 ZIP 不包含预装依赖或模型缓存。下载包不携带开发者的密钥、数据库、媒体、Cookie、缓存或 Git 历史。
 
 仓库已公开，可直接查看 Release 和下载附件。GitHub 自动生成的「Source code」压缩包是开发源码；安装使用请选择上面的完整版 ZIP。
+
+## 本版视频分析
+
+v10在保留原始转写、完整校正口播和旧文字报告的同时，新增统一标签、可追溯证据、基础代码指标与首帧/前3秒视觉取证。标准和最高档使用同一套字段，分析密度与费用不同；缺材料时显示未知或部分完成。保留语音转写，本轮不增加语调、配乐、音效、静音或音量分析。详见 [版本说明](program/docs/releases/full-v20261111.6.md)。
+
+已有安装先停止服务并备份，另存 `.dev.vars` 等私密配置；升级不自动重跑已完成任务。操作路径见 [备份、恢复与升级](program/docs/operations/备份恢复与升级操作.md)。
 
 ## 开发与发布
 

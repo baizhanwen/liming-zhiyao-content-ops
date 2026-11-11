@@ -10,7 +10,8 @@ test("analysis detail re-checks project access and scopes every result query", a
   assert.match(route, /video_analyses WHERE organization_id = \? AND project_id = \? AND video_id = \?/);
   assert.match(route, /SELECT id, analysis_job_id, schema_version/);
   assert.match(route, /SELECT id, analysis_job_id, kind/);
-  assert.match(route, /ORDER BY created_at DESC LIMIT 8/);
+  assert.match(route, /created_at DESC(?:, rowid DESC)? LIMIT 8/);
+  assert.match(route, /CASE WHEN id = \? THEN 0 ELSE 1 END/);
   assert.match(route, /analyses: analysisVersions/);
   assert.match(route, /analysis_job_events WHERE organization_id = \? AND project_id = \? AND video_id = \?/);
 });
@@ -58,7 +59,7 @@ test("detail UI keeps protected media review while evidence locating stays hidde
   assert.doesNotMatch(detail, /单独重试这一版/);
   assert.match(detail, /这份报告是“部分完成”/);
   assert.match(detail, /item\.key !== "depth"/);
-  assert.match(detail, /effectiveJobStatus === "partial" && qualityStatus !== "passed"/);
+  assert.match(detail, /effectiveJobStatus === "partial" && <section className="analysis-partial-banner"/);
   assert.match(detail, /qualityAudit\.score \+ \(removedDepthCheck\?\.passed === false \? 12 : 0\)/);
   assert.doesNotMatch(detail, /dangerouslySetInnerHTML/);
 });

@@ -52,6 +52,7 @@ function fixture({ runtime = {}, worker = {}, quotaAllowed = true } = {}) {
     new Function("require", "module", "exports", source)((specifier) => {
       if (mocked.has(specifier)) return mocked.get(specifier);
       if (!specifier.startsWith(".")) throw new Error(`Unexpected dependency: ${specifier}`);
+      if (specifier.endsWith(".json")) { const value = JSON.parse(readFileSync(path.resolve(path.dirname(filename), specifier), "utf8")); return { ...value, __esModule: true, default: value }; }
       return load(path.resolve(path.dirname(filename), specifier.endsWith(".ts") ? specifier : `${specifier}.ts`));
     }, loadedModule, loadedModule.exports);
     cache.set(filename, loadedModule.exports);

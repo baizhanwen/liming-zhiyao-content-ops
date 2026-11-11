@@ -27,12 +27,8 @@ export async function getOrganizationCapacity(organizationId: string, actorUserI
   await ensureOrganizationSettings(organizationId, actorUserId);
   if (deliveryPlan.deliveryMode) {
     const preset = deliveryPlan.quotas;
-    const now = new Date().toISOString();
-    await getD1().prepare(`
-      UPDATE organization_settings SET plan_code = ?, project_quota = ?, member_quota = ?, monthly_analysis_quota = ?,
-        monthly_model_call_quota = ?, storage_quota_bytes = ?, retention_days = ?, failed_job_alert_threshold = ?, updated_at = ?
-      WHERE organization_id = ?
-    `).bind(deliveryPlan.code, preset.projectQuota, preset.memberQuota, preset.monthlyAnalysisQuota, preset.monthlyModelCallQuota, preset.storageQuotaBytes, preset.retentionDays, preset.failedJobAlertThreshold, now, organizationId).run();
+    // The full edition supplies effective capacity without rewriting historical
+    // settings when an older installation is opened after an upgrade.
     return {
       plan_code: deliveryPlan.code,
       project_quota: preset.projectQuota,

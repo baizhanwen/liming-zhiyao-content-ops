@@ -60,7 +60,7 @@ test('extraction receives substantive content and methods, retains attributed co
  f.seed('videos',{id:'video',title:'讲解需求',platform:'douyin',source_type:'url'});
  f.seed('video_library_entries',{id:'library',source_video_id:'video'});
  f.seed('project_video_references',{id:'reference',library_entry_id:'library',purpose:'benchmark',status:'active'});
- f.seed('video_analyses',{id:'analysis',video_id:'video',schema_version:'v1',report_json:JSON.stringify({summary:quote,structure:['先举例再解释']})});
+ f.seed('video_analyses',{id:'analysis',video_id:'video',schema_version:'analysis.v1',report_json:JSON.stringify({summary:quote,structure:['先举例再解释']})});
  f.seed('video_knowledge_atoms',{library_entry_id:'library',analysis_id:'analysis',atom_key:'summary-1',atom_type:'summary',title:'需求观点',content:quote,structured_json:'{}',source_locator_json:'{}',report_hash:'report',extractor_version:'v1',status:'active'});
  const event=await enqueueProjectMemoryEventWithDb(f.db,{...f.scope,eventType:'video_analysis_completed',sourceType:'video_analysis',sourceId:'analysis',payload:{}});
  const result=await f.processor.processProjectMemoryEventWithDb(f.db,{...f.scope,eventId:event.event.id,invoke:async input=>{
@@ -89,6 +89,45 @@ test('legacy extraction events are rechecked in bounded batches once per extract
  assert.equal((await f.processor.syncProjectMemoryEventsWithDb(f.db,{...f.scope,limit:2,invoke})).length,2);
  assert.equal((await f.processor.syncProjectMemoryEventsWithDb(f.db,{...f.scope,limit:2,invoke})).length,1);
  assert.equal((await f.processor.syncProjectMemoryEventsWithDb(f.db,{...f.scope,limit:2,invoke})).length,0);
+});
+
+test('already queued partial and unknown video reports are gated with zero model calls and preserve history',async t=>{
+ const f=await fixture(t);let calls=0;
+ f.seed('videos',{id:'quality-video',platform:'upload',source_type:'upload'});
+ f.seed('video_library_entries',{id:'quality-library',source_video_id:'quality-video'});
+ f.seed('project_video_references',{library_entry_id:'quality-library',purpose:'benchmark',status:'active'});
+ for(const [index,schema] of [[1,'analysis.v9'],[2,'analysis.future']]) {
+   const id='quality-analysis-'+index,report=JSON.stringify({summary:'保留原报告，未通过当前质量验收。'});
+   f.seed('video_analyses',{id,video_id:'quality-video',schema_version:schema,report_json:report});
+   f.seed('video_knowledge_atoms',{library_entry_id:'quality-library',analysis_id:id,atom_key:'legacy-'+index,atom_type:'summary',title:'历史原子',content:'历史内容保留',structured_json:'{}',source_locator_json:'{}',report_hash:'legacy',extractor_version:'legacy',status:'active'});
+   const event=await enqueueProjectMemoryEventWithDb(f.db,{...f.scope,eventType:'video_analysis_completed',sourceType:'video_analysis',sourceId:id,payload:{}});
+   const result=await f.processor.processProjectMemoryEventWithDb(f.db,{...f.scope,eventId:event.event.id,invoke:async()=>{calls++;throw new Error('Unaccepted reports must not invoke a model');}});
+   assert.equal(result.status,'completed');
+   assert.equal(f.sqlite.prepare('SELECT report_json FROM video_analyses WHERE id=?').get(id).report_json,report);
+   assert.equal(f.sqlite.prepare('SELECT model_name FROM project_memory_events WHERE id=?').get(event.event.id).model_name,'benchmark-scope-gate');
+ }
+ assert.equal(calls,0);assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM project_memory_items').get().n,0);
+ assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM video_knowledge_atoms WHERE status='active'").get().n,2);
+});
+
+test('accepted extraction excludes historical atoms from unaccepted reports without deleting them',async t=>{
+ const f=await fixture(t);
+ for(const [suffix,schema] of [['accepted','analysis.v1'],['partial','analysis.v9']]) {
+   f.seed('videos',{id:'video-'+suffix,platform:'upload',source_type:'upload'});
+   f.seed('video_library_entries',{id:'library-'+suffix,source_video_id:'video-'+suffix});
+   f.seed('project_video_references',{library_entry_id:'library-'+suffix,purpose:'benchmark',status:'active'});
+   f.seed('video_analyses',{id:'analysis-'+suffix,video_id:'video-'+suffix,schema_version:schema,report_json:'{"summary":"合成分析内容"}'});
+   f.seed('video_knowledge_atoms',{library_entry_id:'library-'+suffix,analysis_id:'analysis-'+suffix,atom_key:'summary',atom_type:'summary',title:'历史原子',content:'合成分析内容',structured_json:'{}',source_locator_json:'{}',report_hash:'legacy',extractor_version:'legacy',status:'active'});
+ }
+ const event=await enqueueProjectMemoryEventWithDb(f.db,{...f.scope,eventType:'video_analysis_completed',sourceType:'video_analysis',sourceId:'analysis-accepted',payload:{}});
+ let called=0;
+ const result=await f.processor.processProjectMemoryEventWithDb(f.db,{...f.scope,eventId:event.event.id,invoke:async input=>{
+   called++;const source=JSON.parse(input.user).event.source;
+   assert.deepEqual(source.benchmarkCorpus.map(row=>row.analysisId),['analysis-accepted']);
+   return {provider:'test',model:'test',content:'{"memoryOperations":[{"operation":"noop","confidence":100,"reason":"合成验收不生成记忆。"}]}'};
+ }});
+ assert.equal(result.status,'completed');assert.equal(called,1);
+ assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM video_knowledge_atoms WHERE status='active'").get().n,2);
 });
 
 test('non-inspiration generation contexts reject direct memory sources',async t=>{

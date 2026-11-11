@@ -20,6 +20,18 @@ function directory(t) {
   return root;
 }
 
+test("taxonomy changes invalidate source identity while customer state does not", t => {
+  const root = directory(t);
+  const resource = path.join(root, "services/analyzer/liming_analyzer/resources");
+  mkdirSync(resource, { recursive: true });
+  writeFileSync(path.join(resource, "video-taxonomy.v1.json"), "{}");
+  const first = runtimeSourceId(root);
+  writeFileSync(path.join(root, ".dev.vars"), "SYNTHETIC=private-state");
+  assert.equal(runtimeSourceId(root), first);
+  writeFileSync(path.join(resource, "video-taxonomy.v1.json"), '{"version":"changed"}');
+  assert.notEqual(runtimeSourceId(root), first);
+});
+
 async function bridge(t, root, calls = []) {
   const configuration = { LOCAL_RUNTIME_TOKEN: token };
   const server = createAnalyzerEnvironmentBridge({ root, configuration: () => configuration, persist: false, run: async action => {
