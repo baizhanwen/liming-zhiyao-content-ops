@@ -1,11 +1,14 @@
 import ast
 import json
+import sys
 import tempfile
 import unittest
 import wave
 from dataclasses import replace
 from pathlib import Path
+from types import ModuleType
 from typing import ClassVar
+from unittest.mock import Mock, patch
 
 from PIL import Image
 
@@ -299,7 +302,18 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(output.confidence, 91)
 
     def test_funasr_cleans_rich_tags_and_uses_word_timestamp_span(self):
-        output = FunAsrSpeechRecognizer(engine=FakeRawAsr()).transcribe(Path("audio.wav"))
+        # The injected ASR engine must also supply its optional postprocessor;
+        # this unit test runs without installing FunASR or its model runtime.
+        postprocess = Mock(return_value="时间轴测试")
+        module = ModuleType("funasr.utils.postprocess_utils")
+        module.rich_transcription_postprocess = postprocess
+        with patch.dict(sys.modules, {
+            "funasr": ModuleType("funasr"),
+            "funasr.utils": ModuleType("funasr.utils"),
+            "funasr.utils.postprocess_utils": module,
+        }):
+            output = FunAsrSpeechRecognizer(engine=FakeRawAsr()).transcribe(Path("audio.wav"))
+        postprocess.assert_called_once_with("<|zh|><|NEUTRAL|><|Speech|><|woitn|>时间轴测试")
         self.assertEqual(output.full_text, "时间轴测试")
         self.assertEqual((output.segments[0].start_ms, output.segments[0].end_ms), (480, 960))
 

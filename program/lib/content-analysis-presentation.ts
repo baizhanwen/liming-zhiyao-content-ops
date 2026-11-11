@@ -30,6 +30,7 @@ const reasonLabels: Record<string, string> = {
   input_budget_exceeded: "本模块输入超过预算，未继续调用模型。",
   classification_request_failed: "本模块的模型调用未完成。",
   no_audio_or_usable_sampled_text: "源视频没有音轨，成功检查的取样画面也未发现可用文字；文字分析不适用。",
+  no_video_track: "来源只有音频轨，画面与镜头分析不适用。",
 };
 export function contentReasonLabel(reason: string) {
   return reasonLabels[reason] || (reason.endsWith("_evidence_not_acquired") ? "尚未取得这项判断需要的材料。" : reason);

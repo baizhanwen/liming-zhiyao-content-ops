@@ -210,6 +210,16 @@ def text_analysis_not_applicable(media: Any, transcript: Any, visuals: Any) -> b
     )
 
 
+def _is_explicit_audio_only(media: Any) -> bool:
+    info = _get(media, "info", media)
+    missing = object()
+    audio_codec = _get(info, "audio_codec")
+    return (
+        _get(info, "video_codec", missing) is None
+        and isinstance(audio_codec, str) and bool(audio_codec.strip())
+    )
+
+
 def _empty_classification(dimension: Mapping[str, Any], available: bool) -> dict[str, Any]:
     return {
         "dimension_id": dimension["id"],
@@ -699,6 +709,7 @@ def build_content_analysis(
     dimensions = {row["id"]: row for row in taxonomy["dimensions"]}
     registry = build_evidence_registry(media, transcript, visuals)
     text_not_applicable = text_analysis_not_applicable(media, transcript, visuals)
+    no_video_track = _is_explicit_audio_only(media)
     classifications = {
         key: _empty_classification(row, _dimension_acquired(row, registry)) for key, row in dimensions.items()
     }
@@ -708,6 +719,10 @@ def build_content_analysis(
                 classifications[key].update(
                     state="not_applicable", reason="no_audio_or_usable_sampled_text",
                 )
+    if no_video_track:
+        for key, dimension in dimensions.items():
+            if dimension["requires"] in {"visual", "temporal"}:
+                classifications[key].update(state="not_applicable", reason="no_video_track")
     segments: list[dict[str, Any]] = []
     units: list[dict[str, Any]] = []
     module_status: dict[str, Any] = {}
@@ -721,9 +736,13 @@ def build_content_analysis(
         if not requested:
             not_applicable = all(classifications[row["id"]]["state"] == "not_applicable"
                                  for row in dimensions.values() if row["module"] == module)
+            reasons = {classifications[row["id"]]["reason"] for row in dimensions.values()
+                       if row["module"] == module}
             module_status[module] = {
                 "status": "not_applicable" if not_applicable else "not_acquired",
-                "reason": "no_audio_or_usable_sampled_text" if not_applicable else "required_evidence_not_acquired",
+                "reason": next(iter(reasons)) if not_applicable and len(reasons) == 1 else (
+                    "module_not_applicable" if not_applicable else "required_evidence_not_acquired"
+                ),
                 "validation": {"passed": True, "issues": []}, "source_coverage": None,
             }
             continue

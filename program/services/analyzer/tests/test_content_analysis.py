@@ -236,6 +236,55 @@ assert len(result['classifications']) == 65
                             if row["dimension_id"].startswith("visual.")))
         self.assertNotIn("temporal", {row["source"] for row in result["evidence_registry"]})
 
+    def test_explicit_audio_only_marks_visual_not_applicable_and_completes_text_modules(self):
+        media, transcript, visuals = synthetic_inputs()
+        media.info.video_codec = None
+        media.info.width = media.info.height = None
+        visuals.keyframes = []
+        visuals.observations = []
+        visuals.stats = {}
+        calls = []
+        def request(module, payload, budget):
+            calls.append(module)
+            return synthetic_response(module, payload, budget)
+        result = build_content_analysis(media, transcript, visuals, request)
+        self.assertEqual(result["status"], "complete", result["validation"])
+        self.assertTrue(result["validation"]["passed"], result["validation"])
+        self.assertEqual(calls, [module for module in MODULES if module != "visual"])
+        self.assertEqual(result["module_status"]["visual"]["status"], "not_applicable")
+        self.assertEqual(result["module_status"]["visual"]["reason"], "no_video_track")
+        rows = {row["dimension_id"]: row for row in result["classifications"]}
+        for dimension in load_taxonomy()["dimensions"]:
+            if dimension["requires"] in {"visual", "temporal"}:
+                self.assertEqual(rows[dimension["id"]]["state"], "not_applicable")
+                self.assertEqual(rows[dimension["id"]]["reason"], "no_video_track")
+        self.assertEqual(rows["synthesis.visual_text_relation"]["state"], "not_applicable")
+        self.assertEqual(rows["topic.category"]["state"], "known")
+        self.assertEqual(result["module_status"]["synthesis"]["status"], "completed")
+
+    def test_missing_unknown_or_real_video_codec_does_not_hide_visual_failure(self):
+        for variant in ("missing", "unknown", "real_video", "no_audio_either"):
+            with self.subTest(variant=variant):
+                media, transcript, visuals = synthetic_inputs()
+                if variant == "missing":
+                    del media.info.video_codec
+                elif variant == "unknown":
+                    media.info.video_codec = ""
+                elif variant == "no_audio_either":
+                    media.info.video_codec = None
+                    media.info.audio_codec = None
+                visuals.keyframes = []
+                visuals.observations = []
+                visuals.stats = {}
+                result = build_content_analysis(media, transcript, visuals, synthetic_response,
+                                                metrics={})
+                self.assertEqual(result["status"], "partial")
+                self.assertEqual(result["module_status"]["visual"]["status"], "not_acquired")
+                row = next(item for item in result["classifications"]
+                           if item["dimension_id"] == "visual.camera_motion")
+                self.assertEqual(row["state"], "not_acquired")
+                self.assertNotEqual(row["reason"], "no_video_track")
+
     def test_dynamic_opening_tags_and_visual_text_relation_need_their_modalities(self):
         def request(module, payload, budget):
             result = synthetic_response(module, payload, budget)
