@@ -40,4 +40,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows file publication or analyzer control regression failed.' }
       - name: Verify Windows entry points and transfer fixtures
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
-        run: node --test --test-reporter=tap tests/analyzer-collector-runtime.test.mjs tests/analyzer-environment-bridge.test.mjs tests/analyzer-windows-control.test.mjs tests/local-runtime-identity.test.mjs tests/local-port-isolation.test.mjs tests/runtime-configuration-startup.test.mjs tests/material-transfer-roundtrip.test.mjs
+        run: node --test --test-reporter=tap tests/analyzer-collector-runtime.test.mjs tests/analyzer-environment-bridge.test.mjs tests/local-runtime-identity.test.mjs tests/local-port-isolation.test.mjs tests/runtime-configuration-startup.test.mjs tests/material-transfer-roundtrip.test.mjs
+      - name: Use the customer Node runtime for native service control
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.23.2"
+      - name: Verify native Windows service lifecycle on the customer runtime
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        run: node --test --test-reporter=tap tests/analyzer-windows-control.test.mjs
