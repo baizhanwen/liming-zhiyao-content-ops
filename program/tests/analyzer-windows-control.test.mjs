@@ -207,11 +207,17 @@ test("Windows stop adopts a verified legacy venv worker and closes both redirect
 
 test("Windows control keeps similar installation paths independent", { skip: !windows, timeout: 240_000 }, async t => {
   const { installations: [first, second], baseUrl } = await fixture(t);
-  for (const installation of [first, second]) assert.equal((await control(installation, "start", baseUrl)).code, 0);
+  for (const [index, installation] of [first, second].entries()) {
+    if (process.env.CI) console.error(`Synthetic service isolation: starting installation ${index + 1}`);
+    const started = await control(installation, "start", baseUrl);
+    assert.equal(started.code, 0, JSON.stringify(started));
+  }
   const firstOwner = JSON.parse(readFileSync(path.join(first, ".local/analyzer-windows.json"), "utf8"));
   const secondOwner = JSON.parse(readFileSync(path.join(second, ".local/analyzer-windows.json"), "utf8"));
   assert.notEqual(firstOwner.pid, secondOwner.pid);
-  assert.equal((await control(first, "stop", baseUrl)).code, 0);
+  if (process.env.CI) console.error("Synthetic service isolation: stopping the first installation");
+  const stopped = await control(first, "stop", baseUrl);
+  assert.equal(stopped.code, 0, JSON.stringify(stopped));
   const surviving = await control(second, "status", baseUrl);
   assert.equal(surviving.result.processRunning, true, JSON.stringify(surviving));
   assert.equal(surviving.result.workerRunning, true);
