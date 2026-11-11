@@ -21,8 +21,12 @@ def build_lazy_processor(settings: AnalyzerSettings, client: AnalyzerApiClient, 
         nonlocal pipeline, pipeline_settings
         current_job = job
         fetch_configuration = getattr(client, "model_configuration", None)
-        active_settings = replace(settings, **fetch_configuration(job)) if callable(fetch_configuration) else settings
-        if pipeline is None or pipeline_settings != active_settings:
+        transcript_only = job.source.get("transcript_only") is True
+        active_settings = settings
+        if not transcript_only and callable(fetch_configuration):
+            active_settings = replace(settings, **fetch_configuration(job))
+        pipeline_key = (active_settings, transcript_only)
+        if pipeline is None or pipeline_settings != pipeline_key:
             warm_status = "analyzing" if job.checkpoint_stage in {"evidence_ready", "segment_progress"} else "downloading"
             warm_message = "正在初始化本地分析模型（首次使用可能需要下载）"
             observe(heartbeat, "loading_models")
@@ -50,8 +54,9 @@ def build_lazy_processor(settings: AnalyzerSettings, client: AnalyzerApiClient, 
             )
             thread.start()
             try:
-                pipeline = build_pipeline(active_settings, client)
-                pipeline_settings = active_settings
+                pipeline = (build_pipeline(active_settings, client, transcript_only=True)
+                            if transcript_only else build_pipeline(active_settings, client))
+                pipeline_settings = pipeline_key
                 if monitor is not None:
                     pipeline.runtime_monitor = monitor
             except Exception as error:
@@ -66,9 +71,13 @@ def build_lazy_processor(settings: AnalyzerSettings, client: AnalyzerApiClient, 
     return process
 
 
-def main() -> int:
+def configure_worker_logging() -> None:
     logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     logging.getLogger("liming_analyzer").setLevel(logging.INFO)
+
+
+def main() -> int:
+    configure_worker_logging()
     logging.getLogger(__name__).info("Analyzer entrypoint: %s", __file__)
     parser = argparse.ArgumentParser(description="Liming Zhiyao video analyzer worker")
     parser.add_argument("--once", action="store_true", help="claim at most one job")

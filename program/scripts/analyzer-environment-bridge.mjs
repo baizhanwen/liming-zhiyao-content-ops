@@ -54,13 +54,28 @@ function pythonCommand(root) {
   return process.platform === "win32" ? ["py", "-3.11"] : ["python3.11"];
 }
 
-function streamRuntimeProcess(command, args, { root, onLine, children, timeoutMs, baseUrl, spawnProcess = spawn }) {
+function streamRuntimeProcess(command, args, { root, onLine, children, timeoutMs, baseUrl, install = false, spawnProcess = spawn }) {
   return new Promise((resolve, reject) => {
     const child = spawnProcess(command, args, {
-      cwd: root, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
+      cwd: root, windowsHide: true, detached: install && process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, ...(baseUrl ? { ANALYZER_BASE_URL: baseUrl } : {}), PYTHONUNBUFFERED: "1", PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
     });
-    children.add(child);
+    // Installers spawn uv, pip, npm or model downloaders. Stop the whole
+    // installation on shutdown so the next attempt cannot race an orphan.
+    const stop = () => {
+      if (child.exitCode != null || child.signalCode != null) return;
+      if (install && child.pid) {
+        if (process.platform === "win32") {
+          const taskkill = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "taskkill.exe");
+          if (spawnSync(taskkill, ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, timeout: 10_000, stdio: "ignore" }).status === 0) return;
+        } else {
+          try { process.kill(-child.pid, "SIGTERM"); return; } catch { /* Child may have already exited. */ }
+        }
+      }
+      child.kill("SIGTERM");
+    };
+    children.add(stop);
+    const timeout = setTimeout(stop, timeoutMs);
     let lastJson = null;
     const consume = line => {
       if (!line.trim()) return;
@@ -71,6 +86,7 @@ function streamRuntimeProcess(command, args, { root, onLine, children, timeoutMs
       const decoder = new StringDecoder("utf8");
       let pending = "";
       stream.on("data", chunk => {
+        if (install) timeout.refresh();
         pending += decoder.write(chunk);
         const lines = pending.split(/\r?\n/u); pending = lines.pop() ?? "";
         for (const line of lines) consume(line);
@@ -78,10 +94,9 @@ function streamRuntimeProcess(command, args, { root, onLine, children, timeoutMs
       });
       stream.on("end", () => { pending += decoder.end(); if (pending) consume(pending); });
     }
-    const timeout = setTimeout(() => child.kill("SIGTERM"), timeoutMs);
-    child.once("error", error => { clearTimeout(timeout); children.delete(child); reject(error); });
+    child.once("error", error => { clearTimeout(timeout); children.delete(stop); reject(error); });
     child.once("close", (code, signal) => {
-      clearTimeout(timeout); children.delete(child);
+      clearTimeout(timeout); children.delete(stop);
       resolve({ code: code ?? 1, signal, result: lastJson });
     });
   });
@@ -94,12 +109,12 @@ export async function runRuntimeCommand(action, { root = projectRoot, onLine = (
     const probe = spawnSync(probePython, [...probePrefix, "-I", "-c", "import sys; assert sys.version_info[:2] == (3,11) and sys.maxsize > 2**32"], { cwd: root, windowsHide: true, timeout: 10_000, stdio: "ignore" });
     if (probe.status !== 0) {
       onLine("正在为本项目准备 Python 3.11（验证官方发布者签名）…");
-      const installed = await streamRuntimeProcess("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path.join(root, "scripts", "install-python311.ps1"), "-TargetDirectory", path.join(root, ".local", "python311")], { root, onLine, children, spawnProcess, timeoutMs: 20 * 60_000 });
+      const installed = await streamRuntimeProcess("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path.join(root, "scripts", "install-python311.ps1"), "-TargetDirectory", path.join(root, ".local", "python311")], { root, onLine, children, spawnProcess, install: true, timeoutMs: 20 * 60_000 });
       if (installed.code !== 0) return installed;
     }
   }
   const [python, ...prefix] = pythonCommand(root);
-  return streamRuntimeProcess(python, [...prefix, path.join(root, "scripts", "analyzer_local_runtime.py"), action, ...(baseUrl ? ["--base-url", baseUrl] : [])], { root, onLine, children, spawnProcess, baseUrl, timeoutMs: action === "setup" ? 45 * 60_000 : action === "check" ? 240_000 : 90_000 });
+  return streamRuntimeProcess(python, [...prefix, path.join(root, "scripts", "analyzer_local_runtime.py"), action, ...(baseUrl ? ["--base-url", baseUrl] : [])], { root, onLine, children, spawnProcess, baseUrl, install: action === "setup", timeoutMs: action === "setup" ? 4 * 60 * 60_000 : action === "check" ? 240_000 : 90_000 });
 }
 
 function applicationBaseUrl(root, configuration) {
@@ -162,7 +177,7 @@ export function createAnalyzerEnvironmentBridge({ root = projectRoot, configurat
       try {
         const checked = await execute("status", { onLine: () => {} });
         statusCache = publicRuntimeStatus(checked.result, redact);
-        if (checked.code !== 0) statusCache.message = "环境状态检查未完成，请查看运行任务或重新检查。";
+        if (checked.code !== 0) statusCache = { available: true, ready: false, workerRunning: false, checks: [], message: "环境状态检查未完成，请查看运行任务或重新检查。" };
       } catch {
         statusCache = { available: true, ready: false, workerRunning: false, checks: [{ id: "python", label: "Python 3.11", status: "missing", message: process.platform === "win32" ? "尚未找到 Python 3.11，可点击一键配置环境自动准备。" : "尚未找到 Python 3.11，请先准备本机 Python 3.11 后重新检查。" }] };
       }
@@ -186,12 +201,14 @@ export function createAnalyzerEnvironmentBridge({ root = projectRoot, configurat
           const stopped = await execute("stop", { onLine });
           result = stopped.code === 0 ? await execute("setup", { onLine }) : stopped;
         }
-        if (action === "setup" && result.code === 0) {
+        if (action === "setup" && result.code === 0 && result.result?.ready === true) {
           onLine("环境准备完成，正在启动本项目视频分析服务…");
           result = await execute("start", { onLine });
         }
-        current.status = result.code === 0 ? "succeeded" : "failed";
-        if (result.code !== 0) current.error = typeof result.result?.message === "string" ? redact(result.result.message) : "操作没有完成，请根据运行日志修复后重试。";
+        const requiresWorker = action === "setup" || action === "start";
+        const succeeded = result.code === 0 && (!requiresWorker || (result.result?.ready === true && result.result?.workerRunning === true && !result.result.restartRequired));
+        current.status = succeeded ? "succeeded" : "failed";
+        if (!succeeded) current.error = typeof result.result?.message === "string" ? redact(result.result.message) : "操作没有完成，请根据运行日志修复后重试。";
       } catch {
         current.status = "failed";
         current.error = "环境操作无法启动，请确认 Python 3.11 已安装后重试。";
@@ -238,7 +255,7 @@ export function createAnalyzerEnvironmentBridge({ root = projectRoot, configurat
   });
   server.requestTimeout = 30_000;
   server.headersTimeout = 10_000;
-  server.on("close", () => { for (const child of children) child.kill("SIGTERM"); });
+  server.on("close", () => { for (const stop of children) stop(); });
   return server;
 }
 

@@ -69,7 +69,7 @@ test("synthetic long-running setup admits one job, exposes real state transition
     if (action === "status") return status();
     options.onLine(`private-key=${key} Bearer ${token} ${path.join(privateRoot, "model-cache")}`);
     await pending;
-    return { code: 0, result: { ready: true } };
+    return { code: 0, result: { ready: true, workerRunning: action === "start" } };
   });
   const started = await f.post({ action: "setup" });
   assert.equal(started.status, 202);
@@ -99,6 +99,22 @@ test("failed runtime subprocesses stay failed rather than claiming successful in
   const body = await response.json();
   assert.equal(body.job.status, "failed");
   assert.match(body.job.error, /没有完成/);
+});
+
+test("one-click setup requires verified models and a connected worker", async t => {
+  for (const ready of [false, true]) {
+    const calls = [];
+    const f = await bridge(t, async action => {
+      calls.push(action);
+      if (action === "status") return { ...status(), code: 1 };
+      return { code: 0, result: { ready, workerRunning: false } };
+    });
+    const response = await f.post({ action: "setup" });
+    const state = await response.json();
+    assert.equal(state.ready, false);
+    assert.equal(state.job.status, "failed");
+    assert.equal(calls.includes("start"), ready);
+  }
 });
 
 test("repair of a running analyzer handles stopRequired internally before setup and restart", async t => {

@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -16,6 +19,26 @@ ROOT = Path(__file__).resolve().parents[1]
 ANALYZER = ROOT / "services/analyzer"
 LOCAL = ROOT / ".local"
 PID_FILE = LOCAL / "analyzer-local.json"
+
+
+def model_cache_path() -> Path:
+    local_cache = LOCAL / "model-cache"
+    if os.name != "nt" or str(local_cache).isascii():
+        return local_cache
+    # Paddle's native Windows file loader requires an ASCII absolute path.
+    # Keep this installation isolated even when its checkout path is Chinese.
+    identity = hashlib.sha256(str(ROOT.resolve()).casefold().encode("utf-8")).hexdigest()[:24]
+    for directory in (os.environ.get("PROGRAMDATA"), os.environ.get("PUBLIC"),
+                      (os.environ.get("SystemDrive") or "C:") + "/ProgramData"):
+        if directory and directory.isascii():
+            return Path(directory) / "LimingZhiyao" / "installations" / identity / "model-cache"
+    raise RuntimeError("Windows 分析模型需要可写的 ASCII 缓存路径。")
+
+
+def expects_windows_qwen(engine: str, model: str, language: str, device: str) -> bool:
+    return (os.name == "nt" and platform.machine().lower() in {"amd64", "x86_64"}
+            and engine == "faster-whisper" and model == "large-v3-turbo"
+            and language in {"zh", "auto"} and device in {"auto", "cpu"})
 
 
 def windows_control(action: str, base_url: str | None = None):
@@ -130,7 +153,7 @@ def runtime_environment(*, load_configuration=True) -> dict[str, str]:
         for key, value in dotenv_values(ROOT / ".dev.vars").items():
             if value is not None and key.startswith(("ANALYZER_", "CONTENT_MODEL_", "PROJECT_ASSISTANT_MODEL_")):
                 env[key] = value
-    cache = LOCAL / "model-cache"
+    cache = model_cache_path()
     paths = {
         "ANALYZER_MODEL_CACHE": cache,
         "PADDLE_PDX_CACHE_HOME": cache / "paddlex",
@@ -183,20 +206,46 @@ def readiness_snapshot(base_url: str | None = None):
     windows_state = windows_control("status", base_url)[1] if os.name == "nt" else None
     record = None if windows_state is not None else active_process()
     packages = ANALYZER / ".venv" / ("Lib/site-packages" if os.name == "nt" else "lib/python3.11/site-packages")
-    cache = LOCAL / "model-cache"
-    model_record = cache / "models-ready.json"
+    cache = model_cache_path()
+    model_record = LOCAL / "model-cache/models-ready.json"
     try:
         prepared = json.loads(model_record.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         prepared = {}
+    if not isinstance(prepared, dict):
+        prepared = {}
     required = prepared.get("requiredFiles", [])
+    # A previous model's files can still be healthy after the configured model changes.
+    configured_asr = prepared.get("asr")
+    configured = {}
+    if (ROOT / ".dev.vars").is_file():
+        # Readiness is also invoked by the bootstrap interpreter before pip installs dotenv.
+        configured = dict(re.findall(r"""^\s*(ANALYZER_ASR_(?:ENGINE|MODEL|LANGUAGE|DEVICE))\s*=\s*['"]?([A-Za-z0-9._/-]+)""",
+                                     (ROOT / ".dev.vars").read_text(encoding="utf-8-sig"), re.MULTILINE))
+    engine = configured.get("ANALYZER_ASR_ENGINE") or "faster-whisper"
+    model = configured.get("ANALYZER_ASR_MODEL") or ("large-v3-turbo" if engine == "faster-whisper" else "paraformer-zh")
+    windows_qwen = expects_windows_qwen(engine, model, configured.get("ANALYZER_ASR_LANGUAGE", "zh"),
+                                        configured.get("ANALYZER_ASR_DEVICE", "auto"))
+    if (ROOT / ".dev.vars").is_file() or windows_qwen:
+        configured_asr = f"{engine}/{model}"
     tools = resolve_media_tools()
-    models_ready = bool(prepared.get("modelsReady") and required and all(
-        isinstance(item, dict) and (cache / item.get("path", "")).is_file()
-        and (cache / item["path"]).stat().st_size == item.get("size") for item in required
-    ))
+    qwen_verified = (prepared.get("asrBackend") == "sherpa-onnx" and prepared.get("asrModel") == "Qwen3-ASR-1.7B"
+                     and prepared.get("asrVerified") is True and prepared.get("asrProbe") == "asr-check-zh.v1"
+                     and (packages / "sherpa_onnx").is_dir() and any(packages.glob("sherpa_onnx_core-*.dist-info")))
+    def cached_file_matches(item):
+        if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+            return False
+        try:
+            stat = (cache / item["path"]).stat()
+        except OSError:
+            return False
+        return stat.st_size == item.get("size") and (not windows_qwen or stat.st_mtime_ns == item.get("mtimeNs"))
+
+    models_ready = bool(prepared.get("modelsReady") and prepared.get("asr") == configured_asr
+                        and (not windows_qwen or qwen_verified) and isinstance(required, list)
+                        and required and all(cached_file_matches(item) for item in required))
     checks = [{"name": "pythonEnvironment", "ok": interpreter().is_file()}]
-    for name, directory in [("torch", "torch"), ("torchaudio", "torchaudio"), ("FunASR", "funasr"), ("PaddlePaddle", "paddle"), ("PaddleOCR", "paddleocr"), ("OpenCV", "cv2"), ("faster-whisper", "faster_whisper"), ("PyAV", "av")]:
+    for name, directory in [("torch", "torch"), ("torchaudio", "torchaudio"), ("FunASR", "funasr"), ("PaddlePaddle", "paddle"), ("PaddleOCR", "paddleocr"), ("OpenCV", "cv2"), ("faster-whisper", "faster_whisper"), ("PyAV", "av"), ("pypinyin", "pypinyin")]:
         checks.append({"name": name, "ok": (packages / directory).is_dir()})
     checks.extend([
         {"name": "FFmpeg", "ok": bool(tools["ffmpeg"])},
@@ -208,6 +257,10 @@ def readiness_snapshot(base_url: str | None = None):
     ])
     for item in checks:
         item.update(id=item["name"].lower().replace("-", "_"), label=item["name"], status="ready" if item["ok"] else "missing", message="已就绪" if item["ok"] else "需要准备")
+    if windows_qwen:
+        checks.append({"name": "Qwen3-ASR-1.7B", "id": "qwen3_asr", "label": "Qwen3-ASR-1.7B 本地转写",
+                       "ok": models_ready, "status": "ready" if models_ready else "missing",
+                       "message": "已通过中文录音识别验证" if models_ready else "需要安装并验证中文语音模型"})
     missing = [item["name"] for item in checks if not item["ok"]]
     result = {"available": True, "message": "本地分析环境已就绪。" if not missing else "仍需准备：" + "、".join(missing), "ready": not missing, "workerRunning": record is not None, "missing": missing, "checks": checks,
               "modelsReady": models_ready, "modelCache": str(cache), "pid": record["pid"] if record else None}
@@ -220,7 +273,7 @@ def readiness_snapshot(base_url: str | None = None):
 
 def setup():
     current_state = readiness_snapshot()
-    if current_state["ready"] and all(path and _test_media_binary(path) for path in resolve_media_tools().values()):
+    if current_state["ready"] and not current_state.get("restartRequired") and all(path and _test_media_binary(path) for path in resolve_media_tools().values()):
         print(json.dumps({**current_state, "alreadyPrepared": True, "alreadyRunning": current_state["workerRunning"]}, ensure_ascii=False), flush=True)
         return 0
     if active_process():
@@ -265,6 +318,9 @@ def setup():
         ("installing_collector_dependencies", [npm, "ci", "--prefix", str(ANALYZER / "liming_analyzer/douyin_collector/node"), "--omit=dev", "--no-audit", "--no-fund"], ROOT),
         ("installing_browser", [npm, "run", "install-browser", "--prefix", str(ANALYZER / "liming_analyzer/douyin_collector/node")], ROOT),
     ]
+    if os.name == "nt":
+        commands.append(("checking_windows_native_runtime", ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                                                              "-File", str(ROOT / "scripts/install-vcredist.ps1")], ROOT))
     media_tools = resolve_media_tools(env)
     if not all(path and _test_media_binary(path) for path in media_tools.values()):
         if os.name == "nt":
@@ -286,9 +342,12 @@ def setup():
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("setup", "start", "stop", "status", "check", "install-media-tools"))
+    parser.add_argument("command", choices=("setup", "start", "stop", "status", "check", "install-media-tools", "cache-path"))
     parser.add_argument("--base-url", help="Actual local web URL selected by this installation's launcher")
     args = parser.parse_args()
+    if args.command == "cache-path":
+        print(model_cache_path())
+        return 0
     if args.command == "status":
         print(json.dumps(readiness_snapshot(args.base_url), ensure_ascii=False))
         return 0
@@ -313,7 +372,10 @@ def main() -> int:
         result = readiness_snapshot(args.base_url)
         if interpreter().is_file():
             env = runtime_environment(load_configuration=False)
-            code = "import torch,torchaudio,funasr,paddle,paddleocr,cv2,faster_whisper,av; print('MEDIA_IMPORTS_OK')"
+            modules = "torch,torchaudio,funasr,paddle,paddleocr,cv2,faster_whisper,av,pypinyin"
+            if any(item["id"] == "qwen3_asr" for item in result["checks"]):
+                modules += ",sherpa_onnx"
+            code = f"import {modules}; print('MEDIA_IMPORTS_OK')"
             imported = subprocess.run([str(interpreter()), "-c", code], cwd=ROOT, env=env, capture_output=True, text=True, timeout=180, check=False)
             passed = imported.returncode == 0 and "MEDIA_IMPORTS_OK" in imported.stdout
             result["checks"].append({"name": "mediaImports", "ok": passed, "id": "media_imports", "label": "媒体依赖实际加载", "status": "ready" if passed else "missing", "message": "加载成功" if passed else "依赖加载失败，请重新准备环境"})

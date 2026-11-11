@@ -107,3 +107,40 @@ def test_windows_stop_propagates_incomplete_stop_instead_of_claiming_success(mon
     assert calls == [("stop", "http://127.0.0.1:3100")]
     state = json.loads(capsys.readouterr().out)
     assert state["processRunning"] and state["message"] == "进程仍在退出"
+
+def test_windows_qwen_readiness_rejects_old_receipts_and_changed_weights(tmp_path, monkeypatch):
+    module = runtime_module()
+    isolate(module, tmp_path / "中文安装", monkeypatch)
+    windows_os(monkeypatch, module)
+    monkeypatch.setenv("PROGRAMDATA", str(tmp_path / "programdata"))
+    monkeypatch.setattr(module.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(module, "windows_control", lambda *_args: (0, {"workerRunning": False, "message": "未启动。"}))
+    monkeypatch.setattr(module, "resolve_media_tools", lambda *_args: {"ffmpeg": None, "ffprobe": None})
+    cache = module.model_cache_path()
+    assert cache.is_relative_to(tmp_path / "programdata") and str(cache).isascii()
+    model = cache / "qwen/encoder.int8.onnx"
+    model.parent.mkdir(parents=True)
+    model.write_bytes(b"weights")
+    receipt = module.LOCAL / "model-cache/models-ready.json"
+    receipt.parent.mkdir(parents=True)
+    packages = module.ANALYZER / ".venv/Lib/site-packages"
+    (packages / "sherpa_onnx").mkdir(parents=True)
+    (packages / "sherpa_onnx_core-2.0.1.dist-info").mkdir()
+
+    def qwen_ok():
+        snapshot = module.readiness_snapshot()
+        check = next(check for check in snapshot["checks"] if check["id"] == "qwen3_asr")
+        assert snapshot["modelsReady"] == check["ok"]
+        return check["ok"]
+
+    data = {"modelsReady": True, "asr": "faster-whisper/large-v3-turbo",
+            "requiredFiles": [{"path": str(model.relative_to(cache)), "size": model.stat().st_size, "mtimeNs": model.stat().st_mtime_ns}]}
+    receipt.write_text(json.dumps(data), encoding="utf-8")
+    assert not qwen_ok()
+    data.update(asrModel="Qwen3-ASR-1.7B", asrBackend="sherpa-onnx", asrVerified=True, asrProbe="asr-check-zh.v1")
+    receipt.write_text(json.dumps(data), encoding="utf-8")
+    assert qwen_ok()
+    model.write_bytes(b"bad")
+    assert not qwen_ok()
+    model.unlink()
+    assert not qwen_ok()

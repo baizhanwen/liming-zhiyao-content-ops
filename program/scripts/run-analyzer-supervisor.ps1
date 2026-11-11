@@ -35,6 +35,13 @@ function Import-AnalyzerEnvironment {
         }
     }
     $env:ANALYZER_BASE_URL = $BaseUrl.TrimEnd('/')
+    if (Test-Path -LiteralPath (Join-Path $ProjectRoot '.local\model-cache\models-ready.json')) {
+        # The settings installer and the separate supervisor must load the very
+        # same verified weights, including Windows installations in Chinese paths.
+        $cacheRoot = & $PythonPath (Join-Path $PSScriptRoot 'analyzer_local_runtime.py') cache-path
+        if ($LASTEXITCODE -ne 0 -or -not $cacheRoot) { throw "Failed to resolve the prepared analyzer model cache." }
+        $env:ANALYZER_MODEL_CACHE = ([string]$cacheRoot).Trim()
+    }
     $env:PYTHONUNBUFFERED = "1"
     . (Join-Path $PSScriptRoot "analyzer-media-runtime.ps1")
     $null = Import-AnalyzerMediaRuntime $ProjectRoot

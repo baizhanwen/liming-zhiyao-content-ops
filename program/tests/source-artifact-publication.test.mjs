@@ -119,3 +119,18 @@ test("simultaneous publication retries of the same source retain one asset and o
   assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM media_assets WHERE status='active'").get().n, 1);
   assert.equal(f.objects.size, 1);
 });
+
+test("only manuscript JSON receives the extended subtitle allowance, for both declared and actual bytes", async t => {
+  const f = await fixture(t, 64 * 1024 * 1024), video = f.job();
+  const headers = { "x-artifact-kind": "subtitle", "x-artifact-filename": "manuscript.json", "content-type": "application/json" };
+  const body = new TextEncoder().encode(JSON.stringify({ version: "manuscript.v1", segments: [{ text: "语".repeat(710_000) }] }));
+  assert.ok(body.byteLength > 2 * 1024 * 1024);
+  const accepted = await f.upload(video, headers, body);
+  assert.equal(accepted.status, 201, await accepted.clone().text());
+  assert.equal((await f.upload(video, { ...headers, "x-artifact-filename": "other.json" }, body)).status, 413);
+  assert.equal((await f.upload(video, { ...headers, "content-type": "text/vtt" }, body)).status, 413);
+  const overflow = 16 * 1024 * 1024 + 1;
+  assert.equal((await f.upload(video, { ...headers, "content-length": String(overflow) })).status, 413);
+  assert.equal((await f.upload(video, headers, new Uint8Array(overflow))).status, 413);
+  assert.equal(f.uploaded.length, 1);
+});

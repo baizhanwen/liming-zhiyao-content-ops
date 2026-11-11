@@ -20,17 +20,55 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     const db = getD1();
     const nowIso = new Date().toISOString();
     const job = await db.prepare(`
-      SELECT j.id, j.organization_id, j.project_id, j.video_id, j.input_transcript_id, j.status, j.progress, j.current_stage, j.lease_owner, j.lease_expires_at, j.attempt_count, j.version, j.result_key, j.checkpoint_stage, j.checkpoint_json
+      SELECT j.id, j.organization_id, j.project_id, j.video_id, j.input_transcript_id, j.idempotency_key, j.status, j.progress, j.current_stage, j.lease_owner, j.lease_expires_at, j.attempt_count, j.version, j.result_key, j.checkpoint_stage, j.checkpoint_json
       FROM analysis_jobs j INNER JOIN videos v ON v.id = j.video_id AND v.organization_id = j.organization_id AND v.project_id = j.project_id
       WHERE j.id = ?
-    `).bind(jobId).first<WorkerJobRow & { input_transcript_id: string | null }>();
+    `).bind(jobId).first<WorkerJobRow & { input_transcript_id: string | null; idempotency_key: string }>();
     if (!job) return apiError("JOB_NOT_FOUND", "分析任务不存在。", 404);
+    const transcriptOnly = job.idempotency_key.startsWith("transcript:");
+    if (transcriptOnly !== (payload.analysis.schemaVersion === "transcript.v1")) {
+      return apiError("JOB_RESULT_TYPE_MISMATCH", "结果类型与领取的任务不符。", 409);
+    }
     if ((job.status === "completed" || job.status === "partial") && job.result_key === payload.resultKey) {
       return Response.json({ job: { id: jobId, status: job.status, version: job.version }, idempotent: true });
     }
-    if (job.status !== "analyzing") return apiError("INVALID_STATUS_TRANSITION", "只有分析中的任务可以提交最终结果。", 409);
+    if (job.status !== (transcriptOnly ? "extracting" : "analyzing")) return apiError("INVALID_STATUS_TRANSITION", "只有分析中的任务可以提交最终结果。", 409);
     if (job.lease_owner !== payload.workerId || !job.lease_expires_at || job.lease_expires_at <= nowIso) return apiError("LEASE_NOT_OWNED", "当前 Worker 不再持有有效租约。", 409);
     if (job.version !== payload.version) return apiError("JOB_VERSION_CONFLICT", "任务版本已发生变化。", 409);
+
+    if (transcriptOnly) {
+      const transcript = payload.transcript;
+      if (!transcript?.fullText.trim() || transcript.segmentsJson === "[]" || payload.analysis.reportJson !== "{}") {
+        return apiError("INVALID_TRANSCRIPT_RESULT", "没有收到完整口播稿及其分段。", 400);
+      }
+      const actor = `service:${payload.workerId}`;
+      const stage = "完整口播稿已提取";
+      const transcriptId = crypto.randomUUID();
+      const finalVersion = payload.version + 1;
+      // Fence the transcript insert before changing the job, so concurrent deliveries cannot duplicate it.
+      const results = await db.batch([
+        db.prepare(`INSERT INTO video_transcripts (id, organization_id, project_id, video_id, version, language, source,
+            full_text, segments_json, confidence, created_by, created_at, updated_at)
+          SELECT ?, j.organization_id, j.project_id, j.video_id, (SELECT COALESCE(MAX(version), 0) + 1 FROM video_transcripts WHERE video_id=j.video_id),
+            ?, 'asr', ?, ?, ?, ?, ?, ? FROM analysis_jobs j
+          WHERE j.id=? AND j.status='extracting' AND j.lease_owner=? AND j.version=? AND j.lease_expires_at>?
+            AND EXISTS (SELECT 1 FROM videos v WHERE v.id=j.video_id AND v.organization_id=j.organization_id AND v.project_id=j.project_id AND v.deleted_at IS NULL)`)
+          .bind(transcriptId, transcript.language, transcript.fullText, transcript.segmentsJson, transcript.confidence,
+            actor, nowIso, nowIso, jobId, payload.workerId, payload.version, nowIso),
+        db.prepare(`UPDATE analysis_jobs SET status='completed', progress=100, current_stage=?, error_code=NULL, error_message=NULL,
+            completed_at=?, last_progress_at=?, lease_owner=NULL, lease_expires_at=NULL, result_key=?, checkpoint_stage=NULL,
+            checkpoint_json=NULL, checkpoint_updated_at=NULL, version=version+1, updated_by=?, updated_at=?
+          WHERE EXISTS(SELECT 1 FROM video_transcripts WHERE id=?) AND id=? AND status='extracting' AND lease_owner=? AND version=? AND lease_expires_at>?`)
+          .bind(stage, nowIso, nowIso, payload.resultKey, actor, nowIso, transcriptId, jobId, payload.workerId, payload.version, nowIso),
+        db.prepare(`INSERT INTO analysis_job_events (id, organization_id, project_id, job_id, video_id, event_type, from_status, to_status,
+            progress, worker_id, details_json, created_at)
+          SELECT ?, organization_id, project_id, id, video_id, 'completed', 'extracting', 'completed', 100, ?, ?, ?
+          FROM analysis_jobs WHERE EXISTS(SELECT 1 FROM video_transcripts WHERE id=?) AND id=? AND result_key=? AND version=?`)
+          .bind(crypto.randomUUID(), payload.workerId, JSON.stringify({ schemaVersion: "transcript.v1", hasTranscript: true }), nowIso, transcriptId, jobId, payload.resultKey, finalVersion),
+      ]);
+      if (!results[1].meta.changes) return apiError("JOB_STATE_CHANGED", "任务状态已变化，未保存口播稿。", 409);
+      return Response.json({ job: { id: jobId, status: "completed", progress: 100, version: finalVersion, message: stage }, idempotent: false });
+    }
 
     const report = JSON.parse(payload.analysis.reportJson) as unknown;
     const analysisMeta = isPlainRecord(report) && isPlainRecord(report.analysis_meta) ? report.analysis_meta : null;

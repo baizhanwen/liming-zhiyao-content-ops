@@ -4,7 +4,7 @@ import { apiError, errorResponse } from "../../../../../lib/api-response";
 import { normalizeLeaseSeconds, normalizeWorkerId, requireAnalyzerService } from "../../../../../lib/service-auth";
 import { parseAnalyzerBrowserAuth, type WorkerJobRow } from "../../../../../lib/analysis-worker";
 
-type ClaimedJob = WorkerJobRow & { source_type: "url" | "upload"; source_ref: string; input_transcript_id: string | null; analysis_profile: "max" | "economy" | "standard" | "deep"; checkpoint_stage: string | null; checkpoint_json: string | null; checkpoint_updated_at: string | null; resume_count: number };
+type ClaimedJob = WorkerJobRow & { source_type: "url" | "upload"; source_ref: string; idempotency_key: string; input_transcript_id: string | null; analysis_profile: "max" | "economy" | "standard" | "deep"; checkpoint_stage: string | null; checkpoint_json: string | null; checkpoint_updated_at: string | null; resume_count: number };
 type JobSource = { source_url: string | null; media_asset_id: string | null; r2_key: string | null; content_type: string | null; filename: string | null; size_bytes: number | null; sha256: string | null; transcript_id: string | null; transcript_version: number | null; transcript_language: string | null; transcript_segments_json: string | null };
 
 export const dynamic = "force-dynamic";
@@ -53,7 +53,7 @@ export async function POST(request: Request) {
         ORDER BY CASE WHEN j.status = 'pending' THEN 0 ELSE 1 END, COALESCE(j.enqueued_at,j.created_at) ASC, j.id ASC
         LIMIT 1
       )
-      RETURNING id, organization_id, project_id, video_id, input_transcript_id, source_type, source_ref, analysis_profile, status, progress, current_stage,
+      RETURNING id, organization_id, project_id, video_id, input_transcript_id, source_type, source_ref, idempotency_key, analysis_profile, status, progress, current_stage,
         lease_owner, lease_expires_at, attempt_count, version, result_key, checkpoint_stage, checkpoint_json, checkpoint_updated_at, resume_count
     `).bind(workerId, leaseExpiresAt, nowIso, nowIso, nowIso, nowIso, actor, nowIso, nowIso, nowIso).first<ClaimedJob>();
     if (!job) return new Response(null, { status: 204 });
@@ -67,7 +67,8 @@ export async function POST(request: Request) {
       LEFT JOIN video_transcripts t ON t.id = j.input_transcript_id AND t.organization_id = j.organization_id AND t.project_id = j.project_id AND t.video_id = j.video_id
       WHERE j.id = ? AND j.lease_owner = ? AND j.version = ?
     `).bind(job.id, workerId, job.version).first<JobSource>();
-    if (!source || (job.source_type === "url" ? !source.source_url : !source.r2_key)) {
+    const transcriptOnly = job.idempotency_key.startsWith("transcript:");
+    if (!source || (transcriptOnly && job.source_type === "upload" && source.media_asset_id !== job.source_ref) || (job.source_type === "url" ? !source.source_url : !source.r2_key)) {
       await db.prepare("UPDATE analysis_jobs SET status = 'failed', error_code = 'SOURCE_UNAVAILABLE', error_message = '任务来源记录不完整', lease_owner = NULL, lease_expires_at = NULL, completed_at = ?, last_progress_at = ?, version = version + 1, updated_at = ? WHERE id = ? AND lease_owner = ? AND version = ?").bind(nowIso, nowIso, nowIso, job.id, workerId, job.version).run();
       return apiError("JOB_SOURCE_UNAVAILABLE", "任务来源记录不完整。", 409);
     }
@@ -106,6 +107,7 @@ export async function POST(request: Request) {
     }
     const safeJob: Partial<typeof job> = { ...job };
     delete safeJob.checkpoint_json;
-    return Response.json({ job: { ...safeJob, checkpoint, source: { ...safeSource, manual_transcript: manualTranscript } } });
+    delete safeJob.idempotency_key;
+    return Response.json({ job: { ...safeJob, checkpoint, source: { ...safeSource, ...(transcriptOnly ? { transcript_only: true } : {}), manual_transcript: manualTranscript } } });
   } catch (error) { return errorResponse(error); }
 }

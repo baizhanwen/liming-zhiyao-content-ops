@@ -34,9 +34,9 @@ ANALYZER_LLM_BASE_URL=https://api.minimax.cn/v1
 ANALYZER_LLM_MODEL=MiniMax-M3.1-Flash
 ANALYZER_LLM_API_KEY=
 
-# 与 lmzy 一致的本地转写，模型下载到本项目自己的缓存。
+# Windows x64 中文默认用 Qwen3-ASR-1.7B 转写，以下兼容设置选择 Whisper 时间定位模型。
 ANALYZER_ASR_ENGINE=faster-whisper
-ANALYZER_ASR_MODEL=small
+ANALYZER_ASR_MODEL=large-v3-turbo
 ANALYZER_ASR_LANGUAGE=zh
 ANALYZER_ASR_DEVICE=auto
 

@@ -5,6 +5,7 @@ import type { AnalysisReportView, ReportClassificationView, ReportFindingView } 
 import type { UnifiedModuleKey } from "../lib/unified-report";
 
 type Props = {
+  manuscript?: import("react").ReactNode;
   view: AnalysisReportView;
   assets: Array<{ id: string; url: string }>;
   canLocate: boolean;
@@ -28,7 +29,7 @@ function ClassificationRows({ rows, label }: { rows: ReportClassificationView[];
   </div>)}</dl>;
 }
 
-export function UnifiedReportContent({ view, assets, canLocate, onLocate, onCopyScript, canCopyScript, failedModuleKeys, onRetry, busy = false }: Props) {
+export function UnifiedReportContent({ view, assets, canLocate, onLocate, onCopyScript, canCopyScript, failedModuleKeys, onRetry, busy = false, manuscript }: Props) {
   const evidenceById = new Map(view.evidence.map(row => [row.id, row]));
   const assetById = new Map(assets.map(row => [row.id, row.url]));
   const summaryFinding = view.sections.find(section => section.key === "synthesis")?.findings.find(finding => finding.text.trim() === view.summary.trim());
@@ -50,10 +51,10 @@ export function UnifiedReportContent({ view, assets, canLocate, onLocate, onCopy
       {section.classifications.some(row => !row.featured) && <details className="report-more-classifications"><summary>更多分类</summary><ClassificationRows rows={section.classifications.filter(row => !row.featured)} label={`${section.name}的更多分类`} /></details>}
       {!section.findings.length && !section.reason && <p className="report-empty">这一部分没有可展示的结论。</p>}
     </section>)}
-    <section className="report-script" id="report-script"><header><div><span className="section-kicker">可复制文案</span><h2>完整口播稿</h2></div><button className="primary-button" type="button" disabled={!canCopyScript || busy} onClick={onCopyScript}>复制口播稿</button></header>
+    {manuscript ?? <section className="report-script" id="report-script"><header><div><span className="section-kicker">可复制文案</span><h2>完整口播稿</h2></div><button className="primary-button" type="button" disabled={!canCopyScript || busy} onClick={onCopyScript}>复制口播稿</button></header>
       {view.scriptStatus === "not_applicable" ? <p>这份素材没有口播。</p> : view.scriptStatus === "failed" ? <div className="report-section-message"><p>{view.legacy ? "该历史报告没有保存完整口播稿，可展开原始转写核对。" : "校正稿尚未通过核对，下方内容保留为候选稿。"}</p>{onRetry && failedModuleKeys.includes("canonical") && <button type="button" disabled={busy} onClick={() => onRetry("canonical")}>重新校正口播</button>}</div> : null}
       <div className="report-manuscript">{view.script.map((paragraph, index) => <p key={index}>{paragraph}</p>)}</div>
       {view.changes.length > 0 && <details className="report-correction-diff"><summary>核对 {view.changes.length} 处校正</summary>{view.changes.map(change => <article key={change.sourceId}><del>{change.before}</del><ins>{change.after}</ins>{evidenceView({ id: change.sourceId, title: "校正依据", text: change.after, evidenceIds: change.evidenceIds })}</article>)}</details>}
-    </section>
+    </section>}
   </>;
 }

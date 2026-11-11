@@ -35,7 +35,7 @@ test("worker claims the chosen transcript and does not expose storage internals"
   assert.match(claim, /transcript_segments_json/);
   assert.match(complete, /CASE WHEN j\.input_transcript_id IS NULL THEN 'asr' ELSE 'manual' END/);
   assert.match(pipeline, /manual_transcript is None/);
-  assert.match(pipeline, /正在使用人工校正版并提取画面/);
+  assert.match(pipeline, /if manual is not None:\s+transcript = manual/);
 });
 
 test("analysis workspace reports readiness and uploads multiple files sequentially", async () => {

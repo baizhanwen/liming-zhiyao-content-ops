@@ -1,5 +1,5 @@
 import { activeAnalysisStatuses as activeStatuses } from "../../../../../lib/analysis-jobs";
-import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess } from "../../../../../db/runtime";
+import { canWriteProjectAccess, ensureUser, getD1, getLegacyMediaBucket, getMediaBucket, getProjectAccess } from "../../../../../db/runtime";
 import { analyzerReadinessError, readAnalyzerReadiness } from "../../../../../lib/analyzer-readiness";
 import { normalizeAnalysisProfile } from "../../../../../lib/analysis-profile";
 import { apiError, errorResponse } from "../../../../../lib/api-response";
@@ -28,7 +28,9 @@ export async function POST(request: Request, context: { params: Promise<{ videoI
   const identity = await readRequestIdentity(request);
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再重新分析。", 401);
   try {
-    const payload = await request.json() as { organizationId?: string; projectId?: string; analysisProfile?: unknown };
+    const payload = await request.json() as { organizationId?: string; projectId?: string; analysisProfile?: unknown; task?: unknown };
+    const transcriptOnly = payload.task === "transcript";
+    if (payload.task !== undefined && !transcriptOnly) return apiError("INVALID_TASK", "不支持的任务类型。", 400);
     const organizationId = payload.organizationId?.trim() ?? ""; const projectId = payload.projectId?.trim() ?? "";
     if (!organizationId || !projectId) return apiError("PROJECT_SCOPE_REQUIRED", "缺少公司或项目范围。", 400);
     const { videoId } = await context.params; const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
@@ -37,26 +39,35 @@ export async function POST(request: Request, context: { params: Promise<{ videoI
     if (!video) return apiError("VIDEO_NOT_FOUND", "视频不存在或不属于当前项目。", 404);
     const active = await db.prepare(`SELECT id FROM analysis_jobs WHERE organization_id = ? AND project_id = ? AND video_id = ? AND status IN (${activeStatuses.map(() => "?").join(",")}) LIMIT 1`).bind(organizationId, projectId, videoId, ...activeStatuses).first();
     if (active) return apiError("ANALYSIS_ALREADY_RUNNING", "当前视频已有分析任务正在运行。", 409);
-    const readinessIssue = analyzerReadinessError(await readAnalyzerReadiness(organizationId), video.source_type === "url");
+    const readinessIssue = analyzerReadinessError(await readAnalyzerReadiness(organizationId, transcriptOnly), video.source_type === "url", transcriptOnly);
     if (readinessIssue) return apiError(readinessIssue.code, readinessIssue.message, 503);
     const user = await ensureUser(identity); const quota = await checkOrganizationQuota(organizationId, user.id, "analyses");
     if (!quota.allowed) return apiError("ANALYSIS_QUOTA_EXCEEDED", `本月分析任务已达到 ${quota.limit} 次套餐上限。`, 429, { usage: quota.current, limit: quota.limit });
     const scope = { organizationId, projectId, userId: user.id };
     const assertAccess = createProjectWriteAssertion(db, scope, async () => (await readRequestIdentity(request))?.authSubject === identity.authSubject);
-    const sourceRef = video.source_type === "upload" ? video.media_asset_id : video.source_url;
+    let sourceType = video.source_type;
+    if (transcriptOnly && video.media_asset_id) {
+      const asset = await db.prepare(`SELECT r2_key,size_bytes FROM media_assets WHERE id=? AND organization_id=? AND project_id=?
+        AND status='active' AND kind IN ('source_video','source_audio')`).bind(video.media_asset_id, organizationId, projectId).first<{ r2_key: string; size_bytes: number }>();
+      const stored = asset && (await getMediaBucket().head(asset.r2_key) ?? await getLegacyMediaBucket()?.head(asset.r2_key));
+      if (stored && stored.size > 0 && stored.size === asset?.size_bytes) sourceType = "upload";
+      else if (sourceType === "upload") return apiError("SOURCE_UNAVAILABLE", "已保存的原片缺失或大小不符，请重新上传。", 409);
+    }
+    const sourceRef = sourceType === "upload" ? video.media_asset_id : video.source_url;
     if (!sourceRef) return apiError("SOURCE_UNAVAILABLE", "原始媒体来源不存在，无法重新分析。", 409);
     if (!await db.prepare(`SELECT 1 WHERE ${currentSourceCondition}`).bind(...sourceBindings(scope,video)).first()) return await conflictResponse(db,scope,video);
-    const transcript = await db.prepare("SELECT id FROM video_transcripts WHERE organization_id = ? AND project_id = ? AND video_id = ? AND source = 'manual' ORDER BY version DESC LIMIT 1").bind(organizationId, projectId, videoId).first<{ id: string }>();
+    const transcript = transcriptOnly ? null : await db.prepare("SELECT id FROM video_transcripts WHERE organization_id = ? AND project_id = ? AND video_id = ? AND source = 'manual' ORDER BY version DESC LIMIT 1").bind(organizationId, projectId, videoId).first<{ id: string }>();
     const analysisProfile = normalizeAnalysisProfile(payload.analysisProfile); const now = new Date().toISOString(); const jobId = crypto.randomUUID();
+    const stage = transcriptOnly ? "等待提取完整口播稿" : "等待按新模式重新分析";
     await assertAccess();
     const results = await db.batch([
       db.prepare(`INSERT INTO analysis_jobs (id, organization_id, project_id, video_id, input_transcript_id, source_type, source_ref, idempotency_key, status, analysis_profile, progress, current_stage, retry_count, created_by, updated_by, created_at, updated_at)
-        SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 0, '等待按新模式重新分析', 0, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 0, ?, 0, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')
         WHERE ${projectWriteAccessCondition} AND ${currentSourceCondition} AND NOT EXISTS (SELECT 1 FROM analysis_jobs WHERE organization_id = ? AND project_id = ? AND video_id = ? AND status IN (${activeStatuses.map(() => "?").join(",")}))
-      `).bind(jobId, organizationId, projectId, videoId, transcript?.id ?? null, video.source_type, sourceRef, `reanalyze:${jobId}`, analysisProfile, user.id, user.id, ...projectWriteAccessBindings(scope), ...sourceBindings(scope,video), organizationId, projectId, videoId, ...activeStatuses),
-      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) SELECT ?, ?, ?, ?, 'analysis_job.reanalysis_created', 'analysis_job', ?, ?, ? WHERE EXISTS (SELECT 1 FROM analysis_jobs WHERE id = ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, jobId, JSON.stringify({ videoId, analysisProfile, inputTranscriptId: transcript?.id ?? null }), now, jobId),
+      `).bind(jobId, organizationId, projectId, videoId, transcript?.id ?? null, sourceType, sourceRef, `${transcriptOnly ? "transcript" : "reanalyze"}:${jobId}`, analysisProfile, stage, user.id, user.id, ...projectWriteAccessBindings(scope), ...sourceBindings(scope,video), organizationId, projectId, videoId, ...activeStatuses),
+      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) SELECT ?, ?, ?, ?, ?, 'analysis_job', ?, ?, ? WHERE EXISTS (SELECT 1 FROM analysis_jobs WHERE id = ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, transcriptOnly ? "analysis_job.transcript_requested" : "analysis_job.reanalysis_created", jobId, JSON.stringify({ videoId, analysisProfile, inputTranscriptId: transcript?.id ?? null }), now, jobId),
     ]);
     if (!results[0].meta.changes) return await conflictResponse(db,scope,video);
-    return Response.json({ job: { id: jobId, video_id: videoId, status: "pending", analysis_profile: analysisProfile, progress: 0, current_stage: "等待按新模式重新分析", retry_count: 0, created_at: now, updated_at: now } }, { status: 201 });
+    return Response.json({ job: { id: jobId, video_id: videoId, status: "pending", analysis_profile: analysisProfile, progress: 0, current_stage: stage, retry_count: 0, created_at: now, updated_at: now } }, { status: 201 });
   } catch (error) { return error instanceof ProjectWriteAccessChangedError ? apiError(error.code,"当前登录或项目权限已改变，本次没有创建分析任务。请刷新核对后再操作。",403) : errorResponse(error); }
 }

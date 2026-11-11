@@ -2819,6 +2819,7 @@ a.top-content-row:hover { background: var(--brand-soft); }
 .unified-report-section, .report-script { padding: 27px 30px; border-radius: 14px; background: var(--panel, #fff); border: 1px solid var(--line); margin-bottom: 20px; scroll-margin-top: 24px; }
 .unified-report-section > header, .report-script > header { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-bottom: 20px; }
 .unified-report-section h2, .report-script h2 { font-size: 19px; letter-spacing: -.025em; margin: 0; }
+#report-script { scroll-margin-top: 88px; }
 .report-script .section-kicker { display: block; margin-bottom: 7px; }
 .report-script > header button { flex-shrink: 0; font-size: 13px; padding: 9px 12px; }
 .report-finding + .report-finding { border-top: 1px solid #eceef0; margin-top: 20px; padding-top: 20px; }

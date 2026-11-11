@@ -11,7 +11,6 @@ from typing import TypeVar
 
 from .api_client import AnalyzerApiClient
 from .artifacts import ApiArtifactStore
-from .faster_whisper_asr import FasterWhisperSpeechRecognizer
 from .ffmpeg import FfmpegMediaProcessor
 from .minimax_vision import MiniMaxTokenPlanMcpVisionEngine
 from .pipeline import AnalysisPipeline
@@ -22,6 +21,7 @@ from .providers import (
     PySceneDetectFrameExtractor,
     SparseTailFallbackSpeechRecognizer,
 )
+from .quality_speech import build_quality_recognizer
 from .sources import PlatformSourceProvider, SkillCollectPublicVideoResolver
 from .vision_capabilities import resolve_vision_capability
 from .visual import KeyframeVisualAnalyzer, OpenAiCompatibleVisionEngine
@@ -125,11 +125,11 @@ class AnalyzerSettings:
     vision_model: str = ""
     vision_provider: str = ""
     vision_concurrency: int = 2
-    asr_model: str = "paraformer-zh"
-    asr_engine: str = "funasr"
+    asr_model: str = "large-v3-turbo"
+    asr_engine: str = "faster-whisper"
     asr_language: str = "zh"
     asr_fallback_model: str = "iic/SenseVoiceSmall"
-    asr_device: str = "cpu"
+    asr_device: str = "auto"
     paddle_ocr_detection_model: str = "PP-OCRv5_mobile_det"
     paddle_ocr_recognition_model: str = "PP-OCRv5_mobile_rec"
     paddle_model_source: str = "bos"
@@ -172,6 +172,7 @@ class AnalyzerSettings:
             raise RuntimeError("ANALYZER_VISION_CONCURRENCY must be an integer") from error
         if not 1 <= vision_concurrency <= 3:
             raise RuntimeError("ANALYZER_VISION_CONCURRENCY must be between 1 and 3")
+        asr_engine = os.environ.get("ANALYZER_ASR_ENGINE", "faster-whisper").strip()
         return cls(
             **values,
             vision_api_key=os.environ.get("ANALYZER_VISION_API_KEY", "").strip(),
@@ -179,13 +180,13 @@ class AnalyzerSettings:
             vision_model=os.environ.get("ANALYZER_VISION_MODEL", "").strip(),
             vision_provider=os.environ.get("ANALYZER_VISION_PROVIDER", "").strip(),
             vision_concurrency=vision_concurrency,
-            asr_model=os.environ.get("ANALYZER_ASR_MODEL", "paraformer-zh").strip(),
-            asr_engine=os.environ.get("ANALYZER_ASR_ENGINE", "funasr").strip(),
+            asr_model=os.environ.get("ANALYZER_ASR_MODEL", "paraformer-zh" if asr_engine == "funasr" else "large-v3-turbo").strip(),
+            asr_engine=asr_engine,
             asr_language=os.environ.get("ANALYZER_ASR_LANGUAGE", "zh").strip(),
             asr_fallback_model=os.environ.get(
                 "ANALYZER_ASR_FALLBACK_MODEL", "iic/SenseVoiceSmall"
             ).strip(),
-            asr_device=os.environ.get("ANALYZER_ASR_DEVICE", "cpu").strip(),
+            asr_device=os.environ.get("ANALYZER_ASR_DEVICE", "cpu" if asr_engine == "funasr" else "auto").strip(),
             paddle_ocr_detection_model=os.environ.get(
                 "ANALYZER_PADDLE_OCR_DETECTION_MODEL", "PP-OCRv5_mobile_det"
             ).strip(),
@@ -325,7 +326,7 @@ def _paddlex_cache_paths(settings: AnalyzerSettings) -> tuple[Path, ...]:
     )
 
 
-def build_pipeline(settings: AnalyzerSettings, client: AnalyzerApiClient) -> AnalysisPipeline:
+def build_pipeline(settings: AnalyzerSettings, client: AnalyzerApiClient, *, transcript_only: bool = False) -> AnalysisPipeline:
     model_cache = Path(settings.model_cache).expanduser().resolve()
     model_cache.mkdir(parents=True, exist_ok=True)
     _configure_paddlex_model_source(settings.paddle_model_source)
@@ -338,7 +339,7 @@ def build_pipeline(settings: AnalyzerSettings, client: AnalyzerApiClient) -> Ana
     resolved_ffprobe = _resolve_media_executable(settings.ffprobe, "ffprobe")
     media = FfmpegMediaProcessor(resolved_ffmpeg, resolved_ffprobe)
     if settings.asr_engine == "faster-whisper":
-        speech = FasterWhisperSpeechRecognizer(
+        speech = build_quality_recognizer(
             settings.asr_model, model_cache=model_cache,
             language=settings.asr_language, device=settings.asr_device,
         )
@@ -356,6 +357,25 @@ def build_pipeline(settings: AnalyzerSettings, client: AnalyzerApiClient) -> Ana
             )
     else:
         raise RuntimeError("Unsupported ANALYZER_ASR_ENGINE; choose faster-whisper or funasr.")
+    source = PlatformSourceProvider(client, SkillCollectPublicVideoResolver(ffmpeg=resolved_ffmpeg, ffprobe=resolved_ffprobe))
+    artifact_store = ApiArtifactStore(client)
+    try:
+        ocr = _initialize_model_with_cache_repair(
+            "PaddleOCR visual recognition",
+            lambda: PaddleOcrEngine(
+                detection_model=settings.paddle_ocr_detection_model,
+                recognition_model=settings.paddle_ocr_recognition_model,
+            ),
+            model_cache / "paddlex", _paddlex_cache_paths(settings),
+        )
+    except RuntimeError:
+        if not transcript_only:
+            raise
+        import logging
+        logging.getLogger(__name__).warning("字幕识别模型未就绪，本次仅使用原声转写")
+        ocr = None
+    if transcript_only:
+        return AnalysisPipeline(source, media, speech, None, None, artifact_store, manuscript_ocr=ocr)
     vision_values = (
         settings.vision_api_key,
         settings.vision_base_url,
@@ -393,15 +413,7 @@ def build_pipeline(settings: AnalyzerSettings, client: AnalyzerApiClient) -> Ana
         )
     visual = KeyframeVisualAnalyzer(
         PySceneDetectFrameExtractor(media),
-        _initialize_model_with_cache_repair(
-            "PaddleOCR visual recognition",
-            lambda: PaddleOcrEngine(
-                detection_model=settings.paddle_ocr_detection_model,
-                recognition_model=settings.paddle_ocr_recognition_model,
-            ),
-            model_cache / "paddlex",
-            _paddlex_cache_paths(settings),
-        ),
+        ocr,
         vision_engine,
         vision_unavailable_reason=vision_unavailable_reason,
     )
@@ -412,20 +424,4 @@ def build_pipeline(settings: AnalyzerSettings, client: AnalyzerApiClient) -> Ana
         provider=settings.llm_provider,
         call_recorder=client.record_model_call,
     )
-    artifact_store = ApiArtifactStore(client)
-    pipeline = AnalysisPipeline(
-        PlatformSourceProvider(
-            client,
-            SkillCollectPublicVideoResolver(
-                ffmpeg=resolved_ffmpeg,
-                ffprobe=resolved_ffprobe,
-            ),
-        ),
-        media,
-        speech,
-        visual,
-        structure,
-        artifact_store,
-        artifact_store,
-    )
-    return pipeline
+    return AnalysisPipeline(source, media, speech, visual, structure, artifact_store, artifact_store, manuscript_ocr=ocr)

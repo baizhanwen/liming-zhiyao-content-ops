@@ -14,7 +14,7 @@ export async function GET(request: Request, context: { params: Promise<{ jobId: 
       SELECT m.r2_key FROM analysis_jobs j
       INNER JOIN videos v ON v.id = j.video_id AND v.organization_id = j.organization_id AND v.project_id = j.project_id
       INNER JOIN media_assets m ON m.id = v.media_asset_id AND m.organization_id = j.organization_id AND m.project_id = j.project_id AND m.status = 'active'
-      WHERE j.id = ? AND j.source_type = 'upload' AND j.lease_owner = ? AND j.lease_expires_at > ?
+      WHERE j.id = ? AND j.source_type = 'upload' AND (j.idempotency_key NOT LIKE 'transcript:%' OR (m.id=j.source_ref AND m.kind IN ('source_video','source_audio') AND v.deleted_at IS NULL)) AND j.lease_owner = ? AND j.lease_expires_at > ?
     `).bind(jobId, workerId, now).first<{ r2_key: string }>();
     if (!row) return apiError("SOURCE_NOT_AVAILABLE", "上传来源不存在或任务租约已经失效。", 409);
     const located = await getMediaObject(row.r2_key, { range: request.headers }); if (!located) return apiError("SOURCE_NOT_FOUND", "源媒体文件不存在。", 404);

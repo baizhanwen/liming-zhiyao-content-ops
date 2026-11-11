@@ -1,0 +1,109 @@
+name: Windows Qwen3-ASR acceptance
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["verify/windows-qwen-*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build-package:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      WRANGLER_SEND_METRICS: "false"
+      DELIVERY_VERIFY_ENVIRONMENT_BRIDGE: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.23.2"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - working-directory: program
+        run: npm ci --no-audit --no-fund
+      - name: Build the public GitHub distribution
+        shell: pwsh
+        run: |
+          & ./program/scripts/prepare-delivery.ps1 -Distribution github -DestinationRoot "$env:RUNNER_TEMP/full-package"
+          if ($LASTEXITCODE) { throw 'Distribution packaging or validation failed.' }
+          $files = @(Get-ChildItem "$env:RUNNER_TEMP/full-package" -Filter '*.zip' -File)
+          if ($files.Count -ne 1) { throw 'Expected one distribution ZIP.' }
+          $output = Join-Path $env:RUNNER_TEMP release-assets
+          New-Item $output -ItemType Directory | Out-Null
+          $archive = Join-Path $output LimingZhiyao-Windows-Full.zip
+          Copy-Item $files[0].FullName $archive
+          $candidate = Join-Path $files[0].DirectoryName $files[0].BaseName
+          Copy-Item (Join-Path $candidate 'LimingZhiyao/delivery-validation.json') $output
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText("$archive.sha256", "$hash  LimingZhiyao-Windows-Full.zip`n")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LimingZhiyao-Windows-Full
+          path: ${{ runner.temp }}/release-assets/*
+          if-no-files-found: error
+          retention-days: 14
+  cold-install-and-transcribe:
+    needs: build-package
+    runs-on: windows-2022
+    timeout-minutes: 120
+    env:
+      WRANGLER_SEND_METRICS: "false"
+      PYTHONUTF8: "1"
+      UV_LINK_MODE: hardlink
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.23.2"
+      - uses: actions/download-artifact@v4
+        with:
+          name: LimingZhiyao-Windows-Full
+          path: ${{ runner.temp }}/release-assets
+      - name: Unpack the exact distribution into an empty directory
+        shell: pwsh
+        run: |
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, BuildNumber
+          Get-PSDrive -PSProvider FileSystem | Select-Object Name, Free, Used
+          $archive = Join-Path $env:RUNNER_TEMP release-assets/LimingZhiyao-Windows-Full.zip
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne ((Get-Content "$archive.sha256") -split ' ')[0]) { throw 'ZIP hash mismatch.' }
+          "ACCEPTANCE_ZIP_SHA256=$hash" >> $env:GITHUB_ENV
+          New-Item D:\qw -ItemType Directory -ErrorAction Stop | Out-Null
+          tar -xf $archive -C D:\qw
+          if ($LASTEXITCODE) { throw 'Cannot extract the delivery ZIP.' }
+          Set-Location D:\qw\LimingZhiyao
+          foreach ($item in @('.local', '.wrangler', 'services/analyzer/.venv', 'node_modules', 'scripts/verify-windows-qwen.mjs')) {
+            if (Test-Path $item) { throw "Unexpected bundled file or prior installation: $item" }
+          }
+      - name: Run the shipped first-install entry and prepare a separate browser driver
+        working-directory: D:\qw\LimingZhiyao
+        shell: pwsh
+        run: |
+          cmd.exe /d /c "setup-local.bat < nul"
+          if ($LASTEXITCODE) { throw 'Packaged web setup failed.' }
+          $driver = Join-Path $env:RUNNER_TEMP acceptance-driver
+          New-Item $driver -ItemType Directory | Out-Null
+          Copy-Item services/analyzer/liming_analyzer/douyin_collector/node/package*.json $driver
+          npm ci --prefix $driver --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE) { throw 'Browser driver installation failed.' }
+          "ACCEPTANCE_PLAYWRIGHT=$driver/node_modules/playwright/index.mjs" >> $env:GITHUB_ENV
+      - name: Click one-click setup and extract a fresh manuscript
+        working-directory: D:\qw\LimingZhiyao
+        shell: pwsh
+        run: node "$env:GITHUB_WORKSPACE/program/scripts/verify-windows-qwen.mjs"
+      - name: Retain the independent transcription result and test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-qwen-acceptance
+          path: D:/qw/LimingZhiyao/.local/verification/windows-qwen/result.json
+          retention-days: 7
+          if-no-files-found: ignore

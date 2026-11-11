@@ -1,3 +1,4 @@
+import { env } from "cloudflare:workers";
 import { getD1 } from "../db/runtime";
 import { readEffectiveModelRuntime } from "./model-settings";
 
@@ -11,8 +12,8 @@ type WorkerPresence = {
   browser_auth_message: string | null;
 };
 
-export async function readAnalyzerReadiness(organizationId: string) {
-  const runtime = await readEffectiveModelRuntime(organizationId);
+export async function readAnalyzerReadiness(organizationId: string, workerOnly = false) {
+  const runtime = workerOnly ? env as Record<string, string> : await readEffectiveModelRuntime(organizationId);
   const worker = await getD1().prepare(`
       SELECT last_seen_at, browser_auth_status, browser_auth_browser, browser_auth_checked_at, browser_auth_message
       FROM analyzer_workers WHERE status = 'online' ORDER BY last_seen_at DESC LIMIT 1
@@ -47,11 +48,11 @@ export async function readAnalyzerReadiness(organizationId: string) {
   };
 }
 
-export function analyzerReadinessError(readiness: Awaited<ReturnType<typeof readAnalyzerReadiness>>, _requireCookie: boolean) {
+export function analyzerReadinessError(readiness: Awaited<ReturnType<typeof readAnalyzerReadiness>>, _requireCookie: boolean, workerOnly = false) {
   // Retain the upload/link call contract; neither needs personal authentication.
   void _requireCookie;
   if (!readiness.credentialConfigured) return { code: "ANALYZER_CREDENTIAL_REQUIRED", message: "分析服务凭据尚未配置。" };
-  if (!readiness.modelConfigured) return { code: "ANALYZER_MODEL_REQUIRED", message: "结构分析模型尚未配置。" };
+  if (!workerOnly && !readiness.modelConfigured) return { code: "ANALYZER_MODEL_REQUIRED", message: "结构分析模型尚未配置。" };
   if (!readiness.analyzerOnline) return { code: "ANALYZER_OFFLINE", message: "后台分析服务尚未就绪，请稍候再试。" };
   return null;
 }

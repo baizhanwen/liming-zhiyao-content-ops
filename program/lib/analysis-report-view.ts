@@ -137,10 +137,12 @@ export function analysisReportView(schema: string, body: unknown): AnalysisRepor
 const dimensionModules = new Map(contentTaxonomy.dimensions.map(row => [row.id, row.module]));
 const contentTaxonomyModule = (id: string) => dimensionModules.get(id);
 
-export function unifiedReportMarkdown(title: string, view: AnalysisReportView) {
+export function unifiedReportMarkdown(title: string, view: AnalysisReportView, currentManuscript?: readonly string[]) {
   const status = view.invalid ? "报告尚未通过格式检查。" : view.legacy ? "历史分析报告。" : view.complete ? "分析已完成。" : "部分内容尚未完成，请结合各部分提示核对。";
   const lines = [`# ${title}`, "", status, "", view.summary, ""];
-  if (view.script.length) lines.push(view.scriptStatus === "failed" ? "## 待核对口播候选稿" : "## 完整口播稿", "",
+  if (currentManuscript?.length) lines.push("## 完整口播稿", "", "此处采用当前口播稿。下文分析与依据对应所选报告版本。", "",
+    ...currentManuscript.flatMap(text => [text, ""]));
+  else if (view.script.length) lines.push(view.scriptStatus === "failed" ? "## 待核对口播候选稿" : "## 完整口播稿", "",
     ...(view.scriptStatus === "failed" ? ["校正稿尚未通过核对，以下内容保留为候选稿。", ""] : []), ...view.script.flatMap(text => [text, ""]));
   const evidence = new Map(view.evidence.map(row => [row.id, row]));
   for (const section of view.sections) {

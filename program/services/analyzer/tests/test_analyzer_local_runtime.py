@@ -179,12 +179,15 @@ def test_setup_pins_uv_to_own_environment_and_selected_python(tmp_path, monkeypa
 def test_worker_and_model_records_round_trip_utf8_paths(tmp_path, monkeypatch):
     module = runtime_module()
     isolate(module, tmp_path / "中文安装目录", monkeypatch)
-    cache = module.LOCAL / "model-cache"
+    monkeypatch.setenv("PROGRAMDATA", str(tmp_path / "programdata"))
+    cache = module.model_cache_path()
     cache.mkdir(parents=True)
+    (module.LOCAL / "model-cache").mkdir(parents=True, exist_ok=True)
+    (module.ROOT / ".dev.vars").write_text("ANALYZER_ASR_MODEL=small\n", encoding="utf-8")
     model = cache / "语音模型.bin"
     model.write_bytes(b"fixture-model")
-    model_record = cache / "models-ready.json"
-    model_record.write_text(json.dumps({"modelsReady": True, "requiredFiles": [{"path": model.name, "size": model.stat().st_size}], "message": "模型已准备"}, ensure_ascii=False), encoding="utf-8")
+    model_record = module.LOCAL / "model-cache/models-ready.json"
+    model_record.write_text(json.dumps({"modelsReady": True, "asr": "faster-whisper/small", "requiredFiles": [{"path": model.name, "size": model.stat().st_size}], "message": "模型已准备"}, ensure_ascii=False), encoding="utf-8")
     record = {"pid": 424242, "project": str(module.ROOT), "log": str(module.LOCAL / "中文日志.log")}
     module.PID_FILE.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
     if module.os.name == "nt":

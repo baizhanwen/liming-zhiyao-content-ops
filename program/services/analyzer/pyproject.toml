@@ -8,6 +8,7 @@ dependencies = [
   "instructor>=1.15,<2",
   "openai>=2.8,<3",
   "pydantic>=2.12,<3",
+  "pypinyin==0.55.0",
   "mcp>=2.0,<3",
   "minimax-coding-plan-mcp==0.0.5",
   "Pillow>=10,<13",
@@ -30,6 +31,10 @@ media = [
   # overwrites the same cv2 package and makes Windows installations order-dependent.
   "opencv-contrib-python==4.10.0.84",
   "faster-whisper>=1.1,<2",
+  "sherpa-onnx==2.0.1; sys_platform == 'win32' and platform_machine == 'AMD64'",
+  "mlx-audio==0.6.5; sys_platform == 'darwin' and platform_machine == 'arm64'",
+  "mlx-whisper==0.4.3; sys_platform == 'darwin' and platform_machine == 'arm64'",
+  "safetensors>=0.6,<1; sys_platform == 'darwin' and platform_machine == 'arm64'",
   "av==16.1.0",
 ]
 dev = ["ruff>=0.12,<1", "pytest>=9.1,<10", "cryptography>=47,<51"]

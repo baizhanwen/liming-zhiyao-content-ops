@@ -115,6 +115,7 @@ test("team launch scripts install, migrate, start analysis automatically, stop s
   assert.match(analyzerSetup, /--check-python/);
   assert.match(analyzerSetup, /install-python311\.ps1/);
   assert.match(analyzerSetup, /install-vcredist\.ps1/);
+  assert.match(analyzerSetup, /scripts\\prepare_analyzer_models\.py"\r?\nif errorlevel 1 goto :failed\s+echo \[OK\] Analyzer environment setup completed/);
   assert.match(analyzerSetup, /install-ffmpeg\.ps1/);
   assert.match(analyzerSetup, /ffmpeg -version/);
   assert.match(analyzerSetup, /ffprobe -version/);

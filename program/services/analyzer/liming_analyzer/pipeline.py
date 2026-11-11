@@ -22,6 +22,7 @@ from .adapters import (
     SourceProvider,
     SpeechRecognizer,
     StructureAnalyzer,
+    StructureOutput,
     TranscriptOutput,
     TranscriptSegment,
     VisualAnalyzer,
@@ -32,6 +33,7 @@ from .adapters import (
 from .api_client import AnalysisResult, ClaimedJob
 from .evidence import clean_transcript
 from .task_progress import observe
+from .visual import OcrEngine
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -184,14 +186,17 @@ class AnalysisPipeline:
         source: SourceProvider,
         media: MediaProcessor,
         speech: SpeechRecognizer,
-        visual: VisualAnalyzer,
-        structure: StructureAnalyzer,
+        visual: VisualAnalyzer | None,
+        structure: StructureAnalyzer | None,
         artifacts: AnalysisArtifactStore | None = None,
         checkpoints: AnalysisCheckpointStore | None = None,
         heartbeat_seconds: float = 8.0,
+        *,
+        manuscript_ocr: OcrEngine | None = None,
     ) -> None:
         if heartbeat_seconds <= 0:
             raise ValueError("heartbeat_seconds must be positive")
+        self.manuscript_ocr = manuscript_ocr
         self.source = source
         self.media = media
         self.speech = speech
@@ -221,6 +226,52 @@ class AnalysisPipeline:
                     if on_current is not None:
                         on_current(current)
             return current, future.result()
+
+    def _extract_manuscript(
+        self, current: ClaimedJob, media: NormalizedMedia, manual: TranscriptOutput | None,
+        workspace: Path, heartbeat,
+    ) -> tuple[ClaimedJob, TranscriptOutput]:
+        from .manuscript_punctuation import punctuate_manuscript
+        from .subtitle_evidence import SubtitleRecovery, recover_burned_subtitles
+
+        current = heartbeat("transcribing", 35, "正在从原声提取完整口播稿")
+        if manual is not None:
+            transcript = manual
+        elif media.audio_path is not None:
+            observe(heartbeat, "model_transcription", transcribed_chunks=0, total_chunks=1)
+            current, raw = self._run_monitored(
+                lambda: self.speech.transcribe(media.audio_path), current, heartbeat,
+                "transcribing", 35, "正在转写完整音轨",
+            )
+            transcript = clean_transcript(raw)
+        else:
+            transcript = TranscriptOutput("zh-CN", ())
+        if not transcript.segments:
+            return current, transcript
+
+        recovered = SubtitleRecovery(transcript, {})
+        if manual is None and media.info.video_codec and self.manuscript_ocr is not None:
+            def read_captions():
+                try:
+                    read_timing = getattr(self.speech, "timing_transcript_for", None)
+                    timing = read_timing(media.audio_path) if callable(read_timing) else None
+                    return recover_burned_subtitles(
+                        media.source_path, transcript, ocr=self.manuscript_ocr,
+                        timing_transcript=timing if isinstance(timing, TranscriptOutput) else None,
+                    )
+                except Exception as error:  # noqa: BLE001 - optional captions cannot discard a valid audio transcript
+                    logger.warning("同期字幕读取失败，保留原声转写 (%s)", type(error).__name__)
+                    return SubtitleRecovery(transcript, {})
+            current, recovered = self._run_monitored(
+                read_captions, current, heartbeat, "transcribing", 37, "正在对齐原片字幕与口播时间",
+            )
+        manuscript = recovered.transcript if manual is not None else punctuate_manuscript(transcript, recovered.transcript)
+        persist = getattr(self.artifacts, "persist_manuscript", None)
+        if callable(persist):
+            # This scoped artifact survives downstream service errors and report retries.
+            persist(current, manuscript, workspace, recovered.evidence, manual=manual is not None, original=transcript)
+        observe(heartbeat, "model_transcription", transcribed_chunks=1, total_chunks=1)
+        return current, manuscript
 
     def _run_structure(
         self,
@@ -347,10 +398,28 @@ class AnalysisPipeline:
             configure_speech_context = getattr(self.speech, "set_context", None)
             if callable(configure_speech_context):
                 configure_speech_context(acquired.metadata.title if acquired.metadata else None)
-            observe(heartbeat, "model_transcription", **({"transcribed_chunks": 0, "total_chunks": 1} if media.audio_path and manual_transcript is None else {}))
-            current = heartbeat("transcribing", 35, "正在使用人工校正版并提取画面" if manual_transcript else "正在并行转写语音与提取画面")
+            prepared_transcript = manual_transcript
+            transcript_only = current.source.get("transcript_only") is True
+            extraction_started = time.monotonic()
+            if self.manuscript_ocr is not None or transcript_only or callable(getattr(self.artifacts, "persist_manuscript", None)):
+                current, prepared_transcript = self._extract_manuscript(current, media, manual_transcript, workspace, heartbeat)
+                if transcript_only:
+                    if not prepared_transcript.segments:
+                        raise RuntimeError("Speech recognition: 这段素材没有识别到可提取的口播。")
+                    current = heartbeat("extracting", 95, "正在保存完整口播稿")
+                    persist_source = getattr(self.artifacts, "persist_source", None)
+                    if callable(persist_source):
+                        current, _ = self._run_monitored(
+                            lambda: persist_source(current, media), current, heartbeat,
+                            "extracting", 95, "正在保存原片与口播稿",
+                        )
+                    return build_analysis_result(prepared_transcript, StructureOutput("transcript.v1", {}, None), acquired.metadata)
+            observe(heartbeat, "model_transcription", **({"transcribed_chunks": 0, "total_chunks": 1} if media.audio_path and prepared_transcript is None else {}))
+            current = heartbeat("transcribing", max(35, current.progress), "口播稿已提取，正在处理画面" if prepared_transcript else "正在并行转写语音与提取画面")
 
             branch_timing: dict[str, int] = {}
+            if prepared_transcript and manual_transcript is None:
+                branch_timing["transcription_elapsed_ms"] = round((time.monotonic() - extraction_started) * 1000)
 
             def timed_branch(name: str, operation):
                 began = time.monotonic()
@@ -360,7 +429,7 @@ class AnalysisPipeline:
                     branch_timing[name] = round((time.monotonic() - began) * 1000)
 
             with ThreadPoolExecutor(max_workers=2, thread_name_prefix="liming-evidence") as executor:
-                transcript_future = executor.submit(timed_branch, "transcription_elapsed_ms", lambda: self.speech.transcribe(media.audio_path)) if media.audio_path and manual_transcript is None else None
+                transcript_future = executor.submit(timed_branch, "transcription_elapsed_ms", lambda: self.speech.transcribe(media.audio_path)) if media.audio_path and prepared_transcript is None else None
                 visuals_future = executor.submit(timed_branch, "visual_elapsed_ms", lambda: self.visual.analyze(media, workspace / "visuals"))
                 pending = {visuals_future}
                 if transcript_future:
@@ -413,7 +482,7 @@ class AnalysisPipeline:
                             observed_metrics.update(transcribed_chunks=int(transcript_future.done() and transcript_future.exception() is None), total_chunks=1)
                         observe(heartbeat, observed_phase, **observed_metrics)
                         current = heartbeat("transcribing", progress, stage)
-                transcript = manual_transcript or clean_transcript(transcript_future.result() if transcript_future else TranscriptOutput("zh-CN", ()))
+                transcript = prepared_transcript or clean_transcript(transcript_future.result() if transcript_future else TranscriptOutput("zh-CN", ()))
                 visuals = visuals_future.result()
             visuals = replace(visuals, stats={**visuals.stats, "branch_timing": branch_timing})
 

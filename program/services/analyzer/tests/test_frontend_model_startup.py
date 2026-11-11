@@ -70,3 +70,16 @@ def test_incomplete_job_models_still_fail_before_loading_pipeline():
         build_lazy_processor(settings, client)(claimed(), lambda *_args: claimed())
     assert failure.value.code == "ANALYZER_MODEL_REQUIRED"
     builder.assert_not_called()
+
+
+def test_transcript_task_never_fetches_cloud_configuration_and_has_its_own_pipeline():
+    settings = clean_settings()
+    client = AnalyzerApiClient(settings.base_url, settings.service_token, settings.worker_id,
+                               lambda *_: pytest.fail("transcription contacted model-settings"))
+    local_job = replace(claimed(), source={"transcript_only": True})
+    with patch("liming_analyzer.__main__.build_pipeline") as builder:
+        process = build_lazy_processor(settings, client)
+        process(local_job, lambda *_: local_job)
+        process(local_job, lambda *_: local_job)
+        builder.assert_called_once_with(settings, client, transcript_only=True)
+        assert builder.return_value.process.call_count == 2

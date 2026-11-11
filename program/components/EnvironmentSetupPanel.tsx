@@ -37,6 +37,10 @@ function readableLog(line: string) {
       installing_collector_dependencies: "正在安装采集器依赖…",
       installing_browser: "正在准备独立 Chromium 浏览器…",
       preparing_local_models: "正在下载并验证本地转写和文字识别模型…",
+      checking_windows_native_runtime: "正在检查 Windows 本地推理所需的 Microsoft Visual C++ 运行库…",
+      preparing_windows_qwen: "正在准备 Qwen3-ASR-1.7B 本地模型…",
+      verifying_windows_qwen: "正在用 Qwen3-ASR-1.7B 转写中文测试录音…",
+      asr_inference_passed: "本地语音模型已通过转写验证。",
     };
     if (event.phase) return phases[event.phase] || "正在准备分析环境…";
     if (event.message) return event.message;
@@ -107,9 +111,9 @@ export function EnvironmentSetupPanel({ organizationId, canManage }: { organizat
   const disabled = !canManage || !snapshot?.available || Boolean(submitting) || jobRunning;
   return <article id="analyzer-environment" className="panel operations-panel">
     <div className="panel-heading"><div><p className="section-kicker">本项目独立运行环境</p><h2>视频分析服务</h2></div><span>{snapshot?.restartRequired ? "服务需要重新启动" : snapshot?.workerRunning ? "服务运行中" : snapshot?.processRunning ? "服务已启动，等待连接" : "服务未启动"}</span></div>
-    <p className={styles.intro}>在这里安装缺少的依赖、准备模型并启动服务。安装文件、模型缓存和日志保存在本项目目录，首次准备可能需要较长时间。</p>
+    <p className={styles.intro}>在这里安装缺少的依赖、准备模型并启动服务。首次配置会联网下载模型。验证通过后，下次启动时可直接复用。</p>
     <div className={styles.body}>
-      <div className={styles.status}><strong>{!snapshot ? "正在检查环境…" : snapshot.ready ? "分析环境已就绪" : snapshot.available ? "分析环境需要准备" : "环境管理暂不可用"}</strong>{snapshot?.job?.status === "running" && <span role="status">正在执行，页面会自动更新进度</span>}</div>
+      <div className={styles.status}><strong>{error && !submitting ? "环境状态需重新检查" : !snapshot ? "正在检查环境…" : snapshot.ready ? "分析环境已就绪" : snapshot.available ? "分析环境需要准备" : "环境管理暂不可用"}</strong>{snapshot?.job?.status === "running" && <span role="status">正在执行，页面会自动更新进度</span>}</div>
       {snapshot?.message && <p className={styles.message}>{snapshot.message}</p>}
       {snapshot && snapshot.checks.length > 0 && <ul className={styles.checks}>{snapshot.checks.map(check => <li className={`${styles.check} ${styles[check.status] ?? ""}`} key={check.id}><span className={styles.indicator} aria-hidden="true">{check.status === "ready" ? "✓" : check.status === "checking" ? "…" : "!"}</span><div><strong>{check.label} · {checkLabels[check.status]}</strong>{check.message && <small>{check.message}</small>}</div></li>)}</ul>}
       <div className={styles.actions}>

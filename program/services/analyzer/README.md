@@ -60,15 +60,15 @@ Worker 启动只需本项目的 `ANALYZER_BASE_URL`、`ANALYZER_SERVICE_TOKEN`�
 - `ANALYZER_VISION_PROVIDER`：当前为 `minimax`。原 `minimax-token-plan` / `understand_image` 的 MCP 路径仍兼容，使用原来对应的 `https://api.minimaxi.com` 配置；OCR 继续独立执行。
 - `ANALYZER_VISION_CONCURRENCY`：视觉批次并发数，默认 `2`，允许 `1`～`3`；建议稳定运行后再从 `2` 调到 `3`
 - `PLAYWRIGHT_BROWSERS_PATH`：macOS/Linux 可指定本项目专用 Chromium 缓存；Windows 启动脚本固定使用当前 `program/.local/collector-browsers`。
-- `ANALYZER_ASR_ENGINE`：`faster-whisper` 或兼容的 `funasr`（代码缺省值保持 `funasr`）；
-- `ANALYZER_ASR_MODEL`：本次部署为 faster-whisper `small`；FunASR 路径默认 `paraformer-zh`；
+- `ANALYZER_ASR_ENGINE` 默认保留兼容配置值 `faster-whisper`。Windows x64 的默认中文配置自动用 Qwen3-ASR-1.7B INT8 在 CPU 上转写。
+- `ANALYZER_ASR_MODEL` 默认为 `large-v3-turbo`，用于时间定位。使用旧配置的 Windows x64 安装可将该值改为 `large-v3-turbo`，再运行一键配置。显式选择其他 Whisper 型号或 `funasr` 时按该配置转写。
 - `ANALYZER_ASR_LANGUAGE`：本次部署为 `zh`，faster-whisper 可选 `auto`；
 - ANALYZER_ASR_FALLBACK_MODEL，默认 iic/SenseVoiceSmall；仅在末尾转写异常稀疏且能找回更多文字时延迟调用，设为空可关闭
-- `ANALYZER_ASR_DEVICE`，默认 `cpu`
+- `ANALYZER_ASR_DEVICE` 默认为 `auto`。Windows x64 默认配置和显式 `cpu` 均使用本地 Qwen；显式 `cuda` 选择 Whisper GPU 路径。
 - `ANALYZER_PADDLE_OCR_DETECTION_MODEL`，默认 `PP-OCRv5_mobile_det`
 - `ANALYZER_PADDLE_OCR_RECOGNITION_MODEL`，默认 `PP-OCRv5_mobile_rec`
 - `ANALYZER_PADDLE_MODEL_SOURCE`，默认 `bos`（Paddle 官方 BOS 模型源，Windows 本地交付推荐）
-- `ANALYZER_MODEL_CACHE`，建议指向 Worker 的持久化模型卷；Windows 未配置时自动使用纯英文的 `%LOCALAPPDATA%/LimingZhiyao/model-cache`
+- `ANALYZER_MODEL_CACHE` 用于独立部署的模型持久化。Windows 一键配置和后台服务共用本项目的模型缓存，中文安装目录会使用隔离的纯英文缓存路径。
 
 原来的 `ANALYZER_YTDLP_COOKIES_FROM_BROWSER` 和 Cookie 快照不参与当前匿名视频采集。已有上传与分析接口保持原有数据约定。
 

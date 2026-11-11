@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import gzip
+import json
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -7,6 +10,14 @@ from typing import Any
 
 from .adapters import NormalizedMedia, TranscriptOutput, VisualOutput
 from .api_client import AnalyzerApiClient, ClaimedJob
+
+# Paired with the dedicated manuscript.json receiver limit. Other subtitle
+# artifacts keep their existing cap.
+_MANUSCRIPT_MAX_BYTES = 16 * 1024 * 1024
+
+
+def _json_bytes(value: Any) -> bytes:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
 def _vtt_time(milliseconds: int) -> str:
@@ -45,6 +56,39 @@ class ApiArtifactStore:
         return self.client.upload_artifact(job,
             kind="source_video" if media.info.video_codec else "source_audio",
             path=media.source_path, content_type=content_type)
+
+    def persist_manuscript(self, job: ClaimedJob, transcript: TranscriptOutput, workspace: Path,
+                           evidence: Mapping[str, Any], *, manual: bool, original: TranscriptOutput | None = None) -> None:
+        path = workspace / "manuscript.json"
+        rows = [
+            {"start_ms": row.start_ms, "end_ms": row.end_ms, "text": row.text}
+            for row in transcript.segments
+        ]
+        if original is not None:
+            for row, source in zip(rows, original.segments, strict=True):
+                if row["text"] != source.text:
+                    row["original_text"] = source.text
+        document = {"version": "manuscript.v1", "language": transcript.language, "segments": rows,
+                    "basis": "manual" if manual else "audio", "subtitle_evidence": evidence}
+        data = _json_bytes(document)
+        if len(data) > _MANUSCRIPT_MAX_BYTES:
+            # Frame-level provenance can dwarf a valid long transcript. Keep
+            # both wordings and the UI fields directly accessible; retain every
+            # original proof record in a reversible, self-contained archive.
+            archive = gzip.compress(_json_bytes(evidence), compresslevel=4, mtime=0)
+            document["subtitle_evidence"] = {
+                key: {name: value for name, value in proof.items() if name not in ("timestamps_ms", "captions")}
+                for key, proof in evidence.items()
+            }
+            document["subtitle_evidence_archive"] = {
+                "encoding": "gzip+base64", "format": "subtitle_evidence.json",
+                "data": base64.b64encode(archive).decode("ascii"),
+            }
+            data = _json_bytes(document)
+        if len(data) > _MANUSCRIPT_MAX_BYTES:
+            raise ValueError("完整口播原稿、校订稿和字幕依据无损压缩后仍超过 16 MiB，稿件未提交。")
+        path.write_bytes(data)
+        self.client.upload_artifact(job, kind="subtitle", path=path, content_type="application/json")
 
     def persist(
         self,

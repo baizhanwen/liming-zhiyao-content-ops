@@ -11,6 +11,7 @@ def model_module(tmp_path, monkeypatch):
     runtime = importlib.util.module_from_spec(runtime_spec)
     runtime_spec.loader.exec_module(runtime)
     root = tmp_path / "中文安装目录"
+    monkeypatch.setenv("PROGRAMDATA", str(tmp_path / "programdata"))
     monkeypatch.setattr(runtime, "ROOT", root)
     monkeypatch.setattr(runtime, "LOCAL", root / ".local")
     monkeypatch.setattr(runtime, "ANALYZER", root / "services/analyzer")
@@ -21,11 +22,16 @@ def model_module(tmp_path, monkeypatch):
     return module, runtime
 
 
-def test_model_preparation_writes_utf8_reports_without_real_models(tmp_path, monkeypatch, capsys):
-    module, runtime = model_module(tmp_path, monkeypatch)
+def synthetic_models(module, runtime, monkeypatch, speech_result="大家好，欢迎使用语音识别。"):
+
     package = ModuleType("liming_analyzer")
     package.__path__ = []
     class Speech:
+        backend = "sherpa-onnx"
+        model = "Qwen3-ASR-1.7B"
+        def transcribe_verified(self, path):
+            assert path == runtime.ROOT / "resources/media-tools/asr-check-zh.wav"
+            return SimpleNamespace(full_text=speech_result)
         def __init__(self, _model, *, model_cache, **_kwargs):
             model_cache.mkdir(parents=True, exist_ok=True)
             (model_cache / "中文模型.bin").write_bytes(b"synthetic-model")
@@ -36,22 +42,31 @@ def test_model_preparation_writes_utf8_reports_without_real_models(tmp_path, mon
         def save(self, target):
             target.write_bytes(b"synthetic-image-no-network")
     monkeypatch.setitem(sys.modules, "liming_analyzer", package)
-    monkeypatch.setitem(sys.modules, "liming_analyzer.faster_whisper_asr", SimpleNamespace(FasterWhisperSpeechRecognizer=Speech))
+    monkeypatch.setitem(sys.modules, "liming_analyzer.quality_speech", SimpleNamespace(build_quality_recognizer=Speech))
     monkeypatch.setitem(sys.modules, "liming_analyzer.providers", SimpleNamespace(FunAsrSpeechRecognizer=Speech, PaddleOcrEngine=Ocr))
     monkeypatch.setitem(sys.modules, "PIL", SimpleNamespace(
         Image=SimpleNamespace(new=lambda *_args: Bitmap()),
         ImageDraw=SimpleNamespace(Draw=lambda _bitmap: SimpleNamespace(text=lambda *_args, **_kwargs: None)),
         ImageFont=SimpleNamespace(truetype=lambda *_args: object(), load_default=lambda **_kwargs: object()),
     ))
+
+
+def test_model_preparation_writes_utf8_reports_without_real_models(tmp_path, monkeypatch, capsys):
+    module, runtime = model_module(tmp_path, monkeypatch)
+    synthetic_models(module, runtime, monkeypatch)
     monkeypatch.setenv("ANALYZER_ASR_ENGINE", "faster-whisper")
     monkeypatch.setenv("ANALYZER_ASR_MODEL", "small")
     report_paths = {runtime.LOCAL / "model-cache/models-ready.json", runtime.LOCAL / "verification/media-runtime/result.json"}
     original_write = Path.write_text
     writes = []
     def write(path, text, *args, **kwargs):
-        if path in report_paths:
+        if path.name.startswith("models-ready.json.") and path.suffix == ".tmp":
+            recorded = path.with_name("models-ready.json")
+        else:
+            recorded = path
+        if recorded in report_paths:
             assert kwargs.get("encoding") == "utf-8"
-            writes.append(path)
+            writes.append(recorded)
         return original_write(path, text, *args, **kwargs)
     monkeypatch.setattr(Path, "write_text", write)
     assert module.child() == 0
@@ -61,7 +76,7 @@ def test_model_preparation_writes_utf8_reports_without_real_models(tmp_path, mon
     assert reports[0]["modelsReady"] and reports[0]["ocrVerified"]
     assert reports[0]["asrVerified"] is False
     assert any(item["path"] == "中文模型.bin" for item in reports[0]["requiredFiles"])
-    assert "中文安装目录" in reports[0]["modelCache"]
+    assert Path(reports[0]["modelCache"]) == runtime.model_cache_path()
     assert json.loads(capsys.readouterr().out.splitlines()[-1])["modelsReady"]
 
 
@@ -89,4 +104,22 @@ def test_model_child_receives_utf8_and_only_its_own_asr_defaults(tmp_path, monke
     assert environment["PYTHONUTF8"] == "1"
     assert environment["ANALYZER_ASR_MODEL"] == "small"
     assert "ANALYZER_LLM_API_KEY" not in environment
-    assert Path(environment["ANALYZER_MODEL_CACHE"]).is_relative_to(runtime.ROOT)
+    assert Path(environment["ANALYZER_MODEL_CACHE"]) == runtime.model_cache_path()
+
+
+def test_windows_setup_requires_bundled_speech_to_be_recognized_even_without_user_media(tmp_path, monkeypatch):
+    import pytest
+
+    module, runtime = model_module(tmp_path, monkeypatch)
+    monkeypatch.setattr(module, "expects_windows_qwen", lambda *_args: True)
+    receipt = runtime.LOCAL / "model-cache/models-ready.json"
+    synthetic_models(module, runtime, monkeypatch)
+    assert module.child() == 0
+    verified = json.loads(receipt.read_text(encoding="utf-8"))
+    assert verified["asrVerified"] and verified["asrBackend"] == "sherpa-onnx"
+    assert verified["asrModel"] == "Qwen3-ASR-1.7B" and verified["asrProbe"] == "asr-check-zh.v1"
+
+    synthetic_models(module, runtime, monkeypatch, speech_result="这段话识别错了")
+    with pytest.raises(RuntimeError, match="未能识别"):
+        module.child()
+    assert not receipt.exists()

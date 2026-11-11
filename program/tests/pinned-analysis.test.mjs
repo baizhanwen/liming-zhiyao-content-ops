@@ -137,3 +137,35 @@ test("historical reports use their contemporary raw transcript without overwriti
   assert.equal(latest.transcript.id, "later-manual"); assert.equal(latest.transcript_binding, "latest");
   assert.deepEqual(f.sqlite.prepare("SELECT * FROM video_transcripts ORDER BY version").all(), before);
 });
+
+test("a later saved manuscript remains visible on latest and cannot become an older report's transcript", async t => {
+  const f = await fixture(t);
+  const latestReport = f.analyses.at(-1);
+  f.seed("video_transcripts", { id: "first-asr", video_id: f.videoId, version: 1, source: "asr", language: "zh",
+    full_text: "原始转写", segments_json: '[{"start_ms":0,"end_ms":900,"text":"原始转写"}]', created_at: "2026-01-15T00:00:00.000Z" });
+  f.seed("video_transcripts", { id: "saved-correction", video_id: f.videoId, version: 2, source: "manual", language: "zh",
+    full_text: "人工改词", segments_json: '[{"start_ms":0,"end_ms":900,"text":"人工改词"}]', created_at: "2026-01-16T00:00:00.000Z" });
+  const latest = await (await f.read()).json();
+  assert.equal(latest.analysis.id, latestReport);
+  assert.equal(latest.transcript.full_text, "人工改词");
+  assert.equal(latest.original_asr_segments[0].text, "原始转写");
+  const historical = await (await f.read(latestReport)).json();
+  assert.equal(historical.transcript, null);
+  assert.deepEqual(historical.analysis.report, latest.analysis.report);
+});
+
+test("latest extraction plays its own saved source while the old analysis keeps its original media binding", async t => {
+  const f = await fixture(t);
+  const job = f.seed("analysis_jobs", { video_id: f.videoId, source_type: "url", source_ref: "https://example.invalid/clip", idempotency_key: "transcript:media", status: "completed" });
+  const output = (kind, filename, r2_key, content_type) => f.seed("media_assets", {
+    video_id: f.videoId, analysis_job_id: job, kind, filename, r2_key, content_type,
+    size_bytes: 100, sha256: "a".repeat(64), status: "active", created_at: "2026-01-20T00:00:00.000Z" });
+  output("subtitle", "manuscript.json", "new-manuscript", "application/json");
+  const source = output("source_video", "new-source.mp4", "new-original", "video/mp4");
+  const latest = await (await f.read()).json();
+  assert.equal(latest.video.media_binding, "manuscript");
+  assert.match(latest.video.media_url, new RegExp(`/assets/${source}\\?`));
+  assert.equal(latest.video.filename, "new-source.mp4");
+  const old = await (await f.read(f.analyses[0])).json();
+  assert.equal(old.video.media_url, null);
+});

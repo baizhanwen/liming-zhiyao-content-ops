@@ -110,6 +110,8 @@ try {
     if (features.videoAnalysis) for (const filename of ["scripts/analyzer_local_runtime.py", "scripts/prepare_analyzer_models.py", "services/analyzer/uv.lock", "services/analyzer/liming_analyzer/douyin_collector/node/package-lock.json"])
       assert.ok(existsSync(path.join(packageRoot, filename)), `Missing video environment dependency: ${filename}`);
     if (features.videoAnalysis) for (const filename of [
+      "services/analyzer/liming_analyzer/qwen_windows.py", "services/analyzer/liming_analyzer/qwen_speech.py",
+      "resources/media-tools/asr-check-zh.wav", "docs/releases/windows-qwen-v20261112.1.md",
       "services/analyzer/liming_analyzer/canonical_transcript.py", "services/analyzer/liming_analyzer/content_module_protocol.py",
       "services/analyzer/liming_analyzer/unified_analysis.py", "services/analyzer/liming_analyzer/content_analysis.py",
       "services/analyzer/liming_analyzer/content_metrics.py", "lib/unified-report.ts", "lib/analysis-report-view.ts",

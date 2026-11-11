@@ -1,4 +1,5 @@
 import { readAnalysisModuleRetryState } from "../../../../lib/analysis-module-retry";
+import { manuscriptAssetForVersion } from "../../../../lib/manuscript-view";
 import { readScopedAnalysisMedia } from "../../../../lib/analysis-media";
 import { canAccessOrganizationVideoLibrary, canWriteProjectAccess, getD1, getOrganizationAccess, getProjectAccess } from "../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../lib/api-response";
@@ -69,7 +70,7 @@ export async function GET(request: Request, context: { params: Promise<{ videoId
       db.prepare(`SELECT id, analysis_job_id, schema_version, report_json, confidence, model_provider, model_name, prompt_version, created_at FROM video_analyses WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY ${requestedAnalysisId ? "CASE WHEN id = ? THEN 0 ELSE 1 END, " : ""}created_at DESC, rowid DESC LIMIT 8`).bind(organizationId, sourceProjectId, videoId, ...(requestedAnalysisId ? [requestedAnalysisId] : [])).all<{ id: string; analysis_job_id: string | null; schema_version: string; created_at: string; report_json: string } & Record<string, unknown>>(),
       db.prepare("SELECT source, plays, likes, comments, favorites, shares, followers_gained, collected_at FROM video_metric_snapshots WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY collected_at DESC LIMIT 10").bind(organizationId, sourceProjectId, videoId).all(),
       db.prepare("SELECT event_type, from_status, to_status, progress, details_json, created_at FROM analysis_job_events WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY created_at DESC LIMIT 50").bind(organizationId, sourceProjectId, videoId).all(),
-      db.prepare("SELECT id, analysis_job_id, kind, filename, content_type, size_bytes, created_at FROM media_assets WHERE organization_id = ? AND project_id = ? AND video_id = ? AND kind IN ('keyframe', 'subtitle', 'report') AND status = 'active' ORDER BY created_at ASC").bind(organizationId, sourceProjectId, videoId).all(),
+      db.prepare("SELECT id, analysis_job_id, kind, filename, content_type, size_bytes, created_at FROM media_assets WHERE organization_id = ? AND project_id = ? AND video_id = ? AND kind IN ('keyframe', 'subtitle', 'report') AND status = 'active' ORDER BY created_at ASC,rowid ASC").bind(organizationId, sourceProjectId, videoId).all<{ id: string; analysis_job_id: string | null; kind: string; filename: string; created_at: string }>(),
       canReadOwnedPerformance ? db.prepare(`
         SELECT w.id AS work_id, w.title AS work_title, s.as_of_at,
           s.views, s.completion_rate_bps, s.five_second_completion_rate_bps, s.cover_ctr_bps,
@@ -91,9 +92,21 @@ export async function GET(request: Request, context: { params: Promise<{ videoId
     const analysisVersions = analyses.results.map((analysis) => ({ ...analysis, report: parseStoredJson(analysis.report_json), report_json: undefined }));
     const selectedMedia = await readScopedAnalysisMedia(db, { organizationId, projectId: sourceProjectId, videoId }, typeof analysisVersions[0]?.id === "string" ? analysisVersions[0].id : null);
     const selected = analysisVersions[0];
-    const historicalTranscript = selected ? await db.prepare("SELECT id, version, language, source, full_text, segments_json, confidence, created_at, updated_at FROM video_transcripts WHERE organization_id = ? AND project_id = ? AND video_id = ? AND created_at <= ? ORDER BY version DESC LIMIT 1")
+    const assetUrl = (id: string) => sharedReference && libraryEntryId
+      ? `/api/video-library/${libraryEntryId}/assets/${id}?${libraryQuery}` : `/api/videos/${videoId}/assets/${id}?${libraryQuery}`;
+    const manuscript = manuscriptAssetForVersion(assets.results, selected ?? null, Boolean(requestedAnalysisId));
+    const extractionMedia = !requestedAnalysisId && manuscript?.analysis_job_id && manuscript.analysis_job_id !== selected?.analysis_job_id
+      ? await db.prepare("SELECT id,filename,content_type,size_bytes FROM media_assets WHERE organization_id=? AND project_id=? AND video_id=? AND analysis_job_id=? AND kind IN ('source_video','source_audio') AND status='active' ORDER BY created_at DESC,rowid DESC LIMIT 1")
+        .bind(organizationId, sourceProjectId, videoId, manuscript.analysis_job_id).first<{ id: string; filename: string; content_type: string; size_bytes: number }>() : null;
+    const media = extractionMedia ?? selectedMedia.media;
+    const mediaQuery = selected?.id ? `${libraryQuery}&analysisId=${encodeURIComponent(selected.id)}` : libraryQuery;
+    const mediaUrl = extractionMedia ? assetUrl(extractionMedia.id) : selectedMedia.media
+      ? sharedReference && libraryEntryId ? `/api/video-library/${libraryEntryId}/media?${mediaQuery}` : `/api/videos/${videoId}/media?${mediaQuery}` : null;
+    const historicalTranscript = requestedAnalysisId && selected ? await db.prepare("SELECT id, version, language, source, full_text, segments_json, confidence, created_at, updated_at FROM video_transcripts WHERE organization_id = ? AND project_id = ? AND video_id = ? AND created_at <= ? ORDER BY version DESC LIMIT 1")
       .bind(organizationId, sourceProjectId, videoId, selected.created_at).first<{ id: string; segments_json: string } & Record<string, unknown>>() : null;
-    const transcript = historicalTranscript ?? latestTranscript;
+    const transcript = requestedAnalysisId ? historicalTranscript : latestTranscript;
+    const originalAsr = transcript?.source === "manual" ? await db.prepare("SELECT segments_json FROM video_transcripts WHERE organization_id = ? AND project_id = ? AND video_id = ? AND source = 'asr' AND version < ? ORDER BY version DESC LIMIT 1")
+      .bind(organizationId, sourceProjectId, videoId, transcript.version).first<{ segments_json: string }>() : null;
     const transcriptBinding = historicalTranscript && historicalTranscript.id !== latestTranscript?.id ? "historical" : "latest";
     const jobColumns = "id,status,analysis_profile,progress,current_stage,error_code,error_message,retry_count,checkpoint_stage,checkpoint_json,checkpoint_updated_at,resume_count,created_at,updated_at,completed_at";
     const selectedJobId = typeof selected?.analysis_job_id === "string" ? selected.analysis_job_id : null;
@@ -109,16 +122,19 @@ export async function GET(request: Request, context: { params: Promise<{ videoId
       module_retry: { available: !sharedReference && canWriteProjectAccess(access) && ["evidence_ready", "segment_progress"].includes(String(job.checkpoint_stage)) && ["partial", "failed"].includes(String(job.status)) && Boolean(moduleRetry?.available) && retryableModuleKeys.length > 0, failedModuleKeys: retryableModuleKeys } } : null;
     const safeLatestJob = latestJob ? { ...latestJob, checkpoint_json: undefined, segment_progress: summarizeSegmentProgress(latestJob.checkpoint_json) } : null;
     return Response.json({
-      video: { ...video, filename: selectedMedia.media?.filename ?? video.filename, content_type: selectedMedia.media?.content_type ?? video.content_type, size_bytes: selectedMedia.media?.size_bytes ?? video.size_bytes, media_binding: selectedMedia.binding, is_shared_reference: sharedReference, library_entry_id: libraryEntryId, local_media_asset_id: undefined, media_url: selectedMedia.media ? (sharedReference && libraryEntryId ? `/api/video-library/${libraryEntryId}/media?${libraryQuery}${analysisVersions[0]?.id ? `&analysisId=${encodeURIComponent(String(analysisVersions[0].id))}` : ""}` : `/api/videos/${videoId}/media?${libraryQuery}${analysisVersions[0]?.id ? `&analysisId=${encodeURIComponent(String(analysisVersions[0].id))}` : ""}`) : null },
+      video: { ...video, filename: media?.filename ?? video.filename, content_type: media?.content_type ?? video.content_type,
+        size_bytes: media?.size_bytes ?? video.size_bytes, media_binding: extractionMedia ? "manuscript" : selectedMedia.binding,
+        is_shared_reference: sharedReference, library_entry_id: libraryEntryId, local_media_asset_id: undefined, media_url: mediaUrl },
       job: safeJob,
       latestJob: safeLatestJob,
       transcript_binding: transcriptBinding,
+      original_asr_segments: parseStoredJson(originalAsr?.segments_json ?? null),
       transcript: transcript ? { ...transcript, segments: parseStoredJson(transcript.segments_json), segments_json: undefined } : null,
       analysis: analysisVersions[0] ?? null,
       analyses: analysisVersions,
       metrics: metrics.results,
       ownedPerformance,
-      assets: assets.results.map((asset) => ({ ...asset, url: sharedReference && libraryEntryId ? `/api/video-library/${libraryEntryId}/assets/${asset.id}?${libraryQuery}` : `/api/videos/${videoId}/assets/${asset.id}?${libraryQuery}` })),
+      assets: assets.results.map((asset) => ({ ...asset, url: assetUrl(asset.id) })),
       events: events.results.map((event) => ({ ...event, details: parseStoredJson(typeof event.details_json === "string" ? event.details_json : null), details_json: undefined })),
       canWrite: !sharedReference && canWriteProjectAccess(access),
     });

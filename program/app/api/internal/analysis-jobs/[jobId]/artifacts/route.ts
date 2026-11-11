@@ -57,8 +57,10 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
   const filename = safeFilename(request.headers.get("x-artifact-filename") ?? "artifact");
   if (!workerId || version === null) return apiError("INVALID_ARTIFACT_OWNER", "Worker 标识或任务版本无效。", 400);
   if (!artifactKinds.has(kind) || !contentTypes[kind]?.has(rawContentType)) return apiError("INVALID_ARTIFACT_TYPE", "分析产物类型无效。", 415);
+  const maxBytes = kind === "subtitle" && filename === "manuscript.json" && rawContentType === "application/json"
+    ? 16 * 1024 * 1024 : sizeLimits[kind];
   const declaredLength = Number(request.headers.get("content-length") ?? 0);
-  if (declaredLength > sizeLimits[kind]) return apiError("ARTIFACT_TOO_LARGE", "分析产物超过大小限制。", 413);
+  if (declaredLength > maxBytes) return apiError("ARTIFACT_TOO_LARGE", "分析产物超过大小限制。", 413);
 
   let storedKey: string | null = null;
   let writeAttempted = false;
@@ -75,7 +77,7 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     `).bind(jobId, workerId, version, now).first<ArtifactJob>();
     if (!job || !isLeasedAnalysisStatus(job.status)) return apiError("ARTIFACT_LEASE_INVALID", "任务租约已失效，分析产物未接收。", 409);
     const bytes = await request.arrayBuffer();
-    if (bytes.byteLength <= 0 || bytes.byteLength > sizeLimits[kind]) return apiError("INVALID_ARTIFACT_SIZE", "分析产物大小无效。", 413);
+    if (bytes.byteLength <= 0 || bytes.byteLength > maxBytes) return apiError("INVALID_ARTIFACT_SIZE", "分析产物大小无效。", 413);
     const sha256 = await sha256Hex(bytes);
     const sourceMedia = kind === "source_video" || kind === "source_audio";
     const storageQuota = sourceMedia ? (await getOrganizationCapacity(job.organization_id, `service:${workerId}`)).storage_quota_bytes : null;

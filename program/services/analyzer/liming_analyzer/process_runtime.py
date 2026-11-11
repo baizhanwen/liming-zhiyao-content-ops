@@ -48,7 +48,8 @@ class ProcessingLimits:
 
 
 def _build_processor(settings, client, monitor):
-    from .__main__ import build_lazy_processor
+    from .__main__ import build_lazy_processor, configure_worker_logging
+    configure_worker_logging()  # The spawned process starts with fresh logging settings.
     return build_lazy_processor(settings, client, monitor=monitor)
 
 

@@ -43,6 +43,10 @@ echo [Liming Zhiyao] Preparing the anonymous video collector and Chromium...
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%PROJECT_ROOT%\scripts\install-collector.ps1" -ProjectRoot "%PROJECT_ROOT%"
 if errorlevel 1 goto :failed
 
+echo [Liming Zhiyao] Preparing local models and verifying the configured speech recognizer...
+"services\analyzer\.venv\Scripts\python.exe" "scripts\prepare_analyzer_models.py"
+if errorlevel 1 goto :failed
+
 echo [OK] Analyzer environment setup completed.
 call :start_analyzer_if_app_is_running
 pause

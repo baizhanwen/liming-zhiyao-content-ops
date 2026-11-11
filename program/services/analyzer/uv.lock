@@ -915,6 +915,7 @@ dependencies = [
     { name = "openai" },
     { name = "pillow" },
     { name = "pydantic" },
+    { name = "pypinyin" },
     { name = "yt-dlp" },
 ]
 
@@ -928,9 +929,13 @@ media = [
     { name = "av" },
     { name = "faster-whisper" },
     { name = "funasr" },
+    { name = "mlx-audio", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
+    { name = "mlx-whisper", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
     { name = "opencv-contrib-python" },
     { name = "paddleocr" },
     { name = "paddlepaddle" },
+    { name = "safetensors", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
+    { name = "sherpa-onnx", marker = "platform_machine == 'AMD64' and sys_platform == 'win32'" },
     { name = "torch" },
     { name = "torchaudio" },
 ]
@@ -945,14 +950,19 @@ requires-dist = [
     { name = "instructor", specifier = ">=1.15,<2" },
     { name = "mcp", specifier = ">=2.0,<3" },
     { name = "minimax-coding-plan-mcp", specifier = "==0.0.5" },
+    { name = "mlx-audio", marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'media'", specifier = "==0.6.5" },
+    { name = "mlx-whisper", marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'media'", specifier = "==0.4.3" },
     { name = "openai", specifier = ">=2.8,<3" },
     { name = "opencv-contrib-python", marker = "extra == 'media'", specifier = "==4.10.0.84" },
     { name = "paddleocr", marker = "extra == 'media'", specifier = ">=3.7,<4" },
     { name = "paddlepaddle", marker = "extra == 'media'", specifier = "==3.2.0" },
     { name = "pillow", specifier = ">=10,<13" },
     { name = "pydantic", specifier = ">=2.12,<3" },
+    { name = "pypinyin", specifier = "==0.55.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1,<10" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.12,<1" },
+    { name = "safetensors", marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'media'", specifier = ">=0.6,<1" },
+    { name = "sherpa-onnx", marker = "platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'media'", specifier = "==2.0.1" },
     { name = "torch", marker = "extra == 'media'", specifier = ">=2.11,<2.12" },
     { name = "torchaudio", marker = "extra == 'media'", specifier = ">=2.11,<2.12" },
     { name = "yt-dlp", specifier = ">=2026.7.4" },
@@ -1056,6 +1066,18 @@ wheels = [
 ]
 
 [[package]]
+name = "miniaudio"
+version = "1.73"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cffi" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/1b/8b/2da6a5df7be82ff56810bd90fb79ef3574b2ffd121caa168d3cba4498f9d/miniaudio-1.73.tar.gz", hash = "sha256:6652da7e60fabde24d4f3b56c062d4be5f3bfb626818c5a2877f2c782d6e2c4f", size = 1143250, upload-time = "2026-11-10T20:11:18.627Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6a/e8/38f1dc93057a0a0add1e52f1a0c16d9e43ef10b7b3e3206ba541cb005cfc/miniaudio-1.73-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:1cd705a791e457d4745271da6939b0ce2eb025351f2cf4bacf620febb18983b8", size = 384055, upload-time = "2026-11-10T20:09:47.787Z" },
+]
+
+[[package]]
 name = "minimax-coding-plan-mcp"
 version = "0.0.5"
 source = { registry = "https://pypi.org/simple" }
@@ -1067,6 +1089,69 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/40/78/90455ce0a27605d41ccc1308619a88615a4a98c868e3320bfcea7e6a9df7/minimax_coding_plan_mcp-0.0.5.tar.gz", hash = "sha256:2b866a4f69683c16117ca3426c9bac0f1dd291c182b0074d187613abe0b71761", size = 12381, upload-time = "2026-08-21T10:00:51.638Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/49/f7/df3968fcfb29ea96d2d73d4f2ab1ad81c434b6a995daf8c58904d17f39b8/minimax_coding_plan_mcp-0.0.5-py3-none-any.whl", hash = "sha256:95ec8cbbd4f1ed0c897b8b98acf0a1266a35ad14988fd83e96cfc6213598a80c", size = 13472, upload-time = "2026-08-21T10:00:50.413Z" },
+]
+
+[[package]]
+name = "mlx"
+version = "0.32.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "mlx-metal" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7b/fd/f7af63951d6f4d39b47bbda462f2ed0341ce1293967de36ce9bbd4b836a9/mlx-0.32.4-cp311-cp311-macosx_14_0_arm64.whl", hash = "sha256:dd0c9070d9c362fe280a0224806b1b47719b154984735041ebcc907e597c08ca", size = 671764, upload-time = "2026-10-14T21:15:48.321Z" },
+    { url = "https://files.pythonhosted.org/packages/56/1d/e23a150073e07212c23358b978af0bfd21b87f0b97937ec1f300cee346ce/mlx-0.32.4-cp311-cp311-macosx_15_0_arm64.whl", hash = "sha256:fbb3fcf1363a631d05aa5adcb30d07655158be07e09339c1fe62f7267b3a78f5", size = 671761, upload-time = "2026-10-14T21:15:49.94Z" },
+    { url = "https://files.pythonhosted.org/packages/c7/9b/3e5cfd79fd468dbc7f516e5fa7341419541804c5f8beefe04053326e25e9/mlx-0.32.4-cp311-cp311-macosx_26_0_arm64.whl", hash = "sha256:dfd5269398bb64372137d8c354530b6e81159ce0e92fd1ed7e9140b294fd939a", size = 671758, upload-time = "2026-10-14T21:15:51.859Z" },
+]
+
+[[package]]
+name = "mlx-audio"
+version = "0.6.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "huggingface-hub" },
+    { name = "jinja2" },
+    { name = "miniaudio" },
+    { name = "mlx" },
+    { name = "numpy" },
+    { name = "scipy" },
+    { name = "sentencepiece" },
+    { name = "sounddevice" },
+    { name = "tqdm" },
+    { name = "transformers", extra = ["chat-template"] },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b0/b3/ebfe8659f5e08607a3c1bedba42c01f472f7b06cbd859c3809f513c2430b/mlx_audio-0.6.5.tar.gz", hash = "sha256:96e41009b7819c8dfa3a288ebc36c92da83cc5718302a84d26326fa2122ee26c", size = 2165008, upload-time = "2026-11-09T18:53:16.343Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/69/00/0d91656b0bcb0a323c2c88be7bf2eb516cc7bc999d9574ffc8196ac93a7a/mlx_audio-0.6.5-py3-none-any.whl", hash = "sha256:e4ecd7ac96e501bf0b8e72a9fee7f8411b096ce3ff7ab4b0f48c9424c906f87f", size = 2600060, upload-time = "2026-11-09T18:53:14.607Z" },
+]
+
+[[package]]
+name = "mlx-metal"
+version = "0.32.4"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/77/24/7e5b7ed5d28abacab4577c7a8dd1fca6e9058504f5f95ae4333c09420e2e/mlx_metal-0.32.4-py3-none-macosx_14_0_arm64.whl", hash = "sha256:8019b2db622599267d66cc168b2f0dbf5af929790a6c3b3913e00eabc42a7947", size = 44958619, upload-time = "2026-10-14T21:14:45.727Z" },
+    { url = "https://files.pythonhosted.org/packages/54/8c/9754dd6c4db485037f59cc8be6495738e14cdeb8bf19d5bddb5e96da890f/mlx_metal-0.32.4-py3-none-macosx_15_0_arm64.whl", hash = "sha256:9f0a3cc26d89724434d9684932fc6f3e4e83669d2a895d858ed2c8a55eb84e8b", size = 44942974, upload-time = "2026-10-14T21:14:50.012Z" },
+    { url = "https://files.pythonhosted.org/packages/2a/d6/4340ed6e184f71693d7f531c9ae55d677451351245760d71f8dd714dcbe5/mlx_metal-0.32.4-py3-none-macosx_26_0_arm64.whl", hash = "sha256:514df92d41a286895d2564b4b18f4da45096bd7a4a0c47e1042f345ad5a7f936", size = 78106861, upload-time = "2026-10-14T21:14:56.184Z" },
+]
+
+[[package]]
+name = "mlx-whisper"
+version = "0.4.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "huggingface-hub" },
+    { name = "mlx" },
+    { name = "more-itertools" },
+    { name = "numba" },
+    { name = "numpy" },
+    { name = "scipy" },
+    { name = "tiktoken" },
+    { name = "torch" },
+    { name = "tqdm" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/22/b7/a35232812a2ccfffcb7614ba96a91338551a660a0e9815cee668bf5743f0/mlx_whisper-0.4.3-py3-none-any.whl", hash = "sha256:6b82b6597a994643a3e5496c7bc229a672e5ca308458455bfe276e76ae024489", size = 890544, upload-time = "2025-08-29T14:56:13.815Z" },
 ]
 
 [[package]]
@@ -1100,6 +1185,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/76/9d/3fabfd2b147d94e1980d670fecd3c183999db04a71b80a546bcf37cc6f89/modelscope_hub-0.2.0.tar.gz", hash = "sha256:00288d3e08ad7fadfdd7539f4dffa9d75f9006c43c73abd33ea51767317f001c", size = 163316, upload-time = "2026-08-01T15:00:08.694Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ab/be/3b0e14c296a622c920287fc6d2c1b5a8668c8e0d98662f7b2bd8f3fcc779/modelscope_hub-0.2.0-py3-none-any.whl", hash = "sha256:84668c80c1d36d1fb1ea1ce17b707d77e044b92255288618c3b7de5b13834418", size = 156023, upload-time = "2026-08-01T15:00:07.335Z" },
+]
+
+[[package]]
+name = "more-itertools"
+version = "11.2.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/52/b8/c63995bebbb9ac9c059350e0fb8c82c2420c85aeca7d34e40aecf3df9281/more_itertools-11.2.1.tar.gz", hash = "sha256:cbf08fd0af284dc69718b9b76a8e6203df624d70209ea511e4219d350c856f63", size = 154133, upload-time = "2026-10-14T18:50:30.407Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5d/57/3c4b1c6f2e0cc29ba023802458ea3d2a996f87085559e4a5f2192d549532/more_itertools-11.2.1-py3-none-any.whl", hash = "sha256:35a7377edd1dd6608dcb2cdf534ded55ea32d49448875ad042cd3f879fb1ded0", size = 74405, upload-time = "2026-10-14T18:50:29.116Z" },
 ]
 
 [[package]]
@@ -1874,6 +1968,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pypinyin"
+version = "0.55.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b4/a4/784cf98c09e0dc22776b0d7d8a4a5b761218bcae4608c2416ce1e167c8af/pypinyin-0.55.0.tar.gz", hash = "sha256:b5711b3a0c6f76e67408ec6b2e3c4987a3a806b7c528076e7c7b86fcf0eaa66b", size = 839836, upload-time = "2025-07-20T12:01:50.657Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b9/7b/4cabc76fcc21c3c7d5c671d8783984d30ac9d3bb387c4ba784fca3cdfa3a/pypinyin-0.55.0-py2.py3-none-any.whl", hash = "sha256:d53b1e8ad2cdb815fb2cb604ed3123372f5a28c6f447571244aca36fc62a286f", size = 840203, upload-time = "2025-07-20T12:01:48.535Z" },
+]
+
+[[package]]
 name = "pytest"
 version = "9.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2258,6 +2361,26 @@ wheels = [
 ]
 
 [[package]]
+name = "sherpa-onnx"
+version = "2.0.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "sherpa-onnx-core" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/1b/63/a42bb5d1c0592f47c66f026b93b55e5b41b3b4eb0dcdc1e60236da15f72f/sherpa_onnx-2.0.1.tar.gz", hash = "sha256:c3a41594d7b1a637f6e13d6935ebb93616fe0b01931ce4894c097e79a51f4927", size = 1129216, upload-time = "2026-10-26T16:10:26.391Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/21/60/db4716f269132ffa8889c98d5bc763fd55728f55003cad3e7aa9923d6700/sherpa_onnx-2.0.1-cp311-cp311-win_amd64.whl", hash = "sha256:70bb7a6fd866fa097e5f1f7d34b9b1d7913399ab7f94973be4d04dbb74c0ab58", size = 2173799, upload-time = "2026-10-26T16:24:32.997Z" },
+]
+
+[[package]]
+name = "sherpa-onnx-core"
+version = "2.0.1"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/68/ea/8f02cc34c19d956697dda2f2c470c14cd6b7af77f3ae855c514a86039b68/sherpa_onnx_core-2.0.1-py3-none-win_amd64.whl", hash = "sha256:08890e9ea23ed2f59f81d5840c63b6b5cc8674d0f6e48d9069126a848aa0e022", size = 16663244, upload-time = "2026-10-26T15:12:40.9Z" },
+]
+
+[[package]]
 name = "six"
 version = "1.17.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2273,6 +2396,19 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/a2/87/a6771e1546d97e7e041b6ae58d80074f81b7d5121207425c964ddf5cfdbd/sniffio-1.3.1.tar.gz", hash = "sha256:f4324edc670a0f49750a81b895f35c3adb843cca46f0530f79fc1babb23789dc", size = 20372, upload-time = "2024-02-25T23:20:04.057Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e9/44/75a9c9421471a6c4805dbf2356f7c181a29c1879239abab1ea2cc8f38b40/sniffio-1.3.1-py3-none-any.whl", hash = "sha256:2f6da418d1f1e0fddd844478f41680e794e6051915791a034ff65e5f100525a2", size = 10235, upload-time = "2024-02-25T23:20:01.196Z" },
+]
+
+[[package]]
+name = "sounddevice"
+version = "0.5.6"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cffi" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ec/db/0c890e2d9aab9ba284021efc02e1d3aebfecab1b611762d7434602209bcf/sounddevice-0.5.6.tar.gz", hash = "sha256:8ec9fbfde2e32f020b167e348f3ab3bac6625a5f15af524d790108ac7147a410", size = 1120094, upload-time = "2026-08-17T07:55:05.048Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/72/1f/62eef605172bddc1017508469a12f75bc7c4194ece35c734f822795f53b1/sounddevice-0.5.6-py3-none-any.whl", hash = "sha256:de099612311ad81e55d31ccbd83f43ea6bf4d87b48f9b6ea55a1fbcde0eee4e0", size = 32793, upload-time = "2026-08-17T07:54:57.507Z" },
+    { url = "https://files.pythonhosted.org/packages/b6/84/85e719d49cf98b2f406d9ac9c338892286c4448eb42ef0b2625ccf159616/sounddevice-0.5.6-py3-none-macosx_10_6_x86_64.macosx_10_6_universal2.whl", hash = "sha256:e3aef00ad8b1d1740eb66d9a7671eab88a4d2b8fa4ab33498d742e63b65c309c", size = 1009647, upload-time = "2026-08-17T07:54:58.814Z" },
 ]
 
 [[package]]
@@ -2513,6 +2649,11 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/5a/fb/2a2ba88f325e68a921d8b69ff63b477830b2e73ade9a3c8c8cab2f06d741/transformers-5.14.1.tar.gz", hash = "sha256:60d196c27781eacf8637e2b533f517582907ad6f9ae142046d6b69431a5b2173", size = 9295927, upload-time = "2026-07-16T09:41:57.773Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/6f/67/8d85ca2323233ae3c0365a659c4e52ee1f587b440e4bc577e7d8e4416d0f/transformers-5.14.1-py3-none-any.whl", hash = "sha256:9db974c4079ede2d1a3ea7ca5a240df33f2cc26fc2b36ba64c5f2a4f43b6e725", size = 11625234, upload-time = "2026-07-16T09:41:54.143Z" },
+]
+
+[package.optional-dependencies]
+chat-template = [
+    { name = "jinja2" },
 ]
 
 [[package]]
