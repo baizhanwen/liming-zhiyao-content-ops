@@ -195,7 +195,11 @@ def test_event_handshake_proves_overlap_after_first_healthy_ocr_and_truthful_pro
     analyzer = KeyframeVisualAnalyzer(Extractor(frames), ConcurrentOcr(), vision)
     output = analyzer.analyze(media(), tmp_path)
     assert len(output.keyframes) == 3 and output.stats["vision_observation_count"] == 3
-    assert output.stats["stage_timing"]["ocr_vision_overlap_ms"] > 0
+    timing = output.stats["stage_timing"]
+    assert timing["mode"] == "overlapped"
+    # The bidirectional events above prove concurrency. Clock resolution and
+    # millisecond rounding can still quantify a short Windows interval as zero.
+    assert 0 <= timing["ocr_vision_overlap_ms"] <= timing["ocr_vision_wall_ms"]
     assert analyzer.progress_snapshot()["phase"] == "completed"
     assert vision.callback is None
 
