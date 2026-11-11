@@ -76,9 +76,12 @@ function Get-AnalyzerControlStatus([string]$ProjectRoot, [string]$Url, $Configur
 }
 
 function Invoke-AnalyzerWindowsControl([string]$RequestedAction, [string]$RequestedUrl = '') {
+    $script:controlPhase = 'read_configuration'
     $configuration = Read-AnalyzerControlConfiguration $projectRoot
+    $script:controlPhase = 'resolve_url'
     $url = Resolve-AnalyzerControlUrl $projectRoot $RequestedUrl $configuration
     if ($RequestedAction -eq 'status') { return @{ code = 0; result = (Get-AnalyzerControlStatus $projectRoot $url $configuration) } }
+    $script:controlPhase = 'startup_lock'
     $startupLock = Enter-AnalyzerInstanceLock $projectRoot 'startup' 30000
     if ($null -eq $startupLock) { return @{ code = 1; result = @{ workerRunning = $false; processRunning = $false; message = '另一个分析服务启停操作仍在执行，请等待完成。' } } }
     try {
@@ -96,6 +99,7 @@ function Invoke-AnalyzerWindowsControl([string]$RequestedAction, [string]$Reques
             Remove-AnalyzerOwnerRecords $projectRoot
             return @{ code = 0; result = @{ workerRunning = $false; processRunning = $false; restartRequired = $false; message = '本项目分析服务已停止。' } }
         }
+        $script:controlPhase = 'check_existing'
         $current = Get-AnalyzerControlStatus $projectRoot $url $configuration
         if ($current.processRunning) {
             if (-not $current.workerRunning -and -not $current.restartRequired) {
@@ -111,16 +115,21 @@ function Invoke-AnalyzerWindowsControl([string]$RequestedAction, [string]$Reques
         Remove-AnalyzerOwnerRecords $projectRoot
         New-Item -ItemType Directory -Force -Path (Join-Path $projectRoot '.local\logs') | Out-Null
         $launchStartedAt = (Get-Date).ToUniversalTime()
+        $script:controlPhase = 'source_signature'
         $signature = Get-AnalyzerSourceSignature $projectRoot
+        $script:controlPhase = 'launch_supervisor'
         $process = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$supervisor`"", '-PythonPath', "`"$python`"", '-ProjectRoot', "`"$projectRoot`"", '-BaseUrl', "`"$url`"") -WorkingDirectory $projectRoot -WindowStyle Hidden -PassThru
+        $script:controlPhase = 'verify_owner'
         $owner = $null
         for ($identityAttempt = 0; $identityAttempt -lt 10 -and $null -eq $owner; $identityAttempt += 1) {
             $owner = Get-AnalyzerOwnedProcess $projectRoot ([pscustomobject]@{ pid = $process.Id; creationTime = ''; project = $projectRoot })
             if ($null -eq $owner) { Start-Sleep -Milliseconds 100 }
         }
         if ($null -eq $owner) { throw 'The newly launched analyzer supervisor could not be verified; inspect the startup log.' }
+        $script:controlPhase = 'persist_owner'
         try { Write-AnalyzerOwnerRecord $projectRoot $owner $url $signature }
         finally { $owner.native.Dispose() }
+        $script:controlPhase = 'await_heartbeat'
         for ($attempt = 0; $attempt -lt 15; $attempt += 1) {
             Start-Sleep -Seconds 1
             $process.Refresh()
@@ -144,6 +153,11 @@ if ($MyInvocation.InvocationName -ne '.') {
         $answer.result | ConvertTo-Json -Depth 8 -Compress
         exit $answer.code
     } catch {
+        $codeFile = [IO.Path]::GetFileName([string]$_.InvocationInfo.ScriptName)
+        $diagnostic = @{ phase = [string]$script:controlPhase; type = $_.Exception.GetType().FullName; file = $(if ($codeFile -in @('analyzer-windows-control.ps1', 'analyzer-windows-identity.ps1', 'analyzer-instance-lock.ps1')) { $codeFile } else { '<external>' }); line = $_.InvocationInfo.ScriptLineNumber; hresult = $_.Exception.HResult }
+        # Only bounded code locations and exception types cross this boundary.
+        # Exception messages, source lines, paths and configuration stay private.
+        [Console]::Error.WriteLine(('Analyzer control failure: ' + ($diagnostic | ConvertTo-Json -Compress)))
         $detail = [string]$_.Exception.Message
         $safeMessage = if ($detail -match '^(The analyzer |The local analyzer |The newly launched analyzer |The verified analyzer |Analyzer source )') { $detail } else { '本项目分析服务控制未完成，请查看环境管理日志并检查安装和服务配置。' }
         @{ workerRunning = $false; processRunning = $false; message = $safeMessage } | ConvertTo-Json -Compress
