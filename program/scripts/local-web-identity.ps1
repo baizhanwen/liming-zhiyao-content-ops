@@ -21,8 +21,15 @@ function Test-LocalWebHealth([string]$ProjectRoot, [ValidateRange(1, 65535)][int
     if (-not (Test-LocalWebListener $ProjectRoot $Port)) { return $false }
     try {
         $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:${Port}/api/health" -TimeoutSec 2
-        return $response.StatusCode -eq 200
+        if ($response.StatusCode -ne 200) { return $false }
     } catch { return $false }
+    $identityScript = Join-Path $ProjectRoot 'scripts\local-runtime-identity.mjs'
+    if (-not (Test-Path -LiteralPath $identityScript)) { throw 'Runtime version checker is missing. Reinstall the complete update.' }
+    $expected = (& node $identityScript --source-id $ProjectRoot).Trim()
+    if ($LASTEXITCODE -ne 0 -or $expected -notmatch '^[a-f0-9]{64}$') { throw 'Cannot verify the running app version.' }
+    try { $health = $response.Content | ConvertFrom-Json } catch { return $false }
+    if ($health.localRuntimeSourceId -ne $expected) { throw 'This installation is still running an older version. Wait for tasks to finish, run stop-local.bat, then start-local.bat again.' }
+    return $true
 }
 
 if ($CheckHealth) {

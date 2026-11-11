@@ -45,11 +45,12 @@ jobs:
         run: |
           python -m venv .local/runtime-tests
           $testPython = Join-Path (Get-Location) '.local/runtime-tests/Scripts/python.exe'
-          $pytestRequirement = & $testPython -c "import tomllib; data = tomllib.load(open('services/analyzer/uv.lock', 'rb')); print(next('pytest==' + package['version'] for package in data['package'] if package['name'] == 'pytest'))"
+          $testRequirements = & $testPython -c "import tomllib; data = tomllib.load(open('services/analyzer/uv.lock', 'rb')); print('\n'.join(package['name'] + '==' + package['version'] for package in data['package'] if package['name'] in {'pytest', 'httpx'}))"
           if ($LASTEXITCODE -ne 0) { throw 'Cannot read the locked test dependency.' }
-          & $testPython -m pip install --disable-pip-version-check $pytestRequirement
+          & $testPython -m pip install --disable-pip-version-check @testRequirements
           if ($LASTEXITCODE -ne 0) { throw 'Cannot prepare the isolated runtime tests.' }
-          & $testPython -m pytest services/analyzer/tests/test_analyzer_local_runtime.py services/analyzer/tests/test_prepare_analyzer_models.py -q
+          $env:PYTHONPATH = Join-Path (Get-Location) 'services/analyzer'
+          & $testPython -m pytest services/analyzer/tests/test_analyzer_local_runtime.py services/analyzer/tests/test_analyzer_windows_control.py services/analyzer/tests/test_prepare_analyzer_models.py services/analyzer/tests/collector/test_adapter.py services/analyzer/tests/test_skill_collect_source.py -q
           if ($LASTEXITCODE -ne 0) { throw 'Python runtime isolation tests failed.' }
       - name: Check source and run regression tests
         working-directory: program

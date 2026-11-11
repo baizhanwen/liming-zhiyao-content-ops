@@ -589,9 +589,50 @@ def _script_unit_batches(
     return batches
 
 
+def _is_output_token_limit_error(error: Exception) -> bool:
+    """Recognize output truncation, including SDK exception wrappers."""
+    pending = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if type(current).__name__ in {"IncompleteOutputException", "LengthFinishReasonError"}:
+            return True
+        for name in ("last_completion", "completion"):
+            completion = getattr(current, name, None)
+            choices = (
+                completion.get("choices")
+                if isinstance(completion, Mapping)
+                else getattr(completion, "choices", None)
+            )
+            if isinstance(choices, Sequence) and not isinstance(choices, (str, bytes)):
+                for choice in choices:
+                    reason = (
+                        choice.get("finish_reason")
+                        if isinstance(choice, Mapping)
+                        else getattr(choice, "finish_reason", None)
+                    )
+                    if reason in {"length", "max_tokens"}:
+                        return True
+        message = str(current).lower()
+        if (
+            "output is incomplete due to a max_tokens length limit" in message
+            or "could not parse response content as the length limit was reached" in message
+        ):
+            return True
+        for cause in (current.__cause__, current.__context__):
+            if isinstance(cause, Exception):
+                pending.append(cause)
+    return False
+
+
 def _generate_corrected_script(
     source_rows: list[dict[str, Any]],
     request: Callable[[str, Mapping[str, Any], int], Mapping[str, Any]],
+    *,
+    max_output_tokens: int = 6_000,
 ) -> tuple[dict[str, Any] | None, str]:
     """Correct ASR mistakes without changing the source information or structure."""
     units = _faithful_script_units(source_rows, strip_asr_punctuation=True)
@@ -604,6 +645,18 @@ def _generate_corrected_script(
         for segment_id in unit["source_segment_ids"]
     ]
     batches = _script_unit_batches(units)
+    output_budgets = [
+        min(
+            max_output_tokens,
+            6_000,
+            max(
+                800,
+                round(estimate_text_tokens("".join(str(unit["text"]) for unit in batch)) * 1.25)
+                + 500,
+            ),
+        )
+        for batch in batches
+    ]
     previous: dict[str, str] = {}
     validation_feedback: dict[str, Any] | None = None
     last_error = ""
@@ -636,19 +689,7 @@ def _generate_corrected_script(
                             for unit in batch
                         ],
                     },
-                    min(
-                        6_000,
-                        max(
-                            800,
-                            round(
-                                estimate_text_tokens(
-                                    "".join(str(unit["text"]) for unit in batch)
-                                )
-                                * 1.25
-                            )
-                            + 500,
-                        ),
-                    ),
+                    output_budgets[batch_index - 1],
                 )
                 rows_by_id, repaired_mappings = _repair_light_rewrite_mapping(
                     response.get("paragraphs"),
@@ -705,6 +746,13 @@ def _generate_corrected_script(
             }, ""
         except Exception as error:  # noqa: BLE001 - one controlled repair attempt
             last_error = str(error)[:500]
+            if _is_output_token_limit_error(error):
+                current_budget = output_budgets[batch_index - 1]
+                increased_budget = min(max_output_tokens, max(2_048, current_budget * 2))
+                if increased_budget <= current_budget:
+                    last_error += f" 已达到配置的输出上限（{max_output_tokens} Token），停止同额度重试。"
+                    break
+                output_budgets[batch_index - 1] = increased_budget
     if last_candidate is not None:
         last_candidate.setdefault("error", last_error or "AI 校正原版验收失败。")
     return last_candidate, last_error or "AI 校正原版生成失败。"
@@ -3324,6 +3372,7 @@ class InstructorStructureAnalyzer:
             corrected_candidate, correction_error = _generate_corrected_script(
                 raw_transcript_rows,
                 request_script_model,
+                max_output_tokens=self.max_output_tokens,
             )
             if correction_error:
                 script_generation_errors["corrected_original"] = correction_error

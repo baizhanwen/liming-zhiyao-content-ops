@@ -1,14 +1,14 @@
 """Standalone adapter boundaries; all media bytes here are synthetic fixtures."""
-from pathlib import Path
-from threading import Event
+import errno
 import hashlib
 import json
+from pathlib import Path
+from threading import Event
 
 import httpx
 import pytest
 
-from liming_analyzer.douyin_collector import collect, CollectorError
-from liming_analyzer.douyin_collector import adapter
+from liming_analyzer.douyin_collector import CollectorError, adapter, collect
 from liming_analyzer.douyin_collector.python import media, security
 
 PAGE = 'https://www.douyin.com/video/1234567890123456789'
@@ -45,6 +45,80 @@ def test_success_is_atomic_and_transient_headers_never_leave_adapter(tmp_path, m
     assert result['sha256'] == digest and result['coverage'] == [[0,len(data)]]
     assert len(list(tmp_path.iterdir())) == 1
     assert 'cookie' not in json.dumps(result) and 'signed-url=private' not in json.dumps(result)
+
+
+def synthetic_source(_url, folder, **_kwargs):
+    data = b'explicit-self-authored-media-fixture'
+    path = folder / 'douyin.mp4'
+    path.write_bytes(data)
+    return {'media_path': str(path), 'video_id': '1234567890123456789', 'title': 'fixture',
+            'acquisition': {'media_sha256': hashlib.sha256(data).hexdigest(), 'method': 'synthetic_fixture'}}
+
+
+def test_windows_fsync_requires_write_access_before_atomic_publish(tmp_path, monkeypatch):
+    """Emulate Windows _commit semantics on any test host, using actual FD access."""
+    real_open, real_fsync = Path.open, adapter.os.fsync
+    writable_by_fd = {}
+    synced = []
+
+    def tracked_open(path, mode='r', *args, **kwargs):
+        stream = real_open(path, mode, *args, **kwargs)
+        if path.name == 'douyin.mp4':
+            writable_by_fd[stream.fileno()] = stream.writable()
+        return stream
+
+    def windows_fsync(fd):
+        if not writable_by_fd.get(fd, False):
+            raise OSError(errno.EBADF, 'Windows _commit requires write access')
+        assert not list(tmp_path.glob('video-*.mp4'))
+        synced.append(fd)
+        real_fsync(fd)
+
+    monkeypatch.setattr(media, 'douyin_source', synthetic_source)
+    monkeypatch.setattr(media, 'inspect_video', lambda _p: {'video': True, 'audio': False, 'duration': 3.0})
+    monkeypatch.setattr(Path, 'open', tracked_open)
+    monkeypatch.setattr(adapter.os, 'fsync', windows_fsync)
+    result = collect(PAGE, tmp_path)
+    assert len(synced) == 1
+    assert Path(result['media_path']).read_bytes() == b'explicit-self-authored-media-fixture'
+    assert len(list(tmp_path.iterdir())) == 1
+
+
+@pytest.mark.parametrize('stage', ['sync_media', 'publish_media', 'set_permissions'])
+def test_local_publish_failure_is_classified_and_cleans_all_outputs(stage, tmp_path, monkeypatch):
+    real_replace, real_chmod = Path.replace, Path.chmod
+    failure = OSError(errno.EIO, 'private signed-url=https://cdn.invalid/?token=secret',
+                      'C:\\Users\\PrivateCustomer\\private.mp4')
+
+    def fail_sync(_fd):
+        if stage == 'sync_media':
+            raise failure
+
+    def replace(path, target):
+        result = real_replace(path, target)
+        if stage == 'publish_media' and path.name == 'douyin.mp4':
+            # Even an exception after rename must not leave a successful file.
+            raise failure
+        return result
+
+    def chmod(path, mode, *args, **kwargs):
+        if stage == 'set_permissions' and path.name.startswith('video-'):
+            raise failure
+        return real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(media, 'douyin_source', synthetic_source)
+    monkeypatch.setattr(media, 'inspect_video', lambda _p: {'video': True, 'audio': False, 'duration': 3.0})
+    monkeypatch.setattr(adapter.os, 'fsync', fail_sync)
+    monkeypatch.setattr(Path, 'replace', replace)
+    monkeypatch.setattr(Path, 'chmod', chmod)
+    with pytest.raises(CollectorError) as caught:
+        collect(PAGE, tmp_path)
+    assert caught.value.code == 'media_publish_failed'
+    assert caught.value.stage == stage
+    assert caught.value.retryable is False
+    assert caught.value.__cause__ is failure
+    assert 'secret' not in str(caught.value)
+    assert not list(tmp_path.iterdir())
 
 
 def test_cancel_after_response_cleans_all_files(tmp_path, monkeypatch):

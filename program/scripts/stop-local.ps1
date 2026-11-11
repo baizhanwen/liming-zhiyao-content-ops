@@ -27,48 +27,13 @@ function Get-ProcessRecord([int]$processId) {
 }
 
 function Stop-AnalyzerProcess {
-    $pidPath = Join-Path $projectRoot ".local\analyzer.pid"
-    $baseUrlPath = Join-Path $projectRoot ".local\analyzer.base-url"
-    if (-not (Test-Path -LiteralPath $pidPath)) {
-        Remove-Item -LiteralPath $baseUrlPath -Force -ErrorAction SilentlyContinue
-        return
-    }
-    $savedId = 0
-    [void][int]::TryParse((Get-Content -Raw -LiteralPath $pidPath).Trim(), [ref]$savedId)
-    if ($savedId -le 0) {
-        Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $baseUrlPath -Force -ErrorAction SilentlyContinue
-        return
-    }
-    try { $analyzer = Get-ProcessRecord $savedId }
-    catch {
-        Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $baseUrlPath -Force -ErrorAction SilentlyContinue
-        return
-    }
-    $expectedPython = Join-Path $projectRoot "services\analyzer\.venv\Scripts\python.exe"
-    $expectedSupervisor = Join-Path $projectRoot "scripts\run-analyzer-supervisor.ps1"
-    $commandLine = [string]$analyzer.CommandLine
-    $isWorker = $analyzer.Name -eq "python.exe" -and
-        $commandLine.IndexOf($expectedPython, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
-        $commandLine -match '(?i)-m\s+liming_analyzer'
-    $isSupervisor = $analyzer.Name -eq "powershell.exe" -and
-        $commandLine.IndexOf($expectedSupervisor, [StringComparison]::OrdinalIgnoreCase) -ge 0
-    if (-not $isWorker -and -not $isSupervisor) {
-        Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $baseUrlPath -Force -ErrorAction SilentlyContinue
-        Write-Host "[Liming Zhiyao] Removed a stale analyzer process record."
-        return
-    }
-    if ($CheckOnly) {
-        Write-Host "[Liming Zhiyao] Verified the background video analyzer process."
-        return
-    }
-    Write-Host "[Liming Zhiyao] Stopping the supervised background video analyzer..."
-    & taskkill.exe /PID $savedId /T /F | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw "taskkill failed for the video analyzer with exit code $LASTEXITCODE" }
-    Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $baseUrlPath -Force -ErrorAction SilentlyContinue
+    # run-analyzer-supervisor.ps1 and legacy workers are inspected by the same
+    # native-handle controller used in Settings; no analyzer PID is killed here.
+    $controller = Join-Path $PSScriptRoot 'analyzer-windows-control.ps1'
+    if (-not (Test-Path -LiteralPath $controller)) { return } # Plans without video analysis.
+    $action = if ($CheckOnly) { 'status' } else { 'stop' }
+    & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $controller -Action $action
+    if ($LASTEXITCODE -ne 0) { throw 'The verified local analyzer could not be stopped. Review its environment status.' }
 }
 
 $listenerIds = @(Get-ListenerProcessIds)

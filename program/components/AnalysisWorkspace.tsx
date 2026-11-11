@@ -43,6 +43,8 @@ const errorGuidance: Record<string, string> = {
   SOURCE_RATE_LIMITED: "请暂停密集重试，稍后再试；持续出现时联系管理员检查抖音访问状态。",
   SOURCE_UNAVAILABLE: "请确认原链接在浏览器能正常播放，视频可能已删除或被设为不可访问。",
   SOURCE_DOWNLOAD_FAILED: "请确认原视频为可公开访问的单条抖音视频；稍后重试，或直接上传原文件。",
+  SOURCE_PUBLISH_FAILED: "采集文件保存失败，请先检查分析主机的磁盘空间、目录权限和本机分析日志；修复后再试，或上传原文件继续。",
+  SOURCE_INTERNAL_ERROR: "采集服务出现内部异常，请联系管理员查看本机分析日志；可先上传原文件继续，不必反复更换视频链接。",
   SOURCE_RUNTIME_UNAVAILABLE: "请运行 tools\\setup-analyzer.bat 安装或修复独立 Chromium、Node 和 FFmpeg，然后重启分析服务。",
   MEDIA_PROCESSING_FAILED: "媒体格式处理失败，可重新上传 MP4、MP3 或 WAV 后再试。",
   TRANSCRIPTION_FAILED: "语音转写没有完成，可重试；持续失败时建议先转为清晰音频。",

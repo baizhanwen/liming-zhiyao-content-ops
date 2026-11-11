@@ -18,6 +18,28 @@ LOCAL = ROOT / ".local"
 PID_FILE = LOCAL / "analyzer-local.json"
 
 
+def windows_control(action: str, base_url: str | None = None):
+    """Use the same supervisor controller as Windows BAT launchers.
+
+    Windows os.kill(pid, 0) is not a side-effect-free liveness probe. The
+    controller instead validates command, image and creation time on a handle.
+    """
+    command = ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+               str(ROOT / "scripts/analyzer-windows-control.ps1"), "-Action", action]
+    if base_url:
+        command.extend(["-BaseUrl", base_url])
+    try:
+        completed = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, encoding="utf-8-sig",
+                                   timeout=85, check=False)
+        result = next((json.loads(line) for line in reversed(completed.stdout.splitlines()) if line.strip().startswith("{")), None)
+        if not isinstance(result, dict) or not isinstance(result.get("workerRunning"), bool):
+            raise ValueError("invalid Windows analyzer control response")
+        return completed.returncode, result
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return 1, {"workerRunning": False, "processRunning": False,
+                   "message": "本项目 Windows 分析服务控制未完成，请检查环境管理日志。"}
+
+
 def recorded_media_directories():
     recorded = LOCAL / "ffmpeg.path"
     if not recorded.is_file():
@@ -139,6 +161,9 @@ def runtime_environment(*, load_configuration=True) -> dict[str, str]:
 
 
 def active_process():
+    if os.name == "nt":
+        _, state = windows_control("status")
+        return {"pid": state.get("pid")} if state.get("processRunning") else None
     if not PID_FILE.is_file():
         return None
     try:
@@ -154,8 +179,9 @@ def active_process():
         return None
 
 
-def readiness_snapshot():
-    record = active_process()
+def readiness_snapshot(base_url: str | None = None):
+    windows_state = windows_control("status", base_url)[1] if os.name == "nt" else None
+    record = None if windows_state is not None else active_process()
     packages = ANALYZER / ".venv" / ("Lib/site-packages" if os.name == "nt" else "lib/python3.11/site-packages")
     cache = LOCAL / "model-cache"
     model_record = cache / "models-ready.json"
@@ -183,8 +209,13 @@ def readiness_snapshot():
     for item in checks:
         item.update(id=item["name"].lower().replace("-", "_"), label=item["name"], status="ready" if item["ok"] else "missing", message="已就绪" if item["ok"] else "需要准备")
     missing = [item["name"] for item in checks if not item["ok"]]
-    return {"available": True, "message": "本地分析环境已就绪。" if not missing else "仍需准备：" + "、".join(missing), "ready": not missing, "workerRunning": record is not None, "missing": missing, "checks": checks,
-            "modelsReady": models_ready, "modelCache": str(cache), "pid": record["pid"] if record else None}
+    result = {"available": True, "message": "本地分析环境已就绪。" if not missing else "仍需准备：" + "、".join(missing), "ready": not missing, "workerRunning": record is not None, "missing": missing, "checks": checks,
+              "modelsReady": models_ready, "modelCache": str(cache), "pid": record["pid"] if record else None}
+    if windows_state is not None:
+        result.update(windows_state)
+        if missing:
+            result["message"] += " 仍需准备：" + "、".join(missing)
+    return result
 
 
 def setup():
@@ -256,15 +287,20 @@ def setup():
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("setup", "start", "stop", "status", "check", "install-media-tools"))
+    parser.add_argument("--base-url", help="Actual local web URL selected by this installation's launcher")
     args = parser.parse_args()
     if args.command == "status":
-        print(json.dumps(readiness_snapshot(), ensure_ascii=False))
+        print(json.dumps(readiness_snapshot(args.base_url), ensure_ascii=False))
         return 0
     if args.command == "setup":
         return setup()
     if args.command == "install-media-tools":
         return install_media_packages()
     if args.command == "stop":
+        if os.name == "nt":
+            code, state = windows_control("stop", args.base_url)
+            print(json.dumps({**readiness_snapshot(args.base_url), **state}, ensure_ascii=False))
+            return code
         record = active_process()
         if record:
             os.kill(int(record["pid"]), signal.SIGTERM)
@@ -274,7 +310,7 @@ def main() -> int:
         PID_FILE.unlink(missing_ok=True)
         return 0
     if args.command == "check":
-        result = readiness_snapshot()
+        result = readiness_snapshot(args.base_url)
         if interpreter().is_file():
             env = runtime_environment(load_configuration=False)
             code = "import torch,torchaudio,funasr,paddle,paddleocr,cv2,faster_whisper,av; print('MEDIA_IMPORTS_OK')"
@@ -288,6 +324,14 @@ def main() -> int:
         result["ready"] = bool(result["ready"] and passed)
         print(json.dumps(result, ensure_ascii=False))
         return 0 if result["ready"] else 1
+    if os.name == "nt":
+        state = readiness_snapshot(args.base_url)
+        if not state["ready"] and not state.get("processRunning"):
+            print(json.dumps({**state, "started": False, "message": "请先准备当前项目的分析环境，再启动服务。"}, ensure_ascii=False))
+            return 1
+        code, controlled = windows_control("start", args.base_url)
+        print(json.dumps({**state, **controlled}, ensure_ascii=False))
+        return code
     current = active_process()
     if current:
         print(json.dumps({**readiness_snapshot(), "running": True, "pid": current["pid"], "already_running": True}, ensure_ascii=False))

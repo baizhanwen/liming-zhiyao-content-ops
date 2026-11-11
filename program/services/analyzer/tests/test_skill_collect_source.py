@@ -1,15 +1,18 @@
 """Adapter behavior uses synthetic media; no external Douyin acceptance is implied."""
+import errno
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import patch
 
 from liming_analyzer.adapters import AcquiredSource
 from liming_analyzer.api_client import ClaimedJob
 from liming_analyzer.douyin_collector import CollectorError
-from liming_analyzer.source_errors import SourceDownloadError
+from liming_analyzer.source_errors import SourceDownloadError, safe_source_diagnostic
 from liming_analyzer.sources import PlatformSourceProvider, SkillCollectPublicVideoResolver
 
 PAGE = "https://www.douyin.com/video/1234567890123456789"
@@ -178,6 +181,123 @@ class SkillCollectSourceTests(unittest.TestCase):
             self.assertNotIn("signature", str(raised.exception))
             self.assertNotIn("cdn.invalid", str(raised.exception))
             self.assertFalse((Path(directory) / "source").exists())
+
+    def test_unknown_internal_failure_logs_safe_stack_and_preserves_category(self):
+        private = "cookie=private-cookie token=private-token https://cdn.invalid/private?signature=private-signature"
+
+        def fail(_text, folder, **_kwargs):
+            (Path(folder) / "partial").write_bytes(b"partial")
+            raise OSError(errno.EBADF, private, "C:\\Users\\PrivateCustomer\\private.mp4")
+
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "source"
+            with self.assertLogs("liming_analyzer.sources", level="ERROR") as logs, self.assertRaises(SourceDownloadError) as raised:
+                SkillCollectPublicVideoResolver(collector=fail).download(PAGE, destination)
+            self.assertEqual(raised.exception.code, "SOURCE_INTERNAL_ERROR")
+            message = "\n".join(logs.output)
+            self.assertIn('"stage": "collector"', message)
+            self.assertIn('"type": "OSError"', message)
+            self.assertIn('"errno": 9', message)
+            self.assertIn('"file": "sources.py"', message)
+            for secret in ["private-cookie", "private-token", "private-signature", "PrivateCustomer", "cdn.invalid", str(directory), "raise OSError"]:
+                self.assertNotIn(secret, message)
+                self.assertNotIn(secret, str(raised.exception))
+            self.assertFalse(destination.exists())
+            self.assertFalse(list(Path(directory).glob(".source-capture-*")))
+
+    def test_adapter_publish_error_is_distinct_from_platform_rejection(self):
+        def fail(_text, _folder, **_kwargs):
+            try:
+                raise OSError(errno.EBADF, "cookie=private-cookie", "C:\\Users\\PrivateCustomer\\private.mp4")
+            except OSError as error:
+                failure = CollectorError("media_publish_failed", "fixed message", retryable=False, status=500)
+                failure.stage = "sync_media"
+                raise failure from error
+
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertLogs("liming_analyzer.sources", level="ERROR") as logs, self.assertRaises(SourceDownloadError) as raised:
+                SkillCollectPublicVideoResolver(collector=fail).download(PAGE, Path(directory) / "source")
+            self.assertEqual(raised.exception.code, "SOURCE_PUBLISH_FAILED")
+            diagnostic = "\n".join(logs.output)
+            self.assertIn('"stage": "sync_media"', diagnostic)
+            self.assertIn('"errno": 9', diagnostic)
+            self.assertIn('"type": "AppError"', diagnostic)
+            self.assertNotIn("private-cookie", diagnostic)
+            self.assertNotIn("PrivateCustomer", diagnostic)
+
+    def test_provenance_publish_failure_removes_published_media_and_temporary_files(self):
+        real_replace = os.replace
+
+        def collect(_text, folder, **_kwargs):
+            return synthetic_result(folder)
+
+        def fail_provenance(source, destination):
+            if str(destination).endswith(".acquisition.json"):
+                raise PermissionError(errno.EACCES, "private-token in private exception", str(destination))
+            return real_replace(source, destination)
+
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "source"
+            with patch("liming_analyzer.sources.os.replace", side_effect=fail_provenance), self.assertLogs("liming_analyzer.sources", level="ERROR") as logs, self.assertRaises(SourceDownloadError) as raised:
+                SkillCollectPublicVideoResolver(collector=collect).download(PAGE, destination)
+            self.assertEqual(raised.exception.code, "SOURCE_PUBLISH_FAILED")
+            diagnostic = "\n".join(logs.output)
+            self.assertIn('"stage": "publish_provenance"', diagnostic)
+            self.assertIn('"type": "PermissionError"', diagnostic)
+            self.assertNotIn("private-token", diagnostic)
+            self.assertNotIn(directory, diagnostic)
+            self.assertFalse(destination.exists())
+            self.assertFalse(destination.with_name("source.acquisition.json").exists())
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_safe_diagnostic_omits_messages_and_external_paths_in_chained_exceptions(self):
+        try:
+            try:
+                raise OSError(errno.EIO, "private customer body", "/private/customer/secret.mp4")
+            except OSError as error:
+                raise RuntimeError("https://cdn.invalid/?token=secret") from error
+        except RuntimeError as error:
+            diagnostic = safe_source_diagnostic(error, "untrusted stage with private body")
+        serialized = json.dumps(diagnostic)
+        self.assertEqual(diagnostic["stage"], "collector")
+        self.assertEqual([row["type"] for row in diagnostic["errors"]], ["RuntimeError", "OSError"])
+        self.assertEqual(diagnostic["errors"][1]["errno"], errno.EIO)
+        self.assertTrue(diagnostic["errors"][0]["stack"])
+        for secret in ["customer", "secret", "cdn.invalid", "untrusted stage", str(Path(__file__).resolve())]:
+            self.assertNotIn(secret, serialized)
+
+    def test_cleanup_failure_keeps_safe_error_and_attempts_both_artifacts(self):
+        real_replace, real_unlink = os.replace, Path.unlink
+        cleaned = []
+
+        def collect(_text, folder, **_kwargs):
+            return synthetic_result(folder)
+
+        def fail_provenance(source, target):
+            if str(target).endswith(".acquisition.json"):
+                raise PermissionError(errno.EACCES, "private-provenance-token", str(target))
+            return real_replace(source, target)
+
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "source"
+
+            def fail_media_cleanup(path, *args, **kwargs):
+                cleaned.append(path)
+                if path == destination:
+                    raise PermissionError(errno.EACCES, "private-cleanup-token", str(path))
+                return real_unlink(path, *args, **kwargs)
+
+            with patch("liming_analyzer.sources.os.replace", side_effect=fail_provenance), patch.object(Path, "unlink", fail_media_cleanup), self.assertLogs("liming_analyzer.sources", level="ERROR") as logs, self.assertRaises(SourceDownloadError) as raised:
+                SkillCollectPublicVideoResolver(collector=collect).download(PAGE, destination)
+            self.assertEqual(raised.exception.code, "SOURCE_PUBLISH_FAILED")
+            self.assertIn(destination, cleaned)
+            self.assertIn(destination.with_name("source.acquisition.json"), cleaned)
+            diagnostic = "\n".join(logs.output)
+            self.assertIn('"stage": "cleanup_source"', diagnostic)
+            for secret in ["private-provenance-token", "private-cleanup-token", directory]:
+                self.assertNotIn(secret, diagnostic)
+                self.assertNotIn(secret, str(raised.exception))
+            real_unlink(destination)
 
 
 if __name__ == "__main__":

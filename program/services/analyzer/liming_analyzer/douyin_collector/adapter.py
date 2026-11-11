@@ -9,8 +9,8 @@ from pathlib import Path
 from uuid import uuid4
 
 from .python import media
-from .python.security import AppError
 from .python.runtime import media_tools
+from .python.security import AppError
 
 CollectorError = AppError
 MAX_MEDIA_BYTES = media.MAX_UPLOAD
@@ -56,6 +56,7 @@ def _collect(share_text, output_dir, progress=None, cancelled=None, *, browser_t
     work = root / ('.capture-' + uuid4().hex)
     work.mkdir(mode=0o700)
     target = None
+    stage = 'collect_media'
 
     def notify(event):
         if stopped():
@@ -68,6 +69,7 @@ def _collect(share_text, output_dir, progress=None, cancelled=None, *, browser_t
                                     browser_timeout=browser_timeout)
         if stopped():
             raise CollectorError('cancelled', '任务已取消')
+        stage = 'validate_media'
         raw = Path(source['media_path'])
         if raw.is_symlink() or not raw.resolve().is_relative_to(work.resolve()) or not raw.is_file():
             raise CollectorError('unsafe_storage', '采集产物未处于当前任务目录')
@@ -85,9 +87,13 @@ def _collect(share_text, output_dir, progress=None, cancelled=None, *, browser_t
             raise CollectorError('cancelled', '任务已取消')
         target = root / ('video-' + uuid4().hex + '.mp4')
         # Publish only after media/identity/coverage checks; fsync before rename.
-        with raw.open('rb') as stream:
+        # Windows _commit requires write access even when bytes are unchanged.
+        stage = 'sync_media'
+        with raw.open('r+b') as stream:
             os.fsync(stream.fileno())
+        stage = 'publish_media'
         raw.replace(target)
+        stage = 'set_permissions'
         target.chmod(0o600)
         return {
             'media_path': str(target), 'video_id': source['video_id'],
@@ -106,7 +112,13 @@ def _collect(share_text, output_dir, progress=None, cancelled=None, *, browser_t
         }
     except BaseException as exc:
         if target is not None:
-            target.unlink(missing_ok=True)
+            try:
+                target.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                failure = CollectorError('media_publish_failed', '视频采集文件清理失败，请检查磁盘、目录权限和分析日志。',
+                                         retryable=False, status=500)
+                failure.stage = 'cleanup_media'
+                raise failure from cleanup_error
         if isinstance(exc, CollectorError) and hasattr(exc, 'capture_diagnostic'):
             # Browser-private diagnostic payloads never belong to API error data.
             raw = exc.capture_diagnostic
@@ -114,6 +126,11 @@ def _collect(share_text, output_dir, progress=None, cancelled=None, *, browser_t
                 'blocked_requests','media_responses','complete_bound_media','proxy_connections')
                 if type(raw.get(key)) is int and raw[key] >= 0}
             del exc.capture_diagnostic
+        if isinstance(exc, OSError) and stage in {'sync_media', 'publish_media', 'set_permissions'}:
+            failure = CollectorError('media_publish_failed', '视频采集文件未能保存到本机，请检查磁盘、目录权限和分析日志。',
+                                     retryable=False, status=500)
+            failure.stage = stage
+            raise failure from exc
         raise
     finally:
         shutil.rmtree(work, ignore_errors=True)

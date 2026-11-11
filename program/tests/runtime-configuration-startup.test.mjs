@@ -63,11 +63,12 @@ test("production startup forwards all web arguments and closes its own bridge af
   writeFileSync(path.join(root, "scripts/analyzer-environment-bridge.mjs"), "import {writeFileSync} from 'node:fs';process.on('SIGTERM',()=>{writeFileSync('bridge-stopped.txt','stopped');process.exit(0)});setInterval(()=>{},1000);\n");
   writeFileSync(path.join(root, "node_modules/vinext/dist/cli.js"), "require('node:fs').writeFileSync('web-args.json',JSON.stringify(process.argv.slice(2)));setTimeout(()=>process.exit(7),300);\n");
   const args = ["--port", "31999", "--hostname", "127.0.0.1"];
-  const launched = await startWebWithEnvironment({ root, args, listenSignals: false });
+  const launched = await startWebWithEnvironment({ root, args, listenSignals: false, verifyBridge: async () => {} });
   const bridgeClosed = once(launched.bridge, "close");
   assert.equal(await launched.done, 7);
   await bridgeClosed;
   assert.deepEqual(JSON.parse(readFileSync(path.join(root, "web-args.json"), "utf8")), ["start", ...args]);
+  assert.equal(readFileSync(path.join(root, ".local/app.port"), "utf8").trim(), "31999");
   assert.equal(launched.bridge.killed, true);
   assert.ok(launched.bridge.exitCode !== null || launched.bridge.signalCode !== null, "The owned bridge must actually exit after the web child closes");
   // Windows terminates a child for SIGTERM without running its JS handler.
@@ -92,7 +93,7 @@ for (const [name, eol] of [["LF", "\n"], ["CRLF", "\r\n"]]) {
     for (const setting of ["MODEL_SETTINGS_ENCRYPTION_KEY", "LOCAL_RUNTIME_TOKEN", "ANALYZER_SERVICE_TOKEN"])
       assert.equal(/^[a-f\d]{64}$/u.test(configured[setting]), true, `Missing generated ${setting}`);
     assert.equal(configured.ANALYZER_LLM_API_KEY, "synthetic-model-key-preserve");
-    assert.equal(configured.LOCAL_RUNTIME_URL, "http://127.0.0.1:3001");
+    assert.match(configured.LOCAL_RUNTIME_URL, /^http:\/\/127\.0\.0\.1:\d+$/u);
     const outputLines = first.split(eol);
     assert.equal(outputLines.includes("# 分析服务通信配置"), true);
     assert.equal(outputLines.includes("# 已保存模型的加密配置"), true);
@@ -117,7 +118,7 @@ test("legacy bare-CR settings preserve existing encryption and service keys duri
   assert.equal(configured.LOCAL_RUNTIME_TOKEN, runtimeToken);
   assert.equal(configured.ANALYZER_SERVICE_TOKEN, serviceToken);
   assert.equal(configured.ANALYZER_LLM_API_KEY, "synthetic-existing-model-key");
-  assert.equal(configured.LOCAL_RUNTIME_URL, "http://127.0.0.1:3001");
+  assert.match(configured.LOCAL_RUNTIME_URL, /^http:\/\/127\.0\.0\.1:\d+$/u);
   const repaired = readFileSync(target, "utf8");
   assert.equal(repaired.startsWith(original), true, "Adding a missing URL must preserve existing bare-CR keys");
   assert.equal((await prepareRuntimeConfiguration(root)).updated, false);

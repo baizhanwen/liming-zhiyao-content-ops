@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 
 from .adapters import AcquiredSource, SourceMetadata
 from .api_client import AnalyzerApiClient, ClaimedJob
-from .source_errors import SourceDownloadError, classify_source_message
+from .source_errors import SourceDownloadError, classify_source_message, safe_source_diagnostic
 
 logger = logging.getLogger(__name__)
 
@@ -117,13 +117,15 @@ class SkillCollectPublicVideoResolver:
         if not is_allowed_douyin_url(url):
             raise ValueError("public resolver only accepts allowed Douyin URLs")
         destination = Path(destination)
-        destination.parent.mkdir(parents=True, exist_ok=True)
         evidence_path = destination.with_name(destination.name + ".acquisition.json")
         published = False
         completed = False
+        stage = "prepare_destination"
         try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
             with TemporaryDirectory(prefix=".source-capture-", dir=destination.parent.resolve()) as temporary:
                 folder = Path(temporary)
+                stage = "collector"
                 result = self._collector(
                     url, folder,
                     progress=self._progress,
@@ -132,9 +134,11 @@ class SkillCollectPublicVideoResolver:
                     ffmpeg=self._ffmpeg,
                     ffprobe=self._ffprobe,
                 )
+                stage = "source_validation"
                 source = Path(result["media_path"])
                 if source.is_symlink() or not source.resolve().is_relative_to(folder.resolve()) or not source.is_file():
                     raise SourceDownloadError("SOURCE_DOWNLOAD_FAILED", "采集产物未处于当前任务目录，请重试。")
+                stage = "source_metadata"
                 metadata = SourceMetadata(
                     platform_work_id=str(result["video_id"])[:200],
                     title=str(result.get("title") or "抖音视频")[:500],
@@ -147,30 +151,58 @@ class SkillCollectPublicVideoResolver:
                     "has_video", "has_audio", "limitations", "acquisition_method",
                     "identity_verified", "coverage", "reported_duration", "evidence",
                 ) if key in result}
+                stage = "write_provenance"
                 pending_evidence = folder / "acquisition.json"
                 pending_evidence.write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8")
+                stage = "publish_source"
                 source.replace(destination)
                 published = True
+                stage = "publish_provenance"
                 os.replace(pending_evidence, evidence_path)
                 completed = True
                 return AcquiredSource(destination, metadata)
         except CollectorError as error:
             failure = _collector_failure(error.code)
-            logger.warning("Skill Collect acquisition failed: code=%s", failure.code)
+            if failure.code == "SOURCE_PUBLISH_FAILED":
+                logger.error("Skill Collect internal failure: %s", json.dumps(
+                    safe_source_diagnostic(error, getattr(error, "stage", stage)), ensure_ascii=True,
+                ))
+            else:
+                logger.warning("Skill Collect acquisition failed: code=%s", failure.code)
             raise failure from None
         except SourceDownloadError:
             raise
-        except Exception:  # noqa: BLE001 - keep private acquisition diagnostics out of worker errors
-            raise SourceDownloadError("SOURCE_DOWNLOAD_FAILED", "未能获取完整视频，请重试或上传本地视频。") from None
+        except Exception as error:  # noqa: BLE001 - log only allowlisted internal diagnostics
+            logger.error("Skill Collect internal failure: %s", json.dumps(
+                safe_source_diagnostic(error, stage), ensure_ascii=True,
+            ))
+            if isinstance(error, OSError) and stage in {
+                "prepare_destination", "write_provenance", "publish_source", "publish_provenance",
+            }:
+                raise _collector_failure("media_publish_failed") from None
+            raise SourceDownloadError(
+                "SOURCE_INTERNAL_ERROR", "视频采集服务出现内部异常，请联系管理员查看本机分析日志，或上传原文件继续。",
+            ) from None
         finally:
             if published and not completed:
-                destination.unlink(missing_ok=True)
-                evidence_path.unlink(missing_ok=True)
+                cleanup_failed = False
+                for path in (destination, evidence_path):
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError as error:
+                        cleanup_failed = True
+                        logger.error("Skill Collect internal failure: %s", json.dumps(
+                            safe_source_diagnostic(error, "cleanup_source"), ensure_ascii=True,
+                        ))
+                if cleanup_failed:
+                    raise _collector_failure("media_publish_failed") from None
 
 
 def _collector_failure(code: str) -> SourceDownloadError:
     # Only public, fixed messages cross the worker API. Collector diagnostics
     # can contain transient request state and must never be serialized here.
+    if code == "media_publish_failed":
+        return SourceDownloadError("SOURCE_PUBLISH_FAILED", "视频采集文件未能保存到本机，请检查分析主机磁盘、目录权限和日志后再试，或上传原文件继续。")
     if code in {"cancelled"}:
         return SourceDownloadError("SOURCE_CANCELLED", "视频采集已取消。")
     if code in {"ffmpeg_missing", "browser_unavailable", "browser_missing", "node_missing", "browser_runtime", "browser_dependency", "douyin_browser_runtime"}:

@@ -5,6 +5,8 @@ export type AnalyzerEnvironmentSnapshot = {
   available: boolean;
   ready: boolean;
   workerRunning: boolean;
+  processRunning?: boolean;
+  restartRequired?: boolean;
   checks: Array<{ id: string; label: string; status: "ready" | "missing" | "error" | "checking"; message?: string }>;
   job?: { id: string; action: string; status: "running" | "succeeded" | "failed"; logTail: string[]; startedAt: string; error?: string };
   message?: string;
@@ -26,6 +28,7 @@ function publicSnapshot(value: unknown, secret: string): AnalyzerEnvironmentSnap
   const text = (input: unknown) => cleanText(input, secret);
   const snapshot: AnalyzerEnvironmentSnapshot = {
     available: data.available === true, ready: data.ready === true, workerRunning: data.workerRunning === true,
+    processRunning: data.processRunning === true || data.workerRunning === true, restartRequired: data.restartRequired === true,
     checks: Array.isArray(data.checks) ? data.checks.slice(0, 30).map((item: Record<string, unknown>, index) => ({
       id: text(item.id) || String(index), label: text(item.label),
       status: ["ready", "missing", "error", "checking"].includes(String(item.status)) ? item.status as "ready" | "missing" | "error" | "checking" : "error",
@@ -47,22 +50,28 @@ export function isLocalEnvironmentRequest(request: Request) {
 }
 
 export async function requestAnalyzerEnvironment(action?: AnalyzerEnvironmentAction): Promise<AnalyzerEnvironmentSnapshot> {
-  const runtime = env as typeof env & { LOCAL_RUNTIME_URL?: string; LOCAL_RUNTIME_TOKEN?: string };
+  const runtime = env as typeof env & { LOCAL_RUNTIME_URL?: string; LOCAL_RUNTIME_TOKEN?: string; LOCAL_RUNTIME_INSTALLATION_ID?: string; LOCAL_RUNTIME_SOURCE_ID?: string };
   const token = runtime.LOCAL_RUNTIME_TOKEN?.trim() ?? "";
+  const installationId = runtime.LOCAL_RUNTIME_INSTALLATION_ID?.trim() ?? "";
+  const sourceId = runtime.LOCAL_RUNTIME_SOURCE_ID?.trim() ?? "";
   let endpoint: URL;
   try {
     endpoint = new URL(runtime.LOCAL_RUNTIME_URL ?? "");
-    if (endpoint.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(endpoint.hostname) || endpoint.port !== "3001" || endpoint.username || endpoint.password || token.length < 32) throw new Error("Unavailable local runtime");
+    if (endpoint.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(endpoint.hostname) || !/^\d+$/u.test(endpoint.port) || Number(endpoint.port) < 1024 || endpoint.username || endpoint.password || endpoint.pathname !== "/" || endpoint.search || endpoint.hash || token.length < 32 || !/^[a-f\d]{64}$/u.test(installationId) || !/^[a-f\d]{64}$/u.test(sourceId)) throw new Error("Unavailable local runtime");
     endpoint = new URL("/environment", endpoint);
   } catch { if (action) throw new AnalyzerEnvironmentError("RUNTIME_UNAVAILABLE", offline().message!, 503); return offline(); }
   try {
     const response = await fetch(endpoint, {
       method: action ? "POST" : "GET",
-      headers: { authorization: `Bearer ${token}`, ...(action ? { "content-type": "application/json" } : {}) },
+      headers: { authorization: `Bearer ${token}`, "x-liming-installation": installationId, "x-liming-source": sourceId, ...(action ? { "content-type": "application/json" } : {}) },
       ...(action ? { body: JSON.stringify({ action }) } : {}),
       signal: AbortSignal.timeout(25_000), redirect: "manual",
     });
-    if (response.status === 409) throw new AnalyzerEnvironmentError("RUNTIME_BUSY", "已有环境任务正在执行，请等待完成。", 409);
+    if (response.status === 409) {
+      const body = await response.json() as { error?: { code?: string } };
+      if (body.error?.code === "RUNTIME_INSTALLATION_MISMATCH") throw new AnalyzerEnvironmentError("RUNTIME_INSTALLATION_MISMATCH", "环境管理服务属于另一安装或旧版本，请重新启动当前项目。", 409);
+      throw new AnalyzerEnvironmentError("RUNTIME_BUSY", "已有环境任务正在执行，请等待完成。", 409);
+    }
     if (!response.ok) throw new Error("Local runtime unavailable");
     return publicSnapshot(await response.json(), token);
   } catch (error) {

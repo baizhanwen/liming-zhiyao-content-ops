@@ -52,6 +52,13 @@ class ModelCacheRecoveryTests(unittest.TestCase):
 
         self.assertEqual(cache, r"C:\Users\Public\LimingZhiyao\model-cache")
 
+    def test_windows_cache_system_drive_fallback_is_absolute(self) -> None:
+        self.assertEqual(_windows_model_cache({}), r"C:\ProgramData\LimingZhiyao\model-cache")
+        self.assertEqual(
+            _windows_model_cache({"SystemDrive": "D:"}),
+            r"D:\ProgramData\LimingZhiyao\model-cache",
+        )
+
     def test_paddlex_defaults_can_be_forced_to_bos_before_import(self) -> None:
         previous_source = os.environ.get("PADDLE_PDX_MODEL_SOURCE")
         previous_check = os.environ.get("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK")

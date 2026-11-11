@@ -4,6 +4,8 @@ import { open, unlink } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseLocalRuntimeConfiguration } from "./analyzer-environment-bridge.mjs";
+import { selectLocalRuntimeUrl } from "./local-runtime-endpoint.mjs";
+import { runtimeInstallationId, runtimeSourceId } from "./local-runtime-identity.mjs";
 
 const defaultRoot = fileURLToPath(new URL("..", import.meta.url));
 
@@ -65,7 +67,11 @@ export async function prepareRuntimeConfiguration(root = defaultRoot) {
       const current = existing[name]?.trim() ?? "";
       if (!current || /change-me|replace-with/iu.test(current)) set(name, randomBytes(32).toString("hex"));
     }
-    if (!existing.LOCAL_RUNTIME_URL?.trim()) set("LOCAL_RUNTIME_URL", "http://127.0.0.1:3001");
+    const endpoint = await selectLocalRuntimeUrl(root, parseLocalRuntimeConfiguration(content));
+    if (existing.LOCAL_RUNTIME_URL !== endpoint) set("LOCAL_RUNTIME_URL", endpoint);
+    for (const [name, value] of [["LOCAL_RUNTIME_INSTALLATION_ID", runtimeInstallationId(root)], ["LOCAL_RUNTIME_SOURCE_ID", runtimeSourceId(root)]]) {
+      if (existing[name] !== value) set(name, value);
+    }
     if (updated) {
       const pending = path.join(root, `.dev.vars.prepare-${randomUUID()}`);
       try { writeFileSync(pending, content, { mode: 0o600, flag: "wx" }); renameSync(pending, target); }

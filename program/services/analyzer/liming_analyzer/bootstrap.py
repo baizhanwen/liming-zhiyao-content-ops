@@ -6,7 +6,7 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import TypeVar
 
 from .api_client import AnalyzerApiClient
@@ -63,14 +63,15 @@ def _windows_model_cache(environ: Mapping[str, str]) -> str:
     # Chinese Windows account because LOCALAPPDATA lives below C:\Users\<name>.
     # ProgramData is machine-local, writable for application-created folders,
     # and normally has an ASCII-only path.
+    system_drive = (environ.get("SystemDrive") or "C:").rstrip("\\/") + "\\"
     candidates = (
         environ.get("PROGRAMDATA", ""),
         environ.get("PUBLIC", ""),
-        str(Path(environ.get("SystemDrive", "C:")) / "ProgramData"),
+        str(PureWindowsPath(system_drive) / "ProgramData"),
     )
     for root in candidates:
         if root and _path_is_ascii(root):
-            return str(Path(root) / "LimingZhiyao" / "model-cache")
+            return str(PureWindowsPath(root) / "LimingZhiyao" / "model-cache")
     return r"C:\ProgramData\LimingZhiyao\model-cache"
 
 

@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createAnalyzerEnvironmentBridge, runRuntimeCommand } from "../scripts/analyzer-environment-bridge.mjs";
+import { runtimeInstallationId, runtimeSourceId } from "../scripts/local-runtime-identity.mjs";
 
 const token = "synthetic-runtime-token-00000000000000000000";
 const key = "synthetic-provider-key-must-not-leak";
@@ -20,10 +21,11 @@ async function bridge(t, run) {
   await once(server, "listening");
   t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
   const base = `http://127.0.0.1:${server.address().port}/environment`;
+  const identityHeaders = { "x-liming-installation": runtimeInstallationId(privateRoot), "x-liming-source": runtimeSourceId(privateRoot) };
   return {
     base,
-    get: (headers = {}) => fetch(base, { headers: { authorization: `Bearer ${token}`, ...headers } }),
-    post: (body, headers = {}) => fetch(base, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...headers }, body: JSON.stringify(body) }),
+    get: (headers = {}) => fetch(base, { headers: { authorization: `Bearer ${token}`, ...identityHeaders, ...headers } }),
+    post: (body, headers = {}) => fetch(base, { method: "POST", headers: { authorization: `Bearer ${token}`, ...identityHeaders, "content-type": "application/json", ...headers }, body: JSON.stringify(body) }),
   };
 }
 

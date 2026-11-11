@@ -14,7 +14,7 @@ test("port selection distinguishes two installations and preserves an owned heal
   const installations = [path.join(dir, "app"), path.join(dir, "app-extra")];
   for (const install of installations) {
     mkdirSync(path.join(install, "scripts"), { recursive: true }); mkdirSync(path.join(install, ".local"));
-    for (const name of ["select-local-port.ps1", "local-web-identity.ps1", "start-lan.ps1", "analyzer-instance-lock.ps1"]) {
+    for (const name of ["select-local-port.ps1", "local-web-identity.ps1", "local-runtime-identity.mjs", "start-lan.ps1", "analyzer-instance-lock.ps1"]) {
       const source = path.join(root, "scripts", name);
       if (existsSync(source)) copyFileSync(source, path.join(install, "scripts", name));
     }
@@ -23,7 +23,10 @@ test("port selection distinguishes two installations and preserves an owned heal
   const server = path.join(foreign, "node_modules/vinext/bin/server.mjs"); mkdirSync(path.dirname(server), { recursive: true });
   writeFileSync(server, `import http from 'node:http';
 import { existsSync, writeFileSync } from 'node:fs';
-const server = http.createServer((req, res) => { res.writeHead(existsSync(new URL('../../../.local/unhealthy', import.meta.url)) ? 503 : 200, { 'Content-Type': 'application/json' }); res.end('{"ok":true}'); });
+import { fileURLToPath } from 'node:url';
+import { runtimeSourceId } from '../../../scripts/local-runtime-identity.mjs';
+const sourceId = runtimeSourceId(fileURLToPath(new URL('../../../', import.meta.url)));
+const server = http.createServer((req, res) => { res.writeHead(existsSync(new URL('../../../.local/unhealthy', import.meta.url)) ? 503 : 200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ok:true,localRuntimeSourceId:sourceId})); });
 server.listen(0, '127.0.0.1', () => writeFileSync(new URL('../../../.local/port', import.meta.url), String(server.address().port)));
 `);
   const child = spawn(process.execPath, [server, "dev"], { windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
@@ -79,5 +82,11 @@ exit $LASTEXITCODE
   assert.ok(existsSync(path.join(current, ".local/lan-network-probe")), `LAN entry did not use its controlled network fixture:\n${entryOutput}`);
   assert.ok(existsSync(path.join(current, ".local/lan-start")), `LAN entry did not reach its controlled npm boundary:\n${entryOutput}`);
   assert.notEqual(Number(new URL(readFileSync(path.join(current, ".local/lan-start"), "utf8")).port), occupied);
-  writeFileSync(path.join(dir, "report.json"), JSON.stringify({ synthetic: true, foreignHealthyPortSkipped: true, lanForeignPortSkipped: true, ownHealthyPortReused: true, unhealthyOwnedInstanceBlocked: true, invalidPortIgnored: true, actualLanEntryForeignInstanceSkipped: true }, null, 2));
+  const identityScript = path.join(foreign, "scripts/local-web-identity.ps1");
+  writeFileSync(identityScript, readFileSync(identityScript, "utf8") + "\n# synthetic upgrade after the listener started\n");
+  const stale = select(foreign);
+  assert.notEqual(stale.status, 0, "A still-running old web process was silently reused after an upgrade");
+  assert.match(stale.stderr, /still running an older version/);
+  assert.equal(Number(readFileSync(path.join(foreign, ".local/app.port"), "utf8")), occupied);
+  writeFileSync(path.join(dir, "report.json"), JSON.stringify({ synthetic: true, foreignHealthyPortSkipped: true, lanForeignPortSkipped: true, ownHealthyPortReused: true, unhealthyOwnedInstanceBlocked: true, invalidPortIgnored: true, actualLanEntryForeignInstanceSkipped: true, staleWebVersionBlocked: true }, null, 2));
 });

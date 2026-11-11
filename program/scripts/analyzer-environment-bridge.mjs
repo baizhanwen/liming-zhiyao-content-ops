@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { LOCAL_RUNTIME_PROTOCOL, runtimeInstallationId, runtimeSourceId } from "./local-runtime-identity.mjs";
 
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 const actions = new Set(["setup", "start", "stop", "check"]);
@@ -53,11 +54,11 @@ function pythonCommand(root) {
   return process.platform === "win32" ? ["py", "-3.11"] : ["python3.11"];
 }
 
-function streamRuntimeProcess(command, args, { root, onLine, children, timeoutMs, spawnProcess = spawn }) {
+function streamRuntimeProcess(command, args, { root, onLine, children, timeoutMs, baseUrl, spawnProcess = spawn }) {
   return new Promise((resolve, reject) => {
     const child = spawnProcess(command, args, {
       cwd: root, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, PYTHONUNBUFFERED: "1", PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
+      env: { ...process.env, ...(baseUrl ? { ANALYZER_BASE_URL: baseUrl } : {}), PYTHONUNBUFFERED: "1", PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
     });
     children.add(child);
     let lastJson = null;
@@ -86,7 +87,7 @@ function streamRuntimeProcess(command, args, { root, onLine, children, timeoutMs
   });
 }
 
-export async function runRuntimeCommand(action, { root = projectRoot, onLine = () => {}, children = new Set(), spawnProcess = spawn } = {}) {
+export async function runRuntimeCommand(action, { root = projectRoot, onLine = () => {}, children = new Set(), spawnProcess = spawn, baseUrl } = {}) {
   if (![...actions, "status"].includes(action)) throw new Error("Unsupported runtime action");
   if (action === "setup" && process.platform === "win32") {
     const [probePython, ...probePrefix] = pythonCommand(root);
@@ -98,7 +99,17 @@ export async function runRuntimeCommand(action, { root = projectRoot, onLine = (
     }
   }
   const [python, ...prefix] = pythonCommand(root);
-  return streamRuntimeProcess(python, [...prefix, path.join(root, "scripts", "analyzer_local_runtime.py"), action], { root, onLine, children, spawnProcess, timeoutMs: action === "setup" ? 45 * 60_000 : action === "check" ? 240_000 : 90_000 });
+  return streamRuntimeProcess(python, [...prefix, path.join(root, "scripts", "analyzer_local_runtime.py"), action, ...(baseUrl ? ["--base-url", baseUrl] : [])], { root, onLine, children, spawnProcess, baseUrl, timeoutMs: action === "setup" ? 45 * 60_000 : action === "check" ? 240_000 : 90_000 });
+}
+
+function applicationBaseUrl(root, configuration) {
+  try {
+    const port = Number(readFileSync(path.join(root, ".local", "app.port"), "utf8").trim());
+    if (Number.isInteger(port) && port > 0 && port <= 65535) return `http://127.0.0.1:${port}`;
+  } catch { /* Direct CLI startup can provide the address in the environment. */ }
+  const address = new URL(process.env.ANALYZER_BASE_URL || configuration.ANALYZER_BASE_URL || "http://127.0.0.1:3000");
+  if (address.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(address.hostname) || address.username || address.password || address.pathname !== "/" || address.search || address.hash) throw new Error("Invalid local application address");
+  return address.origin;
 }
 
 function publicRuntimeStatus(result, redact) {
@@ -106,6 +117,8 @@ function publicRuntimeStatus(result, redact) {
   return {
     available: true,
     workerRunning: data.workerRunning === true,
+    processRunning: data.processRunning === true || data.workerRunning === true,
+    restartRequired: data.restartRequired === true,
     ready: data.ready === true,
     checks: Array.isArray(data.checks) ? data.checks.slice(0, 30).map((check, index) => ({
       id: typeof check.id === "string" ? check.id.slice(0, 80) : String(index),
@@ -119,7 +132,9 @@ function publicRuntimeStatus(result, redact) {
 
 export function createAnalyzerEnvironmentBridge({ root = projectRoot, configuration = () => readLocalRuntimeConfiguration(root), run, persist = true } = {}) {
   const children = new Set();
-  const execute = run ?? ((action, options) => runRuntimeCommand(action, { root, children, ...options }));
+  const installationId = runtimeInstallationId(root);
+  const sourceId = runtimeSourceId(root);
+  const execute = run ?? ((action, options) => runRuntimeCommand(action, { root, children, baseUrl: applicationBaseUrl(root, configuration()), ...options }));
   let job = null;
   let statusCache = null;
   let cachedAt = 0;
@@ -176,7 +191,7 @@ export function createAnalyzerEnvironmentBridge({ root = projectRoot, configurat
           result = await execute("start", { onLine });
         }
         current.status = result.code === 0 ? "succeeded" : "failed";
-        if (result.code !== 0) current.error = "操作没有完成，请根据运行日志修复后重试。";
+        if (result.code !== 0) current.error = typeof result.result?.message === "string" ? redact(result.result.message) : "操作没有完成，请根据运行日志修复后重试。";
       } catch {
         current.status = "failed";
         current.error = "环境操作无法启动，请确认 Python 3.11 已安装后重试。";
@@ -199,7 +214,11 @@ export function createAnalyzerEnvironmentBridge({ root = projectRoot, configurat
       if (!secretMatches(authorization.startsWith("Bearer ") ? authorization.slice(7) : "", configuration().LOCAL_RUNTIME_TOKEN ?? "")) {
         send(401, { error: { code: "AUTH_REQUIRED", message: "环境控制凭据无效。" } }); return;
       }
+      if (request.headers["x-liming-installation"] !== installationId || request.headers["x-liming-source"] !== sourceId) {
+        send(409, { error: { code: "RUNTIME_INSTALLATION_MISMATCH", message: "环境管理服务属于另一安装或旧版本，请重新启动当前项目。" } }); return;
+      }
       const url = new URL(request.url ?? "/", host);
+      if (url.pathname === "/identity" && request.method === "GET") { send(200, { protocol: LOCAL_RUNTIME_PROTOCOL, installationId, sourceId }); return; }
       if (url.pathname !== "/environment") { send(404, { error: { code: "NOT_FOUND", message: "接口不存在。" } }); return; }
       if (request.method === "GET") { send(200, await snapshot()); return; }
       if (request.method !== "POST") { send(405, { error: { code: "METHOD_NOT_ALLOWED", message: "不支持该请求方式。" } }); return; }
@@ -230,7 +249,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
   } else {
     const server = createAnalyzerEnvironmentBridge();
     server.on("error", error => { console.error(error.code === "EADDRINUSE" ? "Local environment manager port is already in use." : "Local environment manager could not start."); process.exitCode = 1; });
-    server.listen(3001, "127.0.0.1", () => console.log("Local environment manager is listening on 127.0.0.1:3001."));
+    let endpoint;
+    try {
+      endpoint = new URL(configuration.LOCAL_RUNTIME_URL);
+      if (endpoint.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(endpoint.hostname) || !/^\d+$/u.test(endpoint.port) || Number(endpoint.port) < 1024 || endpoint.username || endpoint.password || endpoint.pathname !== "/" || endpoint.search || endpoint.hash) throw new Error();
+    } catch { console.error("Local environment manager address is invalid."); process.exitCode = 1; }
+    if (endpoint && !process.exitCode) server.listen(Number(endpoint.port), "127.0.0.1", () => console.log(`Local environment manager is listening on 127.0.0.1:${endpoint.port}.`));
     const close = () => server.close(() => process.exit(0));
     process.once("SIGINT", close); process.once("SIGTERM", close);
   }

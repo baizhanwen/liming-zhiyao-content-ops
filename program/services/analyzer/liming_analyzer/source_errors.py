@@ -1,6 +1,44 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
+
+_DIAGNOSTIC_STAGES = frozenset({
+    "prepare_destination", "collector", "collect_media", "validate_media", "source_validation",
+    "source_metadata", "write_provenance", "publish_source", "publish_provenance",
+    "sync_media", "publish_media", "set_permissions",
+    "cleanup_media", "cleanup_source",
+})
+_PACKAGE_ROOT = Path(__file__).resolve().parent
+
+
+def safe_source_diagnostic(error: Exception, stage: str) -> dict:
+    """Keep code locations and OS error numbers without exception text or locals."""
+    diagnostic = {"stage": stage if isinstance(stage, str) and stage in _DIAGNOSTIC_STAGES else "collector", "errors": []}
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen and len(diagnostic["errors"]) < 8:
+        seen.add(id(current))
+        row = {"type": type(current).__name__, "stack": []}
+        for attribute in ("errno", "winerror"):
+            value = getattr(current, attribute, None)
+            if type(value) is int:
+                row[attribute] = value
+        trace = current.__traceback__
+        while trace is not None and len(row["stack"]) < 24:
+            code = trace.tb_frame.f_code
+            try:
+                filename = Path(code.co_filename).resolve().relative_to(_PACKAGE_ROOT).as_posix()
+            except (OSError, ValueError):
+                filename = "<external>"
+            # Never format a traceback: source lines and exception messages can
+            # embed URLs, credentials, private paths or the customer's content.
+            row["stack"].append({"file": filename, "line": trace.tb_lineno,
+                                 "function": code.co_name if filename != "<external>" else "<external>"})
+            trace = trace.tb_next
+        diagnostic["errors"].append(row)
+        current = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
+    return diagnostic
 
 
 class SourceDownloadError(RuntimeError):
