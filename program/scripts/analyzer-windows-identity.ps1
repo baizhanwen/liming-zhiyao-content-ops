@@ -45,11 +45,18 @@ function Get-AnalyzerSourceSignature([string]$ProjectRoot) {
     $source = Join-Path $ProjectRoot 'services\analyzer\liming_analyzer'
     $sha = [Security.Cryptography.SHA256]::Create()
     try {
-        $lines = @(Get-ChildItem -LiteralPath $source -Filter '*.py' -File -Recurse | Sort-Object FullName | ForEach-Object {
-            $relative = $_.FullName.Substring($source.Length).Replace('\', '/')
-            $digest = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
-            "$relative=$digest"
-        })
+        # Do not rely on Get-FileHash/module auto-loading in a Windows PS 5.1
+        # child started by another PowerShell installation.
+        [string[]]$files = @([IO.Directory]::GetFiles($source, '*.py', [IO.SearchOption]::AllDirectories))
+        [Array]::Sort($files, [System.Collections.IComparer][StringComparer]::Ordinal)
+        $lines = [Collections.Generic.List[string]]::new()
+        foreach ($filename in $files) {
+            $relative = $filename.Substring($source.Length).Replace('\', '/')
+            $stream = [IO.File]::OpenRead($filename)
+            try { $digest = [BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '') }
+            finally { $stream.Dispose() }
+            $lines.Add("$relative=$digest")
+        }
         if ($lines.Count -eq 0) { throw 'Analyzer source is missing from this installation.' }
         return [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(($lines -join "`n")))).Replace('-', '').ToLowerInvariant()
     } finally { $sha.Dispose() }
