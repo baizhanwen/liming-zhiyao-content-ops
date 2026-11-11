@@ -17,9 +17,18 @@ HUB_REVISION = "66fb5ea2d4d1682ff8a663bf7e788913604996a0"
 MODELSCOPE_REPO = "zengshuishui/Qwen3-ASR-onnx"
 MODELSCOPE_REVISION = "cb045ad80b8970c9d411d463e5b78991a566596c"
 FILES = {
-    "conv_frontend.onnx": (48_080_441, "fa894a4ba53da6a4238f2a6ca0b09362e505d39cecbd646051b033e2e8d7e2fb"),
-    "encoder.int8.onnx": (314_222_162, "436fbd910a0c8914851e5ac1354e807be9f283d08a5da728adaa609731c41469"),
-    "decoder.int8.onnx": (2_037_458_645, "c43c853fa6e97d08365cb8a5502b360b595cd43c00dc60e4d8ca7cc18cad460b"),
+    "conv_frontend.onnx": (
+        48_080_441,
+        "fa894a4ba53da6a4238f2a6ca0b09362e505d39cecbd646051b033e2e8d7e2fb",
+    ),
+    "encoder.int8.onnx": (
+        314_222_162,
+        "436fbd910a0c8914851e5ac1354e807be9f283d08a5da728adaa609731c41469",
+    ),
+    "decoder.int8.onnx": (
+        2_037_458_645,
+        "c43c853fa6e97d08365cb8a5502b360b595cd43c00dc60e4d8ca7cc18cad460b",
+    ),
     "tokenizer/merges.txt": (1_671_853, QWEN_FILES["merges.txt"]),
     "tokenizer/vocab.json": (2_776_833, QWEN_FILES["vocab.json"]),
     "tokenizer/tokenizer_config.json": (12_487, QWEN_FILES["tokenizer_config.json"]),
@@ -41,8 +50,11 @@ def _fetch_original(folder: Path, missing: list[str]) -> None:
     with TemporaryDirectory(prefix=".qwen-download-", dir=folder) as staging:
         for name in missing:
             remote = f"model_1.7B/{name}" if name.endswith(".onnx") else name
-            downloaded = Path(model_file_download(MODELSCOPE_REPO, remote, revision=MODELSCOPE_REVISION,
-                                                   local_dir=staging))
+            downloaded = Path(
+                model_file_download(
+                    MODELSCOPE_REPO, remote, revision=MODELSCOPE_REVISION, local_dir=staging
+                )
+            )
             if not _valid(downloaded, name):
                 raise RuntimeError(f"Qwen 模型文件校验失败：{name}")
             target = folder / name
@@ -62,10 +74,17 @@ def windows_model_path(model_cache: Path, *, prepare: bool) -> Path:
 
     folder.mkdir(parents=True, exist_ok=True)
     try:
-        snapshot_download(HUB_REPO, revision=HUB_REVISION, local_dir=folder, allow_patterns=missing,
-                          force_download=any((folder / name).is_file() for name in missing))
+        snapshot_download(
+            HUB_REPO,
+            revision=HUB_REVISION,
+            local_dir=folder,
+            allow_patterns=missing,
+            force_download=any((folder / name).is_file() for name in missing),
+        )
     except (OSError, RuntimeError, ValueError) as error:
-        logging.getLogger(__name__).warning("Hugging Face 模型下载未完成，继续从 ModelScope 获取：%s", type(error).__name__)
+        logging.getLogger(__name__).warning(
+            "Hugging Face 模型下载未完成，继续从 ModelScope 获取：%s", type(error).__name__
+        )
     remaining = [name for name in missing if not _valid(folder / name, name)]
     if remaining:
         _fetch_original(folder, remaining)
@@ -81,7 +100,9 @@ class SherpaQwenEngine:
             encoder=str(folder / "encoder.int8.onnx"),
             decoder=str(folder / "decoder.int8.onnx"),
             tokenizer=str(folder / "tokenizer"),
-            num_threads=min(os.cpu_count() or 1, 4), provider="cpu", max_total_len=512,
+            num_threads=min(os.cpu_count() or 1, 4),
+            provider="cpu",
+            max_total_len=512,
         )
 
     def generate(self, samples, *, language, temperature, max_tokens):
@@ -93,7 +114,9 @@ class SherpaQwenEngine:
         stream.accept_waveform(16000, samples)
         self.recognizer.decode_stream(stream)
         result = stream.result
-        return SimpleNamespace(text=result.text, generation_tokens=len(result.tokens), language=language)
+        return SimpleNamespace(
+            text=result.text, generation_tokens=len(result.tokens), language=language
+        )
 
 
 class WindowsQwenSpeechRecognizer(QwenSpeechRecognizer):
@@ -101,3 +124,17 @@ class WindowsQwenSpeechRecognizer(QwenSpeechRecognizer):
     # This export has 512 KV positions including audio, instruction, and output.
     # Shorter windows leave enough room for fast speech and CJK tokenization.
     max_window_ms = 16_000
+
+    def _detect_speech(self, samples):
+        from faster_whisper.vad import VadOptions, get_speech_timestamps
+
+        # The default 2-second silence threshold misses ordinary sentence pauses
+        # on these shorter windows and can split a word at the decoder boundary.
+        return get_speech_timestamps(
+            samples,
+            vad_options=VadOptions(
+                min_silence_duration_ms=300,
+                speech_pad_ms=100,
+                max_speech_duration_s=self.max_window_ms / 1000,
+            ),
+        )

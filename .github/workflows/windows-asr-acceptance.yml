@@ -77,9 +77,14 @@ jobs:
           if ($hash -ne ((Get-Content "$archive.sha256") -split ' ')[0]) { throw 'ZIP hash mismatch.' }
           "ACCEPTANCE_ZIP_SHA256=$hash" >> $env:GITHUB_ENV
           New-Item D:\qw -ItemType Directory -ErrorAction Stop | Out-Null
-          tar -xf $archive -C D:\qw
-          if ($LASTEXITCODE) { throw 'Cannot extract the delivery ZIP.' }
+          # The package contains Chinese document names. Windows bsdtar under an
+          # English code page cannot read them; the native ZIP reader preserves UTF-8.
+          [IO.Compression.ZipFile]::ExtractToDirectory($archive, 'D:\qw', [Text.Encoding]::UTF8)
           Set-Location D:\qw\LimingZhiyao
+          # These documents include both nested Chinese directories and filenames.
+          foreach ($document in @('docs/产品使用手册.html', 'docs/产品使用手册.md', 'docs/operations/备份恢复与升级操作.md', 'docs/电商素材使用说明.md')) {
+            if (-not (Test-Path -LiteralPath $document -PathType Leaf)) { throw "Packaged document missing: $document" }
+          }
           foreach ($item in @('.local', '.wrangler', 'services/analyzer/.venv', 'node_modules', 'scripts/verify-windows-qwen.mjs')) {
             if (Test-Path $item) { throw "Unexpected bundled file or prior installation: $item" }
           }

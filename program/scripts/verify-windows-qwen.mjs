@@ -17,6 +17,7 @@ let sessionCookie;
 const fixture = "https://isv-data.oss-cn-hangzhou.aliyuncs.com/ics/MaaS/ASR/test_audio/asr_example_zh.wav";
 const audioHash = "a1bd32dc78493c123f9625a66deee562aed2895f53fbc39f2cca3be7e6f4f20f";
 const reference = "欢迎大家来体验达摩院推出的语音识别模型";
+const spoken = text => text.replace(/[\p{P}\p{Z}\s]/gu, "");
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
 const report = { revision: process.env.GITHUB_SHA, zipSha256: process.env.ACCEPTANCE_ZIP_SHA256, windows: os.release(), cpu: os.cpus()[0].model,
   cores: os.availableParallelism(), memoryGiB: Math.round(os.totalmem() / 2 ** 30), startedAt: new Date().toISOString(), fixture, audioHash, reference };
@@ -178,7 +179,14 @@ async function transcribe(scope, name, { bytes, duration, expected }) {
   extraction.workerEvidence = decodeMessage + " (windows=" + decodes[0] + ")";
   assert.ok(decodes[0] >= (duration > 32 ? 3 : 1), "Actual worker decode count must span the expected audio windows.");
   record();
-  assert.equal(transcript.full_text.replace(/[\p{P}\p{Z}\s]/gu, ""), expected);
+  assert.equal(spoken(transcript.full_text), expected);
+  const asset = result.assets.find(item => item.filename === "manuscript.json" && item.analysis_job_id === job.id && item.kind === "subtitle");
+  assert.ok(asset?.url, "The result page requires the manuscript bound to this job.");
+  const manuscript = await api(asset.url);
+  assert.equal(manuscript.version, "manuscript.v1");
+  assert.equal(manuscript.basis, "audio");
+  assert.equal(spoken(manuscript.segments.map(row => row.text).join("")), expected);
+  extraction.manuscript = { version: manuscript.version, segments: manuscript.segments.length, basis: manuscript.basis };
   assert.ok(Array.isArray(transcript.segments) && transcript.segments.length > 0);
   let previousEnd = 0;
   for (const segment of transcript.segments) {

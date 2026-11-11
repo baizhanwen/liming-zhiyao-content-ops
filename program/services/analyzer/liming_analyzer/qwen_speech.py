@@ -183,15 +183,26 @@ class QwenSpeechRecognizer:
     max_window_ms = MAX_WINDOW_MS
 
     def __init__(
-        self, model_path: Path, language: str, timing: SpeechRecognizer | None, *, engine=None, vad=None
+        self,
+        model_path: Path,
+        language: str,
+        timing: SpeechRecognizer | None,
+        *,
+        engine=None,
+        vad=None,
     ):
         self.model_path = Path(model_path)
         self.language = language
         self.timing = timing
         self.engine = engine
-        self.vad = vad
+        self.vad = vad or self._detect_speech
         self._timing_lock = Lock()
         self._last_timing: tuple[Path, TranscriptOutput | None] | None = None
+
+    def _detect_speech(self, samples):
+        from faster_whisper.vad import get_speech_timestamps
+
+        return get_speech_timestamps(samples)
 
     @property
     def last_timing_transcript(self) -> TranscriptOutput | None:
@@ -217,7 +228,11 @@ class QwenSpeechRecognizer:
         with self._timing_lock:
             self._last_timing = active_input
         try:
-            anchors = self.timing.transcribe(audio) if self.timing else TranscriptOutput(self.language, ())
+            anchors = (
+                self.timing.transcribe(audio)
+                if self.timing
+                else TranscriptOutput(self.language, ())
+            )
             with self._timing_lock:
                 # An overlapping call may already be listening to a different recording.
                 if self._last_timing is active_input:
@@ -242,10 +257,6 @@ class QwenSpeechRecognizer:
                     np.frombuffer(wav.readframes(wav.getnframes()), dtype="<i2").astype(np.float32)
                     / 32768.0
                 )
-            if self.vad is None:
-                from faster_whisper.vad import get_speech_timestamps
-
-                self.vad = get_speech_timestamps
             speech = self.vad(samples)
             if not speech:
                 if require_qwen:
@@ -269,7 +280,9 @@ class QwenSpeechRecognizer:
                 raise
             return anchors
 
-    def _transcribe_windows(self, samples, speech, anchors: TranscriptOutput, *, require_qwen: bool) -> TranscriptOutput:
+    def _transcribe_windows(
+        self, samples, speech, anchors: TranscriptOutput, *, require_qwen: bool
+    ) -> TranscriptOutput:
         import numpy as np
 
         duration = (len(samples) + 15) // 16
@@ -324,7 +337,9 @@ class QwenSpeechRecognizer:
                     cues.extend(_aligned_cues(text, rows, spoken_start, spoken_end))
                 else:
                     if require_qwen or not rows:
-                        raise RuntimeError("Qwen ASR did not return a complete transcription for the speech window")
+                        raise RuntimeError(
+                            "Qwen ASR did not return a complete transcription for the speech window"
+                        )
                     if any(row.end_ms > end for row in rows):
                         # Keeping a cue that crosses the window would duplicate speech in the next window.
                         return anchors
@@ -341,8 +356,16 @@ class QwenSpeechRecognizer:
             if whisper_windows:
                 logger.info(
                     "%s %s mixed transcription: Qwen windows=%d Whisper windows=%d",
-                    self.model, self.backend, qwen_windows, whisper_windows,
+                    self.model,
+                    self.backend,
+                    qwen_windows,
+                    whisper_windows,
                 )
             else:
-                logger.info("%s %s transcription completed (windows=%d)", self.model, self.backend, qwen_windows)
+                logger.info(
+                    "%s %s transcription completed (windows=%d)",
+                    self.model,
+                    self.backend,
+                    qwen_windows,
+                )
         return TranscriptOutput(language, tuple(cues))
