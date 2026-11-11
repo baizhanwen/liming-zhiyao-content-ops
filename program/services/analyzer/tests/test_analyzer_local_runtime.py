@@ -187,8 +187,20 @@ def test_worker_and_model_records_round_trip_utf8_paths(tmp_path, monkeypatch):
     model_record.write_text(json.dumps({"modelsReady": True, "requiredFiles": [{"path": model.name, "size": model.stat().st_size}], "message": "模型已准备"}, ensure_ascii=False), encoding="utf-8")
     record = {"pid": 424242, "project": str(module.ROOT), "log": str(module.LOCAL / "中文日志.log")}
     module.PID_FILE.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
-    monkeypatch.setattr(module.os, "kill", lambda *_args: None)
-    monkeypatch.setattr(module.subprocess, "check_output", lambda *_args, **_kwargs: f"{module.interpreter()} -m liming_analyzer")
+    if module.os.name == "nt":
+        controller_calls = []
+        def controller(action, base_url=None):
+            controller_calls.append((action, base_url))
+            return 0, {"workerRunning": True, "processRunning": True, "pid": record["pid"]}
+        monkeypatch.setattr(module, "windows_control", controller)
+        monkeypatch.setattr(module.os, "kill", lambda *_args: (_ for _ in ()).throw(AssertionError("Windows status must not signal a PID")))
+        expected_process = {"pid": record["pid"]}
+        expected_reads = {model_record}
+    else:
+        monkeypatch.setattr(module.os, "kill", lambda *_args: None)
+        monkeypatch.setattr(module.subprocess, "check_output", lambda *_args, **_kwargs: f"{module.interpreter()} -m liming_analyzer")
+        expected_process = record
+        expected_reads = {module.PID_FILE, model_record}
     original_read = Path.read_text
     reads = []
     def read(path, *args, **kwargs):
@@ -197,7 +209,9 @@ def test_worker_and_model_records_round_trip_utf8_paths(tmp_path, monkeypatch):
             reads.append(path)
         return original_read(path, *args, **kwargs)
     monkeypatch.setattr(Path, "read_text", read)
-    assert module.active_process() == record
+    assert module.active_process() == expected_process
     snapshot = module.readiness_snapshot()
     assert snapshot["modelsReady"] and snapshot["workerRunning"]
-    assert set(reads) == {module.PID_FILE, model_record}
+    assert set(reads) == expected_reads
+    if module.os.name == "nt":
+        assert controller_calls == [("status", None), ("status", None)]

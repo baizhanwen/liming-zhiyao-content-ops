@@ -14,20 +14,22 @@ def windows_os(monkeypatch, module):
 
 def test_windows_control_routes_to_project_controller_and_actual_web_url(tmp_path, monkeypatch):
     module = runtime_module()
-    isolate(module, tmp_path, monkeypatch)
+    installation = tmp_path / "中文 安装目录"
+    isolate(module, installation, monkeypatch)
     calls = []
 
     def run(command, **kwargs):
         calls.append((command, kwargs))
-        return SimpleNamespace(returncode=0, stdout=json.dumps({"workerRunning": True, "processRunning": True, "pid": 71}))
+        return SimpleNamespace(returncode=0, stdout=json.dumps({"workerRunning": True, "processRunning": True, "pid": 71, "message": "中文服务已就绪"}, ensure_ascii=False))
 
     monkeypatch.setattr(module.subprocess, "run", run)
     code, state = module.windows_control("start", "http://127.0.0.1:3100")
     assert code == 0 and state["pid"] == 71
+    assert state["message"] == "中文服务已就绪"
     command, options = calls[0]
     assert command == ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
-                       str(tmp_path / "scripts/analyzer-windows-control.ps1"), "-Action", "start", "-BaseUrl", "http://127.0.0.1:3100"]
-    assert options["cwd"] == tmp_path and options["encoding"] == "utf-8-sig"
+                       str(installation / "scripts/analyzer-windows-control.ps1"), "-Action", "start", "-BaseUrl", "http://127.0.0.1:3100"]
+    assert options["cwd"] == installation and options["encoding"] == "utf-8-sig"
     assert options["timeout"] <= 90
 
 

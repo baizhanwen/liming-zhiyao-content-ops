@@ -25,7 +25,8 @@ jobs:
           node-version: "24.19.0"
           cache: npm
           cache-dependency-path: program/package-lock.json
-      - run: npm ci --no-audit --no-fund
+      - id: dependencies
+        run: npm ci --no-audit --no-fund
       - name: Check Windows file publication and analyzer control
         run: |
           python -m venv .local/runtime-tests
@@ -38,4 +39,5 @@ jobs:
           & $testPython -m pytest services/analyzer/tests/test_analyzer_local_runtime.py services/analyzer/tests/test_analyzer_windows_control.py services/analyzer/tests/collector/test_adapter.py services/analyzer/tests/test_skill_collect_source.py -q
           if ($LASTEXITCODE -ne 0) { throw 'Windows file publication or analyzer control regression failed.' }
       - name: Verify Windows entry points and transfer fixtures
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         run: node --test tests/analyzer-collector-runtime.test.mjs tests/analyzer-environment-bridge.test.mjs tests/analyzer-windows-control.test.mjs tests/local-runtime-identity.test.mjs tests/local-port-isolation.test.mjs tests/runtime-configuration-startup.test.mjs tests/material-transfer-roundtrip.test.mjs

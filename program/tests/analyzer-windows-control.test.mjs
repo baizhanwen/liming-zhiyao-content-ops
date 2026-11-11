@@ -74,7 +74,7 @@ finally:
 `;
 
 async function fixture(t) {
-  const directory = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "lmzy-control-")));
+  const directory = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "lmzy-control-中文 目录-")));
   const installations = [path.join(directory, "app"), path.join(directory, "app-extra")];
   const workers = new Map();
   const web = createServer((request, response) => {
@@ -196,7 +196,7 @@ test("Windows control keeps similar installation paths independent", { skip: !wi
 });
 
 test("Windows process ownership rejects a recycled creation time and foreign command path without stopping either process", { skip: !windows, timeout: 90_000 }, async t => {
-  const directory = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "lmzy-owner-")));
+  const directory = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "lmzy-owner-中文 目录-")));
   const first = path.join(directory, "app");
   const second = path.join(directory, "app-extra");
   for (const installation of [first, second]) copyRuntime(installation);
