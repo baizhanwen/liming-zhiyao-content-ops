@@ -89,18 +89,17 @@ async function fixture(t) {
   await new Promise(resolve => web.listen(0, "127.0.0.1", resolve));
   const baseUrl = `http://127.0.0.1:${web.address().port}`;
   t.after(async () => {
-    for (const installation of installations) {
-      if (existsSync(path.join(installation, "scripts/analyzer-windows-control.ps1"))) {
-        const stopped = await control(installation, "stop", baseUrl);
-        assert.equal(stopped.code, 0, JSON.stringify(stopped));
-        // The stdlib worker notices its supervisor's exit on its next poll.
-        // Wait for that exit before removing its Windows working directory.
-        const marker = path.join(installation, ".local/synthetic-worker.json");
-        for (let attempt = 0; attempt < 100 && existsSync(marker); attempt++) await pause(50);
-        assert.equal(existsSync(marker), false, "Fixture worker survived its supervisor");
+    try {
+      for (const installation of installations) {
+        if (existsSync(path.join(installation, "scripts/analyzer-windows-control.ps1"))) {
+          const stopped = await control(installation, "stop", baseUrl);
+          assert.equal(stopped.code, 0, JSON.stringify(stopped));
+        }
       }
-    }
-    await new Promise(resolve => web.close(resolve));
+    } finally { await new Promise(resolve => web.close(resolve)); }
+    // A legacy worker is deliberately terminated without executing its Python
+    // finally block. Its marker can remain after exit; async removal retries
+    // Windows directory locks while the owned processes finish closing.
     await rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   });
   for (const [index, installation] of installations.entries()) {
