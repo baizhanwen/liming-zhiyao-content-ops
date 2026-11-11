@@ -4,6 +4,45 @@
 The taxonomy JSON beside this file is the shared Python/TypeScript source of IDs.
 Neither v9 prose nor user asset tags are converted into these classifications.
 
+## Compact unified-production entry
+
+`build_content_analysis_bundle(..., max_workers=1, on_module_checkpoint=None,
+resume_modules=None, transcript_basis="canonical")` returns
+`{content_analysis, findings_by_module, module_results}`. The legacy
+`build_content_analysis` callback and return contract below remain unchanged.
+The compact entry uses `content-module-wire.v1`, implemented in
+`content_module_protocol.py`; the public lazy SDK schema factory is
+`create_compact_response_model(module_key)`.
+
+Wire output is `{c, g, u, f}`: classifications use request-local numeric dimension,
+tag and evidence indices; segment and finding kinds use their module tables.
+The decoder restores stable IDs and derives segment times from original cited
+source envelopes. The model never generates evidence IDs, frame paths, times,
+measurement values or a repeated long report. Segments and information units
+are bounded separately per module; visual has neither and synthesis has at most
+one reusable template. Findings are bounded to at most six per module and each
+must reference actual semantic source evidence. Visual findings require vision,
+not OCR or a timing-group record alone. Input/output caps are shared under
+`taxonomy.budgets.standard/max.compact`.
+
+The stored `content_analysis` shape remains `content-analysis.v1`; its methodology
+adds optional `transcript_basis: "canonical" | "original"`. Metrics should be
+supplied from original pre-correction ASR measurements, while semantic modules use
+the validated canonical transcript. Findings remain outside this stored object:
+`findings_by_module[module] = [{section, text, evidence_ids}]`.
+
+Successful module cache entries are
+`{signature, status: "completed", validation: {passed: true, issues: []},
+response: {classifications, segments, information_units}, findings}`. Signatures
+bind the exact compact input, profile and protocol; the caller additionally binds
+source/model/prompt/taxonomy in the enclosing checkpoint. Restore revalidates
+every classification, source reference and finding; a status flag alone is never
+trusted. Failed modules are not checkpointed. Checkpoint acknowledgements run on
+the caller thread before submitting additional work. First three modules have at
+most two requests in flight; synthesis runs last. Failed or unavailable upstream
+modules defer synthesis without a paid request; explicit not-applicable modules
+(for example an audio-only file's visual module) do not block it.
+
 ## Stored object
 
 ```text

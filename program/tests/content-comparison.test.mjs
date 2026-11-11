@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { runtimeFixture } from "./helpers/runtime-fixture.mjs";
-import { analysisReportFixture, contentAnalysisFixture, setKnown } from "./helpers/content-analysis-fixture.mjs";
+import { analysisReportFixture, contentAnalysisFixture, setKnown, unifiedAnalysisReportFixture } from "./helpers/content-analysis-fixture.mjs";
 import { contentTaxonomy } from "../lib/video-content-analysis.ts";
 
 async function fixture(t) {
@@ -28,6 +28,23 @@ async function fixture(t) {
   const invoke = (entryIds, extra = {}) => f.load("app/api/video-library/content-comparison/route.ts").POST(new Request("http://localhost/api/video-library/content-comparison", { method: "POST", body: JSON.stringify({ organizationId: owner.organizationId, scope: "library", entryIds, ...extra }), headers: { "Content-Type": "application/json" } }));
   return { ...f, owner, project, entry, report, reference, invoke, logout: () => { signedIn = false; }, revoke: () => { allowed = false; } };
 }
+
+test("comparison accepts both v10 and v11 and snapshots actual revisions without mixing transcript bases", async t => {
+  const f = await fixture(t), a = f.entry("v10"), b = f.entry("v11"), v11 = unifiedAnalysisReportFixture();
+  f.report(a, "accepted-v10");
+  f.report(b, "accepted-v11", v11, "analysis.v11");
+  const response = await f.invoke([a.entryId, b.entryId]); assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.equal(result.summary.includedVideos, 2); assert.equal(result.snapshot.analysisSchemaVersion, "mixed");
+  assert.deepEqual(result.snapshot.analysisSchemaVersions, ["analysis.v10", "analysis.v11"]);
+  assert.deepEqual(result.snapshot.analyses.map(row => row.schemaVersion).sort(), ["analysis.v10", "analysis.v11"]);
+  assert.equal(result.groupings.length, 2); assert.deepEqual(result.distributions, []);
+  assert.deepEqual(result.groupings.map(row => row.transcriptBasis).sort(), ["canonical", "original"]);
+  const broken = structuredClone(v11); delete broken.unified_report;
+  f.report(b, "newer-unaccepted-v11", broken, "analysis.v11", "2099-01-01");
+  const fallback = await (await f.invoke([a.entryId, b.entryId])).json();
+  assert.equal(fallback.entries.find(row => row.entryId === b.entryId).analysisId, "accepted-v11");
+});
 
 test("comparison requires authentication and explicit deduplicated 2–100 selection", async t => {
   const f = await fixture(t), a = f.entry(1), b = f.entry(2);

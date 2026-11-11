@@ -6,7 +6,7 @@ on:
       release_tag:
         description: "New full-v release tag (must have matching release notes)"
         required: true
-        default: "full-v20261111.6"
+        default: "full-v20261111.7"
         type: string
   push:
     tags:
@@ -59,8 +59,8 @@ jobs:
           $env:PYTHONPATH = Join-Path (Get-Location) 'services/analyzer'
           & $testPython -m pytest services/analyzer/tests/test_analyzer_local_runtime.py services/analyzer/tests/test_analyzer_windows_control.py services/analyzer/tests/test_prepare_analyzer_models.py services/analyzer/tests/collector/test_adapter.py services/analyzer/tests/test_skill_collect_source.py -q
           if ($LASTEXITCODE -ne 0) { throw 'Python runtime isolation tests failed.' }
-          & $testPython -m pytest services/analyzer/tests/test_content_analysis.py services/analyzer/tests/test_content_metrics.py services/analyzer/tests/test_no_audio_content.py services/analyzer/tests/test_content_provider_integration.py services/analyzer/tests/test_content_packaging.py services/analyzer/tests/test_visual_evidence.py services/analyzer/tests/test_ffmpeg.py services/analyzer/tests/test_minimax_vision.py services/analyzer/tests/test_minimax_flash_compat.py services/analyzer/tests/test_providers.py services/analyzer/tests/test_correction_token_retry.py services/analyzer/tests/test_model_calls.py -q
-          if ($LASTEXITCODE -ne 0) { throw 'Windows v10 content analysis or wheel resource regression failed.' }
+          & $testPython -m pytest services/analyzer/tests/test_canonical_transcript.py services/analyzer/tests/test_content_module_protocol.py services/analyzer/tests/test_unified_analysis.py services/analyzer/tests/test_vision_batch_runtime.py services/analyzer/tests/test_visual_overlap.py services/analyzer/tests/test_pipeline_checkpoint_synchronization.py services/analyzer/tests/test_unified_manual_batching.py services/analyzer/tests/test_content_analysis.py services/analyzer/tests/test_content_metrics.py services/analyzer/tests/test_no_audio_content.py services/analyzer/tests/test_content_provider_integration.py services/analyzer/tests/test_content_packaging.py services/analyzer/tests/test_visual_evidence.py services/analyzer/tests/test_ffmpeg.py services/analyzer/tests/test_minimax_vision.py services/analyzer/tests/test_minimax_flash_compat.py services/analyzer/tests/test_providers.py services/analyzer/tests/test_correction_token_retry.py services/analyzer/tests/test_model_calls.py -q
+          if ($LASTEXITCODE -ne 0) { throw 'Windows unified content analysis or wheel resource regression failed.' }
       - name: Check source and run regression tests
         working-directory: program
         run: npm test

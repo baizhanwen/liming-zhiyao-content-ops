@@ -8,14 +8,24 @@ import os
 import re
 import sys
 import tempfile
+import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from .adapters import Keyframe, VisualObservation
+from .model_calls import ModelCalls, exception_usage
 from .vision_capabilities import normalize_minimax_token_plan_host
-from .visual import VISUAL_EVIDENCE_INSTRUCTIONS, temporal_groups_in_batch, vision_batch_indices
+from .visual import (
+    VISUAL_EVIDENCE_INSTRUCTIONS,
+    temporal_groups_in_batch,
+    vision_batch_indices,
+    vision_usage,
+    vision_usage_totals,
+)
 
 _SECRET_PATTERN = re.compile(r"sk-cp[-_A-Za-z0-9]{8,}", re.IGNORECASE)
 _TRACE_PATTERN = re.compile(r"(?:trace[-_ ]?id|request[-_ ]?id)\s*[:=]\s*([A-Za-z0-9._:-]+)", re.IGNORECASE)
@@ -93,6 +103,23 @@ class McpVisionCallResult:
     request_id: str | None = None
     error_type: str | None = None
     message: str | None = None
+    usage: Any = None
+    elapsed_ms: int | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+
+
+class _McpCallFailure(RuntimeError):
+    def __init__(self, result: McpVisionCallResult):
+        super().__init__(result.message or "MCP vision tool failed")
+        self.result = result
+        self.total_usage = result.usage
+
+
+def _overloaded(result: Any) -> bool:
+    return bool(getattr(result, "is_error", False) and re.search(
+        r"\b(?:429|503|529|2064)\b|rate.?limit|overload|限流|负载较高",
+        str(getattr(result, "message", "") or getattr(result, "text", "")), re.IGNORECASE))
 
 
 @dataclass(frozen=True)
@@ -111,32 +138,36 @@ async def _run_bounded_calls(
     operation: Callable[[Mapping[str, str]], Awaitable[Any]],
     on_progress: Callable[[int, int], None] | None = None,
 ) -> list[Any]:
-    semaphore = asyncio.Semaphore(concurrency)
-
-    async def run_one(
-        index: int,
-        request: Mapping[str, str],
-    ) -> tuple[int, Any]:
-        async with semaphore:
-            return index, await operation(request)
-
-    tasks = [
-        asyncio.create_task(run_one(index, request))
-        for index, request in enumerate(requests)
-    ]
-    results: list[Any] = [None] * len(tasks)
+    active: dict[Any, int] = {}
+    results: list[Any] = [None] * len(requests)
     completed = 0
+    next_index = 0
+    effective_concurrency = min(2, concurrency)
+    cooldown = 0.0
     try:
-        for task in asyncio.as_completed(tasks):
-            index, result = await task
-            results[index] = result
-            completed += 1
-            if on_progress is not None:
-                on_progress(completed, len(tasks))
+        while active or next_index < len(requests):
+            if not active and cooldown > time.monotonic():
+                await asyncio.sleep(cooldown - time.monotonic())
+            while next_index < len(requests) and len(active) < effective_concurrency and time.monotonic() >= cooldown:
+                active[asyncio.create_task(operation(requests[next_index]))] = next_index
+                next_index += 1
+            if not active:
+                continue
+            done, _ = await asyncio.wait(active, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                index = active.pop(task)
+                result = await task
+                results[index] = result
+                completed += 1
+                if _overloaded(result):
+                    effective_concurrency = 1
+                    cooldown = max(cooldown, time.monotonic() + 1.0)
+                if on_progress is not None:
+                    on_progress(completed, len(requests))
     except BaseException:
-        for task in tasks:
+        for task in active:
             task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*active, return_exceptions=True)
         raise
     return results
 
@@ -162,6 +193,35 @@ class MiniMaxTokenPlanMcpRunner:
         self.timeout_seconds = timeout_seconds
         self.concurrency = concurrency
         self.command = command or sys.executable
+        self._model_calls = None
+
+    def set_call_context(self, job, recorder=None) -> None:
+        self._model_calls = ModelCalls(job, recorder)
+
+    async def _recorded_call(self, operation) -> McpVisionCallResult:
+        begin = time.monotonic()
+        started_at = datetime.now(UTC).isoformat()
+        try:
+            if self._model_calls is None:
+                result = await operation()
+            else:
+                loop = asyncio.get_running_loop()
+
+                def invoke():
+                    def provider_operation():
+                        result = asyncio.run_coroutine_threadsafe(operation(), loop).result()
+                        if result.is_error:
+                            raise _McpCallFailure(result)
+                        return result, SimpleNamespace(usage=result.usage)
+                    # This provider does not expose an output limit. None is
+                    # stored as the ledger's explicit unknown-budget sentinel.
+                    return self._model_calls.invoke("vision_batch", None, provider_operation)[0]
+                result = await asyncio.to_thread(invoke)
+        except _McpCallFailure as error:
+            result = error.result
+        except Exception as error:  # noqa: BLE001 - tool failures remain independent batch diagnostics
+            result = McpVisionCallResult("", is_error=True, response_type="exception", error_type=type(error).__name__, message=_safe_message(error), usage=exception_usage(error))
+        return replace(result, elapsed_ms=round((time.monotonic() - begin) * 1000), started_at=started_at, completed_at=datetime.now(UTC).isoformat())
 
     def call_many(
         self,
@@ -180,7 +240,7 @@ class MiniMaxTokenPlanMcpRunner:
             return asyncio.run(self._call_many(
                 requests,
                 on_progress=on_progress,
-                concurrency=effective_concurrency,
+                concurrency=min(2, effective_concurrency),
             ))
         raise RuntimeError("MiniMax MCP runner cannot start inside an existing asyncio event loop")
 
@@ -237,7 +297,7 @@ class MiniMaxTokenPlanMcpRunner:
                     async def call_one(
                         request: Mapping[str, str],
                     ) -> McpVisionCallResult:
-                        try:
+                        async def perform_request():
                             response = await session.call_tool(
                                 "understand_image",
                                 {
@@ -267,21 +327,17 @@ class MiniMaxTokenPlanMcpRunner:
                                 request_id=_request_id(text),
                                 error_type="MCPToolError" if is_error else None,
                                 message=_safe_message(text) if is_error else None,
+                                usage=getattr(response, "usage", None) or (
+                                    response.structuredContent.get("usage") if isinstance(getattr(response, "structuredContent", None), Mapping) else None),
                             )
-                        except Exception as error:  # noqa: BLE001 - each batch remains independently retryable
-                            return McpVisionCallResult(
-                                text="",
-                                is_error=True,
-                                response_type="exception",
-                                error_type=type(error).__name__,
-                                message=_safe_message(error),
-                            )
+                        return await self._recorded_call(perform_request)
                     results = await _run_bounded_calls(
                         requests,
                         concurrency=concurrency,
                         operation=call_one,
                         on_progress=on_progress,
                     )
+                    metadata["effective_concurrency"] = 1 if any(_overloaded(result) for result in results) else min(2, concurrency)
                     return results, metadata
         except Exception as error:
             stderr_buffer.flush()
@@ -297,6 +353,8 @@ class MiniMaxTokenPlanMcpRunner:
 
 class MiniMaxTokenPlanMcpVisionEngine:
     """Analyze numbered contact sheets through MiniMax Token Plan understand_image."""
+
+    supports_ocr_overlap = True  # Contact sheets/manifests do not consume OCR.
 
     def __init__(
         self,
@@ -335,6 +393,11 @@ class MiniMaxTokenPlanMcpVisionEngine:
         callback: Callable[[Mapping[str, Any]], None] | None,
     ) -> None:
         self._progress_callback = callback
+
+    def set_call_context(self, job, recorder=None) -> None:
+        setter = getattr(self.runner, "set_call_context", None)
+        if callable(setter):
+            setter(job, recorder)
 
     def _notify_progress(self, progress: Mapping[str, Any]) -> None:
         if self._progress_callback is not None:
@@ -455,11 +518,16 @@ class MiniMaxTokenPlanMcpVisionEngine:
         result: McpVisionCallResult,
     ) -> tuple[dict[int, VisualObservation], dict[str, Any], list[dict[str, Any]]]:
         record: dict[str, Any] = {
+            "index": batch.batch_index,
             "batch": batch.batch_index,
             "attempt": batch.attempt,
             "frame_count": len(batch.refs),
             "response_type": result.response_type,
             "request_id": result.request_id,
+            "elapsed_ms": result.elapsed_ms, "started_at": result.started_at, "completed_at": result.completed_at,
+            "failure_kind": "overloaded" if _overloaded(result) else "provider_error" if result.is_error else None,
+            "output_budget": None,
+            **vision_usage(result),
         }
         if result.is_error:
             record.update({"status": "failed", "understood_count": 0, "missing_count": len(batch.refs)})
@@ -517,13 +585,14 @@ class MiniMaxTokenPlanMcpVisionEngine:
                 )
             missing_count = len(batch.refs) - len(observations)
             record.update({
-                "status": "completed" if missing_count == 0 else "partial",
+                "status": "completed" if missing_count == 0 else "failed",
+                "failure_kind": "incomplete_response" if missing_count else None,
                 "understood_count": len(observations),
                 "missing_count": missing_count,
             })
             return observations, record, []
         except Exception as error:  # noqa: BLE001 - invalid provider output remains diagnosable and retryable
-            record.update({"status": "failed", "understood_count": 0, "missing_count": len(batch.refs)})
+            record.update({"status": "failed", "understood_count": 0, "missing_count": len(batch.refs), "failure_kind": "invalid_response"})
             return {}, record, [self._diagnostic(
                 batch=batch,
                 stage="response_parse",
@@ -565,7 +634,7 @@ class MiniMaxTokenPlanMcpVisionEngine:
         results, metadata = self.runner.call_many(
             requests,
             on_progress=on_progress,
-            concurrency=1 if attempt > 1 else self.concurrency,
+            concurrency=1 if attempt > 1 else min(2, self.concurrency),
         )
         observations: dict[int, VisualObservation] = {}
         records: list[dict[str, Any]] = []
@@ -591,6 +660,7 @@ class MiniMaxTokenPlanMcpVisionEngine:
         return observations, records, errors, metadata, successful_responses
 
     def analyze(self, frames: Sequence[Keyframe]) -> Sequence[VisualObservation]:
+        started = time.monotonic()
         if not frames:
             self.last_stats = {
                 "status": "failed",
@@ -639,20 +709,17 @@ class MiniMaxTokenPlanMcpVisionEngine:
 
         missing_refs = [ref for ref in refs if ref[0] not in observations]
         throttled = any(
-            error.get("http_status") == 429
-            or error.get("provider_code") == 429
+            error.get("http_status") in {429, 503, 529}
+            or error.get("provider_code") in {429, 503, 529, 2064}
             or any(
                 marker in str(error.get("message") or "").casefold()
-                for marker in ("rate limit", "too many requests", "限流")
+                for marker in ("rate limit", "too many requests", "限流", "负载较高", "overload")
             )
             for error in errors
         )
         if missing_refs and (successful_responses > 0 or throttled):
             retry_frame_count = len(missing_refs)
-            retry_groups = [
-                missing_refs[index:index + self.batch_size]
-                for index in range(0, len(missing_refs), self.batch_size)
-            ]
+            retry_groups = [[missing_refs[index] for index in indices] for indices in vision_batch_indices([ref[1] for ref in missing_refs], self.batch_size)]
             retry = self._prepare(retry_groups, attempt=2)
             try:
                 before = len(observations)
@@ -730,6 +797,7 @@ class MiniMaxTokenPlanMcpVisionEngine:
             "failed_batches": len(initial_groups) - completed_batches,
             "contact_sheet_count": request_count,
             "request_count": request_count,
+            "elapsed_ms": round((time.monotonic() - started) * 1000),
             "retry_frame_count": retry_frame_count,
             "serial_retry": bool(retry_frame_count),
             "recovered_frame_count": recovered_frame_count,
@@ -740,6 +808,9 @@ class MiniMaxTokenPlanMcpVisionEngine:
             "coverage_threshold_percent": threshold,
             "observation_count": len(ordered),
             "batches": records,
+            "output_budget": None,
+            "effective_concurrency": metadata.get("effective_concurrency", min(2, self.concurrency)),
+            **vision_usage_totals(records),
             "errors": errors[:20],
         }
         return tuple(ordered)

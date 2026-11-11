@@ -3,7 +3,7 @@ import { apiError, errorResponse } from "../../../../../../lib/api-response";
 import { LEASED_ANALYSIS_STATUSES_SQL } from "../../../../../../lib/analysis-jobs";
 import { normalizeWorkerId, requireAnalyzerService } from "../../../../../../lib/service-auth";
 
-const tasks = new Set(["report", "report_continuation", "corrected_original", "light_rewrite", "restructure_plan", "restructure_section", "insight_evidence",
+const tasks = new Set(["canonical_transcript", "vision_batch", "report", "report_continuation", "corrected_original", "light_rewrite", "restructure_plan", "restructure_section", "insight_evidence",
   "content_classification:text_topic_structure_audience", "content_classification:text_expression_value",
   "content_classification:visual", "content_classification:synthesis"]);
 const counter = (value: unknown) => value === null || value === undefined ? null : Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= 1_000_000_000 ? Number(value) : undefined;
@@ -14,10 +14,12 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     const payload = await request.json() as Record<string, unknown>;
     const workerId = normalizeWorkerId(payload.workerId);
     const { id, task, status, attempt, outputBudget } = payload;
+    // Only the MCP vision runner lacks an exposed output cap. Its internal 0
+    // sentinel means unknown, never a measured zero; report diagnostics use null.
     const input = counter(payload.inputTokens), output = counter(payload.outputTokens), total = counter(payload.totalTokens);
     if (!workerId || typeof id !== "string" || !/^[a-zA-Z0-9:-]{16,100}$/.test(id) || typeof task !== "string" || !tasks.has(task)
       || !["started", "completed", "failed"].includes(String(status)) || !Number.isSafeInteger(attempt) || Number(attempt) < 1
-      || !Number.isSafeInteger(outputBudget) || Number(outputBudget) < 1 || Number(outputBudget) > 1_000_000
+      || !Number.isSafeInteger(outputBudget) || Number(outputBudget) < (task === "vision_batch" ? 0 : 1) || Number(outputBudget) > 1_000_000
       || input === undefined || output === undefined || total === undefined) return apiError("INVALID_MODEL_CALL", "模型调用记录格式无效。", 400);
     const { jobId } = await context.params, db = getD1(), now = new Date().toISOString();
     // The ownership condition is part of the write, preventing a cancelled or

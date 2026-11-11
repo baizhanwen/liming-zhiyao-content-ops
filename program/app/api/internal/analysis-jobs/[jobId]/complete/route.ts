@@ -1,3 +1,4 @@
+import { readEvidenceCheckpoint, parseAnalysisModuleRetryKeys } from "../../../../../../lib/analysis-module-retry";
 import { getD1 } from "../../../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../../../lib/api-response";
 import { parseCompletionPayload, type WorkerJobRow } from "../../../../../../lib/analysis-worker";
@@ -61,6 +62,7 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
             ...checkpoint,
             previous_spoken_script_set: previousSpokenScriptSet,
             retry_script_version: null,
+            retry_module_keys: null,
           });
           if (augmented.length <= 1_000_000) {
             partialCheckpointStage = job.checkpoint_stage === "segment_progress" ? "segment_progress" : "evidence_ready";
@@ -80,13 +82,18 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
       db.prepare("UPDATE analysis_jobs SET status = ?, progress = 100, current_stage = ?, error_code = ?, error_message = ?, completed_at = ?, last_progress_at = ?, lease_owner = NULL, lease_expires_at = NULL, result_key = ?, checkpoint_stage = ?, checkpoint_json = ?, checkpoint_updated_at = ?, version = version + 1, updated_by = ?, updated_at = ? WHERE id = ? AND status = 'analyzing' AND lease_owner = ? AND version = ? AND lease_expires_at > ?")
         .bind(finalStatus, finalStage, finalStatus === "partial" ? "ANALYSIS_PARTIAL" : null, partialMessage, nowIso, nowIso, payload.resultKey, partialCheckpointStage, partialCheckpointJson, partialCheckpointJson ? nowIso : null, actor, nowIso, jobId, payload.workerId, payload.version, nowIso),
     ];
+    const resumedCheckpoint = readEvidenceCheckpoint(job.checkpoint_json);
+    const reuseIdenticalRawTranscript = !job.input_transcript_id && Boolean(resumedCheckpoint && parseAnalysisModuleRetryKeys(resumedCheckpoint.retry_module_keys));
     if (payload.transcript) {
       statements.push(db.prepare(`
         INSERT INTO video_transcripts (id, organization_id, project_id, video_id, version, language, source, full_text, segments_json, confidence, created_by, created_at, updated_at)
         SELECT ?, j.organization_id, j.project_id, j.video_id, (SELECT COALESCE(MAX(t.version), 0) + 1 FROM video_transcripts t WHERE t.video_id = j.video_id), ?, CASE WHEN j.input_transcript_id IS NULL THEN 'asr' ELSE 'manual' END, ?, ?, ?, ?, ?, ?
         FROM analysis_jobs j INNER JOIN videos v ON v.id = j.video_id AND v.organization_id = j.organization_id AND v.project_id = j.project_id
         WHERE j.id = ? AND j.status IN ('completed', 'partial') AND j.result_key = ? AND j.version = ?
-      `).bind(crypto.randomUUID(), payload.transcript.language, payload.transcript.fullText, payload.transcript.segmentsJson, payload.transcript.confidence, actor, nowIso, nowIso, jobId, payload.resultKey, finalVersion));
+          AND (? = 0 OR NOT EXISTS (SELECT 1 FROM video_transcripts t WHERE t.organization_id=j.organization_id AND t.project_id=j.project_id
+            AND t.video_id=j.video_id AND t.source='asr' AND t.language=? AND t.full_text=? AND t.segments_json=? AND t.confidence IS ?))
+      `).bind(crypto.randomUUID(), payload.transcript.language, payload.transcript.fullText, payload.transcript.segmentsJson, payload.transcript.confidence, actor, nowIso, nowIso, jobId, payload.resultKey, finalVersion,
+        reuseIdenticalRawTranscript ? 1 : 0, payload.transcript.language, payload.transcript.fullText, payload.transcript.segmentsJson, payload.transcript.confidence));
     }
     if (payload.sourceMetadata) {
       const source = payload.sourceMetadata;

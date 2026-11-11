@@ -58,6 +58,22 @@
         "text_expression_value": 4500,
         "visual": 3500,
         "synthesis": 1800
+      },
+      "compact": {
+        "input_token_limit": 6000,
+        "sdk_schema_reserve_tokens": 700,
+        "token_estimate_method": "cjk_one_other_four.v1",
+        "initial_output_tokens": 3000,
+        "initial_output_tokens_by_module": {
+          "text_expression_value": 4500
+        },
+        "max_api_attempts_per_module": 2,
+        "modules": {
+          "text_topic_structure_audience": 6000,
+          "text_expression_value": 6000,
+          "visual": 6000,
+          "synthesis": 6000
+        }
       }
     },
     "max": {
@@ -71,6 +87,22 @@
         "text_expression_value": 6000,
         "visual": 4500,
         "synthesis": 2600
+      },
+      "compact": {
+        "input_token_limit": 12000,
+        "sdk_schema_reserve_tokens": 700,
+        "token_estimate_method": "cjk_one_other_four.v1",
+        "initial_output_tokens": 4500,
+        "initial_output_tokens_by_module": {
+          "text_expression_value": 6000
+        },
+        "max_api_attempts_per_module": 2,
+        "modules": {
+          "text_topic_structure_audience": 6000,
+          "text_expression_value": 6000,
+          "visual": 6000,
+          "synthesis": 6000
+        }
       }
     }
   },

@@ -518,7 +518,9 @@ class ProviderTests(unittest.TestCase):
                 NormalizedMedia(Path("video.mp4"), None, MediaInfo(6_000, 64, 64, "h264", "aac")),
                 Path(directory),
             )
-        self.assertEqual([row["candidates_checked"] for row in blocked_snapshots], [0, 1, 3])
+        # Image-only filtering now finishes before OCR/VLM can overlap. Those
+        # checks are complete while the separate OCR counters remain honest.
+        self.assertEqual([row["candidates_checked"] for row in blocked_snapshots], [4, 4, 4])
         self.assertEqual([row["ocr_completed"] for row in blocked_snapshots], [0, 1, 2])
         actual = analyzer.progress_snapshot()
         self.assertEqual(actual["candidates_checked"], 4)

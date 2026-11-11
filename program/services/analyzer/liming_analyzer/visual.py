@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 from collections.abc import Mapping, Sequence
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import replace
+from datetime import UTC, datetime
 from itertools import pairwise
 from pathlib import Path
 from threading import Lock
@@ -12,6 +15,7 @@ from typing import Any, Protocol
 from .adapters import Keyframe, NormalizedMedia, VisualObservation, VisualOutput
 from .evidence import deduplicate_timed_rows, is_useful_ocr
 from .ffmpeg import FfmpegFrameExtractor
+from .model_calls import ModelCalls, exception_usage, usage_counts
 from .model_compat import completion_options, is_minimax_flash
 
 
@@ -27,6 +31,35 @@ class VisionEngine(Protocol):
     last_stats: Mapping[str, Any]
 
     def analyze(self, frames: Sequence[Keyframe]) -> Sequence[VisualObservation]: ...
+
+
+def vision_usage(value: Any) -> dict[str, int | None]:
+    usage = value.get("usage") if isinstance(value, Mapping) else getattr(value, "usage", None)
+    counts = usage_counts(usage)
+    details = usage.get("completion_tokens_details") if isinstance(usage, Mapping) else getattr(usage, "completion_tokens_details", None)
+    reasoning = details.get("reasoning_tokens") if isinstance(details, Mapping) else getattr(details, "reasoning_tokens", None)
+    return {"input_tokens": counts.get("inputTokens"), "output_tokens": counts.get("outputTokens"),
+            "total_tokens": counts.get("totalTokens"),
+            "reasoning_tokens": reasoning if isinstance(reasoning, int) and not isinstance(reasoning, bool) and reasoning >= 0 else None}
+
+
+def vision_usage_totals(records: Sequence[Mapping[str, Any]]) -> dict[str, int | None]:
+    result = {}
+    for field, target in (("input_tokens", "total_input_tokens"), ("output_tokens", "total_output_tokens"), ("total_tokens", "total_tokens")):
+        values = [record.get(field) for record in records]
+        result[target] = sum(values) if values and all(isinstance(value, int) and not isinstance(value, bool) for value in values) else None
+    return result
+
+
+def _failure_kind(error: Exception) -> str:
+    status = getattr(error, "status_code", None) or getattr(getattr(error, "response", None), "status_code", None)
+    if status in {429, 503, 529}:
+        return "overloaded"
+    if isinstance(error, TimeoutError) or "timeout" in type(error).__name__.lower():
+        return "timeout"
+    if isinstance(error, (ValueError, TypeError, json.JSONDecodeError)):
+        return "invalid_response"
+    return "provider_error"
 
 
 def vision_batch_indices(frames: Sequence[Keyframe], batch_size: int) -> list[list[int]]:
@@ -152,6 +185,8 @@ def _strip_json_fence(value: str) -> str:
 class OpenAiCompatibleVisionEngine:
     """Analyze representative frames with an API isolated from OCR and structure analysis."""
 
+    supports_ocr_overlap = True  # Prompts/images never read OCR text or confidence.
+
     def __init__(
         self,
         *,
@@ -161,6 +196,8 @@ class OpenAiCompatibleVisionEngine:
         provider: str,
         batch_size: int = 6,
         max_output_tokens: int = 4_800,
+        concurrency: int = 2,
+        overload_backoff_seconds: float = 1.0,
         prompt_version: str = "video-vision.v2",
         client: Any | None = None,
     ) -> None:
@@ -168,12 +205,14 @@ class OpenAiCompatibleVisionEngine:
             raise ValueError("vision API key is required")
         if batch_size < 1 or batch_size > 16:
             raise ValueError("vision batch size must be between 1 and 16")
+        if concurrency not in {1, 2} or overload_backoff_seconds < 0:
+            raise ValueError("vision concurrency must be 1 or 2 and backoff cannot be negative")
         if client is None:
             try:
                 from openai import OpenAI
             except ImportError as error:
                 raise RuntimeError("OpenAI SDK is required for visual understanding") from error
-            client = OpenAI(api_key=api_key, base_url=base_url)
+            client = OpenAI(api_key=api_key, base_url=base_url, max_retries=0, timeout=120)
         self.client = client
         self.model = model
         self.provider = provider
@@ -181,6 +220,20 @@ class OpenAiCompatibleVisionEngine:
         self.max_output_tokens = max_output_tokens
         self.prompt_version = prompt_version
         self.last_stats: dict[str, Any] = {}
+        self.concurrency = concurrency
+        self.overload_backoff_seconds = overload_backoff_seconds
+        self._progress_callback = None
+        self._model_calls = None
+
+    def set_progress_callback(self, callback) -> None:
+        self._progress_callback = callback
+
+    def set_call_context(self, job, recorder=None) -> None:
+        self._model_calls = ModelCalls(job, recorder)
+
+    def _notify_progress(self, progress: Mapping[str, Any]) -> None:
+        if self._progress_callback is not None:
+            self._progress_callback(dict(progress))
 
     def _request_batch(
         self,
@@ -188,6 +241,7 @@ class OpenAiCompatibleVisionEngine:
         *,
         batch_index: int,
         batch_count: int,
+        batch_record: dict[str, Any] | None = None,
     ) -> list[VisualObservation]:
         temporal_groups = temporal_groups_in_batch(batch)
         frame_manifest = [
@@ -240,7 +294,12 @@ class OpenAiCompatibleVisionEngine:
             kwargs["response_format"] = {"type": "json_object"}
         if self.provider.strip().lower() == "deepseek":
             kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
-        response = self.client.chat.completions.create(**kwargs)
+        def operation():
+            response = self.client.chat.completions.create(**kwargs)
+            return response, response
+        response, _raw = self._model_calls.invoke("vision_batch", self.max_output_tokens, operation) if self._model_calls is not None else operation()
+        if batch_record is not None:
+            batch_record.update(vision_usage(response))
         payload = _json_object(_completion_text(response))
         raw_observations = payload.get("observations")
         if not isinstance(raw_observations, Sequence) or isinstance(raw_observations, (str, bytes)):
@@ -251,7 +310,7 @@ class OpenAiCompatibleVisionEngine:
             if not isinstance(raw, Mapping):
                 continue
             frame_index = raw.get("frame_index")
-            if not isinstance(frame_index, int) or not 1 <= frame_index <= len(batch) or frame_index in seen:
+            if not isinstance(frame_index, int) or isinstance(frame_index, bool) or not 1 <= frame_index <= len(batch) or frame_index in seen:
                 continue
             seen.add(frame_index)
             frame = batch[frame_index - 1]
@@ -300,19 +359,77 @@ class OpenAiCompatibleVisionEngine:
         batches = [[frames[index] for index in indices] for indices in vision_batch_indices(frames, self.batch_size)]
         observations: list[VisualObservation] = []
         errors: list[dict[str, Any]] = []
-        completed_batches = 0
-        for index, batch in enumerate(batches, start=1):
+        records: list[dict[str, Any]] = []
+        terminal: set[int] = set()
+        succeeded: set[int] = set()
+        queue = [(index, 1) for index in range(len(batches))]
+        effective_concurrency = self.concurrency
+        retry_remaining = 1  # One shared overload retry; never N unbounded paid retries.
+        cooldown = 0.0
+        started = time.monotonic()
+
+        def notify():
+            self._notify_progress({"phase": "vision", "batch_completed": len(terminal), "batch_total": len(batches),
+                                   "concurrency": effective_concurrency, "request_count": len(records),
+                                   "backoff_seconds": max(0, round(cooldown - time.monotonic(), 2))})
+
+        def run(index, attempt):
+            record = {"index": index + 1, "attempt": attempt, "started_at": datetime.now(UTC).isoformat(),
+                      "output_budget": self.max_output_tokens,
+                      "input_tokens": None, "output_tokens": None, "total_tokens": None, "reasoning_tokens": None,
+                      "status": "failed", "failure_kind": None}
+            begin = time.monotonic()
             try:
-                observations.extend(
-                    self._request_batch(batch, batch_index=index, batch_count=len(batches))
-                )
-                completed_batches += 1
-            except Exception as error:  # noqa: BLE001 - failure is recorded as partial evidence
-                errors.append({
-                    "batch": index,
-                    "error_type": type(error).__name__,
-                    "message": str(error)[:300],
-                })
+                rows = self._request_batch(batches[index], batch_index=index + 1, batch_count=len(batches), batch_record=record)
+                if len(rows) != len(batches[index]):
+                    record["failure_kind"] = "incomplete_response"
+                    return rows, record, {"batch": index + 1, "attempt": attempt, "error_type": "FrameCoverageIncomplete",
+                                          "failure_kind": "incomplete_response", "message": "视觉批次未覆盖全部请求帧。"}
+                record["status"] = "completed"
+                return rows, record, None
+            except Exception as error:  # noqa: BLE001 - independent batches retain successful evidence
+                usage = exception_usage(error)
+                if usage is not None:
+                    record.update(vision_usage({"usage": usage}))
+                record["failure_kind"] = _failure_kind(error)
+                return [], record, {"batch": index + 1, "attempt": attempt,
+                                    "error_type": type(error).__name__, "failure_kind": record["failure_kind"],
+                                    "message": "视觉批次未完成：" + type(error).__name__}
+            finally:
+                record["elapsed_ms"] = round((time.monotonic() - begin) * 1000)
+                record["completed_at"] = datetime.now(UTC).isoformat()
+
+        notify()
+        with ThreadPoolExecutor(max_workers=self.concurrency, thread_name_prefix="liming-vision") as executor:
+            active: dict[Any, tuple[int, int]] = {}
+            while queue or active:
+                if queue and not active and cooldown > time.monotonic():
+                    time.sleep(min(8.0, cooldown - time.monotonic()))
+                while queue and len(active) < effective_concurrency and time.monotonic() >= cooldown:
+                    index, attempt = queue.pop(0)
+                    active[executor.submit(run, index, attempt)] = (index, attempt)
+                if not active:
+                    continue
+                done, _ = wait(active, return_when=FIRST_COMPLETED)
+                for future in done:
+                    index, attempt = active.pop(future)
+                    rows, record, error = future.result()
+                    records.append(record)
+                    observations.extend(rows)
+                    if error is None:
+                        succeeded.add(index); terminal.add(index)
+                    else:
+                        errors.append(error)
+                        if record["failure_kind"] == "overloaded":
+                            effective_concurrency = 1
+                            cooldown = max(cooldown, time.monotonic() + min(8.0, self.overload_backoff_seconds))
+                        if record["failure_kind"] == "overloaded" and attempt == 1 and retry_remaining:
+                            retry_remaining -= 1
+                            queue.insert(0, (index, 2))
+                        else:
+                            terminal.add(index)
+                    notify()
+        completed_batches = len(succeeded)
         if batches and completed_batches == len(batches):
             status = "completed"
         elif completed_batches:
@@ -327,11 +444,17 @@ class OpenAiCompatibleVisionEngine:
             "batch_size": self.batch_size,
             "batch_count": len(batches),
             "completed_batches": completed_batches,
-            "failed_batches": len(errors),
+            "failed_batches": len(batches) - completed_batches,
             "observation_count": len(observations),
+            "concurrency": self.concurrency, "effective_concurrency": effective_concurrency,
+            "request_count": len(records), "overload_retry_count": 1 - retry_remaining,
+            "output_budget": self.max_output_tokens,
+            "elapsed_ms": round((time.monotonic() - started) * 1000),
+            "batches": sorted(records, key=lambda record: (record["index"], record["attempt"])),
+            **vision_usage_totals(records),
             "errors": errors[:10],
         }
-        return observations
+        return sorted(observations, key=lambda row: (row.start_ms, row.end_ms))
 
 
 class KeyframeVisualAnalyzer:
@@ -365,16 +488,24 @@ class KeyframeVisualAnalyzer:
         if callable(configure_extractor):
             configure_extractor(self.analysis_profile)
 
+    def set_call_context(self, job, recorder=None) -> None:
+        setter = getattr(self.vision, "set_call_context", None)
+        if callable(setter):
+            setter(job, recorder)
+
     def analyze(self, media: NormalizedMedia, output_dir: Path) -> VisualOutput:
         self._set_progress({"phase": "extracting_frames"})
+        extraction_started = time.monotonic()
         keyframes: list[Keyframe] = []
         ocr_observations: list[dict[str, object]] = []
         ocr_region_frames: list[dict[str, Any]] = []
         ocr_errors: list[dict[str, Any]] = []
         accepted_signatures: list[tuple[int, int]] = []
         candidates = self.extractor.extract(media, output_dir / "keyframes")
+        extraction_elapsed_ms = round((time.monotonic() - extraction_started) * 1000)
+        filtering_started = time.monotonic()
         self._set_progress({
-            "phase": "ocr",
+            "phase": "filtering_frames",
             "keyframes_completed": 0,
             "keyframes_total": len(candidates),
             "candidates_checked": 0, "candidates_total": len(candidates),
@@ -383,6 +514,7 @@ class KeyframeVisualAnalyzer:
         low_contrast_removed = 0
         similar_removed = 0
         completed_candidates = 0
+        selected_frames: list[Keyframe] = []
         duration_ms = max(0, media.info.duration_ms)
         candidate_interval_ms = duration_ms / max(1, len(candidates) - 1) if candidates else 0
         local_similarity_window_ms = max(
@@ -391,11 +523,11 @@ class KeyframeVisualAnalyzer:
         )
         for candidate_index, frame in enumerate(candidates):
             self._set_progress({
-                "phase": "ocr",
+                "phase": "filtering_frames",
                 "keyframes_completed": candidate_index,
                 "keyframes_total": len(candidates),
                 "candidates_checked": completed_candidates, "candidates_total": len(candidates),
-                "sampled_frames": len(keyframes), "ocr_completed": len(keyframes),
+                "sampled_frames": len(selected_frames), "ocr_completed": 0,
             })
             signature = self._image_signature(frame.path)
             forced = any(role == "first_frame" or role == "opening" or role.startswith("temporal:") for role in frame.roles)
@@ -415,25 +547,93 @@ class KeyframeVisualAnalyzer:
                     completed_candidates += 1
                     continue
                 accepted_signatures.append((frame.timestamp_ms, image_hash))
-            try:
-                text, confidence = self.ocr.recognize(frame.path)
-                regions = None if getattr(self.ocr, "regions_truncated", False) else getattr(self.ocr, "last_regions", None)
-            except Exception as error:  # noqa: BLE001 - a failed OCR frame must not erase image evidence
-                text, confidence, regions = "", None, None
-                ocr_errors.append({"timestamp_ms": frame.timestamp_ms, "error_type": type(error).__name__, "message": str(error)[:200]})
-            clean_text = text.strip()
-            useful_text = clean_text if is_useful_ocr(clean_text, confidence) else ""
-            keyframes.append(replace(frame, ocr_text=useful_text or None, confidence=confidence if useful_text else None))
-            ocr_region_frames.append({"timestamp_ms": frame.timestamp_ms, **_ocr_region_measurement(frame.path, regions)})
+            selected_frames.append(frame)
             completed_candidates += 1
-            if useful_text:
-                ocr_observations.append({
-                    "kind": "ocr",
-                    "start_ms": frame.timestamp_ms,
-                    "end_ms": frame.timestamp_ms,
-                    "text": useful_text,
-                    "confidence": confidence,
+
+        filtering_elapsed_ms = round((time.monotonic() - filtering_started) * 1000)
+        branch_lock = Lock()
+        state: dict[str, Any] = {"ocr_completed": 0, "ocr_finished": False, "vision_finished": self.vision is None, "vision_progress": {}}
+        branch_times: dict[str, float] = {}
+
+        def update_progress(*, ocr_completed=None, ocr_finished=False, vision_progress=None, vision_finished=False):
+            with branch_lock:
+                if ocr_completed is not None:
+                    state["ocr_completed"] = ocr_completed
+                if ocr_finished:
+                    state["ocr_finished"] = True
+                if vision_progress is not None:
+                    state["vision_progress"].update(vision_progress)
+                if vision_finished:
+                    state["vision_finished"] = True
+                phase = "completed" if state["ocr_finished"] and state["vision_finished"] else (
+                    str(state["vision_progress"].get("phase") or "vision") if state["ocr_finished"] else "ocr")
+                self._set_progress({
+                    **state["vision_progress"], "phase": phase,
+                    "keyframes_completed": completed_candidates, "keyframes_total": len(candidates),
+                    "candidates_checked": completed_candidates, "candidates_total": len(candidates),
+                    "sampled_frames": len(selected_frames), "total_frames": len(selected_frames),
+                    "ocr_completed": state["ocr_completed"], "ocr_total": len(selected_frames),
                 })
+
+        set_progress_callback = getattr(self.vision, "set_progress_callback", None)
+        if callable(set_progress_callback):
+            set_progress_callback(lambda progress: update_progress(vision_progress=progress))
+
+        def run_vision(frames):
+            branch_times["vision_started"] = time.monotonic()
+            try:
+                observations = self.vision.analyze(frames)
+                stats = dict(getattr(self.vision, "last_stats", {}))
+                if not stats:
+                    stats = {"status": "completed" if observations else "failed", "observation_count": len(observations)}
+                return observations, stats
+            except Exception as error:  # noqa: BLE001 - OCR/keyframes remain usable
+                return (), {"status": "failed", "reason": str(error)[:300], "observation_count": 0}
+            finally:
+                branch_times["vision_finished"] = time.monotonic()
+                update_progress(vision_finished=True)
+
+        vision_observations: Sequence[VisualObservation] = ()
+        vision_stats: dict[str, Any] = {"status": "unavailable", "reason": self.vision_unavailable_reason, "observation_count": 0}
+        vision_future = None
+        overlap_allowed = self.vision is not None and getattr(self.vision, "supports_ocr_overlap", False) is True
+        update_progress()
+        try:
+            # One orchestration future; the engine's own paid-call limit stays
+            # unchanged. Unknown adapters receive completed OCR in serial mode.
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="liming-visual-overlap") as executor:
+                branch_times["ocr_started"] = time.monotonic()
+                for frame in selected_frames:
+                    healthy = True
+                    try:
+                        text, confidence = self.ocr.recognize(frame.path)
+                        regions = None if getattr(self.ocr, "regions_truncated", False) else getattr(self.ocr, "last_regions", None)
+                    except Exception as error:  # noqa: BLE001 - a failed OCR frame must not erase image evidence
+                        healthy = False
+                        text, confidence, regions = "", None, None
+                        ocr_errors.append({"timestamp_ms": frame.timestamp_ms, "error_type": type(error).__name__, "message": str(error)[:200]})
+                    clean_text = text.strip()
+                    useful_text = clean_text if is_useful_ocr(clean_text, confidence) else ""
+                    keyframes.append(replace(frame, ocr_text=useful_text or None, confidence=confidence if useful_text else None))
+                    ocr_region_frames.append({"timestamp_ms": frame.timestamp_ms, **_ocr_region_measurement(frame.path, regions)})
+                    if useful_text:
+                        ocr_observations.append({"kind": "ocr", "start_ms": frame.timestamp_ms, "end_ms": frame.timestamp_ms, "text": useful_text, "confidence": confidence})
+                    update_progress(ocr_completed=len(keyframes))
+                    # Do not spend on VLM until at least one actual OCR input
+                    # has completed healthily (empty recognized text is valid).
+                    if overlap_allowed and vision_future is None and healthy:
+                        vision_future = executor.submit(run_vision, tuple(selected_frames))
+                branch_times["ocr_finished"] = time.monotonic()
+                update_progress(ocr_finished=True)
+                if vision_future is not None:
+                    vision_observations, vision_stats = vision_future.result()
+                elif self.vision is not None:
+                    vision_observations, vision_stats = run_vision(tuple(keyframes))
+        finally:
+            # Executor joins even during an unexpected OCR failure. Detach only
+            # after that join so callbacks cannot outlive this analysis.
+            if callable(set_progress_callback):
+                set_progress_callback(None)
 
         protected_times = {frame.timestamp_ms for frame in keyframes if any(role in {"first_frame", "opening"} or role.startswith("temporal:") for role in frame.roles)}
         unique_ocr = deduplicate_timed_rows(
@@ -443,51 +643,6 @@ class KeyframeVisualAnalyzer:
         )
         unique_ocr.extend(row for row in ocr_observations if row["start_ms"] in protected_times)
         unique_ocr.sort(key=lambda row: int(row["start_ms"]))
-        vision_observations: Sequence[VisualObservation] = ()
-        if self.vision is None:
-            vision_stats: dict[str, Any] = {
-                "status": "unavailable",
-                "reason": self.vision_unavailable_reason,
-                "observation_count": 0,
-            }
-        else:
-            set_progress_callback = getattr(
-                self.vision,
-                "set_progress_callback",
-                None,
-            )
-
-            def update_vision_progress(progress: Mapping[str, Any]) -> None:
-                self._set_progress({
-                    **progress,
-                    "keyframes_completed": len(candidates),
-                    "keyframes_total": len(candidates),
-                    "candidates_checked": len(candidates), "candidates_total": len(candidates),
-                    "sampled_frames": len(keyframes), "total_frames": len(keyframes),
-                    "ocr_completed": len(keyframes), "ocr_total": len(keyframes),
-                })
-
-            if callable(set_progress_callback):
-                set_progress_callback(update_vision_progress)
-            try:
-                vision_observations = self.vision.analyze(keyframes)
-                vision_stats = dict(getattr(self.vision, "last_stats", {}))
-                if not vision_stats:
-                    vision_stats = {
-                        "status": "completed" if vision_observations else "failed",
-                        "observation_count": len(vision_observations),
-                    }
-            except Exception as error:  # noqa: BLE001 - OCR/keyframes remain usable
-                vision_stats = {
-                    "status": "failed",
-                    "reason": str(error)[:300],
-                    "observation_count": 0,
-                }
-                vision_observations = ()
-            finally:
-                if callable(set_progress_callback):
-                    set_progress_callback(None)
-
         combined = [
             *(
                 VisualObservation(
@@ -514,6 +669,14 @@ class KeyframeVisualAnalyzer:
             "ocr_error_count": len(ocr_errors), "ocr_errors": ocr_errors[:20],
             "vision_observation_count": len(vision_observations),
             "visual_understanding": vision_stats,
+            "stage_timing": {
+                "frame_extraction_elapsed_ms": extraction_elapsed_ms, "frame_filter_elapsed_ms": filtering_elapsed_ms,
+                "ocr_elapsed_ms": round((branch_times["ocr_finished"] - branch_times["ocr_started"]) * 1000),
+                "vision_elapsed_ms": round((branch_times["vision_finished"] - branch_times["vision_started"]) * 1000) if "vision_finished" in branch_times else None,
+                "ocr_vision_overlap_ms": round(max(0, min(branch_times["ocr_finished"], branch_times.get("vision_finished", 0)) - max(branch_times["ocr_started"], branch_times.get("vision_started", 0))) * 1000),
+                "ocr_vision_wall_ms": round((max(branch_times["ocr_finished"], branch_times.get("vision_finished", 0)) - branch_times["ocr_started"]) * 1000),
+                "mode": "overlapped" if vision_future is not None else "serial" if self.vision is not None else "ocr_only",
+            },
             "frame_roles": [{"timestamp_ms": frame.timestamp_ms, "roles": list(frame.roles)} for frame in keyframes],
             "ocr_text_regions": {
                 "status": "estimated" if any(row["text_area_ratio"] is not None for row in ocr_region_frames) else "unknown",

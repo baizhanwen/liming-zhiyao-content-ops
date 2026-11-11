@@ -287,7 +287,7 @@ class AnalyzerApiClient:
         ocr_text: str | None = None,
         confidence: int | None = None,
     ) -> Mapping[str, Any]:
-        if kind not in {"keyframe", "subtitle", "report"}:
+        if kind not in {"keyframe", "subtitle", "report", "source_video", "source_audio"}:
             raise ValueError("unsupported analysis artifact kind")
         body = path.read_bytes()
         headers = {

@@ -2,7 +2,8 @@ import { z } from "zod";
 import taxonomyResource from "../services/analyzer/liming_analyzer/resources/video-taxonomy.v1.json" with { type: "json" };
 
 export const CONTENT_ANALYSIS_SCHEMA = "content-analysis.v1";
-export const CONTENT_ANALYSIS_REPORT_SCHEMA = "analysis.v10";
+export const CONTENT_ANALYSIS_REPORT_SCHEMA = "analysis.v11";
+export const contentAnalysisReportSchemas = ["analysis.v10", "analysis.v11"] as const;
 export type ContentState = "known" | "unknown" | "not_acquired" | "not_applicable";
 export type ContentDimension = { id: string; label: string; module: string; cardinality: "single" | "multiple"; primary_required: boolean; requires: "text" | "visual" | "temporal" | "any"; requires_text?: boolean; allow_empty: boolean; none_tag_id: string | null; tags: Array<{ id: string; label: string; disabled?: boolean; excluded_reason?: string; requires?: "text" | "visual" | "temporal" | "any" }>; inferred?: boolean; definition?: string };
 export const contentTaxonomy = taxonomyResource as Omit<typeof taxonomyResource, "dimensions"> & { dimensions: ContentDimension[] };
@@ -32,7 +33,7 @@ const contentSchema = z.object({
   schema_version: z.literal(CONTENT_ANALYSIS_SCHEMA), taxonomy_version: z.literal(contentTaxonomy.version), profile: z.enum(["standard", "max"]), status: z.enum(["complete", "partial"]),
   evidence_registry: z.array(evidenceSchema).max(30_000), classifications: z.array(classificationSchema).length(contentTaxonomy.dimensions.length),
   segments: z.array(segmentSchema).max(5_000), information_units: z.array(informationUnitSchema).max(5_000), metrics: metricsSchema,
-  methodology: z.object({ transcript_source: shortText, sampling_strategy_id: identifier, sampling_config: z.record(z.string(), z.unknown()), evidence_version: identifier, temporal_min_frames: z.literal(3) }).strict(),
+  methodology: z.object({ transcript_source: shortText, sampling_strategy_id: identifier, sampling_config: z.record(z.string(), z.unknown()), evidence_version: identifier, temporal_min_frames: z.literal(3), transcript_basis: z.enum(["canonical", "original"]).optional() }).strict(),
   module_status: z.object({ text_topic_structure_audience: moduleSchema, text_expression_value: moduleSchema, visual: moduleSchema, synthesis: moduleSchema }).strict(), validation: validationSchema,
 }).strict();
 
@@ -207,12 +208,12 @@ export function aggregateContentComparison(input: ContentComparisonInput[]) {
   const grouped = new Map<string, ContentComparisonInput[]>();
   for (const entry of unique) {
     const content = entry.contentAnalysis;
-    const key = canonicalJson({ taxonomyVersion: content.taxonomy_version, metricsVersion: content.metrics.version, samplingStrategy: content.methodology.sampling_strategy_id, samplingConfig: content.methodology.sampling_config, evidenceVersion: content.methodology.evidence_version });
+    const key = canonicalJson({ taxonomyVersion: content.taxonomy_version, metricsVersion: content.metrics.version, samplingStrategy: content.methodology.sampling_strategy_id, samplingConfig: content.methodology.sampling_config, evidenceVersion: content.methodology.evidence_version, transcriptBasis: content.methodology.transcript_basis ?? "original" });
     grouped.set(key, [...(grouped.get(key) ?? []), entry]);
   }
   const groupings = [...grouped].map(([key, entries], index) => ({
     id: `group-${index + 1}`, compatibilityKey: key, taxonomyVersion: entries[0].contentAnalysis.taxonomy_version, metricsVersion: entries[0].contentAnalysis.metrics.version,
-    samplingStrategy: entries[0].contentAnalysis.methodology.sampling_strategy_id, samplingConfig: entries[0].contentAnalysis.methodology.sampling_config, evidenceVersion: entries[0].contentAnalysis.methodology.evidence_version,
+    samplingStrategy: entries[0].contentAnalysis.methodology.sampling_strategy_id, samplingConfig: entries[0].contentAnalysis.methodology.sampling_config, evidenceVersion: entries[0].contentAnalysis.methodology.evidence_version, transcriptBasis: entries[0].contentAnalysis.methodology.transcript_basis ?? "original",
     videoCount: entries.length, entryIds: entries.map(entry => entry.entryId), distributions: distributionsFor(entries),
     metricsTotals: {
       informationUnits: entries.reduce((total, entry) => total + entry.contentAnalysis.information_units.length, 0),
@@ -227,7 +228,7 @@ export function aggregateContentComparison(input: ContentComparisonInput[]) {
 
 export type ContentComparisonResponse = ReturnType<typeof aggregateContentComparison> & {
   version: "content-comparison.v1"; scope: "library" | "benchmark";
-  snapshot: { analysisSchemaVersion: "analysis.v10"; contentSchemaVersion: "content-analysis.v1"; taxonomyVersion: string; selection: "latest_accepted_per_video"; requestedEntryIds: string[]; filters: ContentComparisonFilters; generatedAt: string; analyses: Array<{ entryId: string; videoId: string; analysisId: string; createdAt: string }> };
+  snapshot: { analysisSchemaVersion: "analysis.v10" | "analysis.v11" | "mixed" | null; analysisSchemaVersions?: Array<"analysis.v10" | "analysis.v11">; contentSchemaVersion: "content-analysis.v1"; taxonomyVersion: string; selection: "latest_accepted_per_video"; requestedEntryIds: string[]; filters: ContentComparisonFilters; generatedAt: string; analyses: Array<{ entryId: string; videoId: string; analysisId: string; createdAt: string; schemaVersion?: "analysis.v10" | "analysis.v11" }> };
   summary: { selectedEntries: number; selectedVideos: number; includedVideos: number; excludedVideos: number };
   entries: ContentComparisonEntry[]; excluded: Record<ContentComparisonExclusion, number>;
 };

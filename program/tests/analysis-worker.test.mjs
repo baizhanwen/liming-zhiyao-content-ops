@@ -111,7 +111,12 @@ test("worker artifacts are lease-bound, tenant-scoped, and persisted through R2 
   assert.match(schema, /idx_media_assets_video_kind/);
   assert.match(complete, /video_id, analysis_job_id, schema_version/);
   assert.match(detailRoute, /SELECT id, analysis_job_id, kind/);
-  assert.match(detail, /asset\.analysis_job_id === analysis\.analysis_job_id/);
+  assert.match(detail, /UnifiedReportContent/);
+  const mediaScope = await readFile(new URL("../lib/analysis-media.ts", import.meta.url), "utf8");
+  assert.match(mediaScope, /a\.analysis_job_id=\?/);
+  assert.match(mediaScope, /a\.video_id=v\.id/);
+  const evidenceView = await readFile(new URL("../components/UnifiedReportContent.tsx", import.meta.url), "utf8");
+  assert.match(evidenceView, /assetById\.get\(frame\.asset_ref\)/);
   assert.match(migration, /UPDATE `media_assets`/);
   assert.match(migration, /idx_media_assets_analysis_job_kind/);
 });

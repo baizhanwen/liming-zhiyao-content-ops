@@ -45,6 +45,12 @@ class ModelCalls:
         self.summary = None
 
     def invoke(self, task, output_budget, operation):
+        if output_budget is None:
+            if task != "vision_batch":
+                raise ValueError("only an opaque vision provider may have an unknown output budget")
+            # Durable legacy column is non-nullable. Zero is an internal unknown
+            # sentinel, never a promised provider cap or a displayed budget.
+            output_budget = 0
         record = {"id": f"call:{uuid.uuid4().hex}", "task": task, "outputBudget": output_budget}
         if self.recorder:
             # Fail before spending money if ownership/accounting cannot be

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable, Mapping
 from concurrent.futures import ALL_COMPLETED, ThreadPoolExecutor, wait
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import RLock
 from typing import Any, TypeVar
 
 from .adapters import (
@@ -70,6 +73,8 @@ def _visual_heartbeat_progress(
     keyframes_total = _progress_count(snapshot.get("keyframes_total"))
     batch_completed = _progress_count(snapshot.get("batch_completed"))
     batch_total = _progress_count(snapshot.get("batch_total"))
+    ocr_completed = _progress_count(snapshot.get("ocr_completed"))
+    ocr_total = _progress_count(snapshot.get("ocr_total"))
     details: list[str] = []
     if keyframes_total:
         details.append(
@@ -80,7 +85,14 @@ def _visual_heartbeat_progress(
         details.append(
             f"{batch_label} {min(batch_completed, batch_total)}/{batch_total}"
         )
-    if phase == "ocr" and keyframes_total:
+    if ocr_total:
+        details.append(f"OCR {min(ocr_completed, ocr_total)}/{ocr_total}")
+    if phase == "ocr" and ocr_total:
+        # Independent OCR/VLM work can now overlap. Neither branch may pretend
+        # the other's counters are complete or erase already reported work.
+        progress = 40 + round(12 * min(ocr_completed, ocr_total) / ocr_total
+                              + (14 * min(batch_completed, batch_total) / batch_total if batch_total else 0))
+    elif phase == "ocr" and keyframes_total:
         progress = 40 + round(12 * keyframes_completed / keyframes_total)
     elif phase == "vision" and batch_total:
         progress = 52 + round(14 * batch_completed / batch_total)
@@ -196,7 +208,7 @@ class AnalysisPipeline:
         heartbeat,
         status: str,
         progress: int,
-        stage: str,
+        stage: str | Callable[[], str],
         on_current: Callable[[ClaimedJob], None] | None = None,
     ) -> tuple[ClaimedJob, T]:
         """Keep worker presence and the job lease alive during one blocking operation."""
@@ -205,7 +217,7 @@ class AnalysisPipeline:
             while not future.done():
                 wait((future,), timeout=self.heartbeat_seconds, return_when=ALL_COMPLETED)
                 if not future.done():
-                    current = heartbeat(status, progress, stage)
+                    current = heartbeat(status, progress, stage() if callable(stage) else stage)
                     if on_current is not None:
                         on_current(current)
             return current, future.result()
@@ -222,29 +234,64 @@ class AnalysisPipeline:
         stage: str,
     ) -> tuple[ClaimedJob, Any]:
         set_checkpoint = getattr(self.structure, "set_segment_checkpoint", None)
+        set_unified = getattr(self.structure, "set_unified_checkpoint", None)
         latest = [current]
+        unified_stage = [stage]
+        state_lock = RLock()
+        retry_metadata: dict[str, Any] = {}
+        retry_keys = current.checkpoint.get("retry_module_keys") if isinstance(current.checkpoint, Mapping) else None
+        if isinstance(retry_keys, list) and 0 < len(retry_keys) <= 5 and all(
+            isinstance(key, str) and key in {"canonical", "text_topic_structure_audience", "text_expression_value", "visual", "synthesis"}
+            for key in retry_keys
+        ):
+            retry_metadata["retry_module_keys"] = list(dict.fromkeys(retry_keys))
+
+        def synchronized_heartbeat(status: str, value: int, detail: str) -> ClaimedJob:
+            # The owner may commit the new version before its heartbeat ACK
+            # returns over HTTP/the process pipe. Checkpoints must not observe
+            # that half-completed transition and retry an already-paid module.
+            with state_lock:
+                updated = heartbeat(status, value, detail)
+                latest[0] = updated
+                return updated
+
         if callable(set_checkpoint) and self.checkpoints is not None:
-            base_checkpoint = _evidence_checkpoint(media, transcript, visuals, source_metadata)
+            base_checkpoint = {**_evidence_checkpoint(media, transcript, visuals, source_metadata), **retry_metadata}
 
             def persist_segment_progress(progress_payload: Mapping[str, Any]) -> None:
                 rows = progress_payload.get("segments")
                 if isinstance(rows, list):
                     observe(heartbeat, "model_analysis", completed=sum(1 for row in rows if isinstance(row, Mapping) and row.get("status") == "completed"), total=len(rows))
                 try:
-                    self.checkpoints.save(latest[0], "segment_progress", {**base_checkpoint, "segment_progress": dict(progress_payload)})
+                    with state_lock:
+                        self.checkpoints.save(latest[0], "segment_progress", {**base_checkpoint, "segment_progress": dict(progress_payload)})
                 except Exception as error:  # noqa: BLE001 - checkpoint is resumability only
                     logger.warning("Could not persist segment checkpoint: %s", error)
 
             set_checkpoint(persist_segment_progress)
+        if callable(set_unified) and self.checkpoints is not None:
+            base_checkpoint = {**_evidence_checkpoint(media, transcript, visuals, source_metadata), **retry_metadata}
+
+            def persist_unified_progress(payload: Mapping[str, Any]) -> None:
+                modules = payload.get("modules", {})
+                completed = len(modules) if isinstance(modules, Mapping) else 0
+                unified_stage[0] = f"正在生成报告，已完成 {completed}/4 个内容部分" if completed else "口播已核对，正在分析选题、文案与画面" if payload.get("canonical") else "正在结合原片文字核对口播"
+                observe(heartbeat, "model_analysis", completed=completed, total=4)
+                checkpoint_payload = {**base_checkpoint, "unified_progress": dict(payload)}
+                with state_lock:
+                    self.checkpoints.save(latest[0], "evidence_ready", checkpoint_payload)
+
+            set_unified(persist_unified_progress)
         try:
             return self._run_monitored(
                 lambda: self.structure.analyze(current, media, transcript, visuals),
-                current, heartbeat, "analyzing", progress, stage,
-                on_current=lambda job: latest.__setitem__(0, job),
+                current, synchronized_heartbeat, "analyzing", progress, lambda: unified_stage[0],
             )
         finally:
             if callable(set_checkpoint):
                 set_checkpoint(None)
+            if callable(set_unified):
+                set_unified(None)
 
     def process(self, job: ClaimedJob, heartbeat) -> AnalysisResult:
         with TemporaryDirectory(prefix="liming-analysis-") as temporary:
@@ -252,6 +299,7 @@ class AnalysisPipeline:
             restored = _restore_evidence_checkpoint(job, workspace)
             if restored is not None:
                 media, transcript, visuals, source_metadata = restored
+                visuals = replace(visuals, stats={**visuals.stats, "evidence_reused": True})
                 monitor = getattr(self, "runtime_monitor", None)
                 if callable(monitor):
                     monitor("duration", media.info.duration_ms / 1000)
@@ -293,15 +341,27 @@ class AnalysisPipeline:
             if callable(monitor):
                 monitor("duration", media.info.duration_ms / 1000)
             manual_transcript = _manual_transcript(current)
+            call_context = getattr(self.visual, "set_call_context", None)
+            if callable(call_context):
+                call_context(current, getattr(self.structure, "call_recorder", None))
             configure_speech_context = getattr(self.speech, "set_context", None)
             if callable(configure_speech_context):
                 configure_speech_context(acquired.metadata.title if acquired.metadata else None)
             observe(heartbeat, "model_transcription", **({"transcribed_chunks": 0, "total_chunks": 1} if media.audio_path and manual_transcript is None else {}))
             current = heartbeat("transcribing", 35, "正在使用人工校正版并提取画面" if manual_transcript else "正在并行转写语音与提取画面")
 
+            branch_timing: dict[str, int] = {}
+
+            def timed_branch(name: str, operation):
+                began = time.monotonic()
+                try:
+                    return operation()
+                finally:
+                    branch_timing[name] = round((time.monotonic() - began) * 1000)
+
             with ThreadPoolExecutor(max_workers=2, thread_name_prefix="liming-evidence") as executor:
-                transcript_future = executor.submit(self.speech.transcribe, media.audio_path) if media.audio_path and manual_transcript is None else None
-                visuals_future = executor.submit(self.visual.analyze, media, workspace / "visuals")
+                transcript_future = executor.submit(timed_branch, "transcription_elapsed_ms", lambda: self.speech.transcribe(media.audio_path)) if media.audio_path and manual_transcript is None else None
+                visuals_future = executor.submit(timed_branch, "visual_elapsed_ms", lambda: self.visual.analyze(media, workspace / "visuals"))
                 pending = {visuals_future}
                 if transcript_future:
                     pending.add(transcript_future)
@@ -355,12 +415,19 @@ class AnalysisPipeline:
                         current = heartbeat("transcribing", progress, stage)
                 transcript = manual_transcript or clean_transcript(transcript_future.result() if transcript_future else TranscriptOutput("zh-CN", ()))
                 visuals = visuals_future.result()
+            visuals = replace(visuals, stats={**visuals.stats, "branch_timing": branch_timing})
 
             observe(heartbeat, "vision_complete", **({"transcribed_chunks": 1, "total_chunks": 1} if transcript_future is not None else {}), sampled_frames=len(visuals.keyframes), total_frames=len(visuals.keyframes))
             current = heartbeat("transcribing", max(68, current.progress), "语音与画面证据已取得")
             observe(heartbeat, "saving")
             current = heartbeat("extracting", 70, "正在整理字幕、OCR 与关键帧证据")
             if self.artifacts:
+                persist_source = getattr(self.artifacts, "persist_source", None)
+                if callable(persist_source):
+                    current, _source_asset = self._run_monitored(
+                        lambda: persist_source(current, media), current, heartbeat,
+                        "extracting", 72, "正在保存原片以支持报告中的时间定位",
+                    )
                 current, visuals = self._run_monitored(
                     lambda: self.artifacts.persist(current, transcript, visuals, workspace),
                     current,

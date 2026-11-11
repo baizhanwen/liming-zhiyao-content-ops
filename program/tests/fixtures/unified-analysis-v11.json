@@ -1,0 +1,1578 @@
+{
+  "summary": "核心结论：合成证据支持的简短结论。",
+  "hook": "开头设计：合成证据支持的简短结论。",
+  "structure": [
+    "结构：合成证据支持的简短结论。"
+  ],
+  "audience": "内容人群：合成证据支持的简短结论。",
+  "hook_analysis": [
+    "开头设计：合成证据支持的简短结论。"
+  ],
+  "viral_points": [
+    "内容价值：合成证据支持的简短结论。"
+  ],
+  "rhythm_analysis": [
+    "结构：合成证据支持的简短结论。",
+    "镜头与转场：合成证据支持的简短结论。"
+  ],
+  "emotion_curve": [
+    "文本情绪：合成证据支持的简短结论。"
+  ],
+  "conversion_design": [
+    "行动引导：合成证据支持的简短结论。"
+  ],
+  "visual": [
+    "画面表现：合成证据支持的简短结论。",
+    "构图与主体：合成证据支持的简短结论。",
+    "开头画面：合成证据支持的简短结论。",
+    "镜头与转场：合成证据支持的简短结论。"
+  ],
+  "language": [
+    "语言风格：合成证据支持的简短结论。",
+    "表达与说服：合成证据支持的简短结论。"
+  ],
+  "highlights": [
+    "内容价值：合成证据支持的简短结论。"
+  ],
+  "risks": [
+    "主要问题：合成证据支持的简短结论。"
+  ],
+  "recommendations": [
+    "可执行建议：合成证据支持的简短结论。"
+  ],
+  "spoken_script": [
+    "为什么开完会，还是没人知道下一步做什么？",
+    "把记录拆成动作、负责人、截止时间，下次开会就照这三项整理。"
+  ],
+  "evidence": [
+    {
+      "start_ms": 0,
+      "end_ms": 2200,
+      "text": "为什么开完会，还是没人知道下一步做什么？",
+      "source": "asr"
+    },
+    {
+      "start_ms": 0,
+      "end_ms": 0,
+      "text": "单人居中讲解，画面标题为会议待办，人物位置和背景保持一致。",
+      "source": "vision"
+    }
+  ],
+  "insight_evidence": [
+    {
+      "section": "structure",
+      "item_index": 0,
+      "evidence_text": "为什么开完会，还是没人知道下一步做什么？"
+    },
+    {
+      "section": "rhythm_analysis",
+      "item_index": 0,
+      "evidence_text": "为什么开完会，还是没人知道下一步做什么？"
+    },
+    {
+      "section": "hook_analysis",
+      "item_index": 0,
+      "evidence_text": "为什么开完会，还是没人知道下一步做什么？"
+    },
+    {
+      "section": "emotion_curve",
+      "item_index": 0,
+      "evidence_text": "为什么开完会，还是没人知道下一步做什么？"
+    },
+    {
+      "section": "viral_points",
+      "item_index": 0,
+      "evidence_text": "为什么开完会，还是没人知道下一步做什么？"
+    },
+    {
+      "section": "highlights",
+      "item_index": 0,
+      "evidence_text": "为什么开完会，还是没人知道下一步做什么？"
+    },
+    {
+      "section": "language",
+      "item_index": 1,
+      "evidence_text": "为什么开完会，还是没人知道下一步做什么？"
+    },
+    {
+      "section": "language",
+      "item_index": 0,
+      "evidence_text": "为什么开完会，还是没人知道下一步做什么？"
+    },
+    {
+      "section": "conversion_design",
+      "item_index": 0,
+      "evidence_text": "为什么开完会，还是没人知道下一步做什么？"
+    },
+    {
+      "section": "visual",
+      "item_index": 0,
+      "evidence_text": "单人居中讲解，画面标题为会议待办，人物位置和背景保持一致。"
+    },
+    {
+      "section": "visual",
+      "item_index": 1,
+      "evidence_text": "单人居中讲解，画面标题为会议待办，人物位置和背景保持一致。"
+    },
+    {
+      "section": "visual",
+      "item_index": 2,
+      "evidence_text": "单人居中讲解，画面标题为会议待办，人物位置和背景保持一致。"
+    },
+    {
+      "section": "rhythm_analysis",
+      "item_index": 1,
+      "evidence_text": "单人居中讲解，画面标题为会议待办，人物位置和背景保持一致。"
+    },
+    {
+      "section": "visual",
+      "item_index": 3,
+      "evidence_text": "单人居中讲解，画面标题为会议待办，人物位置和背景保持一致。"
+    },
+    {
+      "section": "risks",
+      "item_index": 0,
+      "evidence_text": "为什么开完会，还是没人知道下一步做什么？"
+    },
+    {
+      "section": "recommendations",
+      "item_index": 0,
+      "evidence_text": "为什么开完会，还是没人知道下一步做什么？"
+    }
+  ],
+  "cta_analysis": {
+    "present": true,
+    "items": [
+      {
+        "cta_type": "cta.action.practice",
+        "start_ms": 3000,
+        "end_ms": 5900,
+        "stage": "内容片段",
+        "evidence_text": "下次开会就照这三项整理。",
+        "target_action": "下次开会就照这三项整理。",
+        "handoff_path": "仅保留源文案明确写出的动作。",
+        "strength": "unknown",
+        "effectiveness": "",
+        "recommendation": ""
+      }
+    ],
+    "overall_assessment": "行动引导：合成证据支持的简短结论。",
+    "overall_recommendation": ""
+  },
+  "spoken_script_set": {
+    "corrected_original": {
+      "status": "completed",
+      "text": "为什么开完会，还是没人知道下一步做什么？\n\n把记录拆成动作、负责人、截止时间，下次开会就照这三项整理。",
+      "paragraphs": [
+        "为什么开完会，还是没人知道下一步做什么？",
+        "把记录拆成动作、负责人、截止时间，下次开会就照这三项整理。"
+      ],
+      "source_segment_ids": [
+        "transcript:0001",
+        "transcript:0002"
+      ],
+      "candidate_available": true,
+      "error": null,
+      "validation": {
+        "passed": true,
+        "issues": [],
+        "source_segment_coverage_percent": 100,
+        "checks": [
+          {
+            "key": "source_order",
+            "passed": true
+          },
+          {
+            "key": "numeric_fidelity",
+            "passed": true
+          },
+          {
+            "key": "readability",
+            "passed": true
+          }
+        ],
+        "time_precision": "original_asr_segment",
+        "validation_version": "canonical-fidelity.v2",
+        "readability": {
+          "applicable": false,
+          "passed": true,
+          "issues": [],
+          "source_character_count": 43
+        }
+      },
+      "provenance": {
+        "source": "canonical_asr_ocr_correction",
+        "prompt_version": "canonical-transcript.v1"
+      }
+    }
+  },
+  "content_analysis": {
+    "schema_version": "content-analysis.v1",
+    "taxonomy_version": "video-taxonomy.v1",
+    "profile": "max",
+    "status": "complete",
+    "evidence_registry": [
+      {
+        "id": "transcript:0001",
+        "source": "transcript",
+        "text": "为什么开完会，还是没人知道下一步做什么？",
+        "start_ms": 0,
+        "end_ms": 2200,
+        "asset_ref": null,
+        "frame_group_id": null
+      },
+      {
+        "id": "transcript:0002",
+        "source": "transcript",
+        "text": "把记录拆成动作、负责人、截止时间，下次开会就照这三项整理。",
+        "start_ms": 3000,
+        "end_ms": 5900,
+        "asset_ref": null,
+        "frame_group_id": null
+      },
+      {
+        "id": "frame:0001",
+        "source": "frame",
+        "text": "",
+        "start_ms": 0,
+        "end_ms": 0,
+        "asset_ref": "synthetic_frame_1",
+        "frame_group_id": "first_frame"
+      },
+      {
+        "id": "ocr:0001",
+        "source": "ocr",
+        "text": "会议待办三要素",
+        "start_ms": 0,
+        "end_ms": 0,
+        "asset_ref": "synthetic_frame_1",
+        "frame_group_id": null
+      },
+      {
+        "id": "frame:0002",
+        "source": "frame",
+        "text": "",
+        "start_ms": 500,
+        "end_ms": 500,
+        "asset_ref": "synthetic_frame_2",
+        "frame_group_id": null
+      },
+      {
+        "id": "frame:0003",
+        "source": "frame",
+        "text": "",
+        "start_ms": 1000,
+        "end_ms": 1000,
+        "asset_ref": "synthetic_frame_3",
+        "frame_group_id": null
+      },
+      {
+        "id": "vision:0001",
+        "source": "vision",
+        "text": "单人居中讲解，画面标题为会议待办，人物位置和背景保持一致。",
+        "start_ms": 0,
+        "end_ms": 0,
+        "asset_ref": null,
+        "frame_group_id": null
+      },
+      {
+        "id": "vision:0002",
+        "source": "vision",
+        "text": "单人居中讲解，画面标题为会议待办，人物位置和背景保持一致。",
+        "start_ms": 500,
+        "end_ms": 500,
+        "asset_ref": null,
+        "frame_group_id": null
+      },
+      {
+        "id": "vision:0003",
+        "source": "vision",
+        "text": "单人居中讲解，画面标题为会议待办，人物位置和背景保持一致。",
+        "start_ms": 1000,
+        "end_ms": 1000,
+        "asset_ref": null,
+        "frame_group_id": null
+      },
+      {
+        "id": "temporal:opening",
+        "source": "temporal",
+        "text": "{\"kind\": \"opening\", \"timestamps_ms\": [0, 500, 1000], \"limitations\": [\"稀疏采样，仅支持这一采样窗口内的判断。\"]}",
+        "start_ms": 0,
+        "end_ms": 1000,
+        "asset_ref": null,
+        "frame_group_id": "opening"
+      }
+    ],
+    "classifications": [
+      {
+        "reason": null,
+        "evidence_ids": [
+          "transcript:0001"
+        ],
+        "tags": [
+          "topic.category.career"
+        ],
+        "primary_tag": "topic.category.career",
+        "dimension_id": "topic.category",
+        "state": "known"
+      },
+      {
+        "reason": null,
+        "evidence_ids": [
+          "transcript:0001"
+        ],
+        "tags": [
+          "topic.problem.execution"
+        ],
+        "primary_tag": null,
+        "dimension_id": "topic.problem",
+        "state": "known"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "topic.purpose",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "topic.angle",
+        "state": "unknown"
+      },
+      {
+        "reason": null,
+        "evidence_ids": [
+          "transcript:0001"
+        ],
+        "tags": [
+          "topic.granularity.problem"
+        ],
+        "primary_tag": "topic.granularity.problem",
+        "dimension_id": "topic.granularity",
+        "state": "known"
+      },
+      {
+        "reason": null,
+        "evidence_ids": [
+          "transcript:0001",
+          "transcript:0002"
+        ],
+        "tags": [
+          "structure.type.problem_solution"
+        ],
+        "primary_tag": "structure.type.problem_solution",
+        "dimension_id": "structure.type",
+        "state": "known"
+      },
+      {
+        "reason": null,
+        "evidence_ids": [
+          "transcript:0001"
+        ],
+        "tags": [
+          "structure.role.question"
+        ],
+        "primary_tag": null,
+        "dimension_id": "structure.role",
+        "state": "known"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "structure.order",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "structure.ending",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "audience.role",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "audience.stage",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "audience.context",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "audience.need",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "audience.use_case",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "audience.knowledge",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "audience.targeting",
+        "state": "unknown"
+      },
+      {
+        "reason": null,
+        "evidence_ids": [
+          "transcript:0001"
+        ],
+        "tags": [
+          "hook.type.question"
+        ],
+        "primary_tag": "hook.type.question",
+        "dimension_id": "hook.type",
+        "state": "known"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "hook.channel",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "emotion.expressed",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "emotion.intended",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "emotion.connection",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "emotion.trajectory",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "emotion.trigger",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "value.type",
+        "state": "unknown"
+      },
+      {
+        "reason": null,
+        "evidence_ids": [
+          "transcript:0002"
+        ],
+        "tags": [
+          "value.information_type.step"
+        ],
+        "primary_tag": null,
+        "dimension_id": "value.information_type",
+        "state": "known"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "value.actionability",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "value.evidence_form",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "value.repetition",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "technique.retention",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "technique.understanding",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "technique.trust",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "technique.persuasion",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "technique.memory",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "technique.interaction",
+        "state": "unknown"
+      },
+      {
+        "reason": null,
+        "evidence_ids": [
+          "transcript:0002"
+        ],
+        "tags": [
+          "cta.action.practice"
+        ],
+        "primary_tag": null,
+        "dimension_id": "cta.action",
+        "state": "known"
+      },
+      {
+        "reason": null,
+        "evidence_ids": [
+          "transcript:0002"
+        ],
+        "tags": [
+          "cta.position.ending"
+        ],
+        "primary_tag": null,
+        "dimension_id": "cta.position",
+        "state": "known"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "language.register",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "language.tone",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "language.person",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "language.sentence",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "language.vocabulary",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "language.text_pattern",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "language.memory_marker",
+        "state": "unknown"
+      },
+      {
+        "reason": null,
+        "evidence_ids": [
+          "vision:0001"
+        ],
+        "tags": [
+          "visual.first_frame_style.person_title"
+        ],
+        "primary_tag": "visual.first_frame_style.person_title",
+        "dimension_id": "visual.first_frame_style",
+        "state": "known"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "visual.first_frame_information",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "visual.opening",
+        "state": "unknown"
+      },
+      {
+        "reason": null,
+        "evidence_ids": [
+          "vision:0001"
+        ],
+        "tags": [
+          "content.form.talking_head"
+        ],
+        "primary_tag": "content.form.talking_head",
+        "dimension_id": "content.form",
+        "state": "known"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "visual.scene",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "visual.person_count",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "visual.person_role",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "visual.broll",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "visual.text_function",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "visual.shot_size",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "visual.composition",
+        "state": "unknown"
+      },
+      {
+        "reason": null,
+        "evidence_ids": [
+          "vision:0001",
+          "vision:0002",
+          "vision:0003",
+          "temporal:opening"
+        ],
+        "tags": [
+          "visual.camera_motion.static"
+        ],
+        "primary_tag": null,
+        "dimension_id": "visual.camera_motion",
+        "state": "known"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "visual.camera_angle",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "visual.stability",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "visual.color",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "visual.medium",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "visual.transition",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "visual.cut_pattern",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "synthesis.visual_text_relation",
+        "state": "unknown"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "synthesis.retention",
+        "state": "unknown"
+      },
+      {
+        "reason": null,
+        "evidence_ids": [
+          "transcript:0001",
+          "transcript:0002"
+        ],
+        "tags": [
+          "synthesis.opening_fulfillment.fulfilled"
+        ],
+        "primary_tag": "synthesis.opening_fulfillment.fulfilled",
+        "dimension_id": "synthesis.opening_fulfillment",
+        "state": "known"
+      },
+      {
+        "reason": "model_could_not_determine_from_available_evidence",
+        "evidence_ids": [],
+        "tags": null,
+        "primary_tag": null,
+        "dimension_id": "synthesis.problem",
+        "state": "unknown"
+      }
+    ],
+    "segments": [
+      {
+        "id": "segment:text_topic_structure_audience:0001",
+        "kind": "topic_subject",
+        "dimension_id": "topic.category",
+        "tags": [],
+        "start_ms": null,
+        "end_ms": null,
+        "text": "将会议记录转成明确待办。",
+        "evidence_ids": [
+          "transcript:0001"
+        ]
+      },
+      {
+        "id": "segment:text_topic_structure_audience:0002",
+        "kind": "topic_problem",
+        "dimension_id": "topic.problem",
+        "tags": [],
+        "start_ms": null,
+        "end_ms": null,
+        "text": "会后缺少下一步明确行动。",
+        "evidence_ids": [
+          "transcript:0001"
+        ]
+      },
+      {
+        "id": "segment:text_topic_structure_audience:0003",
+        "kind": "structure",
+        "dimension_id": "structure.role",
+        "tags": [
+          "structure.role.question"
+        ],
+        "start_ms": 0,
+        "end_ms": 2200,
+        "text": "先提出会后不知道做什么的问题。",
+        "evidence_ids": [
+          "transcript:0001"
+        ]
+      },
+      {
+        "id": "segment:text_expression_value:0001",
+        "kind": "cta",
+        "dimension_id": "cta.action",
+        "tags": [
+          "cta.action.practice"
+        ],
+        "start_ms": 3000,
+        "end_ms": 5900,
+        "text": "下次开会就照这三项整理。",
+        "evidence_ids": [
+          "transcript:0002"
+        ]
+      },
+      {
+        "id": "segment:synthesis:0001",
+        "kind": "content_template",
+        "dimension_id": null,
+        "tags": [],
+        "start_ms": null,
+        "end_ms": null,
+        "text": "提出会后行动不清的问题，再给出动作、负责人和截止时间。",
+        "evidence_ids": [
+          "transcript:0001",
+          "transcript:0002"
+        ]
+      },
+      {
+        "id": "segment:deterministic:hook_first_sentence",
+        "kind": "hook_first_sentence",
+        "dimension_id": null,
+        "tags": [],
+        "start_ms": 0,
+        "end_ms": 2200,
+        "text": "为什么开完会，还是没人知道下一步做什么？",
+        "evidence_ids": [
+          "transcript:0001"
+        ]
+      },
+      {
+        "id": "segment:deterministic:hook_first_3s",
+        "kind": "hook_first_3s",
+        "dimension_id": null,
+        "tags": [],
+        "start_ms": 0,
+        "end_ms": 2200,
+        "text": "为什么开完会，还是没人知道下一步做什么？",
+        "evidence_ids": [
+          "transcript:0001"
+        ]
+      }
+    ],
+    "information_units": [
+      {
+        "id": "unit:text_expression_value:0001",
+        "type_tag": "value.information_type.step",
+        "text": "待办明确动作、负责人和截止时间。",
+        "evidence_ids": [
+          "transcript:0002"
+        ],
+        "duplicate_of": null
+      }
+    ],
+    "metrics": {
+      "version": "content-metrics.v1",
+      "media": {
+        "status": "measured",
+        "duration_ms": 6000,
+        "duration_seconds": 6.0,
+        "duration_bucket": "under_15s",
+        "encoded_width": 1080,
+        "encoded_height": 1920,
+        "rotation_degrees": 0.0,
+        "sample_aspect_ratio": "1:1",
+        "display_aspect_ratio": "9:16",
+        "aspect_category": "9:16",
+        "aspect_status": "measured",
+        "aspect_reason": null
+      },
+      "shot_detection": {
+        "status": "measured",
+        "method": "ffmpeg_scene_score.v1",
+        "threshold": 0.32,
+        "boundaries_ms": [
+          0,
+          6000
+        ],
+        "segments": [
+          {
+            "start_ms": 0,
+            "end_ms": 6000,
+            "duration_ms": 6000
+          }
+        ],
+        "detected_cut_count": 0,
+        "detected_shot_count": 1,
+        "mean_shot_seconds": 6.0,
+        "cuts_per_minute": 0.0,
+        "limitations": [
+          "场景分数是检测代理指标，闪光、主体运动、渐变可能误检，低反差剪辑可能漏检；不等于人工确认的剪辑数。"
+        ]
+      },
+      "transcript_statistics": {
+        "status": "estimated",
+        "source": "uncorrected_transcript_after_overlap_dedup",
+        "character_count": 43,
+        "character_count_method": "unicode_letters_numbers.v1",
+        "characters_per_video_second": 7.167,
+        "segments": [
+          {
+            "source_segment_id": "transcript:0001",
+            "start_ms": 0,
+            "end_ms": 2200,
+            "character_count": 18,
+            "characters_per_second": 8.182,
+            "status": "estimated"
+          },
+          {
+            "source_segment_id": "transcript:0002",
+            "start_ms": 3000,
+            "end_ms": 5900,
+            "character_count": 25,
+            "characters_per_second": 8.621,
+            "status": "estimated"
+          }
+        ],
+        "limitations": [
+          "只计Unicode字母和数字，排除标点空白；不是语义信息点或跨语言统一词数。",
+          "使用AI纠错前转写；识别错误和重叠识别去重会影响计数。",
+          "全片值包含无口播时段，片段值依赖ASR时间戳，均不是声学发声速度；未计算静音或人声时长占比。"
+        ]
+      },
+      "methodology": {
+        "version": "content-metrics.v1",
+        "time_unit": "milliseconds",
+        "aspect_category_relative_tolerance": 0.01,
+        "character_count_method": "unicode_letters_numbers.v1",
+        "audio_analysis": "out_of_scope",
+        "profile_invariant": true
+      }
+    },
+    "methodology": {
+      "transcript_source": "asr",
+      "sampling_strategy_id": "content-frames.v2",
+      "sampling_config": {
+        "opening_interval_ms": 500,
+        "temporal_interval_ms": 500
+      },
+      "evidence_version": "visual-evidence.v2",
+      "temporal_min_frames": 3,
+      "transcript_basis": "canonical"
+    },
+    "module_status": {
+      "text_topic_structure_audience": {
+        "status": "completed",
+        "reason": null,
+        "validation": {
+          "passed": true,
+          "issues": []
+        },
+        "source_coverage": {
+          "complete": true,
+          "included_evidence_count": 3,
+          "available_evidence_count": 3,
+          "required_opening_complete": null,
+          "temporal_groups_available": [
+            "temporal:opening"
+          ],
+          "temporal_groups_included": [],
+          "input_token_limit": 12000,
+          "estimated_payload_tokens": 1602
+        }
+      },
+      "text_expression_value": {
+        "status": "completed",
+        "reason": null,
+        "validation": {
+          "passed": true,
+          "issues": []
+        },
+        "source_coverage": {
+          "complete": true,
+          "included_evidence_count": 7,
+          "available_evidence_count": 7,
+          "required_opening_complete": true,
+          "temporal_groups_available": [
+            "temporal:opening"
+          ],
+          "temporal_groups_included": [
+            "temporal:opening"
+          ],
+          "input_token_limit": 12000,
+          "estimated_payload_tokens": 2413
+        }
+      },
+      "visual": {
+        "status": "completed",
+        "reason": null,
+        "validation": {
+          "passed": true,
+          "issues": []
+        },
+        "source_coverage": {
+          "complete": true,
+          "included_evidence_count": 8,
+          "available_evidence_count": 8,
+          "required_opening_complete": true,
+          "temporal_groups_available": [
+            "temporal:opening"
+          ],
+          "temporal_groups_included": [
+            "temporal:opening"
+          ],
+          "input_token_limit": 12000,
+          "estimated_payload_tokens": 1579
+        }
+      },
+      "synthesis": {
+        "status": "completed",
+        "reason": null,
+        "validation": {
+          "passed": true,
+          "issues": []
+        },
+        "source_coverage": {
+          "complete": true,
+          "included_evidence_count": 7,
+          "available_evidence_count": 7,
+          "required_opening_complete": null,
+          "temporal_groups_available": [
+            "temporal:opening"
+          ],
+          "temporal_groups_included": [
+            "temporal:opening"
+          ],
+          "input_token_limit": 12000,
+          "estimated_payload_tokens": 1079
+        }
+      }
+    },
+    "validation": {
+      "passed": true,
+      "issues": []
+    }
+  },
+  "unified_report": {
+    "version": "unified-report.v1",
+    "status": "complete",
+    "summary": "核心结论：合成证据支持的简短结论。",
+    "sections": [
+      {
+        "key": "text_topic_structure_audience",
+        "status": "completed",
+        "findings": [
+          {
+            "id": "finding:text_topic_structure_audience:001",
+            "title": "选题判断",
+            "text": "选题：合成证据支持的简短结论。",
+            "evidence_ids": [
+              "transcript:0001"
+            ]
+          },
+          {
+            "id": "finding:text_topic_structure_audience:002",
+            "title": "内容结构",
+            "text": "结构：合成证据支持的简短结论。",
+            "evidence_ids": [
+              "transcript:0001"
+            ]
+          },
+          {
+            "id": "finding:text_topic_structure_audience:003",
+            "title": "目标人群",
+            "text": "内容人群：合成证据支持的简短结论。",
+            "evidence_ids": [
+              "transcript:0001"
+            ]
+          }
+        ],
+        "reason": null,
+        "diagnostics": {
+          "failure_kind": null,
+          "http_status": null,
+          "finish_reason": "stop",
+          "attempts": 1,
+          "elapsed_ms": 1,
+          "input_tokens": 100,
+          "output_tokens": 20,
+          "total_tokens": 120,
+          "reasoning_tokens": 3,
+          "output_budget": 4500,
+          "reused": false
+        }
+      },
+      {
+        "key": "text_expression_value",
+        "status": "completed",
+        "findings": [
+          {
+            "id": "finding:text_expression_value:001",
+            "title": "开头吸引力",
+            "text": "开头设计：合成证据支持的简短结论。",
+            "evidence_ids": [
+              "transcript:0001"
+            ]
+          },
+          {
+            "id": "finding:text_expression_value:002",
+            "title": "文案情绪",
+            "text": "文本情绪：合成证据支持的简短结论。",
+            "evidence_ids": [
+              "transcript:0001"
+            ]
+          },
+          {
+            "id": "finding:text_expression_value:003",
+            "title": "内容价值",
+            "text": "内容价值：合成证据支持的简短结论。",
+            "evidence_ids": [
+              "transcript:0001"
+            ]
+          },
+          {
+            "id": "finding:text_expression_value:004",
+            "title": "说服方式",
+            "text": "表达与说服：合成证据支持的简短结论。",
+            "evidence_ids": [
+              "transcript:0001"
+            ]
+          },
+          {
+            "id": "finding:text_expression_value:005",
+            "title": "语言表达",
+            "text": "语言风格：合成证据支持的简短结论。",
+            "evidence_ids": [
+              "transcript:0001"
+            ]
+          },
+          {
+            "id": "finding:text_expression_value:006",
+            "title": "行动引导",
+            "text": "行动引导：合成证据支持的简短结论。",
+            "evidence_ids": [
+              "transcript:0001"
+            ]
+          }
+        ],
+        "reason": null,
+        "diagnostics": {
+          "failure_kind": null,
+          "http_status": null,
+          "finish_reason": "stop",
+          "attempts": 1,
+          "elapsed_ms": 0,
+          "input_tokens": 100,
+          "output_tokens": 20,
+          "total_tokens": 120,
+          "reasoning_tokens": 3,
+          "output_budget": 4500,
+          "reused": false
+        }
+      },
+      {
+        "key": "visual",
+        "status": "completed",
+        "findings": [
+          {
+            "id": "finding:visual:001",
+            "title": "画面表达",
+            "text": "画面表现：合成证据支持的简短结论。",
+            "evidence_ids": [
+              "vision:0001"
+            ]
+          },
+          {
+            "id": "finding:visual:002",
+            "title": "构图与呈现",
+            "text": "构图与主体：合成证据支持的简短结论。",
+            "evidence_ids": [
+              "vision:0001"
+            ]
+          },
+          {
+            "id": "finding:visual:003",
+            "title": "开头画面",
+            "text": "开头画面：合成证据支持的简短结论。",
+            "evidence_ids": [
+              "vision:0001"
+            ]
+          },
+          {
+            "id": "finding:visual:004",
+            "title": "镜头与转场",
+            "text": "镜头与转场：合成证据支持的简短结论。",
+            "evidence_ids": [
+              "vision:0001"
+            ]
+          }
+        ],
+        "reason": null,
+        "diagnostics": {
+          "failure_kind": null,
+          "http_status": null,
+          "finish_reason": "stop",
+          "attempts": 1,
+          "elapsed_ms": 0,
+          "input_tokens": 100,
+          "output_tokens": 20,
+          "total_tokens": 120,
+          "reasoning_tokens": 3,
+          "output_budget": 4500,
+          "reused": false
+        }
+      },
+      {
+        "key": "synthesis",
+        "status": "completed",
+        "findings": [
+          {
+            "id": "finding:synthesis:001",
+            "title": "核心结论",
+            "text": "核心结论：合成证据支持的简短结论。",
+            "evidence_ids": [
+              "transcript:0001"
+            ]
+          },
+          {
+            "id": "finding:synthesis:002",
+            "title": "需要改进",
+            "text": "主要问题：合成证据支持的简短结论。",
+            "evidence_ids": [
+              "transcript:0001"
+            ]
+          },
+          {
+            "id": "finding:synthesis:003",
+            "title": "复用建议",
+            "text": "可执行建议：合成证据支持的简短结论。",
+            "evidence_ids": [
+              "transcript:0001"
+            ]
+          }
+        ],
+        "reason": null,
+        "diagnostics": {
+          "failure_kind": null,
+          "http_status": null,
+          "finish_reason": "stop",
+          "attempts": 1,
+          "elapsed_ms": 0,
+          "input_tokens": 100,
+          "output_tokens": 20,
+          "total_tokens": 120,
+          "reasoning_tokens": 3,
+          "output_budget": 4500,
+          "reused": false
+        }
+      }
+    ],
+    "canonical": {
+      "version": "canonical-transcript.v1",
+      "status": "completed",
+      "segments": [
+        {
+          "source_segment_id": "transcript:0001",
+          "start_ms": 0,
+          "end_ms": 2200,
+          "text": "为什么开完会，还是没人知道下一步做什么？",
+          "original_text": "为什么开完会，还是没人知道下一步做什么？",
+          "evidence_ids": []
+        },
+        {
+          "source_segment_id": "transcript:0002",
+          "start_ms": 3000,
+          "end_ms": 5900,
+          "text": "把记录拆成动作、负责人、截止时间，下次开会就照这三项整理。",
+          "original_text": "把记录拆成动作、负责人、截止时间，下次开会就照这三项整理。",
+          "evidence_ids": []
+        }
+      ],
+      "paragraphs": [
+        "为什么开完会，还是没人知道下一步做什么？",
+        "把记录拆成动作、负责人、截止时间，下次开会就照这三项整理。"
+      ],
+      "validation": {
+        "passed": true,
+        "issues": []
+      },
+      "changes": []
+    },
+    "source_signature": "fc9811fa591d2433fa1cf818e81f10e4ba09ea95de0dfeedc945843039115da0",
+    "methodology": {
+      "pipeline_version": "unified-analysis.v1",
+      "canonical_version": "canonical-transcript.v1",
+      "module_protocol_version": "content-module-wire.v1",
+      "transcript_basis": "canonical",
+      "evidence_version": "content-evidence.v1"
+    },
+    "timing": {
+      "elapsed_ms": 33,
+      "canonical_elapsed_ms": 8,
+      "modules_elapsed_ms": 22,
+      "cache_reused_count": 0
+    },
+    "validation": {
+      "passed": true,
+      "issues": []
+    }
+  },
+  "analysis_meta": {
+    "contract_version": "analysis.v11",
+    "analysis_profile": "max",
+    "generation_strategy": "unified_modules",
+    "quality_audit": {
+      "status": "passed",
+      "label": "分析已完成",
+      "score": null,
+      "acceptance_passed": true,
+      "requires_review": false,
+      "completion_status": "complete",
+      "checks": [],
+      "issues": []
+    },
+    "analysis_passes": 5,
+    "model_requests": [
+      {
+        "task": "canonical_transcript",
+        "attempt": 1,
+        "output_budget": 4500,
+        "elapsed_ms": 5,
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "total_tokens": 120,
+        "reasoning_tokens": 3,
+        "failure_kind": null,
+        "http_status": null,
+        "finish_reason": "stop"
+      },
+      {
+        "task": "content_classification:text_topic_structure_audience",
+        "attempt": 1,
+        "output_budget": 4500,
+        "elapsed_ms": 1,
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "total_tokens": 120,
+        "reasoning_tokens": 3,
+        "failure_kind": null,
+        "http_status": null,
+        "finish_reason": "stop"
+      },
+      {
+        "task": "content_classification:text_expression_value",
+        "attempt": 1,
+        "output_budget": 4500,
+        "elapsed_ms": 0,
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "total_tokens": 120,
+        "reasoning_tokens": 3,
+        "failure_kind": null,
+        "http_status": null,
+        "finish_reason": "stop"
+      },
+      {
+        "task": "content_classification:visual",
+        "attempt": 1,
+        "output_budget": 4500,
+        "elapsed_ms": 0,
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "total_tokens": 120,
+        "reasoning_tokens": 3,
+        "failure_kind": null,
+        "http_status": null,
+        "finish_reason": "stop"
+      },
+      {
+        "task": "content_classification:synthesis",
+        "attempt": 1,
+        "output_budget": 4500,
+        "elapsed_ms": 0,
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "total_tokens": 120,
+        "reasoning_tokens": 3,
+        "failure_kind": null,
+        "http_status": null,
+        "finish_reason": "stop"
+      }
+    ],
+    "actual_input_tokens": 500,
+    "actual_output_tokens": 100,
+    "actual_total_tokens": 600,
+    "known_total_tokens": 600,
+    "unknown_usage_requests": 0,
+    "usage_scope": "recorded_current_attempt_calls",
+    "evidence_reused": false,
+    "visual_extraction": {
+      "evidence_version": "visual-evidence.v2",
+      "sampling_strategy_id": "content-frames.v2",
+      "sampling_config": {
+        "opening_interval_ms": 500,
+        "temporal_interval_ms": 500
+      },
+      "temporal_groups": [
+        {
+          "group_id": "opening",
+          "kind": "opening",
+          "start_ms": 0,
+          "end_ms": 1000,
+          "timestamps_ms": [
+            0,
+            500,
+            1000
+          ],
+          "source": "ordered_sampled_frames",
+          "limitations": [
+            "稀疏采样，仅支持这一采样窗口内的判断。"
+          ]
+        }
+      ],
+      "shot_detection": {
+        "status": "measured",
+        "method": "ffmpeg_scene_score.v1",
+        "threshold": 0.32,
+        "boundaries_ms": [
+          0,
+          6000
+        ]
+      },
+      "vision_observation_count": 3,
+      "visual_understanding": {
+        "status": "completed",
+        "frames_requested": 3,
+        "frames_understood": 3
+      }
+    },
+    "canonical_diagnostics": {
+      "failure_kind": null,
+      "http_status": null,
+      "finish_reason": "stop",
+      "attempts": 1,
+      "elapsed_ms": 5,
+      "input_tokens": 100,
+      "output_tokens": 20,
+      "total_tokens": 120,
+      "reasoning_tokens": 3,
+      "output_budget": 4500,
+      "reused": false
+    },
+    "processing_mode": "unified",
+    "coverage_percent": null
+  }
+}

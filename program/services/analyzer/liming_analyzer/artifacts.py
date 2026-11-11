@@ -5,7 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from .adapters import TranscriptOutput, VisualOutput
+from .adapters import NormalizedMedia, TranscriptOutput, VisualOutput
 from .api_client import AnalyzerApiClient, ClaimedJob
 
 
@@ -35,6 +35,16 @@ def transcript_vtt(transcript: TranscriptOutput) -> str:
 class ApiArtifactStore:
     def __init__(self, client: AnalyzerApiClient) -> None:
         self.client = client
+
+    def persist_source(self, job: ClaimedJob, media: NormalizedMedia) -> Mapping[str, Any] | None:
+        if job.source_type != "url":
+            return None
+        suffix = media.source_path.suffix.lower()
+        content_type = {".webm": "video/webm", ".mov": "video/quicktime", ".mp3": "audio/mpeg",
+                        ".m4a": "audio/mp4", ".wav": "audio/wav", ".ogg": "audio/ogg"}.get(suffix, "video/mp4" if media.info.video_codec else "audio/mp4")
+        return self.client.upload_artifact(job,
+            kind="source_video" if media.info.video_codec else "source_audio",
+            path=media.source_path, content_type=content_type)
 
     def persist(
         self,

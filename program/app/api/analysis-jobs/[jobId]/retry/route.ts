@@ -1,3 +1,4 @@
+import { readAnalysisModuleRetryState, parseAnalysisModuleRetryKeys, type AnalysisModuleRetryKey } from "../../../../../lib/analysis-module-retry";
 import { executeAnalysisJobAction, AnalysisJobActionStatusUnknownError } from "../../../../../lib/analysis-job-action";
 import { createProjectWriteAssertion, ProjectWriteAccessChangedError } from "../../../../../lib/project-write-access";
 import { ACTIVE_ANALYSIS_STATUSES_SQL } from "../../../../../lib/analysis-jobs";
@@ -20,9 +21,14 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再重试任务。", 401);
   try {
     const { jobId } = await context.params;
-    const payload = await request.json().catch(() => ({})) as { segmentKey?: unknown; scriptVersion?: unknown };
+    const rawPayload = await request.json().catch(() => ({}));
+    if (!isPlainRecord(rawPayload)) return apiError("INVALID_RETRY_TARGET", "重试参数格式无效。", 400);
+    const payload = rawPayload as { segmentKey?: unknown; scriptVersion?: unknown; moduleKeys?: unknown };
     const requestedSegmentKey = typeof payload.segmentKey === "string" ? payload.segmentKey.trim() : "";
     const requestedScriptVersion = typeof payload.scriptVersion === "string" ? payload.scriptVersion.trim() : "";
+    const requestedModules = payload.moduleKeys === undefined ? undefined : parseAnalysisModuleRetryKeys(payload.moduleKeys);
+    if (requestedModules === null) return apiError("MODULE_RETRY_INVALID", "必须选择有效的失败模块。", 400);
+    if (requestedModules && (requestedSegmentKey || requestedScriptVersion)) return apiError("RETRY_TARGET_CONFLICT", "模块重试不能与分段或旧口播重试混用。", 400);
     if (requestedSegmentKey && requestedScriptVersion) return apiError("RETRY_TARGET_CONFLICT", "不能同时重试长视频分段和口播版本。", 400);
     if (requestedScriptVersion && !(requestedScriptVersion in scriptVersionLabels)) return apiError("SCRIPT_VERSION_INVALID", "口播版本参数无效。", 400);
 
@@ -78,8 +84,24 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
       }
     }
 
+    let moduleKeys: AnalysisModuleRetryKey[] | null = null;
+    if (!requestedSegmentKey && !requestedScriptVersion) {
+      const latest = await db.prepare("SELECT schema_version,report_json FROM video_analyses WHERE analysis_job_id=? AND organization_id=? AND project_id=? AND video_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1")
+        .bind(jobId, job.organization_id, job.project_id, job.video_id).first<{ schema_version: string; report_json: string }>();
+      let latestReport: unknown = null;
+      try { latestReport = latest ? JSON.parse(latest.report_json) : null; } catch { /* Never infer failed modules from corrupt report bodies. */ }
+      if (latest?.schema_version === "analysis.v11" || requestedModules) {
+        const state = readAnalysisModuleRetryState(job.checkpoint_json, latest?.schema_version, latestReport);
+        if (!["partial", "failed"].includes(job.status) || !canResume || !state?.available || !state.checkpoint) return apiError("MODULE_RETRY_UNAVAILABLE", "当前报告没有可复用的有效模块检查点，请查看最新报告或主动重新分析。", 409);
+        moduleKeys = requestedModules ?? (state.failedModuleKeys.includes("canonical") ? ["canonical"] : state.failedModuleKeys);
+        if (moduleKeys.some(key => !state.failedModuleKeys.includes(key))) return apiError("MODULE_NOT_FAILED", "只能重试最新报告中明确失败的模块，已完成结果会保留。", 409);
+        if (requestedModules?.includes("synthesis") && state.incompleteUpstream.some(key => !moduleKeys!.includes(key))) return apiError("MODULE_DEPENDENCY_INCOMPLETE", "请先补充未完成的内容分析，再重试综合判断；也可同时重试所有失败部分。", 409);
+        retryCheckpointJson = JSON.stringify({ ...state.checkpoint, retry_module_keys: moduleKeys });
+        if (retryCheckpointJson.length > 1_000_000) return apiError("MODULE_RETRY_CHECKPOINT_TOO_LARGE", "模块重试检查点体积超限，请主动重新分析。", 409);
+      }
+    }
     const scriptVersion = requestedScriptVersion as ScriptVersion | "";
-    const stage = scriptVersion
+    const stage = moduleKeys ? "等待仅重试失败的内容模块" : scriptVersion
       ? `等待单独重试${scriptVersionLabels[scriptVersion]}`
       : canResume
         ? "等待从证据检查点继续结构分析"
@@ -90,7 +112,7 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     const progress = canResume ? 82 : 0;
     const state = await executeAnalysisJobAction(db, {
       scope, job, action: "retried", now, toStatus: "pending", progress,
-      metadata: { previousStatus: job.status, retryCount: job.retry_count + 1, staleLease, checkpointStage: job.checkpoint_stage, canResume, segmentKey: requestedSegmentKey || null, segmentRetryTarget: retryTarget, scriptVersion: scriptVersion || null },
+      metadata: { previousStatus: job.status, retryCount: job.retry_count + 1, staleLease, checkpointStage: job.checkpoint_stage, canResume, segmentKey: requestedSegmentKey || null, segmentRetryTarget: retryTarget, scriptVersion: scriptVersion || null, moduleKeys },
       guard: `(status IN ('partial', 'failed', 'cancelled') OR (status NOT IN ('pending', 'completed', 'partial', 'failed', 'cancelled') AND lease_expires_at <= ?))
         AND EXISTS (SELECT 1 FROM videos v WHERE v.id = analysis_jobs.video_id AND v.organization_id = analysis_jobs.organization_id AND v.project_id = analysis_jobs.project_id AND v.deleted_at IS NULL)
         AND NOT EXISTS (SELECT 1 FROM analysis_jobs other WHERE other.organization_id = analysis_jobs.organization_id
@@ -109,7 +131,7 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
         .bind(job.video_id, job.organization_id, job.project_id).first()) return apiError("VIDEO_NOT_FOUND", "素材已删除，不能重试分析。", 404);
       return apiError("JOB_STATE_CHANGED", "任务状态已经变化，或该视频已有其他分析任务，请刷新后重试。", 409);
     }
-    return Response.json({ job: { ...state, segmentKey: requestedSegmentKey || null, scriptVersion: scriptVersion || null } });
+    return Response.json({ job: { ...state, segmentKey: requestedSegmentKey || null, scriptVersion: scriptVersion || null, moduleKeys } });
   } catch (error) {
     if (error instanceof ProjectWriteAccessChangedError) return apiError(error.code, "登录状态或项目权限已改变，本次任务操作未执行。请刷新确认权限后再操作。", 403);
     if (error instanceof AnalysisJobActionStatusUnknownError) return apiError(error.code, error.message, 503);

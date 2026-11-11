@@ -1,3 +1,5 @@
+import { readAnalysisModuleRetryState } from "../../../../lib/analysis-module-retry";
+import { readScopedAnalysisMedia } from "../../../../lib/analysis-media";
 import { canAccessOrganizationVideoLibrary, canWriteProjectAccess, getD1, getOrganizationAccess, getProjectAccess } from "../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../lib/api-response";
 import { summarizeSegmentProgress } from "../../../../lib/analysis-segment-progress";
@@ -25,15 +27,15 @@ export async function GET(request: Request, context: { params: Promise<{ videoId
       sourceProjectId = library.source_project_id; libraryEntryId = library.library_entry_id; sharedReference = true;
       video = await db.prepare(`
         SELECT v.id, v.platform, v.source_type, v.source_url, v.title, v.author_name, v.published_at, v.duration_sec, v.status, v.error_message, v.created_at,
-          a.filename, a.content_type, a.size_bytes
-        FROM videos v LEFT JOIN media_assets a ON a.id = v.media_asset_id AND a.organization_id = v.organization_id AND a.project_id = v.project_id AND a.status = 'active'
+          a.id AS local_media_asset_id, a.filename, a.content_type, a.size_bytes
+        FROM videos v LEFT JOIN media_assets a ON a.id = v.media_asset_id AND a.organization_id = v.organization_id AND a.project_id = v.project_id AND a.status = 'active' AND a.kind IN ('source_video', 'source_audio') AND (a.video_id IS NULL OR a.video_id = v.id)
         WHERE v.id = ? AND v.organization_id = ? AND v.project_id = ? AND v.deleted_at IS NULL
       `).bind(videoId, organizationId, sourceProjectId).first<Record<string, unknown>>();
     } else {
       video = await db.prepare(`
       SELECT v.id, v.platform, v.source_type, v.source_url, v.title, v.author_name, v.published_at, v.duration_sec, v.status, v.error_message, v.created_at,
-        a.filename, a.content_type, a.size_bytes
-      FROM videos v LEFT JOIN media_assets a ON a.id = v.media_asset_id AND a.organization_id = v.organization_id AND a.project_id = v.project_id AND a.status = 'active'
+        a.id AS local_media_asset_id, a.filename, a.content_type, a.size_bytes
+      FROM videos v LEFT JOIN media_assets a ON a.id = v.media_asset_id AND a.organization_id = v.organization_id AND a.project_id = v.project_id AND a.status = 'active' AND a.kind IN ('source_video', 'source_audio') AND (a.video_id IS NULL OR a.video_id = v.id)
       WHERE v.id = ? AND v.organization_id = ? AND v.project_id = ? AND v.deleted_at IS NULL
     `).bind(videoId, organizationId, projectId).first<Record<string, unknown>>();
     }
@@ -50,8 +52,8 @@ export async function GET(request: Request, context: { params: Promise<{ videoId
       sourceProjectId = reference.source_project_id; libraryEntryId = reference.library_entry_id; sharedReference = true;
       video = await db.prepare(`
         SELECT v.id, v.platform, v.source_type, v.source_url, v.title, v.author_name, v.published_at, v.duration_sec, v.status, v.error_message, v.created_at,
-          a.filename, a.content_type, a.size_bytes
-        FROM videos v LEFT JOIN media_assets a ON a.id = v.media_asset_id AND a.organization_id = v.organization_id AND a.project_id = v.project_id AND a.status = 'active'
+          a.id AS local_media_asset_id, a.filename, a.content_type, a.size_bytes
+        FROM videos v LEFT JOIN media_assets a ON a.id = v.media_asset_id AND a.organization_id = v.organization_id AND a.project_id = v.project_id AND a.status = 'active' AND a.kind IN ('source_video', 'source_audio') AND (a.video_id IS NULL OR a.video_id = v.id)
         WHERE v.id = ? AND v.organization_id = ? AND v.project_id = ? AND v.deleted_at IS NULL
       `).bind(videoId, organizationId, sourceProjectId).first<Record<string, unknown>>();
     }
@@ -61,10 +63,10 @@ export async function GET(request: Request, context: { params: Promise<{ videoId
     }
     if (requestedAnalysisId && !await db.prepare("SELECT id FROM video_analyses WHERE id = ? AND organization_id = ? AND project_id = ? AND video_id = ? LIMIT 1").bind(requestedAnalysisId, organizationId, sourceProjectId, videoId).first()) return apiError("ANALYSIS_NOT_FOUND", "指定的分析版本不存在或不在当前可访问的视频中。", 404);
     const canReadOwnedPerformance = !sharedReference || (Boolean(requestedLibraryEntryId) && projectId === sourceProjectId);
-    const [job, transcript, analyses, metrics, events, assets, ownedPerformance] = await Promise.all([
-      db.prepare("SELECT id, status, analysis_profile, progress, current_stage, error_code, error_message, retry_count, checkpoint_stage, checkpoint_json, checkpoint_updated_at, resume_count, created_at, updated_at, completed_at FROM analysis_jobs WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY created_at DESC LIMIT 1").bind(organizationId, sourceProjectId, videoId).first<Record<string, unknown>>(),
+    const [latestJob, latestTranscript, analyses, metrics, events, assets, ownedPerformance] = await Promise.all([
+      db.prepare("SELECT id, status, analysis_profile, progress, current_stage, error_code, error_message, retry_count, checkpoint_stage, checkpoint_json, checkpoint_updated_at, resume_count, created_at, updated_at, completed_at FROM analysis_jobs WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY created_at DESC,rowid DESC LIMIT 1").bind(organizationId, sourceProjectId, videoId).first<Record<string, unknown>>(),
       db.prepare("SELECT id, version, language, source, full_text, segments_json, confidence, created_at, updated_at FROM video_transcripts WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY version DESC LIMIT 1").bind(organizationId, sourceProjectId, videoId).first<{ segments_json: string } & Record<string, unknown>>(),
-      db.prepare(`SELECT id, analysis_job_id, schema_version, report_json, confidence, model_provider, model_name, prompt_version, created_at FROM video_analyses WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY ${requestedAnalysisId ? "CASE WHEN id = ? THEN 0 ELSE 1 END, " : ""}created_at DESC LIMIT 8`).bind(organizationId, sourceProjectId, videoId, ...(requestedAnalysisId ? [requestedAnalysisId] : [])).all<{ report_json: string } & Record<string, unknown>>(),
+      db.prepare(`SELECT id, analysis_job_id, schema_version, report_json, confidence, model_provider, model_name, prompt_version, created_at FROM video_analyses WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY ${requestedAnalysisId ? "CASE WHEN id = ? THEN 0 ELSE 1 END, " : ""}created_at DESC, rowid DESC LIMIT 8`).bind(organizationId, sourceProjectId, videoId, ...(requestedAnalysisId ? [requestedAnalysisId] : [])).all<{ id: string; analysis_job_id: string | null; schema_version: string; created_at: string; report_json: string } & Record<string, unknown>>(),
       db.prepare("SELECT source, plays, likes, comments, favorites, shares, followers_gained, collected_at FROM video_metric_snapshots WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY collected_at DESC LIMIT 10").bind(organizationId, sourceProjectId, videoId).all(),
       db.prepare("SELECT event_type, from_status, to_status, progress, details_json, created_at FROM analysis_job_events WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY created_at DESC LIMIT 50").bind(organizationId, sourceProjectId, videoId).all(),
       db.prepare("SELECT id, analysis_job_id, kind, filename, content_type, size_bytes, created_at FROM media_assets WHERE organization_id = ? AND project_id = ? AND video_id = ? AND kind IN ('keyframe', 'subtitle', 'report') AND status = 'active' ORDER BY created_at ASC").bind(organizationId, sourceProjectId, videoId).all(),
@@ -87,10 +89,30 @@ export async function GET(request: Request, context: { params: Promise<{ videoId
     ]);
     const libraryQuery = `organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`;
     const analysisVersions = analyses.results.map((analysis) => ({ ...analysis, report: parseStoredJson(analysis.report_json), report_json: undefined }));
-    const safeJob = job ? { ...job, checkpoint_json: undefined, segment_progress: summarizeSegmentProgress(job.checkpoint_json) } : null;
+    const selectedMedia = await readScopedAnalysisMedia(db, { organizationId, projectId: sourceProjectId, videoId }, typeof analysisVersions[0]?.id === "string" ? analysisVersions[0].id : null);
+    const selected = analysisVersions[0];
+    const historicalTranscript = selected ? await db.prepare("SELECT id, version, language, source, full_text, segments_json, confidence, created_at, updated_at FROM video_transcripts WHERE organization_id = ? AND project_id = ? AND video_id = ? AND created_at <= ? ORDER BY version DESC LIMIT 1")
+      .bind(organizationId, sourceProjectId, videoId, selected.created_at).first<{ id: string; segments_json: string } & Record<string, unknown>>() : null;
+    const transcript = historicalTranscript ?? latestTranscript;
+    const transcriptBinding = historicalTranscript && historicalTranscript.id !== latestTranscript?.id ? "historical" : "latest";
+    const jobColumns = "id,status,analysis_profile,progress,current_stage,error_code,error_message,retry_count,checkpoint_stage,checkpoint_json,checkpoint_updated_at,resume_count,created_at,updated_at,completed_at";
+    const selectedJobId = typeof selected?.analysis_job_id === "string" ? selected.analysis_job_id : null;
+    const job = selected ? selectedJobId && selectedJobId === latestJob?.id ? latestJob : selectedJobId
+      ? await db.prepare(`SELECT ${jobColumns} FROM analysis_jobs WHERE id=? AND organization_id=? AND project_id=? AND video_id=?`)
+        .bind(selectedJobId, organizationId, sourceProjectId, videoId).first<Record<string, unknown>>() : null : latestJob;
+    const newestForJob = job ? await db.prepare("SELECT id FROM video_analyses WHERE analysis_job_id=? AND organization_id=? AND project_id=? AND video_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1")
+      .bind(job.id, organizationId, sourceProjectId, videoId).first<{ id: string }>() : null;
+    const moduleRetry = job && selected && newestForJob?.id === selected.id
+      ? readAnalysisModuleRetryState(typeof job.checkpoint_json === "string" ? job.checkpoint_json : null, selected.schema_version, selected.report) : null;
+    const retryableModuleKeys = moduleRetry?.failedModuleKeys.filter(key => !moduleRetry.blockedModuleKeys.includes(key)) ?? [];
+    const safeJob = job ? { ...job, checkpoint_json: undefined, segment_progress: summarizeSegmentProgress(job.checkpoint_json),
+      module_retry: { available: !sharedReference && canWriteProjectAccess(access) && ["evidence_ready", "segment_progress"].includes(String(job.checkpoint_stage)) && ["partial", "failed"].includes(String(job.status)) && Boolean(moduleRetry?.available) && retryableModuleKeys.length > 0, failedModuleKeys: retryableModuleKeys } } : null;
+    const safeLatestJob = latestJob ? { ...latestJob, checkpoint_json: undefined, segment_progress: summarizeSegmentProgress(latestJob.checkpoint_json) } : null;
     return Response.json({
-      video: { ...video, is_shared_reference: sharedReference, library_entry_id: libraryEntryId, media_url: video.source_type === "upload" ? (sharedReference && libraryEntryId ? `/api/video-library/${libraryEntryId}/media?${libraryQuery}` : `/api/videos/${videoId}/media?${libraryQuery}`) : null },
+      video: { ...video, filename: selectedMedia.media?.filename ?? video.filename, content_type: selectedMedia.media?.content_type ?? video.content_type, size_bytes: selectedMedia.media?.size_bytes ?? video.size_bytes, media_binding: selectedMedia.binding, is_shared_reference: sharedReference, library_entry_id: libraryEntryId, local_media_asset_id: undefined, media_url: selectedMedia.media ? (sharedReference && libraryEntryId ? `/api/video-library/${libraryEntryId}/media?${libraryQuery}${analysisVersions[0]?.id ? `&analysisId=${encodeURIComponent(String(analysisVersions[0].id))}` : ""}` : `/api/videos/${videoId}/media?${libraryQuery}${analysisVersions[0]?.id ? `&analysisId=${encodeURIComponent(String(analysisVersions[0].id))}` : ""}`) : null },
       job: safeJob,
+      latestJob: safeLatestJob,
+      transcript_binding: transcriptBinding,
       transcript: transcript ? { ...transcript, segments: parseStoredJson(transcript.segments_json), segments_json: undefined } : null,
       analysis: analysisVersions[0] ?? null,
       analyses: analysisVersions,

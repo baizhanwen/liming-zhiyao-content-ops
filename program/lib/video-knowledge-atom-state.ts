@@ -1,4 +1,6 @@
 import { assertProjectWriteAccess, projectWriteAccessBindings, projectWriteAccessCondition, type ProjectWriteScope } from "./project-write-access.ts";
+import { readUnifiedReport } from "./unified-report.ts";
+import { readContentAnalysis } from "./video-content-analysis.ts";
 
 type Prepared = {
   bind(...values: unknown[]): Prepared;
@@ -18,20 +20,31 @@ function values(value: unknown) {
 }
 
 export async function extractVideoKnowledgeAtomsFromReport(db: Database, input: { organizationId: string; libraryEntryId: string; analysisId: string; report: Record<string, unknown>; reportHash: string; extractorVersion: string; now: string; requireCurrentAnalysis?: boolean; reportJson?: string; writeScope?: ProjectWriteScope; assertWriteAccess?: () => Promise<void> }) {
+  const unified = readUnifiedReport(input.report);
+  const registry = new Map((unified ? readContentAnalysis(input.report)?.evidence_registry : [])?.map(row => [row.id, row]) ?? []);
+  const findings = unified?.sections.flatMap(section => section.findings) ?? [];
   const reportEvidence = values(input.report.evidence);
   const atomInputs = atomFields.flatMap((field) => values(input.report[field]).map((item, index) => {
     const evidence = reportEvidence.find((quote) => item.includes(quote) || quote.includes(item));
-    return { field, index, item, evidence };
+    const linked = findings.filter(finding => finding.text === item || item.includes(finding.text));
+    const evidenceIds = [...new Set(linked.flatMap(finding => finding.evidence_ids))];
+    const sources = evidenceIds.flatMap(id => registry.has(id) ? [registry.get(id)!] : []);
+    const locator = linked.length ? {
+      version: "unified-finding-source.v1", finding_ids: linked.map(finding => finding.id), evidence_ids: evidenceIds,
+      evidence: sources.find(source => source.text)?.text ?? null,
+      sources: sources.map(source => ({ id: source.id, source: source.source, start_ms: source.start_ms, end_ms: source.end_ms, asset_ref: source.asset_ref })),
+    } : { evidence: evidence ?? null };
+    return { field, index, item, locator };
   }));
   if (!atomInputs.length) return { status: "unsupported", count: 0, libraryEntryId: input.libraryEntryId };
-  const atoms = atomInputs.map(({ field, index, item, evidence }) => ({
+  const atoms = atomInputs.map(({ field, index, item, locator }) => ({
     id: crypto.randomUUID(),
     atomKey: field + ":" + index,
     atomType: field,
     title: field + " · " + (index + 1),
     content: item,
     structuredJson: JSON.stringify({ field, index }),
-    sourceLocatorJson: JSON.stringify({ evidence: evidence ?? null }),
+    sourceLocatorJson: JSON.stringify(locator),
   }));
   await input.assertWriteAccess?.();
   if (input.writeScope) await assertProjectWriteAccess(db, input.writeScope);

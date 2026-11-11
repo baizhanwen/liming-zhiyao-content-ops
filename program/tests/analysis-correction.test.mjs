@@ -18,8 +18,10 @@ test("manual transcript correction is versioned, tenant-scoped, and auditable", 
   assert.match(route, /input_transcript_id/);
   assert.match(schema, /inputTranscriptId: text\("input_transcript_id"\)/);
   assert.match(migration, /ADD `input_transcript_id`/);
-  assert.match(detail, /保存并以\$\{analysisProfileNames\[rerunProfile\]\}重新分析/);
-  assert.match(detail, /校正转写/);
+  assert.match(detail, /saveTranscript\(true\)/);
+  assert.match(detail, /analysisProfile: profile/);
+  assert.match(detail, /保存并重新分析/);
+  assert.match(detail, /人工校正/);
 });
 
 test("worker claims the chosen transcript and does not expose storage internals", async () => {

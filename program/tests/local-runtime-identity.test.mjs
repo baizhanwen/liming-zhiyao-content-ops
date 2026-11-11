@@ -32,6 +32,32 @@ test("taxonomy changes invalidate source identity while customer state does not"
   assert.notEqual(runtimeSourceId(root), first);
 });
 
+test("each unified-analysis producer, reader and API change invalidates the running source identity", t => {
+  const root = directory(t);
+  const files = [
+    "services/analyzer/liming_analyzer/canonical_transcript.py", "services/analyzer/liming_analyzer/content_module_protocol.py",
+    "services/analyzer/liming_analyzer/unified_analysis.py", "services/analyzer/liming_analyzer/providers.py",
+    "services/analyzer/liming_analyzer/pipeline.py", "services/analyzer/liming_analyzer/api_client.py",
+    "services/analyzer/liming_analyzer/artifacts.py", "services/analyzer/liming_analyzer/model_calls.py",
+    "services/analyzer/liming_analyzer/minimax_vision.py", "services/analyzer/liming_analyzer/visual.py",
+    "lib/unified-report.ts", "lib/analysis-report-view.ts", "lib/analysis-module-retry.ts", "lib/analysis-media.ts",
+    "lib/analysis-quality.ts", "lib/video-content-analysis.ts", "lib/script-rewrite.ts", "lib/video-knowledge-atom-state.ts",
+    "app/api/internal/analysis-jobs/[jobId]/complete/route.ts", "app/api/internal/analysis-jobs/[jobId]/artifacts/route.ts",
+    "app/api/internal/analysis-jobs/[jobId]/model-calls/route.ts", "app/api/analysis-jobs/[jobId]/retry/route.ts",
+    "app/api/videos/[videoId]/route.ts", "app/api/videos/[videoId]/media/route.ts", "app/api/video-library/[entryId]/media/route.ts",
+    "app/api/video-library/content-comparison/route.ts", "components/AnalysisDetail.tsx", "components/UnifiedReportContent.tsx",
+  ];
+  let previous = runtimeSourceId(root);
+  for (const filename of files) {
+    const target = path.join(root, filename); mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, "synthetic source change\n");
+    const next = runtimeSourceId(root); assert.notEqual(next, previous, filename); previous = next;
+  }
+  mkdirSync(path.join(root, ".local"));
+  writeFileSync(path.join(root, ".local/customer-state.json"), '{"private":"synthetic"}');
+  assert.equal(runtimeSourceId(root), previous, "Customer state is not executable source");
+});
+
 async function bridge(t, root, calls = []) {
   const configuration = { LOCAL_RUNTIME_TOKEN: token };
   const server = createAnalyzerEnvironmentBridge({ root, configuration: () => configuration, persist: false, run: async action => {

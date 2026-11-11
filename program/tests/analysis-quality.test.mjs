@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { runtimeFixture } from "./helpers/runtime-fixture.mjs";
-import { analysisReportFixture, contentAnalysisFixture } from "./helpers/content-analysis-fixture.mjs";
+import { analysisReportFixture, contentAnalysisFixture, unifiedAnalysisReportFixture } from "./helpers/content-analysis-fixture.mjs";
 
 async function fixture(t) {
   const f = runtimeFixture(t);
@@ -23,8 +23,8 @@ async function fixture(t) {
   return { ...f, jobId, complete };
 }
 
-for (const schema of ["analysis.v7", "analysis.v8", "analysis.v9", "analysis.v10"]) test(`${schema} completion accepts its valid audit and remains idempotent`, async t => {
-  const f = await fixture(t), report = analysisReportFixture(); report.analysis_meta.contract_version = schema;
+for (const schema of ["analysis.v7", "analysis.v8", "analysis.v9", "analysis.v10", "analysis.v11"]) test(`${schema} completion accepts its valid audit and remains idempotent`, async t => {
+  const f = await fixture(t), report = schema === "analysis.v11" ? unifiedAnalysisReportFixture() : analysisReportFixture(); report.analysis_meta.contract_version = schema;
   const response = await f.complete(schema, report); assert.equal(response.status, 200, await response.clone().text());
   assert.equal((await response.json()).job.status, "completed");
   assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS count FROM video_knowledge_atoms").get().count, 1);
@@ -38,6 +38,16 @@ for (const [label, schema, body] of [
   ["unknown contract", "analysis.future", analysisReportFixture()],
   ["missing structured report", "analysis.v10", { summary: "原文字段保留", analysis_meta: analysisReportFixture().analysis_meta }],
   ["partial structured module", "analysis.v10", (() => { const content = contentAnalysisFixture(); content.status = "partial"; content.module_status.visual.status = "not_acquired"; content.module_status.visual.reason = "not_acquired"; return analysisReportFixture(content); })()],
+  ["missing unified report", "analysis.v11", (() => { const report = unifiedAnalysisReportFixture(); delete report.unified_report; return report; })()],
+  ["failed unified module", "analysis.v11", (() => {
+    const report = unifiedAnalysisReportFixture();
+    report.unified_report.status = report.content_analysis.status = "partial";
+    report.unified_report.validation = report.content_analysis.validation = { passed: false, issues: ["visual:timeout"] };
+    Object.assign(report.content_analysis.module_status.visual, { status: "failed", reason: "classification_request_failed", validation: { passed: false, issues: ["classification_request_failed"] } });
+    Object.assign(report.unified_report.sections[2], { status: "failed", reason: "classification_request_failed", findings: [] });
+    report.unified_report.sections[2].diagnostics.failure_kind = "timeout";
+    return report;
+  })()],
 ]) test(`${label} saves a partial report without creating atoms or benchmark memory`, async t => {
   const f = await fixture(t), response = await f.complete(schema, body); assert.equal(response.status, 200);
   assert.equal((await response.json()).job.status, "partial");
@@ -47,11 +57,11 @@ for (const [label, schema, body] of [
   assert.equal((await (await f.complete(schema, body)).json()).idempotent, true);
 });
 
-test("migration quality uses the same v8/v9/v10 rules and leaves legacy report bodies untouched", t => {
+test("migration quality uses the same v8/v9/v10/v11 rules and leaves legacy report bodies untouched", t => {
   const f = runtimeFixture(t), { importedAnalysisState } = f.load("lib/material-analysis-state.ts");
   const now = new Date().toISOString();
-  for (const schema of ["analysis.v8", "analysis.v9", "analysis.v10"]) {
-    const report = analysisReportFixture(); report.analysis_meta.contract_version = schema;
+  for (const schema of ["analysis.v8", "analysis.v9", "analysis.v10", "analysis.v11"]) {
+    const report = schema === "analysis.v11" ? unifiedAnalysisReportFixture() : analysisReportFixture(); report.analysis_meta.contract_version = schema;
     const row = { schema_version: schema, report_json: JSON.stringify(report), created_at: now }, before = row.report_json;
     assert.equal(importedAnalysisState([row], now).jobStatus, "completed");
     assert.equal(row.report_json, before);

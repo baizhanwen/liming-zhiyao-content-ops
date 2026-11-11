@@ -1,0 +1,59 @@
+"use client";
+import { useState } from "react";
+import { contentTimeLabel } from "../lib/content-analysis-presentation";
+import type { AnalysisReportView, ReportClassificationView, ReportFindingView } from "../lib/analysis-report-view";
+import type { UnifiedModuleKey } from "../lib/unified-report";
+
+type Props = {
+  view: AnalysisReportView;
+  assets: Array<{ id: string; url: string }>;
+  canLocate: boolean;
+  onLocate: (milliseconds: number) => void;
+  onCopyScript: () => void;
+  canCopyScript: boolean;
+  failedModuleKeys: string[];
+  onRetry?: (key: UnifiedModuleKey | "canonical") => void;
+  busy?: boolean;
+};
+function EvidenceImage({ src, alt }: { src: string; alt: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return <span className="report-media-unavailable">画面暂时无法读取，<a href={src} target="_blank" rel="noreferrer">重新打开</a></span>;
+  // Private images require the authenticated browser session.
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img src={src} alt={alt} loading="lazy" onError={() => setFailed(true)} />;
+}
+function ClassificationRows({ rows, label }: { rows: ReportClassificationView[]; label: string }) {
+  return <dl className="report-classification-list" aria-label={label}>{rows.map(row => <div key={row.dimensionId} data-dimension={row.dimensionId}>
+    <dt>{row.label}</dt><dd>{row.tags.length ? <span className="report-classification-value">{row.tags.map((tag, index) => <span key={tag.id}>{index > 0 && "、"}{tag.label}{tag.primary && row.tags.length > 1 && <small className="report-primary-tag">主</small>}</span>)}</span> : <span className="report-classification-state">{row.value}</span>}{row.reason && <small className="report-classification-reason">{row.reason}</small>}</dd>
+  </div>)}</dl>;
+}
+
+export function UnifiedReportContent({ view, assets, canLocate, onLocate, onCopyScript, canCopyScript, failedModuleKeys, onRetry, busy = false }: Props) {
+  const evidenceById = new Map(view.evidence.map(row => [row.id, row]));
+  const assetById = new Map(assets.map(row => [row.id, row.url]));
+  const summaryFinding = view.sections.find(section => section.key === "synthesis")?.findings.find(finding => finding.text.trim() === view.summary.trim());
+  function evidenceView(finding: ReportFindingView) {
+    const rows = finding.evidenceIds.flatMap(id => evidenceById.has(id) ? [evidenceById.get(id)!] : []);
+    if (!rows.length) return null;
+    return <details className="report-evidence"><summary>查看依据 <span>{rows.length}</span></summary><div>{rows.map(row => {
+      const frame = row.asset_ref ? row : view.evidence.find(item => item.source === "frame" && item.start_ms === row.start_ms && item.asset_ref);
+      const asset = frame?.asset_ref ? assetById.get(frame.asset_ref) : null;
+      return <article key={row.id}><header>{row.start_ms !== null && canLocate ? <button type="button" onClick={() => onLocate(row.start_ms!)}>{contentTimeLabel(row.start_ms)} · 跳转播放</button> : <span>{contentTimeLabel(row.start_ms)}</span>}<small>{row.source === "transcript" ? view.legacy ? "原文转写" : "校正文案" : row.source === "ocr" ? "画面文字" : "画面依据"}</small></header><p>{row.text}</p>{asset && <a href={asset} target="_blank" rel="noreferrer"><EvidenceImage src={asset} alt={`${contentTimeLabel(row.start_ms)} 的原片画面`} /></a>}</article>;
+    })}</div></details>;
+  }
+  return <>
+    {view.summary && <section className="report-overview"><span className="section-kicker">核心结论</span><p>{view.summary}</p>{summaryFinding && evidenceView(summaryFinding)}</section>}
+    {view.unified?.canonical.status === "failed" ? <section className="report-overview"><h2>口播内容需要先核对</h2><p>这次校正没有通过检查。完成口播校正后，其余分析会继续生成。</p></section> : view.sections.map(section => <section className="unified-report-section" id={`report-${section.key}`} key={section.key}><header><h2>{section.name}</h2>{section.status === "failed" && <span className="report-section-failed">未完成</span>}</header>
+      {section.reason && <div className="report-section-message"><p>{section.reason}</p>{onRetry && failedModuleKeys.includes(section.key) && <button type="button" disabled={busy} onClick={() => onRetry(section.key)}>只补这一部分</button>}</div>}
+      {section.classifications.some(row => row.featured) && <div className="report-core-classifications"><h3>主要分类</h3><ClassificationRows rows={section.classifications.filter(row => row.featured)} label={`${section.name}的主要分类`} /></div>}
+      {section.findings.filter(finding => section.key !== "synthesis" || finding.text.trim() !== view.summary.trim()).map(finding => <article className="report-finding" key={finding.id}><h3>{finding.title}</h3><p>{finding.text}</p>{evidenceView(finding)}</article>)}
+      {section.classifications.some(row => !row.featured) && <details className="report-more-classifications"><summary>更多分类</summary><ClassificationRows rows={section.classifications.filter(row => !row.featured)} label={`${section.name}的更多分类`} /></details>}
+      {!section.findings.length && !section.reason && <p className="report-empty">这一部分没有可展示的结论。</p>}
+    </section>)}
+    <section className="report-script" id="report-script"><header><div><span className="section-kicker">可复制文案</span><h2>完整口播稿</h2></div><button className="primary-button" type="button" disabled={!canCopyScript || busy} onClick={onCopyScript}>复制口播稿</button></header>
+      {view.scriptStatus === "not_applicable" ? <p>这份素材没有口播。</p> : view.scriptStatus === "failed" ? <div className="report-section-message"><p>{view.legacy ? "该历史报告没有保存完整口播稿，可展开原始转写核对。" : "校正稿尚未通过核对，下方内容保留为候选稿。"}</p>{onRetry && failedModuleKeys.includes("canonical") && <button type="button" disabled={busy} onClick={() => onRetry("canonical")}>重新校正口播</button>}</div> : null}
+      <div className="report-manuscript">{view.script.map((paragraph, index) => <p key={index}>{paragraph}</p>)}</div>
+      {view.changes.length > 0 && <details className="report-correction-diff"><summary>核对 {view.changes.length} 处校正</summary>{view.changes.map(change => <article key={change.sourceId}><del>{change.before}</del><ins>{change.after}</ins>{evidenceView({ id: change.sourceId, title: "校正依据", text: change.after, evidenceIds: change.evidenceIds })}</article>)}</details>}
+    </section>
+  </>;
+}

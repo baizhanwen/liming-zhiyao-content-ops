@@ -102,13 +102,20 @@ try {
     const features = manifest.license.features;
     verifyDeliveryScripts(Object.keys(initialHashes), features);
     const taxonomy = JSON.parse(readFileSync(path.join(packageRoot, "services/analyzer/liming_analyzer/resources/video-taxonomy.v1.json"), "utf8"));
-    assert.equal(taxonomy.version, "video-taxonomy.v1", "All plans require the shared report taxonomy");
+    assert.equal(taxonomy.version, "video-taxonomy.v1", "The full edition requires the shared report taxonomy");
     assert.ok(taxonomy.dimensions.length >= 65);
     if (!features.videoAnalysis) assert.equal(Object.keys(initialHashes).some(file => /^services\/analyzer\/.*\.py$/.test(file)), false, "Starter must only retain taxonomy data");
     for (const filename of ["build/analyzer-environment-plugin.ts", "scripts/start-web-with-environment.mjs", "scripts/prepare-runtime-configuration.mjs", "scripts/analyzer-environment-bridge.mjs"])
       assert.ok(existsSync(path.join(packageRoot, filename)), `Missing settings runtime: ${filename}`);
     if (features.videoAnalysis) for (const filename of ["scripts/analyzer_local_runtime.py", "scripts/prepare_analyzer_models.py", "services/analyzer/uv.lock", "services/analyzer/liming_analyzer/douyin_collector/node/package-lock.json"])
       assert.ok(existsSync(path.join(packageRoot, filename)), `Missing video environment dependency: ${filename}`);
+    if (features.videoAnalysis) for (const filename of [
+      "services/analyzer/liming_analyzer/canonical_transcript.py", "services/analyzer/liming_analyzer/content_module_protocol.py",
+      "services/analyzer/liming_analyzer/unified_analysis.py", "services/analyzer/liming_analyzer/content_analysis.py",
+      "services/analyzer/liming_analyzer/content_metrics.py", "lib/unified-report.ts", "lib/analysis-report-view.ts",
+      "lib/analysis-quality.ts", "lib/video-content-analysis.ts", "lib/analysis-module-retry.ts", "lib/analysis-media.ts",
+      "components/UnifiedReportContent.tsx",
+    ]) assert.ok(existsSync(path.join(packageRoot, filename)), `Missing unified analysis dependency: ${filename}`);
     if (githubDistribution) {
       assert.equal(manifest.activationRequired, false);
       assert.equal(manifest.authorizedKnowledge.included, true);

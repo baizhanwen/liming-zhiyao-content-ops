@@ -75,10 +75,8 @@ test("long videos use a bounded evidence budget and report coverage", async () =
   assert.match(provider, /actual_total_tokens/);
   assert.match(provider, /scene_plus_timeline/);
   assert.match(provider, /visual_extraction/);
-  assert.match(detail, /estimated_model_input_tokens/);
-  assert.match(detail, /actual_total_tokens/);
-  assert.match(detail, /keyframe-coverage/);
-  assert.match(detail, /copyReport/);
+  assert.match(detail, /UnifiedReportContent/);
+  assert.match(detail, /exportMarkdown/);
   assert.match(worker, /MODEL_CONTEXT_LIMIT/);
   assert.match(worker, /DOUYIN_COOKIE_EXPIRED/);
 });
@@ -97,20 +95,19 @@ test("analysis tasks show queue estimates and actionable recovery guidance", asy
   assert.match(workspace, /job-guidance/);
 });
 
-test("long analysis reports can be searched, navigated and exported locally", async () => {
+test("unified reports preserve original-transcript search, section navigation and local export", async () => {
   const [detail, styles] = await Promise.all([
     readFile(new URL("../components/AnalysisDetail.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(detail, /transcriptQuery/);
-  assert.match(detail, /visibleSegments/);
-  assert.match(detail, /highlightedText/);
+  assert.match(detail, /visibleOriginal/);
+  assert.match(detail, /type="search"/);
   assert.match(detail, /exportMarkdown/);
-  assert.match(detail, /exportTranscript/);
-  assert.match(detail, /analysis-detail-nav/);
-  assert.match(styles, /transcript-search/);
-  assert.match(styles, /report-heading-actions/);
+  assert.match(detail, /unifiedReportMarkdown/);
+  assert.match(detail, /report-section-nav/);
+  assert.match(styles, /report-original-tools/);
+  assert.match(styles, /report-primary-actions/);
 });
 
 test("new analysis tasks support standard and max while legacy values remain readable", async () => {
@@ -145,7 +142,7 @@ test("new analysis tasks support standard and max while legacy values remain rea
   assert.match(provider, /single_pass_standard/);
 });
 
-test("analysis submissions expose duration estimates and enforce total token ceilings", async () => {
+test("analysis submissions show v11 text estimates and retain per-request output caps", async () => {
   const [profiles, workspace, provider, modelCompat, detail] = await Promise.all([
     readFile(new URL("../lib/analysis-profile.ts", import.meta.url), "utf8"),
     readFile(new URL("../components/AnalysisWorkspace.tsx", import.meta.url), "utf8"),
@@ -155,16 +152,17 @@ test("analysis submissions expose duration estimates and enforce total token cei
   ]);
 
   assert.match(profiles, /estimateMediaSourceTokens/);
-  assert.match(profiles, /outputTokens: 12_000/);
+  assert.match(profiles, /pipelineVersion: "analysis\.v11"/);
+  assert.match(profiles, /visualTokens: null/);
   assert.match(workspace, /readMediaDuration/);
-  assert.match(workspace, /短视频文字分析预算上限/);
+  assert.match(workspace, /短视频文字预算参考/);
   assert.match(workspace, /profileLabels\[analysisProfile\]/);
-  assert.match(workspace, /30 分钟以上媒体/);
+  assert.doesNotMatch(workspace, /30 分钟以上媒体|自动分段分析后汇总|主体 \+ 专项双阶段合成/);
   assert.match(provider, /completion_options\(self\.provider, self\.model, output_tokens\)/);
   assert.match(modelCompat, /"max_completion_tokens": output_tokens/);
   assert.match(modelCompat, /"max_tokens": output_tokens/);
   assert.match(provider, /"maximum_total_tokens"/);
-  assert.match(detail, /maximum_total_tokens/);
+  assert.match(detail, /UnifiedReportContent/);
 });
 
 test("thirty minute videos use bounded multi-pass analysis and cleaned evidence", async () => {
@@ -185,7 +183,7 @@ test("thirty minute videos use bounded multi-pass analysis and cleaned evidence"
   assert.match(visual, /_image_signature/);
   assert.match(visual, /is_useful_ocr/);
   assert.match(pipeline, /clean_transcript/);
-  assert.match(detail, /分段分析后汇总/);
+  assert.match(detail, /UnifiedReportContent/);
 });
 
 test("analysis reports produce one faithful AI-corrected script and specialist operating insights", async () => {
@@ -231,19 +229,11 @@ test("analysis reports produce one faithful AI-corrected script and specialist o
   assert.match(provider, /_repair_report_evidence/);
   assert.match(provider, /evidence_repair/);
   assert.doesNotMatch(provider, /model report did not preserve exact source evidence/);
-  assert.match(detail, /copySpokenScript/);
-  assert.match(detail, /原版口播文案/);
-  assert.match(detail, /只做原稿纠错/);
-  assert.match(detail, /历史原稿兼容展示/);
-  assert.doesNotMatch(detail, /retrySpokenScript/);
-  assert.doesNotMatch(detail, /spoken-script-tabs/);
-  assert.doesNotMatch(detail, /微调同构版/);
-  assert.doesNotMatch(detail, /内容等价重构版/);
-  assert.match(detail, /visual-understanding-status/);
-  assert.match(detail, /传播爆点/);
-  assert.match(detail, /analysis-comparison-panel/);
-  assert.doesNotMatch(detail, /linked-insight-list/);
-  assert.match(detail, /analysis-quality-audit/);
-  assert.match(styles, /spoken-script-panel/);
-  assert.match(styles, /analysis-comparison-panel/);
+  assert.match(detail, /copyScript/);
+  assert.match(detail, /UnifiedReportContent/);
+  assert.match(detail, /unifiedReportMarkdown/);
+  assert.match(detail, /moduleKeys/);
+  assert.doesNotMatch(detail, /spoken-script-tabs|visual-understanding-status|analysis-quality-audit|qualityAudit\.score/);
+  assert.match(styles, /report-manuscript/);
+  assert.match(styles, /unified-report-section/);
 });

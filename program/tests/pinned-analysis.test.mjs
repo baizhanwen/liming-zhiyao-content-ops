@@ -28,7 +28,7 @@ async function fixture(t) {
     return f.load("app/api/videos/[videoId]/route.ts").GET(new Request(`http://localhost/api/videos/${selectedVideo}?${query}`), { params: Promise.resolve({ videoId: selectedVideo }) });
   };
   const reference = (status = "active", purpose = "benchmark") => seed("project_video_references", { library_entry_id: entryId, project_id: target, purpose, status });
-  return { ...f, owner, source, target, videoId, otherVideoId, entryId, analyses, otherAnalysisId, wrongProjectAnalysisId, read, reference, readable, disableLibrary: () => { libraryReadable = false; }, logout: () => { signedIn = false; } };
+  return { ...f, seed, owner, source, target, videoId, otherVideoId, entryId, analyses, otherAnalysisId, wrongProjectAnalysisId, read, reference, readable, disableLibrary: () => { libraryReadable = false; }, logout: () => { signedIn = false; } };
 }
 
 test("pinned analysis reads an exact report older than the eight-version history window", async t => {
@@ -75,4 +75,65 @@ test("company library pinned reads use company-library permission without wideni
   f.readable.delete(f.target); assert.equal((await f.read(f.analyses[0], query)).status, 403);
   assert.equal((await f.read(f.analyses[0], { organizationId: "foreign-company" })).status, 403);
   f.logout(); assert.equal((await f.read(f.analyses[0])).status, 401);
+});
+
+test("URL media uses the selected analysis source and keeps historical jobs separate from the latest queue", async t => {
+  const f = await fixture(t);
+  f.sqlite.prepare("UPDATE videos SET source_type='url',source_url='https://example.invalid/original' WHERE id=?").run(f.videoId);
+  const oldJob = f.seed("analysis_jobs", { video_id: f.videoId, source_type: "url", source_ref: "https://example.invalid/original", idempotency_key: "old-media-job", status: "completed", created_at: "2020-01-01" });
+  const latestJob = f.seed("analysis_jobs", { video_id: f.videoId, source_type: "url", source_ref: "https://example.invalid/original", idempotency_key: "latest-media-job", status: "failed", error_message: "Latest task must not replace the old report state", created_at: "2099-01-01" });
+  f.sqlite.prepare("UPDATE video_analyses SET analysis_job_id=? WHERE id=?").run(oldJob, f.analyses[0]);
+  const original = f.seed("media_assets", { video_id: f.videoId, analysis_job_id: oldJob, kind: "source_video", filename: "original.mp4", r2_key: "isolated-old-source", content_type: "video/mp4", size_bytes: 100, sha256: "a".repeat(64), status: "active" });
+  const other = f.seed("media_assets", { video_id: f.videoId, analysis_job_id: latestJob, kind: "source_video", filename: "newer.mp4", r2_key: "isolated-new-source", content_type: "video/mp4", size_bytes: 100, sha256: "b".repeat(64), status: "active" });
+  f.sqlite.prepare("UPDATE videos SET media_asset_id=? WHERE id=?").run(other, f.videoId);
+  const body = await (await f.read(f.analyses[0])).json();
+  assert.equal(body.job.id, oldJob); assert.equal(body.job.status, "completed");
+  assert.equal(body.latestJob.id, latestJob);
+  assert.equal(body.video.filename, "original.mp4"); assert.equal(body.video.media_binding, "analysis");
+  assert.match(body.video.media_url, new RegExp(`analysisId=${f.analyses[0]}`));
+
+  const readKeys = [];
+  f.runtime.getMediaObject = async (key, options) => {
+    readKeys.push(key); assert.equal(options.range.get("range"), "bytes=10-19");
+    return { source: "primary", object: { body: "0123456789", size: 100, range: { offset: 10, length: 10 }, httpEtag: '"fixture"', writeHttpMetadata: headers => headers.set("content-type", "video/mp4") } };
+  };
+  const direct = f.load("app/api/videos/[videoId]/media/route.ts");
+  const readMedia = id => direct.GET(new Request(`http://localhost/media?organizationId=${f.owner.organizationId}&projectId=${f.source}&analysisId=${id}`, { headers: { range: "bytes=10-19" } }), { params: Promise.resolve({ videoId: f.videoId }) });
+  const response = await readMedia(f.analyses[0]); assert.equal(response.status, 206); assert.equal(response.headers.get("content-range"), "bytes 10-19/100"); assert.equal(response.headers.get("cache-control"), "private, no-store");
+  assert.deepEqual(readKeys, ["isolated-old-source"]);
+  assert.equal((await readMedia(f.otherAnalysisId)).status, 404);
+  assert.equal((await readMedia("unknown-analysis")).status, 404);
+  f.sqlite.prepare("UPDATE media_assets SET status='deleted' WHERE id=?").run(original);
+  assert.equal((await readMedia(f.analyses[0])).status, 206);
+  assert.equal(readKeys.at(-1), "isolated-new-source", "Legacy fallback is explicit, not falsely bound to the historical analysis");
+  const fallback = await (await f.read(f.analyses[0])).json(); assert.equal(fallback.video.media_binding, "video");
+});
+
+test("library URL media validates both selected analysis and the source asset's company and project", async t => {
+  const f = await fixture(t);
+  const job = f.seed("analysis_jobs", { video_id: f.videoId, source_type: "url", source_ref: "https://example.invalid/video", idempotency_key: "library-media-job", status: "completed" });
+  f.sqlite.prepare("UPDATE video_analyses SET analysis_job_id=? WHERE id=?").run(job, f.analyses[0]);
+  const asset = f.seed("media_assets", { video_id: f.videoId, analysis_job_id: job, kind: "source_video", filename: "original.mp4", r2_key: "isolated-library-source", content_type: "video/mp4", size_bytes: 1, sha256: "a".repeat(64), status: "active" });
+  f.sqlite.prepare("UPDATE videos SET source_type='url',media_asset_id=? WHERE id=?").run(asset, f.videoId);
+  let reads = 0;
+  f.runtime.getMediaObject = async () => { reads++; return { source: "primary", object: { body: "x", size: 1, httpEtag: '"fixture"', writeHttpMetadata: () => {} } }; };
+  const media = f.load("app/api/video-library/[entryId]/media/route.ts");
+  const read = analysisId => media.GET(new Request(`http://localhost/media?organizationId=${f.owner.organizationId}&projectId=${f.target}&analysisId=${analysisId}`), { params: Promise.resolve({ entryId: f.entryId }) });
+  assert.equal((await read(f.analyses[0])).status, 200); assert.equal(reads, 1);
+  assert.equal((await read(f.otherAnalysisId)).status, 404); assert.equal(reads, 1);
+  f.sqlite.prepare("UPDATE media_assets SET project_id=? WHERE id=?").run(f.target, asset);
+  assert.equal((await read(f.analyses[0])).status, 404); assert.equal(reads, 1);
+});
+
+test("historical reports use their contemporary raw transcript without overwriting a newer manual correction", async t => {
+  const f = await fixture(t);
+  f.seed("video_transcripts", { id: "original-asr", video_id: f.videoId, version: 1, language: "zh-CN", source: "asr", full_text: "历史原转写", segments_json: '[{"start_ms":0,"end_ms":1000,"text":"历史原转写"}]', created_at: "2026-01-01T00:00:00.000Z" });
+  f.seed("video_transcripts", { id: "later-manual", video_id: f.videoId, version: 2, language: "zh-CN", source: "manual", full_text: "之后人工修正", segments_json: '[{"start_ms":0,"end_ms":1000,"text":"之后人工修正"}]', created_at: "2026-01-10T00:00:00.000Z" });
+  const before = f.sqlite.prepare("SELECT * FROM video_transcripts ORDER BY version").all();
+  const historical = await (await f.read(f.analyses[0])).json();
+  assert.equal(historical.transcript.id, "original-asr"); assert.equal(historical.transcript.full_text, "历史原转写");
+  assert.equal(historical.transcript_binding, "historical");
+  const latest = await (await f.read()).json();
+  assert.equal(latest.transcript.id, "later-manual"); assert.equal(latest.transcript_binding, "latest");
+  assert.deepEqual(f.sqlite.prepare("SELECT * FROM video_transcripts ORDER BY version").all(), before);
 });

@@ -35,13 +35,19 @@ def test_content_taxonomy_is_in_the_installable_wheel(tmp_path):
         assert len(taxonomy["dimensions"]) == 65
         assert "liming_analyzer/content_analysis.py" in wheel.namelist()
         assert "liming_analyzer/content_metrics.py" in wheel.namelist()
+        for module in ("canonical_transcript", "content_module_protocol", "unified_analysis"):
+            assert f"liming_analyzer/{module}.py" in wheel.namelist()
     # A resource existing in the ZIP is insufficient: importlib.resources must
     # also read it when the wheel is the package source.
     result = subprocess.run([
         sys.executable, "-c",
         ("import sys; sys.path.insert(0,sys.argv[1]); "
         "import liming_analyzer.content_analysis as module; "
+        "import liming_analyzer.canonical_transcript as canonical; "
+        "import liming_analyzer.content_module_protocol as protocol; "
+        "import liming_analyzer.unified_analysis as unified; "
         "assert module.__file__.startswith(sys.argv[1]); "
+        "assert all(item.__file__.startswith(sys.argv[1]) for item in (canonical,protocol,unified)); "
         "assert module.load_taxonomy()['version']=='video-taxonomy.v1'; "
         "assert len(module.load_taxonomy()['dimensions'])==65"),
         str(wheels[0]),

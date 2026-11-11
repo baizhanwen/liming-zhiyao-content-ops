@@ -84,7 +84,9 @@ test("shared project references can read analysis artifacts without gaining edit
   assert.match(detailRoute, /sharedReference = true/);
   assert.match(detailRoute, /\/api\/video-library\/\$\{libraryEntryId\}\/assets/);
   assert.match(detailRoute, /canWrite: !sharedReference && canWriteProjectAccess/);
-  assert.match(detailComponent, /共享素材 · 原分析只读/);
+  assert.match(detailComponent, /const canEdit = Boolean\(detail\?\.canWrite && !detail\.video\.is_shared_reference && !running\)/);
+  assert.match(detailComponent, /const canRetry = Boolean\(detail\?\.canWrite && detail\.job\?\.module_retry\?\.available && !running\)/);
+  assert.ok(detailComponent.includes("{canEdit && !editing && <button"));
 });
 
 test("material-center detail keeps same-space enterprise performance data", async () => {

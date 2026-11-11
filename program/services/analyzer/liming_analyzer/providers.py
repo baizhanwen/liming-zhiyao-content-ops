@@ -2592,6 +2592,7 @@ class InstructorStructureAnalyzer:
         report_model: Any | None = None,
         generate_script_variants: bool | None = None,
         generate_content_features: bool | None = None,
+        generate_unified_report: bool | None = None,
         call_recorder: Callable | None = None,
     ) -> None:
         client_was_injected = client is not None
@@ -2796,10 +2797,17 @@ class InstructorStructureAnalyzer:
             if generate_content_features is None
             else generate_content_features
         )
+        self.generate_unified_report = self.generate_content_features and (
+            not client_was_injected if generate_unified_report is None else generate_unified_report
+        )
         self._segment_checkpoint: Callable[[Mapping[str, Any]], None] | None = None
+        self._unified_checkpoint: Callable[[Mapping[str, Any]], None] | None = None
 
     def set_segment_checkpoint(self, callback: Callable[[Mapping[str, Any]], None] | None) -> None:
         self._segment_checkpoint = callback
+
+    def set_unified_checkpoint(self, callback: Callable[[Mapping[str, Any]], None] | None) -> None:
+        self._unified_checkpoint = callback
 
     def analyze(
         self,
@@ -2808,6 +2816,10 @@ class InstructorStructureAnalyzer:
         transcript: TranscriptOutput,
         visuals: VisualOutput,
     ) -> StructureOutput:
+        if self.generate_unified_report:
+            from .unified_analysis import analyze_unified
+
+            return analyze_unified(self, job, media, transcript, visuals)
         raw_transcript_rows = [
             {
                 "segment_id": f"t-{index + 1:04d}",
