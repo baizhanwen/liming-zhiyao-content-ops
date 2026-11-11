@@ -12,14 +12,26 @@ function fixture() {
   const parent = path.join(root, ".local/maintenance-tests"); mkdirSync(parent, { recursive: true });
   const installation = mkdtempSync(path.join(parent, "run-"));
   mkdirSync(path.join(installation, "scripts")); mkdirSync(path.join(installation, ".local"));
-  for (const name of ["run-web-guard.ps1", "local-web-identity.ps1", "run-migration-guard.ps1", "run-local-migrations.mjs", "analyzer-instance-lock.ps1", "local-state-maintenance.ps1", "backup-local.ps1", "restore-local.ps1", "factory-reset.ps1", "start-lan.ps1", "verify-state-databases.mjs", "recover-performance-imports.ps1"]) copyFileSync(path.join(root, "scripts", name), path.join(installation, "scripts", name));
+  for (const name of ["run-web-guard.ps1", "install-node22.ps1", "node-runtime-policy.mjs", "local-web-identity.ps1", "run-migration-guard.ps1", "run-local-migrations.mjs", "analyzer-instance-lock.ps1", "local-state-maintenance.ps1", "backup-local.ps1", "restore-local.ps1", "factory-reset.ps1", "start-lan.ps1", "verify-state-databases.mjs", "recover-performance-imports.ps1"]) copyFileSync(path.join(root, "scripts", name), path.join(installation, "scripts", name));
   for (const name of ["start-local.bat", "setup-local.bat"]) copyFileSync(path.join(root, name), path.join(installation, name));
+  // Startup validates the selected Node and its adjacent npm before acquiring
+  // the lifecycle lock. Exercise that real selection without invoking npm or
+  // installing anything on the runner; factory-reset's root npm.cmd remains a
+  // separate controlled migration boundary below.
+  const runtime = path.join(installation, ".local/runtime-fixture");
+  mkdirSync(path.join(runtime, "node_modules/npm/bin"), { recursive: true });
+  copyFileSync(process.execPath, path.join(runtime, "node.exe"));
+  writeFileSync(path.join(runtime, "npm.cmd"), '@echo off\r\n"%~dp0node.exe" "%~dp0node_modules\\npm\\bin\\npm-cli.js" %*\r\nexit /b %errorlevel%\r\n');
+  writeFileSync(path.join(runtime, "node_modules/npm/package.json"), '{"type":"commonjs"}\n');
+  writeFileSync(path.join(runtime, "node_modules/npm/bin/npm-cli.js"), 'if (process.argv[2] === "--version") console.log("10.9.2"); else process.exitCode = 91;\n');
+  writeFileSync(path.join(installation, ".local/node.path"), runtime + "\n", "utf8");
   writeFileSync(path.join(installation, ".local/app.port"), "59998");
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "path"));
   env.Path = installation + path.delimiter + (process.env.Path || process.env.PATH || "");
   env.MAINT_TEST_INSTALL = installation;
+  env.MAINT_TEST_RUNTIME = runtime;
   const run = (script, input = "") => spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script], { cwd: installation, env, encoding: "utf8", input, windowsHide: true, timeout: 30000 });
-  return { installation, env, run };
+  return { installation, runtime, env, run };
 }
 async function kill(child) {
   if (!child || child.exitCode !== null) return;
@@ -74,7 +86,7 @@ try {
     assert.equal(reacquired.status, 0, reacquired.stderr);
   }
   // Exercise actual guard -> batch invocation with a harmless child and preserve its exit code.
-  writeFileSync(path.join(f.installation, "start-local.bat"), '@echo off\r\nif not "%~1"=="--guarded" exit /b 9\r\necho launched>"%~dp0.local\\launched"\r\nexit /b 17\r\n');
+  writeFileSync(path.join(f.installation, "start-local.bat"), '@echo off\r\nif not "%~1"=="--guarded" exit /b 9\r\nif not "%LMZY_NODE_HOME%"=="%MAINT_TEST_RUNTIME%" exit /b 11\r\n"%LMZY_NODE_HOME%\\node.exe" "%LMZY_NODE_HOME%\\node_modules\\npm\\bin\\npm-cli.js" --version >nul\r\nif errorlevel 1 exit /b 12\r\necho launched>"%~dp0.local\\launched"\r\nexit /b 17\r\n');
   const result = f.run("& (Join-Path $env:MAINT_TEST_INSTALL 'scripts/run-web-guard.ps1') -Entry start-local; exit $LASTEXITCODE");
   assert.equal(result.status, 17, result.stderr); assert.ok(existsSync(path.join(f.installation, ".local/launched")));
   writeFileSync(path.join(f.installation, ".local/report.json"), JSON.stringify({ passed: true, synthetic: true, blockedCommands: 15, abandonedOwnersRecovered: 2, childExitCodePreserved: 17 }, null, 2));

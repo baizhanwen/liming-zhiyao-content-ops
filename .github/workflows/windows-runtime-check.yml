@@ -40,7 +40,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows file publication or analyzer control regression failed.' }
       - name: Verify Windows entry points and transfer fixtures
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
-        run: node --test --test-reporter=tap tests/analyzer-collector-runtime.test.mjs tests/analyzer-environment-bridge.test.mjs tests/local-runtime-identity.test.mjs tests/local-port-isolation.test.mjs tests/runtime-configuration-startup.test.mjs tests/material-transfer-roundtrip.test.mjs
+        run: node --test --test-reporter=tap tests/analyzer-collector-runtime.test.mjs tests/analyzer-environment-bridge.test.mjs tests/local-runtime-identity.test.mjs tests/local-port-isolation.test.mjs tests/maintenance-concurrency.test.mjs tests/runtime-configuration-startup.test.mjs tests/material-transfer-roundtrip.test.mjs
   native-node-matrix:
     runs-on: windows-latest
     timeout-minutes: 15
