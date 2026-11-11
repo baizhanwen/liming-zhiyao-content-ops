@@ -14,7 +14,7 @@ test("port selection distinguishes two installations and preserves an owned heal
   const installations = [path.join(dir, "app"), path.join(dir, "app-extra")];
   for (const install of installations) {
     mkdirSync(path.join(install, "scripts"), { recursive: true }); mkdirSync(path.join(install, ".local"));
-    for (const name of ["select-local-port.ps1", "local-web-identity.ps1", "local-runtime-identity.mjs", "start-lan.ps1", "analyzer-instance-lock.ps1"]) {
+    for (const name of ["select-local-port.ps1", "local-web-identity.ps1", "local-runtime-identity.mjs", "start-lan.ps1", "analyzer-instance-lock.ps1", "install-node22.ps1", "node-runtime-policy.mjs"]) {
       const source = path.join(root, "scripts", name);
       if (existsSync(source)) copyFileSync(source, path.join(install, "scripts", name));
     }
@@ -66,17 +66,33 @@ server.listen(0, '127.0.0.1', () => writeFileSync(new URL('../../../.local/port'
   // Windows PowerShell updates the calling script's LASTEXITCODE as in use.
   writeFileSync(path.join(current, "scripts/prepare-local-web.ps1"), "param([switch]$CheckDependenciesOnly)\nexit 0\n");
   writeFileSync(path.join(current, "scripts/open-lan.ps1"), "param([string]$Url, [string]$HealthUrl)\n");
+  // Exercise the real Node selector and policy. Only the selected runtime's npm
+  // entry point is synthetic, including its --version completeness probe.
+  const runtime = path.join(current, ".local/runtime-fixture");
+  mkdirSync(path.join(runtime, "node_modules/npm/bin"), { recursive: true });
+  copyFileSync(process.execPath, path.join(runtime, "node.exe"));
+  writeFileSync(path.join(runtime, "npm.cmd"), "@echo off\r\n");
+  writeFileSync(path.join(runtime, "node_modules/npm/package.json"), '{"type":"commonjs"}\n');
+  writeFileSync(path.join(runtime, "node_modules/npm/bin/npm-cli.js"), `
+const { writeFileSync } = require('node:fs');
+if (process.argv[2] === '--version') console.log('10.9.2');
+else if (process.argv[2] === 'run' && process.argv[3] === 'dev') writeFileSync(process.env.LMZY_FIXTURE_LAN_MARKER, process.env.LAN_ACCESS_ORIGIN);
+else process.exitCode = 1;
+`);
+  writeFileSync(path.join(current, ".local/node.path"), `${runtime}\n`, "utf8");
   const probe = path.join(current, "scripts/probe.ps1");
   writeFileSync(probe, `
 # Port inspection auto-loads NetTCPIP, whose exports include Get-NetIPConfiguration.
 # Load it before defining the mock so auto-loading cannot replace this boundary.
 Import-Module NetTCPIP -ErrorAction Stop
 function Get-NetIPConfiguration { [IO.File]::WriteAllText((Join-Path (Split-Path $PSScriptRoot) '.local/lan-network-probe'), 'fixture'); return [pscustomobject]@{ IPv4Address=@([pscustomobject]@{IPAddress='192.168.50.10'}); IPv4DefaultGateway='synthetic'; NetAdapter=[pscustomobject]@{Status='Up'}; InterfaceDescription='Synthetic fixture'; InterfaceAlias='Ethernet' } }
-function npm.cmd { [IO.File]::WriteAllText((Join-Path (Split-Path $PSScriptRoot) '.local/lan-start'), $env:LAN_ACCESS_ORIGIN); $global:LASTEXITCODE=0 }
 & (Join-Path $PSScriptRoot 'start-lan.ps1')
 exit $LASTEXITCODE
 `);
-  const entry = spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", probe], { windowsHide: true, encoding: "utf8", timeout: 25000 });
+  const entry = spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", probe], {
+    windowsHide: true, encoding: "utf8", timeout: 25000,
+    env: { ...process.env, LMZY_FIXTURE_LAN_MARKER: path.join(current, ".local/lan-start") },
+  });
   const entryOutput = [entry.error?.message, entry.stderr, entry.stdout].filter(Boolean).join("\n");
   assert.equal(entry.status, 0, entryOutput);
   assert.ok(existsSync(path.join(current, ".local/lan-network-probe")), `LAN entry did not use its controlled network fixture:\n${entryOutput}`);

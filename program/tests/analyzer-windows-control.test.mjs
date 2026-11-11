@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -89,10 +90,18 @@ async function fixture(t) {
   const baseUrl = `http://127.0.0.1:${web.address().port}`;
   t.after(async () => {
     for (const installation of installations) {
-      if (existsSync(path.join(installation, "scripts/analyzer-windows-control.ps1"))) await control(installation, "stop", baseUrl).catch(() => {});
+      if (existsSync(path.join(installation, "scripts/analyzer-windows-control.ps1"))) {
+        const stopped = await control(installation, "stop", baseUrl);
+        assert.equal(stopped.code, 0, JSON.stringify(stopped));
+        // The stdlib worker notices its supervisor's exit on its next poll.
+        // Wait for that exit before removing its Windows working directory.
+        const marker = path.join(installation, ".local/synthetic-worker.json");
+        for (let attempt = 0; attempt < 100 && existsSync(marker); attempt++) await pause(50);
+        assert.equal(existsSync(marker), false, "Fixture worker survived its supervisor");
+      }
     }
     await new Promise(resolve => web.close(resolve));
-    rmSync(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    await rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   });
   for (const [index, installation] of installations.entries()) {
     copyRuntime(installation);
@@ -218,9 +227,11 @@ test("Windows control keeps similar installation paths independent", { skip: !wi
   if (process.env.CI) console.error("Synthetic service isolation: stopping the first installation");
   const stopped = await control(first, "stop", baseUrl);
   assert.equal(stopped.code, 0, JSON.stringify(stopped));
+  if (process.env.CI) console.error("Synthetic service isolation: verifying the surviving installation");
   const surviving = await control(second, "status", baseUrl);
   assert.equal(surviving.result.processRunning, true, JSON.stringify(surviving));
   assert.equal(surviving.result.workerRunning, true);
+  if (process.env.CI) console.error("Synthetic service isolation: survivor verified; cleaning up fixture processes");
 });
 
 test("Windows process ownership rejects a recycled creation time and foreign command path without stopping either process", { skip: !windows, timeout: 90_000 }, async t => {
