@@ -5,11 +5,14 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { prepareRuntimeConfiguration } from "./prepare-runtime-configuration.mjs";
 import { readLocalRuntimeConfiguration } from "./analyzer-environment-bridge.mjs";
 import { waitForLocalRuntimeBridge } from "./local-runtime-endpoint.mjs";
+import { evaluateNodeRuntime } from "./node-runtime-policy.mjs";
 
 const defaultRoot = fileURLToPath(new URL("..", import.meta.url));
 
 /** Preserve vinext's arguments while owning only the children started here. */
 export async function startWebWithEnvironment({ root = defaultRoot, args = process.argv.slice(2), spawnProcess = spawn, listenSignals = true, verifyBridge = waitForLocalRuntimeBridge } = {}) {
+  const compatibility = evaluateNodeRuntime({ version: process.versions.node, arch: process.arch, platform: process.platform });
+  if (!compatibility.supported) throw new Error(compatibility.message);
   await prepareRuntimeConfiguration(root);
   const ownConfiguration = readLocalRuntimeConfiguration(root);
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(?:ANALYZER_|CONTENT_MODEL_|PROJECT_ASSISTANT_MODEL_|LOCAL_RUNTIME_|MODEL_SETTINGS_)/u.test(name)));

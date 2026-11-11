@@ -2,26 +2,28 @@
 setlocal
 cd /d "%~dp0"
 
-if /i "%~1"=="--check-runtime" goto :guard_ready
+if /i "%~1"=="--check-runtime" goto :check_runtime
 if /i "%~1"=="--guarded" goto :guard_ready
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\run-web-guard.ps1" -Entry setup-local
 exit /b %errorlevel%
 
 :guard_ready
-
 echo [Liming Zhiyao] Checking the local runtime...
-call :find_node
-if /i "%~1"=="--check-runtime" goto :check_runtime
-if defined NODE_EXE goto :node_ready
-
-echo [NOTICE] 64-bit Node.js 22.13 or newer was not found.
-echo [ACTION] Downloading and installing the official signed Node.js runtime...
+if defined LMZY_RUNTIME_RETRY goto :node_ready
+echo [ACTION] Selecting or preparing a compatible Node.js runtime for this project...
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\install-node22.ps1" -NodePathFile "%~dp0.local\node.path"
 if errorlevel 1 goto :node_install_failed
-call :find_node
-if not defined NODE_EXE goto :node_install_failed
+rem The installer saves the selected existing or portable runtime as UTF-8.
+rem The original guard owns startup while its child restores the Unicode PATH.
+set "LMZY_RUNTIME_RETRY=1"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\run-web-guard.ps1" -Entry setup-local -InheritedGuard
+exit /b %errorlevel%
 
 :node_ready
+if not defined LMZY_NODE_HOME goto :node_install_failed
+set "NODE_HOME=%LMZY_NODE_HOME%"
+set "NODE_EXE=%LMZY_NODE_HOME%\node.exe"
+set "NPM_CLI=%LMZY_NODE_HOME%\node_modules\npm\bin\npm-cli.js"
 set "PATH=%NODE_HOME%;%PATH%"
 echo [OK] Using %NODE_EXE%
 
@@ -33,7 +35,7 @@ if not exist ".dev.vars" (
 )
 
 echo [Liming Zhiyao] Installing web dependencies...
-call "%NPM_CMD%" ci
+"%NODE_EXE%" "%NPM_CLI%" ci
 if errorlevel 1 goto :failed
 if not exist "node_modules\wrangler\bin\wrangler.js" goto :dependencies_incomplete
 if not exist "node_modules\vinext\package.json" goto :dependencies_incomplete
@@ -41,12 +43,12 @@ echo [OK] Web dependencies passed completeness verification.
 
 echo [Liming Zhiyao] Initializing the local database...
 set "CI=1"
-call "%NPM_CMD%" run db:local:migrate
+"%NODE_EXE%" "%NPM_CLI%" run db:local:migrate
 set "CI="
 if errorlevel 1 goto :failed
 
 echo [Liming Zhiyao] Synchronizing authorized content knowledge...
-call "%NPM_CMD%" run knowledge:local:sync
+"%NODE_EXE%" "%NPM_CLI%" run knowledge:local:sync
 if errorlevel 1 goto :failed
 
 echo.
@@ -56,19 +58,15 @@ pause
 exit /b 0
 
 :check_runtime
-if not defined NODE_EXE (
-  echo [ERROR] 64-bit Node.js 22.13 or newer with npm was not found.
-  exit /b 1
-)
-echo [OK] Node.js runtime: %NODE_EXE%
-"%NODE_EXE%" --version
-call "%NPM_CMD%" --version
-exit /b 0
+rem Read-only shared selection uses PowerShell UTF-8, never CMD set /p.
+set "LMZY_SETUP_ROOT=%~dp0"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$root=$env:LMZY_SETUP_ROOT; . (Join-Path $root 'scripts\install-node22.ps1'); $node=Find-NodeRuntime -PathFile (Join-Path $root '.local\node.path'); if (-not $node) { Write-Host '[ERROR] No compatible Windows x64 Node.js and npm were found. Run setup-local.bat.'; exit 1 }; & $node --version; if ($LASTEXITCODE -ne 0) { exit 1 }; $npmCli=Join-Path (Split-Path -Parent $node) 'node_modules\npm\bin\npm-cli.js'; & $node $npmCli --version; exit $LASTEXITCODE"
+exit /b %errorlevel%
 
 :node_install_failed
 echo.
-echo [ERROR] Node.js 22 could not be installed or verified automatically.
-echo Check the internet connection and Windows approval prompt, then run this file again.
+echo [ERROR] The project Node.js runtime could not be prepared or verified automatically.
+echo Check the network and project folder permissions, then run this file again.
 pause
 exit /b 1
 
@@ -84,25 +82,3 @@ echo [ERROR] npm finished, but required web dependency files are still missing.
 echo Check Windows Security quarantine and folder permissions, then run setup-local.bat again.
 pause
 exit /b 1
-
-:find_node
-set "NODE_EXE="
-set "NODE_HOME="
-set "NPM_CMD="
-if exist "%~dp0.local\node.path" set /p NODE_HOME=<"%~dp0.local\node.path"
-if defined NODE_HOME call :try_node "%NODE_HOME%\node.exe"
-if not defined NODE_EXE call :try_node "%ProgramFiles%\nodejs\node.exe"
-if not defined NODE_EXE call :try_node "%LocalAppData%\Programs\nodejs\node.exe"
-for /f "delims=" %%N in ('where node.exe 2^>nul') do if not defined NODE_EXE call :try_node "%%N"
-exit /b 0
-
-:try_node
-if defined NODE_EXE exit /b 0
-if not exist "%~1" exit /b 0
-if not exist "%~dp1npm.cmd" exit /b 0
-"%~1" -e "const [major,minor]=process.versions.node.split('.').map(Number); process.exit(process.arch === 'x64' && (major > 22 || (major === 22 && minor >= 13)) ? 0 : 1)" >nul 2>nul
-if errorlevel 1 exit /b 0
-set "NODE_EXE=%~1"
-set "NODE_HOME=%~dp1"
-set "NPM_CMD=%~dp1npm.cmd"
-exit /b 0

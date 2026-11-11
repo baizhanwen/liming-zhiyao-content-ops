@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, copyFileSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,6 +36,8 @@ test("Windows runtime selection isolates browser cache and keeps upload analysis
     const fixture = path.join(temporary, "services/analyzer/liming_analyzer/douyin_collector/node");
     mkdirSync(fixture, { recursive: true });
     mkdirSync(path.join(temporary, ".local"));
+    mkdirSync(path.join(temporary, "scripts"));
+    copyFileSync(path.join(root, "scripts/node-runtime-policy.mjs"), path.join(temporary, "scripts/node-runtime-policy.mjs"));
     writeFileSync(path.join(temporary, ".local/node.path"), path.dirname(process.execPath));
     writeFileSync(path.join(fixture, "package.json"), JSON.stringify({ dependencies: { "@playwright/test": "1.64.1" } }));
     writeFileSync(path.join(fixture, "package-lock.json"), "{}");

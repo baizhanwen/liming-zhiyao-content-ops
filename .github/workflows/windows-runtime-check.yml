@@ -22,7 +22,7 @@ jobs:
           python-version: "3.11"
       - uses: actions/setup-node@v4
         with:
-          node-version: "24.19.0"
+          node-version: "24.20.0"
           cache: npm
           cache-dependency-path: program/package-lock.json
       - id: dependencies
@@ -41,11 +41,30 @@ jobs:
       - name: Verify Windows entry points and transfer fixtures
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         run: node --test --test-reporter=tap tests/analyzer-collector-runtime.test.mjs tests/analyzer-environment-bridge.test.mjs tests/local-runtime-identity.test.mjs tests/local-port-isolation.test.mjs tests/runtime-configuration-startup.test.mjs tests/material-transfer-roundtrip.test.mjs
-      - name: Use the customer Node runtime for native service control
-        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
-        uses: actions/setup-node@v4
+  native-node-matrix:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22.13.0", "22.23.2", "24.20.0"]
+    defaults:
+      run:
+        working-directory: program
+    steps:
+      - uses: actions/checkout@v4
         with:
-          node-version: "22.23.2"
-      - name: Verify native Windows service lifecycle on the customer runtime
-        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
-        run: node --test --test-reporter=tap tests/analyzer-windows-control.test.mjs
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: program/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - name: Verify supported runtime policy and native Windows lifecycle
+        env:
+          LMZY_VERIFY_OFFICIAL_NODE: ${{ matrix.node == '22.23.2' && '1' || '0' }}
+        run: node --test --test-reporter=tap tests/node-runtime-policy.test.mjs tests/node-portable-runtime.test.mjs tests/shared-launcher.test.mjs tests/analyzer-windows-control.test.mjs

@@ -7,6 +7,14 @@ $webLock = Enter-AnalyzerInstanceLock $projectRoot 'web'
 if ($null -eq $webLock) { throw 'Another startup, setup or maintenance operation is in progress. Stop the local server before starting LAN mode.' }
 try {
 
+. (Join-Path $PSScriptRoot 'install-node22.ps1')
+$node = Find-NodeRuntime -PathFile (Join-Path $projectRoot '.local\node.path')
+if (-not $node) { throw 'No compatible Windows x64 Node.js and npm were found. Run setup-local.bat.' }
+$nodeHome = Split-Path -Parent $node
+$npmCli = Join-Path $nodeHome 'node_modules\npm\bin\npm-cli.js'
+$env:LMZY_NODE_HOME = $nodeHome
+$env:Path = $nodeHome + ';' + $env:Path
+
 & "$PSScriptRoot\prepare-local-web.ps1" -CheckDependenciesOnly
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -63,6 +71,6 @@ Write-Host "Keep this window open. Press Ctrl+C or run stop-local.bat to stop ev
 Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @(
     "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$PSScriptRoot\open-lan.ps1`"", "-Url", $env:LAN_ACCESS_ORIGIN, "-HealthUrl", $hostUrl
 )
-& npm.cmd run dev -- --hostname 0.0.0.0 --port $appPort
+& $node $npmCli run dev -- --hostname 0.0.0.0 --port $appPort
 exit $LASTEXITCODE
 } finally { Exit-AnalyzerInstanceLock $webLock }

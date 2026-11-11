@@ -8,6 +8,16 @@ exit /b %errorlevel%
 
 :guard_ready
 
+rem run-web-guard.ps1 selects and validates Node and npm using the shared selector.
+if not defined LMZY_NODE_HOME (
+  echo [ERROR] No compatible Node.js and npm were selected. Run setup-local.bat.
+  pause
+  exit /b 1
+)
+set "NODE_EXE=%LMZY_NODE_HOME%\node.exe"
+set "NPM_CLI=%LMZY_NODE_HOME%\node_modules\npm\bin\npm-cli.js"
+set "PATH=%LMZY_NODE_HOME%;%PATH%"
+
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\prepare-local-web.ps1" -CheckDependenciesOnly
 if errorlevel 1 (
   pause
@@ -53,7 +63,7 @@ if not "%LOCAL_APP_PORT%"=="3000" echo [NOTICE] This installation uses port %LOC
 echo The browser and video analyzer will start automatically when ready.
 echo Press Ctrl+C or run stop-local.bat to stop everything.
 start "" /b powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0scripts\open-local.ps1" -Url "%LOCAL_APP_URL%"
-call npm run dev -- --hostname 127.0.0.1 --port %LOCAL_APP_PORT%
+"%NODE_EXE%" "%NPM_CLI%" run dev -- --hostname 127.0.0.1 --port %LOCAL_APP_PORT%
 if errorlevel 1 (
   echo [ERROR] The web app stopped unexpectedly. Review the error shown above.
   pause

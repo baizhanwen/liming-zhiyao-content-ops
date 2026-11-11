@@ -10,6 +10,7 @@
     "local-runtime-endpoint.mjs",
     "local-runtime-identity.mjs",
     "local-web-identity.ps1",
+    "node-runtime-policy.mjs",
     "open-lan.ps1",
     "open-local.ps1",
     "open-web.ps1",

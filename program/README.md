@@ -22,7 +22,7 @@
 
 从 [GitHub Releases](https://github.com/baizhanwen/liming-zhiyao-content-ops/releases/latest) 的 Assets 下载 `LimingZhiyao-Windows-Full.zip`，完整解压后进入 `LimingZhiyao` 文件夹。下载包默认是开发完整版，包含 4,176 条方法原子，无需激活码；仓库已公开，可直接下载。GitHub 的「Source code」压缩包供源码开发使用。
 
-1. 保持联网，双击 `setup-local.bat`，等待网页依赖安装和数据库初始化；缺少 64 位 Node.js 22.13 或更高版本时，安装程序会按提示自动准备 Node.js；
+1. 保持联网，双击 `setup-local.bat`，等待网页依赖安装和数据库初始化；安装程序会验证现有 Node.js 与 npm，不兼容时在本项目内准备固定的 64 位 Node.js 22.23.2，不修改电脑的全局 Node；
 2. 双击 `start-local.bat`，保持启动窗口开启；
 3. 在本机浏览器的首次设置页创建公司及管理员，设置邮箱和密码，无需输入交付激活码；
 4. 在「系统设置 → 配置后直接使用」保存模型服务配置和自己的 API Key；
@@ -102,7 +102,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-delivery
 
 ## 命令行开发
 
-要求 Node.js 22.13 或更高版本。
+Windows x64 支持 Node.js 22.x（至少 22.13）或 24.x（至少 24.20），其他版本请先运行 `setup-local.bat` 准备项目运行环境。macOS/Linux 要求 Node.js 22.13 或更高版本。安装与启动共用同一运行时选择规则，跳过无效的旧路径记录；项目内运行时位于 `.local/node-runtime`。
 
 ```bash
 npm ci

@@ -41,7 +41,7 @@ npm --prefix liming_analyzer/douyin_collector/node run install-browser
 node liming_analyzer/douyin_collector/node/capture-douyin.mjs --doctor
 ```
 
-Node.js 需为 22.13 或更新版本；Linux 还需准备 Chromium 系统库。后续启动分析服务时应保留同一个 `PLAYWRIGHT_BROWSERS_PATH`。单个采集视频限制为 100 MiB、1200 秒；无音轨会保留限制，不能视为已获得原音。采集失败不会尝试登录、导入 Cookie 或处理验证码。
+Windows x64 的 Node.js 支持 22.x（至少 22.13）或 24.x（至少 24.20）；不兼容时先运行 `setup-local.bat`，在项目内准备固定的 22.23.2，不修改全局 Node。macOS/Linux 需为 22.13 或更新版本；Linux 还需准备 Chromium 系统库。后续启动分析服务时应保留同一个 `PLAYWRIGHT_BROWSERS_PATH`。单个采集视频限制为 100 MiB、1200 秒；无音轨会保留限制，不能视为已获得原音。采集失败不会尝试登录、导入 Cookie 或处理验证码。
 
 ## 配置
 

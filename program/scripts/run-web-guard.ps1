@@ -1,8 +1,23 @@
-param([ValidateSet('start-local', 'setup-local')][string]$Entry = 'start-local')
+param([ValidateSet('start-local', 'setup-local')][string]$Entry = 'start-local', [switch]$InheritedGuard)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'analyzer-instance-lock.ps1')
 . (Join-Path $PSScriptRoot 'local-web-identity.ps1')
+. (Join-Path $PSScriptRoot 'install-node22.ps1')
+$env:LMZY_NODE_HOME = $null
+$nodePath = Join-Path $projectRoot '.local\node.path'
+$nodeExe = Find-NodeRuntime -PathFile $nodePath
+if ($nodeExe) {
+    $nodeHome = Split-Path -Parent $nodeExe
+    $env:LMZY_NODE_HOME = $nodeHome
+    $env:Path = $nodeHome + [IO.Path]::PathSeparator + $env:Path
+}
+if ($InheritedGuard) {
+    if ($Entry -ne 'setup-local' -or $env:LMZY_GUARDED_ROOT -ne $projectRoot) { throw 'Setup continuation requires its original guarded startup.' }
+    Set-Location -LiteralPath $projectRoot
+    & (Join-Path $projectRoot "$Entry.bat") --guarded
+    exit $LASTEXITCODE
+}
 $webLock = Enter-AnalyzerInstanceLock $projectRoot 'web'
 if ($null -eq $webLock) {
     # Opening an already running app must not revoke coworkers' sessions.
@@ -27,6 +42,7 @@ if ($null -eq $webLock) {
 }
 try {
     Set-Location -LiteralPath $projectRoot
+    $env:LMZY_GUARDED_ROOT = $projectRoot
     & (Join-Path $projectRoot "$Entry.bat") --guarded
     exit $LASTEXITCODE
 } finally { Exit-AnalyzerInstanceLock $webLock }

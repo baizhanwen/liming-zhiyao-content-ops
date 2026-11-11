@@ -49,7 +49,7 @@ test("commercial startup revokes sessions and delivery generation excludes priva
   assert.match(startupSql, /DELETE FROM local_sessions/);
   assert.match(startup, /DELIVERY_MODE/);
   assert.match(local, /prepare-local-web\.ps1/);
-  assert.match(read("scripts/prepare-local-web.ps1"), /npm\.cmd run auth:startup/);
+  assert.match(read("scripts/prepare-local-web.ps1"), /& \$node \$npmCli run auth:startup/);
   assert.match(lan, /prepare-local-web\.ps1/);
   assert.match(delivery, /allowedTopLevelDirectories/);
   assert.match(delivery, /allowedTopLevelFiles/);

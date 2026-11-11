@@ -18,13 +18,16 @@ function Import-AnalyzerCollectorRuntime {
             }
         }
 
-        $recordedDirectories = @(Read-AnalyzerMediaPathFile (Join-Path $ProjectRoot ".local\node.path"))
-        $node = Resolve-AnalyzerMediaExecutable "" "node" $recordedDirectories
+        . (Join-Path $PSScriptRoot 'install-node22.ps1')
+        $selectorRoot = $script:NodeInstallerRoot
+        try {
+            # The requested installation owns its record, portable cache and policy.
+            $script:NodeInstallerRoot = [IO.Path]::GetFullPath($ProjectRoot)
+            $node = Find-NodeRuntime -PathFile (Join-Path $ProjectRoot '.local\node.path')
+        } finally { $script:NodeInstallerRoot = $selectorRoot }
         if (-not $node) {
-            throw "Node.js is missing from the video collector. Run tools\setup-analyzer.bat."
+            throw "No compatible Windows x64 Node.js and npm were found for collection. Run setup-local.bat."
         }
-        & $node -e "const [major,minor]=process.versions.node.split('.').map(Number); process.exit(process.arch === 'x64' && (major > 22 || (major === 22 && minor >= 13)) ? 0 : 1)"
-        if ($LASTEXITCODE -ne 0) { throw "The video collector requires 64-bit Node.js 22.13 or newer." }
 
         $runtimeDirectory = Split-Path -Parent $node
         $npm = Join-Path $runtimeDirectory "npm.cmd"

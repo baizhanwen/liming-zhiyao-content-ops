@@ -6,7 +6,7 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "dev": "vinext dev",
+    "dev": "node scripts/node-runtime-policy.mjs && vinext dev",
     "build": "vinext build",
     "start": "node scripts/start-web-with-environment.mjs",
     "typecheck": "tsc --noEmit",

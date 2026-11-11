@@ -15,7 +15,22 @@ function fixture(t) {
     rmSync(dir, { recursive: true, force: true });
   });
   const scripts = path.join(dir, "scripts"); mkdirSync(scripts);
-  for (const name of ["prepare-local-web.ps1", "open-web.ps1", "open-local.ps1", "open-lan.ps1"]) copyFileSync(path.join(root, "scripts", name), path.join(scripts, name));
+  // Keep Node and the controlled npm command together, as real startup requires.
+  copyFileSync(process.execPath, path.join(dir, "node.exe"));
+  writeFileSync(path.join(dir, "npm.cmd"), '@echo off\r\nexit /b 0\r\n');
+  mkdirSync(path.join(dir, ".local"));
+  writeFileSync(path.join(dir, ".local", "node.path"), dir + "\n");
+  const npmCli = path.join(dir, "node_modules", "npm", "bin", "npm-cli.js");
+  mkdirSync(path.dirname(npmCli), { recursive: true });
+  writeFileSync(npmCli, `const { appendFileSync } = require("node:fs");
+if (process.argv[2] === "--version") console.log("10.9.2");
+else if (process.argv[2] === "run") {
+  const stage = process.argv[3];
+  appendFileSync("calls.txt", stage + "\\n");
+  process.exitCode = stage === process.env.FAIL_STAGE ? 17 : 0;
+}
+`);
+  for (const name of ["prepare-local-web.ps1", "install-node22.ps1", "node-runtime-policy.mjs", "open-web.ps1", "open-local.ps1", "open-lan.ps1"]) copyFileSync(path.join(root, "scripts", name), path.join(scripts, name));
   const run = (script, args = [], env = {}) => {
     // Windows treats PATH/Path as the same name; Node can otherwise retain the
     // inherited PATH and discard our fake-command directory when spawning.
@@ -47,7 +62,6 @@ test("shared startup runs each preparation once and stops on migration failure",
     const target = path.join(f.dir, relative); mkdirSync(path.dirname(target), { recursive: true }); writeFileSync(target, "{}");
   }
   writeFileSync(path.join(f.dir, ".dev.vars"), "SYNTHETIC_TEST=1");
-  writeFileSync(path.join(f.dir, "npm.cmd"), '@echo off\r\necho %2>>"%~dp0calls.txt"\r\nif "%2"=="%FAIL_STAGE%" exit /b 17\r\nexit /b 0\r\n');
   writeFileSync(path.join(f.scripts, "probe.ps1"), '& "$PSScriptRoot\\prepare-local-web.ps1"\n$resultCode = $LASTEXITCODE\n$env:CI | Set-Content -LiteralPath (Join-Path (Split-Path $PSScriptRoot) "ci.txt")\nexit $resultCode\n');
   const success = f.run("probe.ps1", [], { CI: "original-ci", FAIL_STAGE: "" });
   assert.equal(success.status, 0, success.stderr);
