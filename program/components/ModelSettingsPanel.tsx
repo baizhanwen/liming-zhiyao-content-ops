@@ -68,8 +68,9 @@ function ModelRoleEditor({ role, saved, disabled, busy, onSave, onTest }: {
     const result = await onTest(role.id);
     if (result) setFeedback(result);
   }
-  return <section className={styles.role} aria-labelledby={`model-role-${role.id}`}>
-    <h3 id={`model-role-${role.id}`}>{role.label}</h3>
+  return <details className={`${styles.role} operations-model-role`}>
+    <summary><span><strong id={`model-role-${role.id}`}>{role.label}</strong><small>{saved.provider || "未设置提供方"} · {saved.model || "未设置模型"}</small></span><span className={dirty ? "model-role-pending" : saved.apiKeyConfigured ? "model-role-ready" : "model-role-missing"}>{dirty ? "有未保存修改" : saved.apiKeyConfigured ? "已配置" : "待配置"}</span></summary>
+    <div className="operations-model-role-body">
     <p className={styles.description}>{role.description}</p>
     <div className={styles.state}><strong>{saved.apiKeyConfigured ? "密钥已保存" : "尚未设置密钥"}</strong>{saved.source && <span>{saved.source === "organization" ? "当前公司配置" : "本项目默认配置"}</span>}{saved.updatedAt && <span>更新于 {new Date(saved.updatedAt).toLocaleString("zh-CN")}</span>}</div>
     <form className={`stack-form ${styles.form}`} onSubmit={submit}>
@@ -78,8 +79,7 @@ function ModelRoleEditor({ role, saved, disabled, busy, onSave, onTest }: {
           <label>提供方<input aria-label={`${role.label}提供方`} value={draft.provider} onChange={event => change("provider", event.target.value)} list="model-provider-options" placeholder="例如 glm、deepseek、openai-compatible" maxLength={100} autoComplete="off" /></label>
           <label>接口地址<input aria-label={`${role.label}接口地址`} type="url" value={draft.baseUrl} onChange={event => change("baseUrl", event.target.value)} placeholder="https://api.example.com/v1" maxLength={1000} autoComplete="off" /></label>
           <label>模型名称<input aria-label={`${role.label}模型名称`} value={draft.model} onChange={event => change("model", event.target.value)} placeholder={role.id === "visualUnderstanding" ? "支持图片的模型，或 understand_image" : "填写服务商提供的模型名称"} maxLength={200} autoComplete="off" /></label>
-          <label>API 密钥<input aria-label={`${role.label} API 密钥`} type="password" value={draft.apiKey} onChange={event => change("apiKey", event.target.value)} disabled={draft.clearApiKey} placeholder={saved.apiKeyConfigured ? "已保存；留空保持原密钥" : "输入该模型的 API 密钥"} maxLength={4000} autoComplete="new-password" spellCheck={false} /></label>
-          <p className={styles.keyNote}>密钥不会回显。只改模型名称时可留空；更换提供方或接口地址时请填写对应密钥。</p>
+          <label>API 密钥<input aria-label={`${role.label} API 密钥`} aria-describedby="model-settings-guidance" type="password" value={draft.apiKey} onChange={event => change("apiKey", event.target.value)} disabled={draft.clearApiKey} placeholder={saved.apiKeyConfigured ? "输入新密钥（可留空）" : "输入 API 密钥"} maxLength={4000} autoComplete="new-password" spellCheck={false} /></label>
           {saved.apiKeyConfigured && <label className={styles.clear}><input type="checkbox" checked={draft.clearApiKey} onChange={event => { change("clearApiKey", event.target.checked); if (event.target.checked) change("apiKey", ""); }} />清除本角色密钥并停用该角色</label>}
         </div>
       </fieldset>
@@ -87,10 +87,11 @@ function ModelRoleEditor({ role, saved, disabled, busy, onSave, onTest }: {
         <button className="primary-button" type="submit" disabled={disabled || !dirty}>{busy === "save" ? "正在保存…" : "保存并使用"}</button>
         <button className="secondary-button" type="button" disabled={disabled || !saved.apiKeyConfigured || dirty} onClick={() => void testSaved()}>{busy === "test" ? "正在测试…" : "测试已保存配置"}</button>
       </div>
-      <p className={styles.keyNote}>{dirty ? "有未保存的修改，请先保存。" : "连接测试使用已保存配置。"}测试可能产生少量模型用量。</p>
+      {dirty && <p className={styles.keyNote}>有未保存的修改，请先保存后再测试。</p>}
       {feedback && <p className={`${styles.message}${feedback.error ? ` ${styles.error}` : ""}`} role={feedback.error ? "alert" : "status"}>{feedback.text}</p>}
     </form>
-  </section>;
+    </div>
+  </details>;
 }
 
 export function ModelSettingsPanel({ organizationId, canManage, onSaved }: {
@@ -161,12 +162,12 @@ export function ModelSettingsPanel({ organizationId, canManage, onSaved }: {
 
   const editable = canManage && snapshot?.canManage !== false;
   return <article id="model-settings" className="panel operations-panel">
-    <div className="panel-heading"><div><p className="section-kicker">当前公司的模型设置</p><h2>配置后直接使用</h2></div><span>{editable ? "管理员可修改" : "仅管理员可修改"}</span></div>
-    <p className={styles.intro}>分别设置视频分析、画面理解、内容生成和项目助理。配置保存在本项目中；密钥不回显，留空保留已保存密钥。</p>
+    <div className="panel-heading"><div><h2>模型配置</h2></div><span>{editable ? "管理员可修改" : "仅管理员可修改"}</span></div>
+    <p className={styles.intro} id="model-settings-guidance">展开需要调整的角色。密钥不回显，留空保留原密钥；更换提供方或接口地址时须填写对应密钥。连接测试使用已保存配置，可能产生少量模型用量。</p>
     <datalist id="model-provider-options">{["glm", "deepseek", "openai-compatible", "openai", "minimax", "minimax-token-plan", "qwen", "dashscope"].map(provider => <option key={provider} value={provider} />)}</datalist>
     {error && <p className={`${styles.message} ${styles.error}`} role="alert">{error}</p>}
     {notice && <p className={styles.message} role="status">{notice}</p>}
     {!snapshot && !error && <p className={styles.loading}>正在读取模型配置…</p>}
-    {snapshot && <div className={styles.roles}>{roleDetails.map(role => <ModelRoleEditor key={`${organizationId}:${role.id}:${savedEpochs[role.id] ?? 0}`} role={role} saved={snapshot.roles[role.id] ?? emptyConfiguration()} disabled={!editable || Boolean(busy)} busy={busy?.role === role.id ? busy.action : null} onSave={save} onTest={test} />)}</div>}
+    {snapshot && <div className={`${styles.roles} operations-model-roles`}>{roleDetails.map(role => <ModelRoleEditor key={`${organizationId}:${role.id}:${savedEpochs[role.id] ?? 0}`} role={role} saved={snapshot.roles[role.id] ?? emptyConfiguration()} disabled={!editable || Boolean(busy)} busy={busy?.role === role.id ? busy.action : null} onSave={save} onTest={test} />)}</div>}
   </article>;
 }

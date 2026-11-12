@@ -1,0 +1,98 @@
+/* Creation and knowledge pages share the existing workspace tokens. */
+.creation-cleanup .creation-hint,
+.creation-cleanup .creation-reference p,
+.creation-cleanup .creation-context-body p {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--hint-font-size, 12px);
+  font-weight: 400;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.creation-cleanup .creation-reference,
+.creation-cleanup .creation-context-summary,
+.creation-cleanup .creation-memory-events {
+  min-width: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: var(--control-font-size, 12px);
+  line-height: 1.6;
+}
+.creation-cleanup .creation-context-summary,
+.creation-cleanup .creation-memory-events { margin: 0 0 var(--section-gap, 18px); }
+.creation-cleanup .creation-reference-options { margin: 0; }
+.creation-cleanup :is(.creation-reference-options, .creation-context-summary, .creation-memory-events) > summary {
+  min-height: var(--control-height, 38px);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 11px 14px;
+  color: var(--ink);
+  cursor: pointer;
+  list-style: none;
+}
+.creation-cleanup :is(.creation-reference-options, .creation-context-summary, .creation-memory-events) > summary::-webkit-details-marker { display: none; }
+.creation-cleanup :is(.creation-reference-options, .creation-context-summary, .creation-memory-events) > summary > strong { color: var(--ink); font-size: 12px; font-weight: 650; }
+.creation-cleanup :is(.creation-reference-options, .creation-context-summary, .creation-memory-events) > summary > span { flex: 1 1 160px; color: var(--muted); font-size: 12px; }
+.creation-cleanup :is(.creation-reference-options, .creation-context-summary, .creation-memory-events) > summary::after { content: "展开"; margin-left: auto; color: var(--brand); font-size: 12px; }
+.creation-cleanup :is(.creation-reference-options, .creation-context-summary, .creation-memory-events)[open] > summary::after { content: "收起"; }
+.creation-cleanup summary:focus-visible { outline: 2px solid var(--brand); outline-offset: 3px; border-radius: 5px; }
+.creation-cleanup .creation-reference-body,
+.creation-cleanup .creation-context-body { display: grid; gap: 14px; padding: 14px; border-top: 1px solid var(--line); }
+.creation-cleanup .creation-context-body h3 { margin: 0 0 4px; font-size: 12px; font-weight: 650; }
+.creation-cleanup :is(.creation-reference-body, .creation-context-body) .core-strategy-preview { margin: 0; padding: 0; border: 0; background: transparent; font-size: 12px; }
+.creation-cleanup :is(.creation-reference-body, .creation-context-body) .core-strategy-preview p { margin: 6px 0 0; }
+.creation-cleanup .creation-reference .topic-actual-sources { margin: 0; padding: 11px 14px; border-top: 1px solid var(--line); }
+.creation-cleanup .creation-reference .topic-actual-sources p { margin: 8px 0; }
+.creation-cleanup .creation-reference .topic-reference-toggle { margin: 0; font-size: 12px; }
+.creation-cleanup .creation-reference .topic-reference-recommend { margin: 0; gap: 6px; }
+.creation-cleanup .creation-reference button,
+.creation-cleanup .topic-knowledge-actions button { min-height: 32px; padding: 5px 10px; border-radius: 7px; font-size: 12px; }
+.creation-cleanup .creation-reference small,
+.creation-cleanup .topic-knowledge-option small { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.creation-cleanup .topic-knowledge-actions { align-items: flex-start; flex-wrap: wrap; gap: 8px; background: var(--surface-soft); }
+.creation-cleanup .topic-knowledge-actions > span,
+.creation-cleanup .topic-knowledge-picker legend em,
+.creation-cleanup .topic-knowledge-empty { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.creation-cleanup .topic-knowledge-option strong { font-size: 12px; white-space: normal; overflow-wrap: anywhere; }
+.creation-cleanup .topic-ai-toolbar { align-items: flex-start; flex-wrap: wrap; }
+.creation-cleanup .topic-ai-toolbar strong,
+.creation-cleanup .topic-ai-toolbar span,
+.creation-cleanup .topic-ai-toolbar button,
+.creation-cleanup .topic-field-heading > button,
+.creation-cleanup .topic-generation-message { font-size: 12px; line-height: 1.5; }
+.creation-cleanup .topic-ai-toolbar button { min-height: var(--control-height, 38px); }
+
+.creation-cleanup .assistant-thread-empty p,
+.creation-cleanup .assistant-thread-empty button,
+.creation-cleanup .assistant-quick-prompts button,
+.creation-cleanup .assistant-composer > div > small { font-size: 12px; line-height: 1.6; }
+
+.creation-cleanup .creation-knowledge-entry { position: static; max-height: none; overflow: visible; }
+.creation-cleanup .creation-entry-switch { display: flex; gap: 4px; margin-bottom: 18px; padding: 4px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-soft); }
+.creation-cleanup .creation-entry-switch button { flex: 1; min-height: var(--control-height, 38px); padding: 6px 10px; border: 1px solid transparent; border-radius: 6px; color: var(--muted); background: transparent; font: inherit; font-size: var(--control-font-size, 12px); cursor: pointer; }
+.creation-cleanup .creation-entry-switch button[aria-pressed="true"] { border-color: var(--line); color: var(--brand-deep); background: var(--surface); font-weight: 650; }
+.creation-cleanup .creation-entry-panel[hidden] { display: none; }
+.creation-cleanup #knowledge-entry-manual > h2 { margin-top: 0; }
+.creation-cleanup #knowledge-entry-manual > .creation-hint { margin-bottom: 18px; }
+.creation-cleanup .knowledge-bulk-import { gap: 14px; margin: 0; padding: 0; border: 0; background: transparent; }
+.creation-cleanup .knowledge-bulk-import h2 { font-size: 18px; }
+.creation-cleanup .knowledge-bulk-import :is(small, a, button, summary) { font-size: 12px; line-height: 1.6; }
+
+.creation-cleanup .creation-memory-events .memory-event-list { max-height: 420px; overflow: auto; border-top: 1px solid var(--line); }
+.creation-cleanup .creation-memory-events .memory-event-list article { padding: 14px; }
+.creation-cleanup .creation-memory-events .memory-event-list article > div { flex-wrap: wrap; }
+.creation-cleanup .creation-memory-events :is(strong, small, p, em) { font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.creation-cleanup .creation-memory-events .list-empty { padding: 16px; font-size: 12px; }
+
+@media (max-width: 560px) {
+  .creation-cleanup :is(.creation-reference-options, .creation-context-summary, .creation-memory-events) > summary { gap: 4px 8px; padding: 10px 12px; }
+  .creation-cleanup .creation-reference-body,
+  .creation-cleanup .creation-context-body { padding: 12px; }
+  .creation-cleanup .creation-knowledge-entry .form-row { grid-template-columns: 1fr; }
+  .creation-cleanup .knowledge-bulk-import > header { align-items: flex-start; flex-wrap: wrap; }
+}

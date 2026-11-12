@@ -1,0 +1,140 @@
+/* Operational workspaces share the application's controls and surfaces. */
+.workflow-workspace .workflow-inspector-clean { position: static; max-height: none; overflow: visible; }
+.workflow-inspector-clean > header { padding: 16px 20px; }
+.workflow-version-summary { display: flex; align-items: baseline; flex-wrap: wrap; justify-content: space-between; gap: 8px 16px; }
+.workflow-inspector-clean .workflow-version-context { display: block; padding: 0; border: 0; background: transparent; font-size: 12px; }
+.workflow-version-context > summary { color: var(--brand); font-size: 12px; cursor: pointer; }
+.workflow-version-context > p { margin: 7px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.workflow-actions-compact { background: var(--surface-soft); }
+.workflow-actions-compact > header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px; margin-bottom: 10px; }
+.workflow-actions-compact > header h3 { margin: 0; font-size: 13px; }
+.workflow-actions-compact > header small { font-size: 11px; }
+.workflow-inspector-clean :is(.workflow-actions textarea, .comment-panel textarea) { font-size: 12px; }
+.workflow-inspector-clean :is(.workflow-actions button, .comment-panel form button, .schedule-panel form button, .publication-panel form button) { min-height: var(--control-height, 38px); font-size: var(--control-font-size, 12px); }
+.workflow-inspector-clean .review-content-preview > header { padding: 14px 20px 10px; }
+.workflow-inspector-clean .review-content-preview > header h3 { font-size: 13px; }
+.workflow-inspector-clean .review-script-copy { max-height: 360px; overflow-y: auto; font-size: 13px; }
+.workflow-inspector-clean .review-content-preview summary { font-size: 12px; }
+.workflow-records { border-top: 1px solid var(--line); }
+.workflow-records > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 20px; color: var(--ink); font-size: 12px; cursor: pointer; }
+.workflow-records > summary > span { color: var(--muted); font-size: 11px; }
+.workflow-records :is(.review-history, .comment-panel) { padding-top: 0; border-bottom: 0; }
+.workflow-records :is(.review-history, .comment-panel) > h3 { display: none; }
+
+.import-console .import-process-compact { grid-template-columns: minmax(0, 1fr); padding: 14px 20px; }
+.import-console .import-process-compact > ol { width: 100%; margin: 0; }
+.import-format-guide { margin: 0 0 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); overflow: hidden; }
+.import-format-guide > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 13px; color: var(--brand); font-size: 12px; cursor: pointer; }
+.import-format-guide > summary > span { color: var(--muted); font-size: 11px; }
+.import-format-guide .import-data-contract { margin: 0; border: 0; border-radius: 0; }
+.import-format-guide > p { margin: 0; padding: 12px 14px; color: var(--muted); font-size: 12px; line-height: 1.65; }
+.import-submit-bar > div > small { margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+
+.report-center-shell > .report-mode-compact { display: flex; align-items: center; justify-content: flex-start; gap: 16px; padding: 0; margin: 14px 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.report-mode-compact > span { color: var(--muted); font-size: 12px; }
+.report-center-shell .report-mode-compact nav { display: flex; flex-wrap: wrap; width: auto; gap: 4px; padding: 3px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); }
+.report-center-shell .report-mode-compact nav button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 34px; padding: 6px 12px; border-radius: 6px; font-size: 12px; }
+.report-center-shell .report-mode-compact nav button svg { width: 15px; height: 15px; }
+.report-center-shell .report-mode-compact nav button.active { color: var(--brand-deep); border-color: var(--line); background: var(--surface); box-shadow: none; }
+.report-center-shell > [hidden] { display: none !important; }
+
+.model-status-panel > .panel-heading > a { color: var(--brand); font-size: 12px; }
+.model-status-list { padding: 0 18px 4px; }
+.model-status-row { min-width: 0; border-top: 1px solid var(--line); }
+.model-status-row > summary { display: grid; grid-template-columns: minmax(130px, .9fr) minmax(0, 1.4fr) auto; align-items: center; gap: 12px; padding: 13px 0; font-size: 12px; cursor: pointer; list-style: none; }
+.model-status-row > summary::-webkit-details-marker { display: none; }
+.model-status-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.model-status-name > .signal { flex: 0 0 auto; }
+.model-status-name > strong { font-size: 12px; font-weight: 600; }
+.model-status-identity { color: var(--muted); overflow-wrap: anywhere; }
+.model-status-label { color: var(--brand); font-size: 11px; text-align: right; }
+.model-status-label::after { content: '›'; display: inline-block; margin-left: 8px; }
+.model-status-row[open] .model-status-label::after { transform: rotate(90deg); }
+.model-status-details { padding: 0 0 14px 16px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.model-status-details > p { margin: 0 0 6px; }
+.model-status-details > small { font-size: 11px; color: var(--subtle); }
+.model-status-details .model-probe-actions { margin-top: 12px; }
+.model-status-details .model-probe-actions > span { font-size: 11px; }
+.operations-panel .operations-model-roles { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; padding: 0 18px 8px; border-top: 0; background: var(--surface); }
+.operations-model-roles > .operations-model-role { min-width: 0; padding: 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: var(--surface); }
+.operations-model-role > summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 0; cursor: pointer; list-style: none; }
+.operations-model-role > summary::-webkit-details-marker { display: none; }
+.operations-model-role > summary > span:first-child { flex: 1; display: grid; gap: 5px; min-width: 0; }
+.operations-model-role > summary::after { content: '›'; color: var(--subtle); }
+.operations-model-role[open] > summary::after { transform: rotate(90deg); }
+.operations-model-role > summary strong { color: var(--ink); font-size: 13px; font-weight: 600; }
+.operations-model-role > summary small { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.operations-model-role > summary > span:last-child { flex: 0 0 auto; padding: 3px 7px; border-radius: 6px; font-size: 11px; }
+.operations-model-role .model-role-ready { color: var(--success); background: var(--success-soft); }
+.operations-model-role .model-role-missing, .operations-model-role .model-role-pending { color: var(--warning); background: var(--warning-soft); }
+.operations-model-role-body { padding: 0 0 18px; }
+.operations-model-role-body > p { min-height: 0; }
+.operations-model-role-body .stack-form label { font-size: 12px; }
+.operations-model-role-body .stack-form input { font-size: 12px; }
+
+/* Override legacy page-specific small type at the actual control depth. */
+.insights-workspace .insights-toolbar > nav > a,
+.workflow-workspace .workflow-toolbar > nav > a { font-size: var(--control-font-size, 12px); }
+.import-console .import-format-field > legend,
+.import-console .import-format-switch button > strong,
+.import-console .import-asof strong,
+.import-console .import-file-drop > strong,
+.import-console .import-file-drop > em,
+.import-console .import-submit-bar button,
+.import-console .import-panel-refined > header > button,
+.import-console .import-history-refined > footer > a { font-size: var(--control-font-size, 12px); }
+.import-console .import-format-switch button > span,
+.import-console .import-panel-refined > header p,
+.import-console .import-asof small,
+.import-console .import-file-drop > span,
+.import-console .import-submit-bar > div > span,
+.import-console .import-history-refined > header > strong,
+.import-console .import-history-refined > footer > span { font-size: 11px; line-height: 1.6; }
+.import-console .import-submit-bar > div > strong { font-size: 12px; line-height: 1.6; }
+.import-console .import-step-label,
+.import-console .import-process-compact li > strong,
+.import-console .import-process-compact li > span { font-size: 11px; }
+.import-console .import-asof :is(input, select) { min-height: var(--control-height, 38px); font-size: var(--control-font-size, 12px); }
+.import-console .import-panel-refined > header > button,
+.import-console .import-submit-bar > button { min-height: var(--control-height, 38px); }
+.import-console .import-history-copy > strong { font-size: 12px; }
+.import-console .import-history-copy :is(small, span),
+.import-console .import-history-refined details { font-size: 11px; line-height: 1.6; }
+
+.report-center-shell .reports-list form :is(label, input, select, button),
+.report-center-shell .reports-list nav button > strong,
+.report-center-shell .employee-report-person > select,
+.report-center-shell .report-document > header button,
+.report-center-shell .report-actions article > button { font-size: var(--control-font-size, 12px); }
+.report-center-shell .reports-list form :is(input, select, button),
+.report-center-shell .employee-report-person > select,
+.report-center-shell .report-document > header button,
+.report-center-shell .report-actions article > button { min-height: var(--control-height, 38px); }
+.report-center-shell .reports-list nav button > :is(small, span),
+.report-center-shell .employee-report-person > :is(span, small) { font-size: 11px; line-height: 1.6; }
+
+.operations-model-roles .operations-model-role-body button,
+.model-status-list .model-probe-actions > button { min-height: var(--control-height, 38px); font-size: var(--control-font-size, 12px); }
+.operations-model-roles .operations-model-role-body > p,
+.operations-model-roles .operations-model-role-body form > p,
+.operations-model-roles .operations-model-role-body > div { font-size: 11px; line-height: 1.6; }
+.workflow-workspace .review-board button > strong { font-size: 12px; }
+.workflow-workspace .review-board button > small,
+.workflow-inspector-clean .workflow-version-summary > small { font-size: 11px; }
+.workflow-inspector-clean :is(.schedule-panel label, .publication-panel label, .comment-panel form select, .schedule-panel input, .schedule-panel select, .publication-panel input, .publication-panel select) { font-size: var(--control-font-size, 12px); }
+.workflow-inspector-clean :is(.comment-panel article > button, .comment-panel form button) { font-size: 12px; min-height: var(--control-height, 38px); }
+
+@media (max-width: 760px) {
+  .workflow-version-summary { align-items: flex-start; flex-direction: column; }
+  .import-console .import-process-compact { padding: 12px; }
+  .import-console .import-process-compact > ol { gap: 8px; }
+  .import-console .import-process-compact > ol strong { font-size: 11px; }
+  .report-center-shell > .report-mode-compact { flex-wrap: wrap; gap: 8px 12px; }
+  .report-center-shell .report-mode-compact nav { flex: 1; flex-wrap: nowrap; }
+  .report-center-shell .report-mode-compact nav button { flex: 1; padding-inline: 8px; white-space: nowrap; }
+  .model-status-row > summary { grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; }
+  .model-status-identity { grid-column: 1 / -1; grid-row: 2; padding-left: 16px; font-size: 11px; }
+  .model-status-label { grid-column: 2; grid-row: 1; }
+}
+
+@media print { .report-center-shell > .report-mode-compact { display: none; } }

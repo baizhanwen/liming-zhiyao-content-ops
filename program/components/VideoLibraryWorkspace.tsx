@@ -12,6 +12,7 @@ import { MATERIAL_MAX_ARCHIVE_BYTES, MATERIAL_MAX_MANIFEST_BYTES, MATERIAL_MAX_M
 import { strFromU8, strToU8, zipSync } from "fflate";
 import { Download, FolderInput, Upload } from "lucide-react";
 import { preferredOrganizationId, rememberCurrentScope, scopedFetch } from "../lib/client-scope";
+import "./analysis-cleanup.css";
 
 type Organization = { id: string; name: string };
 type Project = { id: string; name: string };
@@ -150,6 +151,7 @@ export function VideoLibraryWorkspace({ mode }: { mode: "benchmark" | "assets" }
     finally { setTransferring(false); }
   }
 
+  const activeFilterCount = Object.values(contentFilters).filter(Boolean).length;
   const tagOptions = !contentFilters.tag || filterOptions.tags.includes(contentFilters.tag)
     ? filterOptions.tags : [contentFilters.tag, ...filterOptions.tags];
 
@@ -172,21 +174,21 @@ export function VideoLibraryWorkspace({ mode }: { mode: "benchmark" | "assets" }
           <span className="library-material-count">{mode === "assets" ? <><small>公司素材</small><strong>{entries.length}</strong><em>条</em></> : <><small>项目对标素材</small><strong>{entries.length}</strong><em>条</em></>}</span>
           {mode === "assets" && <div className="library-command-actions">
             <button className="library-import-button" type="button" disabled={!selected.length || !canImportToProject || loading || working || transferring} onClick={() => void importSelected()}><FolderInput aria-hidden="true" /><span>{working ? "处理中…" : `同步到对标内容库${selected.length ? `（${selected.length}）` : ""}`}</span></button>
-            {canManage && <div className="library-transfer-actions" aria-label="素材迁移">
+            {canManage && <details className="library-more-actions"><summary>更多操作</summary><div className="library-transfer-actions" aria-label="素材迁移">
               <button className="library-transfer-button" type="button" disabled={transferring} onClick={() => void exportMaterials()}><Download aria-hidden="true" /><span>{transferring ? "迁移处理中…" : selected.length ? `导出所选（${selected.length}）` : "导出全部"}</span></button>
               <label className={`library-file-import${transferring ? " disabled" : ""}`}><Upload aria-hidden="true" /><span>导入迁移包</span><input type="file" accept="application/zip,.zip" disabled={transferring} onChange={(event) => void importMaterials(event)} /></label>
-            </div>}
+            </div></details>}
           </div>}
         </div>
       </div>
       {error && <div className="inline-alert" role="alert">{error}</div>}{notice && <div className="library-notice" role="status">{notice}</div>}
       {mode === "assets" && !loading && !canImportToProject && <p className="library-sync-hint" role="status">{projectId ? "当前角色不能向所选企业空间同步素材。" : "请选择要同步到的企业空间。"}</p>}
-      <div className="library-content-filters" aria-label="内容筛选">
+      <details className="library-filter-disclosure"><summary>筛选素材<span>{activeFilterCount ? `已选 ${activeFilterCount} 项` : "类别、形式、时长、标签"}</span></summary><div className="library-content-filters" aria-label="内容筛选">
         <label>选题类别<select aria-label="选题类别" disabled={working || transferring} value={contentFilters.topicCategory} onChange={event => void filterContent("topicCategory", event.target.value)}><option value="">全部类别</option>{filterOptions.topicCategories.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
         <label>内容形式<select aria-label="内容形式" disabled={working || transferring} value={contentFilters.contentForm} onChange={event => void filterContent("contentForm", event.target.value)}><option value="">全部形式</option>{filterOptions.contentForms.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
         <label>时长分组<select aria-label="时长分组" disabled={working || transferring} value={contentFilters.durationBucket} onChange={event => void filterContent("durationBucket", event.target.value)}><option value="">全部时长</option>{filterOptions.durationBuckets.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
         <label>标签<select aria-label="标签" disabled={working || transferring} value={contentFilters.tag} onChange={event => void filterContent("tag", event.target.value)}><option value="">全部标签</option>{tagOptions.map(tag => <option key={tag} value={tag}>{tag}</option>)}</select></label>
-      </div>
+      </div></details>
       {loading ? <div className="list-empty">正在整理素材库…</div> : entries.length === 0 ? <div className="list-empty">{mode === "assets" ? "公司素材库还没有匹配的分析视频。新分析完成后会自动沉淀到这里。" : "当前项目还没有对标素材。请从素材中心选择并导入。"}</div> : <div className="library-grid">{entries.map((entry) => {
         const checked = selected.includes(entry.id); const analysisState = materialCardState(entry);
         const analysisParams = new URLSearchParams({ organizationId, projectId });
@@ -210,9 +212,9 @@ export function VideoLibraryWorkspace({ mode }: { mode: "benchmark" | "assets" }
               </span>
             )}
             <em className={`status ${analysisState.tone}`} title={analysisState.hint || analysisState.label}>{analysisState.label}</em>
-            {mode === "assets" && <label className="library-select"><input type="checkbox" checked={checked} disabled={Boolean(entry.imported_to_project) || !canImportToProject} onChange={() => setSelected((current) => current.includes(entry.id) ? current.filter((id) => id !== entry.id) : [...current, entry.id])} /><span>{entry.imported_to_project ? "已同步" : "选择"}</span></label>}
+            {mode === "assets" && !entry.imported_to_project && <label className="library-select"><input type="checkbox" checked={checked} disabled={!canImportToProject} onChange={() => setSelected((current) => current.includes(entry.id) ? current.filter((id) => id !== entry.id) : [...current, entry.id])} /><span>选择</span></label>}
           </div>
-          <div className="library-card-body"><div className="library-card-tags"><span>{entry.content_category_label || "待分类"}</span><small>{entry.platform === "douyin" ? "抖音" : "本地上传"}</small></div><h3>{entry.title || "待提取视频标题"}</h3><p>{entry.account_name || entry.author_name || "未关联账号"} · 来源：{entry.source_project_name}</p><div className="plain-chips">{entry.tags.length ? entry.tags.slice(0, 6).map(tag => <span key={tag}>{tag}</span>) : <span>暂无标签</span>}</div>{entry.tags.length > 6 && <details className="library-tag-details"><summary>查看全部 {entry.tags.length} 个标签</summary><div className="plain-chips">{entry.tags.slice(6).map(tag => <span key={tag}>{tag}</span>)}</div></details>}
+          <div className="library-card-body"><div className="library-card-tags"><span>{entry.content_category_label || "待分类"}</span><small>{entry.platform === "douyin" ? "抖音" : "本地上传"}</small></div><h3>{entry.title || "待提取视频标题"}</h3><p>{entry.account_name || entry.author_name || "未关联账号"}{mode === "assets" && ` · 来源：${entry.source_project_name}`}</p><div className="plain-chips">{entry.tags.length ? entry.tags.slice(0, 6).map(tag => <span key={tag}>{tag}</span>) : <span>暂无标签</span>}</div>{entry.tags.length > 6 && <details className="library-tag-details"><summary>查看全部 {entry.tags.length} 个标签</summary><div className="plain-chips">{entry.tags.slice(6).map(tag => <span key={tag}>{tag}</span>)}</div></details>}
 
           </div>
           <footer>

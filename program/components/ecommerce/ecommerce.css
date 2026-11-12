@@ -307,13 +307,6 @@
 .ec-editorial-check li > p { margin-top: 5px; color: var(--muted); }
 .ec-editorial-check blockquote { font-size: 12px; }
 @media (max-width: 760px) { .ec-method-pair { grid-template-columns: minmax(0, 1fr); } .ec-reading-foot { flex-wrap: wrap; } }
-@media (max-width: 820px) {
-  .app-shell:has(.ec-workspace) .topbar { grid-template-columns: 32px minmax(0, 1fr) auto; gap: 10px; }
-  .app-shell:has(.ec-workspace) .project-switcher { min-width: 0; max-width: 210px; justify-self: start; }
-  .app-shell:has(.ec-workspace) .project-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .app-shell:has(.ec-workspace) .top-actions { gap: 6px; }
-  .app-shell:has(.ec-workspace) .top-actions :is(.search-button, .signout-button, .avatar) { width: 32px; height: 32px; min-width: 32px; }
-}
 .ec-mobile-task-switch { display: none; }
 @media (max-width: 760px) {
   .ec-writing-layout > .ec-task-list { display: none; }

@@ -11,6 +11,7 @@ import { contentStatusLabels, type ContentStatus } from "../lib/content-workflow
 import { rememberCurrentScope, scopedFetch } from "../lib/client-scope";
 import type { ProductionPack } from "../lib/content-production";
 import { deliveryPlan } from "../lib/delivery-entitlements";
+import "./operations-cleanup.css";
 
 type View = "review" | "calendar" | "publish";
 type Organization = { id: string; name: string };
@@ -98,8 +99,8 @@ export function WorkflowWorkspace({ initialView, initialOrganizationId = "", ini
     <div className="workflow-summary"><article><strong>{data.items.filter((item) => item.status === "internal_review" || item.status === "client_review").length}</strong><span>待内部审核</span></article><article><strong>{data.items.filter((item) => item.status === "internal_revision").length}</strong><span>待修改</span></article><article><strong>{data.schedules.filter((schedule) => schedule.status !== "cancelled" && new Date(schedule.scheduled_at) > new Date()).length}</strong><span>未来排期</span></article><article><strong>{data.publications.filter((publication) => publication.status === "published").length}</strong><span>已发布记录</span></article></div>
     <div className="workflow-main">
       <section className="panel workflow-canvas">{initialView === "review" ? <ReviewBoard items={data.items} selectedId={selectedId} onSelect={(id)=>{if(!busy)setSelectedId(id);}} /> : initialView === "calendar" ? <CalendarView items={data.items} schedules={data.schedules} selectedId={selectedId} onSelect={(id)=>{if(!busy)setSelectedId(id);}} /> : <PublicationView items={data.items} schedules={data.schedules} publications={data.publications} selectedId={selectedId} onSelect={(id)=>{if(!busy)setSelectedId(id);}} />}</section>
-      <aside className="panel workflow-inspector">{selected ? <><header><span className={`workflow-status status-${selected.status}`}>{contentStatusLabels[selected.status]}</span><h2>{selected.title}</h2><small>当前稿件 v{selected.current_version} · {formatTime(selected.updated_at)} 更新</small></header><div className="workflow-lineage"><span>{sourceLabels[selected.topic_source_type || "manual"] || selected.topic_source_type || "人工策划"}</span><strong>分析 / 知识 → 选题 → 内容 → 审核 → 发布</strong><small>{selected.citation_count ?? 0} 条来源证据绑定当前版本</small></div>
-        {initialView === "review" && <><ReviewContentPreview item={selected} pack={selectedPack} /><WorkflowActions item={selected} permissions={data.permissions} busy={busy} decisionNote={decisionNote} onDecisionNote={setDecisionNote} onTransition={transition} /><ReviewHistory reviews={selectedReviews} /><CommentPanel comments={selectedComments} permissions={data.permissions} busy={busy} onSubmit={addComment} onResolve={resolveComment} /></>}
+      <aside className="panel workflow-inspector workflow-inspector-clean">{selected ? <><header><span className={`workflow-status status-${selected.status}`}>{contentStatusLabels[selected.status]}</span><h2>{selected.title}</h2><div className="workflow-version-summary"><small>v{selected.current_version} · {formatTime(selected.updated_at)} 更新</small><details className="workflow-lineage workflow-version-context"><summary>{selected.citation_count ?? 0} 条来源依据</summary><p>选题来源：{sourceLabels[selected.topic_source_type || "manual"] || selected.topic_source_type || "人工策划"}</p><p>来源随当前版本保留，可在审核稿中核对。</p></details></div></header>
+        {initialView === "review" && <><WorkflowActions item={selected} permissions={data.permissions} busy={busy} decisionNote={decisionNote} onDecisionNote={setDecisionNote} onTransition={transition} /><ReviewContentPreview item={selected} pack={selectedPack} /><details className="workflow-records"><summary>审核记录 <span>{selectedReviews.length}</span></summary><ReviewHistory reviews={selectedReviews} /></details><details className="workflow-records"><summary>版本评论 <span>{selectedComments.length}{selectedComments.some(comment => !comment.resolved_at) ? ` · ${selectedComments.filter(comment => !comment.resolved_at).length} 条待处理` : ""}</span></summary><CommentPanel comments={selectedComments} permissions={data.permissions} busy={busy} onSubmit={addComment} onResolve={resolveComment} /></details></>}
         {initialView === "calendar" && <SchedulePanel schedule={selectedSchedule} canManage={data.permissions.canManagePublishing} busy={busy} onSubmit={saveSchedule} />}
         {initialView === "publish" && <PublicationPanel publications={selectedPublications} canManage={data.permissions.canManagePublishing} busy={busy} performanceHref={deliveryPlan.features.insights ? `/insights?view=imports&organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}` : undefined} onSubmit={savePublication} />}
       </> : <div className="workflow-empty"><h2>选择一条内容</h2><p>查看审核记录或发布结果。</p></div>}</aside>
@@ -111,7 +112,7 @@ function ReviewContentPreview({ item, pack }: { item: Item; pack: ProductionPack
   const fullScript = item.full_script || pack?.fullScript || "当前版本还没有完整口播稿。";
   const shortScript = item.short_script || pack?.shortScript || "当前版本还没有精简稿。";
   return <section className="review-content-preview">
-    <header><div><h3>本版本审核稿</h3><small>以下内容来自 v{item.current_version}，审核记录将绑定这一版本。</small></div><span>只读</span></header>
+    <header><div><h3>审核稿</h3></div><span>只读</span></header>
     <details open><summary>完整口播稿</summary><div className="review-script-copy">{fullScript}</div></details>
     <details><summary>精简版</summary><div className="review-script-copy compact">{shortScript}</div></details>
     {pack?.storyboard?.length ? <details><summary>分镜脚本 <em>{pack.storyboard.length}</em></summary><div className="review-storyboard">{pack.storyboard.map((shot, index) => <article key={`${shot.shot}:${index}`}><header><strong>{shot.shot}</strong><span>{shot.durationSec} 秒</span></header><p>{shot.script}</p><small>{shot.visual}{shot.performance ? ` · ${shot.performance}` : ""}</small></article>)}</div></details> : null}
@@ -124,7 +125,7 @@ function WorkflowActions({ item, permissions, busy, decisionNote, onDecisionNote
     const pending = busy === `transition:${status}`;
     return <button className={secondary ? "secondary" : undefined} onClick={() => onTransition(status)} disabled={Boolean(busy)} aria-busy={pending}>{pending ? "处理中…" : label}</button>;
   }
-  return <section className="workflow-actions"><h3>审核操作</h3><textarea value={decisionNote} onChange={(event) => onDecisionNote(event.target.value)} placeholder={item.status.includes("review") ? "退回修改时请填写具体原因" : "提交审核说明（可选）"} /><div>
+  return <section className="workflow-actions workflow-actions-compact"><header><h3>审核操作</h3><small>审核记录绑定当前 v{item.current_version}</small></header><textarea value={decisionNote} onChange={(event) => onDecisionNote(event.target.value)} placeholder={item.status.includes("review") ? "退回修改时请填写具体原因" : "提交审核说明（可选）"} /><div>
     {(item.status === "draft" || item.status === "internal_revision") && permissions.canSubmit && action("internal_review", "提交内部审核")}
     {item.status === "internal_review" && permissions.canInternalReview && <>{action("publish_ready", "审核通过，待发布")}{action("internal_revision", "退回修改", true)}</>}
     {item.status === "client_review" && permissions.canInternalReview && <>{action("publish_ready", "审核通过，待发布")}{action("internal_revision", "退回修改", true)}</>}

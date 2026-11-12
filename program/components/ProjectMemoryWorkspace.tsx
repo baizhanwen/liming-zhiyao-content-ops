@@ -8,6 +8,7 @@ import { readApiError as readError, formatClientDate as dateLabel } from "../lib
 import { FormEvent, useCallback, useMemo, useState } from "react";
 import { Check, CircleX, Clock3, History, PencilLine, Power, RefreshCw, Save, Sparkles, X } from "lucide-react";
 import { rememberCurrentScope, scopedFetch } from "../lib/client-scope";
+import "./creation-cleanup.css";
 
 type Organization = { id: string; name: string };
 type Project = { id: string; name: string };
@@ -201,6 +202,7 @@ export function ProjectMemoryWorkspace({ initialOrganizationId = "", initialProj
   const [repairing, setRepairing] = useState(false);
   const [repairNotice, setRepairNotice] = useState("");
   const [syncNotice, setSyncNotice] = useState("");
+  const [showProcessingRecords, setShowProcessingRecords] = useState(false);
   const [saving, setSaving] = useState(false);
   const [health, setHealth] = useState("");
   const [actionKey, setActionKey] = useState("");
@@ -285,10 +287,11 @@ export function ProjectMemoryWorkspace({ initialOrganizationId = "", initialProj
       const candidateCount = operations.filter((operation) => operation.outcome === "candidate").length;
       const failedCount = body.results.filter((result) => result.status === "failed" || result.status === "blocked").length;
       await loadItems(organizationId, projectId, false);
+      setShowProcessingRecords(failedCount > 0);
       if (candidateCount > 0) {
-        setSyncNotice(`已处理 ${body.results.length} 条新来源，提取出 ${candidateCount} 条待采纳候选。`);
+        setSyncNotice(`已处理 ${body.results.length} 条新来源，提取出 ${candidateCount} 条待采纳候选。${failedCount > 0 ? `另有 ${failedCount} 条未完成，可展开处理记录查看原因。` : ""}`);
       } else if (failedCount > 0) {
-        setSyncNotice(`已处理 ${body.results.length} 条来源，其中 ${failedCount} 条未完成，请查看右侧处理记录。`);
+        setSyncNotice(`已处理 ${body.results.length} 条来源，其中 ${failedCount} 条未完成，可展开处理记录查看原因。`);
       } else if (body.results.length > 0) {
         setSyncNotice(`已处理 ${body.results.length} 条新来源，没有发现符合长期项目记忆标准的新候选。`);
       } else {
@@ -444,7 +447,7 @@ export function ProjectMemoryWorkspace({ initialOrganizationId = "", initialProj
   if (loading) return <div className="management-state" role="status">正在载入项目长期档案…</div>;
   if (!organizationId || !projectId) return <div className="empty-panel"><h2>请先创建企业空间</h2><p>每个项目拥有完全隔离的记忆与事件。</p></div>;
 
-  return <div className="knowledge-workspace project-memory-workspace automatic-memory-workspace">
+  return <div className="knowledge-workspace project-memory-workspace automatic-memory-workspace creation-cleanup">
     <div className="management-toolbar knowledge-toolbar">
       <label>公司<select value={organizationId} onChange={(event) => runScopedAction(async () => { const id = event.target.value; setOrganizationId(id); await loadProjects(id); }, setError)}>{organizations.map((organization) => <option key={organization.id} value={organization.id}>{organization.name}</option>)}</select></label>
       <label>企业空间<select value={projectId} onChange={(event) => runScopedAction(async () => { const id = event.target.value; setProjectId(id); rememberCurrentScope(organizationId, id); await loadItems(organizationId, id); }, setError)}>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
@@ -462,6 +465,19 @@ export function ProjectMemoryWorkspace({ initialOrganizationId = "", initialProj
       <button type="button" className="memory-button primary" disabled={!canWrite || repairing || !configuration?.configured} onClick={() => void repairLegacyConfidenceEvents()}><RefreshCw aria-hidden="true" className={repairing ? "is-spinning" : ""} />{repairing ? "修复处理中" : "安全重排并处理"}</button>
     </div>}
     {repairNotice && <div className="memory-repair-notice" role="status">{repairNotice}</div>}
+
+    <details className="creation-memory-events" open={showProcessingRecords} onToggle={event => setShowProcessingRecords(event.currentTarget.open)}>
+      <summary><strong>最近处理记录</strong><span>{Math.min(events.recent.length, 12)} 条</span></summary>
+          {events.recent.length ? <div className="memory-event-list">{events.recent.slice(0, 12).map((event) => {
+            const result = memoryEventResult(event);
+            return <article key={event.id}>
+              <div><strong>{eventLabels[event.eventType] || event.eventType}</strong><em className={"status " + result.tone}>{result.label}</em></div>
+              <small>{sourceLabels[event.sourceType] || event.sourceType} · {dateLabel(event.createdAt)}</small>
+              {result.details && <small className="memory-event-outcomes">{result.details}</small>}
+              {result.reason && <p className={event.errorMessage ? "" : "memory-event-reason"}>{result.reason}</p>}
+            </article>;
+          })}</div> : <div className="list-empty">还没有自动更新事件。</div>}
+    </details>
 
     <section className="memory-category-index" aria-label="项目记忆状态">
       <button type="button" className={selectedView === "all" ? "active" : ""} onClick={() => setSelectedView("all")}><span>全部</span><strong>{currentItems.length}</strong></button>
@@ -506,19 +522,6 @@ export function ProjectMemoryWorkspace({ initialOrganizationId = "", initialProj
           <dl><div><dt>隔离状态</dt><dd>独立 API · 无隐式回退</dd></div><div><dt>提供方</dt><dd>{configuration?.provider || "未配置"}</dd></div><div><dt>模型</dt><dd>{configuration?.model || "未配置"}</dd></div></dl>
           <button type="button" className="memory-button secondary" disabled={!configuration?.configured || actionKey === "connection:check"} onClick={() => void checkConnection()}><RefreshCw aria-hidden="true" className={actionKey === "connection:check" ? "is-spinning" : ""} />{actionKey === "connection:check" ? "检查中" : "检查连接"}</button>
           {health && <small>{health}</small>}
-        </section>
-
-        <section className="panel memory-event-panel">
-          <div className="panel-heading"><div><p className="section-kicker">最近处理记录</p><h3>候选提取事件</h3></div></div>
-          {events.recent.length ? <div className="memory-event-list">{events.recent.slice(0, 12).map((event) => {
-            const result = memoryEventResult(event);
-            return <article key={event.id}>
-              <div><strong>{eventLabels[event.eventType] || event.eventType}</strong><em className={"status " + result.tone}>{result.label}</em></div>
-              <small>{sourceLabels[event.sourceType] || event.sourceType} · {dateLabel(event.createdAt)}</small>
-              {result.details && <small className="memory-event-outcomes">{result.details}</small>}
-              {result.reason && <p className={event.errorMessage ? "" : "memory-event-reason"}>{result.reason}</p>}
-            </article>;
-          })}</div> : <div className="list-empty">还没有自动更新事件。</div>}
         </section>
       </aside>
     </div>

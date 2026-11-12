@@ -502,7 +502,8 @@ test("rewrite workspace is project-scoped, versioned and uses the confirmed rewr
   assert.match(component, /maximumCallCount/);
   assert.doesNotMatch(component, /重新安排开场、段落顺序/);
   assert.match(component, /selectedVersion\.variant === "light_rewrite"/);
-  assert.match(page, /微调同构或内容等价重构/);
+  assert.match(page, /按你的目标改写口播稿/);
+  assert.match(component, /内容等价重构/);
   assert.match(shell, /口播改写/);
   assert.match(schema, /scriptRewriteWorkspaces/);
   assert.match(schema, /scriptRewriteRuns/);

@@ -1,4 +1,5 @@
 "use client";
+import "./operations-cleanup.css";
 import { runScopedAction } from "../lib/client-scope";
 import { useWorkspaceInitialization } from "./useWorkspaceInitialization";
 import { loadClientProjects } from "../lib/client-scope";
@@ -327,24 +328,23 @@ function ImportView({ canImport, imports, rows, filename, format, offsetMinutes,
     { label: "互动转化", fields: ["赞", "评", "转", "藏", "主页", "增粉"] },
   ];
   return <div className="import-console">
-    <section className="panel import-process">
-      <div><p className="section-kicker">抖音数据接入流程</p><h2>从平台导出到企业空间复盘</h2><span>原文件只在浏览器中解析；确认后才写入当前企业空间。</span></div>
-      <ol><li className={rows.length || importing || imported ? "done" : "active"}><span>1</span><strong>选择文件</strong></li><li className={importing || imported ? "done" : rows.length ? "active" : ""}><span>2</span><strong>核对数据</strong></li><li className={imported ? "done" : importing ? "active" : ""}><span>3</span><strong>确认导入</strong></li><li className={imported ? "active" : ""}><span>4</span><strong>匹配视频分析</strong></li></ol>
+    <section className="panel import-process import-process-compact">
+      <ol aria-label="数据导入步骤"><li className={rows.length || importing || imported ? "done" : "active"}><span>1</span><strong>选择文件</strong></li><li className={importing || imported ? "done" : rows.length ? "active" : ""}><span>2</span><strong>核对数据</strong></li><li className={imported ? "done" : importing ? "active" : ""}><span>3</span><strong>确认导入</strong></li><li className={imported ? "active" : ""}><span>4</span><strong>匹配视频分析</strong></li></ol>
     </section>
     <div className="import-layout import-layout-refined">
       <section className="panel import-panel import-panel-refined">
         <header><div><span className="import-step-label">当前步骤</span><h2>导入作品数据</h2><p>{douyin ? "直接使用抖音创作者中心导出的 XLSX，无需转换CSV。" : "用于已经带有发布记录ID或作品链接的标准快照。"}</p></div><button type="button" onClick={onTemplate}><FileSpreadsheet aria-hidden="true" />下载 CSV 模板</button></header>
         <div className="import-composer">
           <fieldset className="import-format-field"><legend>文件类型</legend><div className="import-format-switch"><button type="button" disabled={busy === "import"} className={douyin ? "active" : ""} onClick={() => onFormat("douyin_16")}><strong>抖音作品列表</strong><span>XLSX / CSV · 16字段</span></button><button type="button" disabled={busy === "import"} className={!douyin ? "active" : ""} onClick={() => onFormat("standard")}><strong>标准发布快照</strong><span>CSV · 按发布记录匹配</span></button></div></fieldset>
-          {douyin && <div className="import-data-contract"><header><div><strong>系统会读取这些数据</strong><span>缺失值保留为空，0值不会被当作缺失值。</span></div><em>16 字段</em></header><div>{fieldGroups.map((group) => <section key={group.label}><strong>{group.label}</strong><p>{group.fields.map((field) => <span key={field}>{field}</span>)}</p></section>)}</div></div>}
+          <details className="import-format-guide"><summary>字段与读取规则 <span>{douyin ? "16 字段" : "标准快照"}</span></summary>{douyin && <div className="import-data-contract"><header><div><strong>读取字段</strong><span>缺失值保留为空，0 值保留为 0。</span></div></header><div>{fieldGroups.map((group) => <section key={group.label}><strong>{group.label}</strong><p>{group.fields.map((field) => <span key={field}>{field}</span>)}</p></section>)}</div></div>}<p>没有时区的日期按所选文件时区读取，统计按 UTC 日期分组。原文件在浏览器内解析，可先核对预览再导入。</p></details>
           {canImport ? <div className="import-inputs">
-            <label className="import-asof" htmlFor="performance-import-timezone" aria-label="文件日期时区"><span><strong>文件日期时区</strong><small>没有时区的日期按此选项读取；统计仍按 UTC 日期分组。改变后需重新选文件。</small></span><select id="performance-import-timezone" disabled={busy === "import"} value={offsetMinutes} onChange={(event) => onOffset(Number(event.target.value))}><option value={0}>UTC +00:00</option><option value={480}>北京时间 +08:00</option></select></label>
+            <label className="import-asof" htmlFor="performance-import-timezone" aria-label="文件日期时区"><span><strong>文件日期时区</strong><small>更改后需重新选择文件。</small></span><select id="performance-import-timezone" disabled={busy === "import"} value={offsetMinutes} onChange={(event) => onOffset(Number(event.target.value))}><option value={0}>UTC +00:00</option><option value={480}>北京时间 +08:00</option></select></label>
             {douyin && <label className="import-asof"><span><Clock3 aria-hidden="true" /><strong>数据截至时间</strong><small>按所选时区显示，用于区分累计快照。</small></span><input type="datetime-local" disabled={busy === "import"} value={asOfAt ? importDateInput(asOfAt, offsetMinutes) : ""} onChange={(event) => onAsOfAt(event.target.value)} /></label>}
             <label className={"file-drop import-file-drop" + (filename ? " has-file" : "")}><input type="file" disabled={busy === "import"} accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) onFile(file); }} />{phase === "reading" ? <Clock3 aria-hidden="true" /> : phase === "error" ? <AlertTriangle aria-hidden="true" /> : filename ? <CheckCircle2 aria-hidden="true" /> : <UploadCloud aria-hidden="true" />}<strong>{filename || "选择或拖入作品列表"}</strong><span>{filename ? phase === "reading" ? "正在读取文件，请稍候。" : phase === "error" ? "读取未完成，请按提示修正或重新选择。" : "文件已读取，可以核对解析结果。" : douyin ? "XLSX / CSV 最多 20 MiB，单次最多500条作品" : "CSV 最多 20 MiB，单次最多500条作品"}</span><em>{filename ? "重新选择" : "浏览文件"}</em></label>
           </div> : <div className="import-permission-note"><AlertTriangle aria-hidden="true" /><div><strong>当前账号只能查看</strong><span>请联系企业空间管理员或可编辑成员完成导入。</span></div></div>}
           {message && <div className={"import-message " + messageState}>{messageState === "success" ? <CheckCircle2 aria-hidden="true" /> : messageState === "error" ? <AlertTriangle aria-hidden="true" /> : <Clock3 aria-hidden="true" />}<span>{message}</span></div>}
         </div>
-        <footer className={"import-submit-bar" + (rows.length ? " ready" : "")}><div><span>{rows.length ? "文件校验完成" : "等待选择文件"}</span><strong>{rows.length ? douyin && !asOfAt ? "请填写数据截至时间" : rows.length + " 条作品 · 累计播放 " + formatNumber(rows.reduce((sum, row) => sum + row.views, 0)) : "导入前不会写入任何数据"}</strong></div><button type="button" disabled={!rows.length || busy === "import" || douyin && !asOfAt} onClick={onSubmit}>{busy === "import" ? "正在导入…" : rows.length ? "确认导入 " + rows.length + " 条" : "确认导入"}<ArrowRight aria-hidden="true" /></button></footer>
+        <footer className={"import-submit-bar" + (rows.length ? " ready" : "")}><div><span>{rows.length ? "文件校验完成" : "等待选择文件"}</span><strong>{rows.length ? douyin && !asOfAt ? "请填写数据截至时间" : rows.length + " 条作品 · 累计播放 " + formatNumber(rows.reduce((sum, row) => sum + row.views, 0)) : "选择文件并核对预览"}</strong><small>确认后才会写入当前企业空间。</small></div><button type="button" disabled={!rows.length || busy === "import" || douyin && !asOfAt} onClick={onSubmit}>{busy === "import" ? "正在导入…" : rows.length ? "确认导入 " + rows.length + " 条" : "确认导入"}<ArrowRight aria-hidden="true" /></button></footer>
       </section>
       <aside className="panel import-history import-history-refined">
         <header><div><span className="import-step-label">最近记录</span><h2>导入历史</h2></div><strong>{imports.length} 个批次</strong></header>
@@ -367,12 +367,14 @@ type ReportsViewProps = { reports: Report[]; selected: Report | null; organizati
 
 function ReportsView(props: ReportsViewProps) {
   const [mode, setMode] = useState<"enterprise" | "employee">("enterprise");
+  const [employeeVisited, setEmployeeVisited] = useState(false);
   return <div className="report-center-shell">
-    <section className="panel report-mode-header">
-      <div><span>报告对象</span><h2>{mode === "enterprise" ? "企业运营报告" : "员工工作报告"}</h2><p>{mode === "enterprise" ? "判断企业空间的内容经营结果、问题与下期动作。" : "按真实操作与成果归属，复盘员工本期完成了什么、产出了什么、哪些内容获得结果。"}</p></div>
-      <nav aria-label="报告类型"><button type="button" className={mode === "enterprise" ? "active" : ""} onClick={() => setMode("enterprise")}><Building2 aria-hidden="true" /><span><strong>企业运营报告</strong><small>经营结果与策略诊断</small></span></button><button type="button" className={mode === "employee" ? "active" : ""} onClick={() => setMode("employee")}><UserRound aria-hidden="true" /><span><strong>员工工作报告</strong><small>工作记录与成果归因</small></span></button></nav>
+    <section className="report-mode-header report-mode-compact">
+      <span>报告对象</span>
+      <nav aria-label="报告类型"><button type="button" aria-pressed={mode === "enterprise"} className={mode === "enterprise" ? "active" : ""} onClick={() => setMode("enterprise")}><Building2 aria-hidden="true" />企业运营报告</button><button type="button" aria-pressed={mode === "employee"} className={mode === "employee" ? "active" : ""} onClick={() => { setEmployeeVisited(true); setMode("employee"); }}><UserRound aria-hidden="true" />员工工作报告</button></nav>
     </section>
-    {mode === "enterprise" ? <EnterpriseReportsView key={`${props.organizationId}:${props.projectId}:${props.selected?.id ?? ""}`} {...props} /> : <EmployeeReportsView key={`${props.organizationId}:${props.projectId}`} organizationId={props.organizationId} projectId={props.projectId} />}
+    <div hidden={mode !== "enterprise"}><EnterpriseReportsView key={`${props.organizationId}:${props.projectId}:${props.selected?.id ?? ""}`} {...props} /></div>
+    {employeeVisited && <div hidden={mode !== "employee"}><EmployeeReportsView key={`${props.organizationId}:${props.projectId}`} organizationId={props.organizationId} projectId={props.projectId} /></div>}
   </div>;
 }
 

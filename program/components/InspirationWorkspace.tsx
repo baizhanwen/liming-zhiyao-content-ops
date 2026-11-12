@@ -7,6 +7,7 @@ import { readApiError as readError, formatClientDate as dateLabel } from "../lib
 
 import { FormEvent, useCallback, useMemo, useState } from "react";
 import { CoreStrategyPreview } from "./CoreStrategyPreview";
+import "./creation-cleanup.css";
 import type { CoreContentStrategy } from "../lib/content-strategy-policy";
 import { Archive, BookmarkCheck, BookmarkPlus, Check, ChevronRight, Clock3, History, MessageSquarePlus, PencilLine, RefreshCw, Save, Send, Sparkles, X } from "lucide-react";
 import { rememberCurrentScope, scopedFetch } from "../lib/client-scope";
@@ -392,7 +393,7 @@ export function InspirationWorkspace({ initialOrganizationId = "", initialProjec
   if (loading) return <div className="management-state" role="status">正在载入项目灵感对话…</div>;
   if (!organizationId || !projectId) return <div className="empty-panel"><h2>请先创建企业空间</h2><p>每个企业空间拥有独立对标内容库、独立对话和独立灵感卡片。</p></div>;
 
-  return <div className="knowledge-workspace inspiration-workspace assistant-inspiration-workspace">
+  return <div className="knowledge-workspace inspiration-workspace assistant-inspiration-workspace creation-cleanup">
     <div className="management-toolbar knowledge-toolbar">
       <label>公司<select value={organizationId} onChange={(event) => runScopedAction(async () => { const id = event.target.value; setOrganizationId(id); await loadProjects(id); }, setError)}>{organizations.map((organization) => <option key={organization.id} value={organization.id}>{organization.name}</option>)}</select></label>
       <label>企业空间<select value={projectId} onChange={(event) => runScopedAction(async () => { const id = event.target.value; setProjectId(id); rememberCurrentScope(organizationId, id); await loadWorkspace(organizationId, id); }, setError)}>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
@@ -409,12 +410,15 @@ export function InspirationWorkspace({ initialOrganizationId = "", initialProjec
     {error && <div className="inline-alert" role="alert">{error}</div>}
     {saveNotice && <div className="analysis-submit-notice" role="status">{saveNotice}</div>}
     {configuration && !configuration.configured && <div className="inline-alert warning-alert"><strong>独立项目助理 API 尚未配置</strong><span>缺少 {configuration.missing.join("、")}。对话按钮会保持不可用，系统不会调用其他模型代替。</span></div>}
-    <CoreStrategyPreview strategy={coreStrategy} />
-    <div className="assistant-memory-context available" role="status"><strong>已接入 {memoryCount} 条已采纳项目记忆</strong><span>按本次问题选择内容启发和表达方法，仅用于灵感对话；候选、停用和过期记忆不参与。</span></div>
-    <div className={"assistant-memory-context " + (benchmarkStatus.available ? "available" : "empty")} role="status">
-      <strong>{benchmarkStatus.available ? "已接入 " + benchmarkStatus.readyCount + " 条当前企业空间对标内容" : "当前企业空间暂无可用对标内容"}</strong>
-      <span>{benchmarkStatus.available ? "本轮从已启用且完成分析的对标内容中寻找选题与方法，并结合核心策略检查账号适配度。" : benchmarkStatus.activeCount ? "对标内容尚未完成分析，完成后即可参与灵感生成。" : "请先在视频分析页把素材加入当前企业空间的对标内容库。"}</span>
-    </div>
+    <details className="creation-context-summary">
+      <summary><strong>可用参考</strong><span>策略{coreStrategy ? "已启用" : "未启用"} · 项目记忆 {memoryCount} 条 · 对标内容 {benchmarkStatus.readyCount} 条</span></summary>
+      <div className="creation-context-body">
+        <CoreStrategyPreview strategy={coreStrategy} />
+        <section><h3>项目记忆</h3><p>从 {memoryCount} 条已采纳记忆中按问题选取；候选、停用和过期记忆不参与，仅用于灵感对话。</p></section>
+        <section><h3>对标内容</h3><p>{benchmarkStatus.available ? "从已启用且完成分析的对标内容中寻找选题与方法，并结合核心策略检查适配度。" : benchmarkStatus.activeCount ? "对标内容尚未完成分析，完成后即可参与灵感生成。" : "当前企业空间暂无可用对标内容，可在视频分析页加入素材。"}</p></section>
+        <p className="creation-hint">以上为可用资料，实际引用见每次回复。</p>
+      </div>
+    </details>
 
     <div className="assistant-chat-layout">
       <aside className="panel conversation-sidebar">
@@ -460,7 +464,7 @@ export function InspirationWorkspace({ initialOrganizationId = "", initialProjec
           </article>) : <div className="assistant-thread-empty"><Sparkles className="assistant-empty-icon" aria-hidden="true" /><strong>我会结合对标内容与已采纳记忆，再给你建议</strong><p>可以问选题、标题、角度、系列规划，也可以基于对标视频的方法继续追问。</p><div>{quickPrompts.map((prompt) => <button type="button" key={prompt} onClick={() => setQuestion(prompt)}><span>{prompt}</span><ChevronRight aria-hidden="true" /></button>)}</div></div>}
         </div>
         <form className="assistant-composer" onSubmit={sendMessage}>
-          <div className="assistant-quick-prompts">{quickPrompts.slice(0, 3).map((prompt, index) => <button type="button" key={prompt} onClick={() => setQuestion(prompt)}>{["推荐选题", "规划系列", "延展标题"][index]}</button>)}</div>
+          {messages.length > 0 && <div className="assistant-quick-prompts">{quickPrompts.slice(0, 3).map((prompt, index) => <button type="button" key={prompt} onClick={() => setQuestion(prompt)}>{["推荐选题", "规划系列", "延展标题"][index]}</button>)}</div>}
           <textarea value={question} onChange={(event) => setQuestion(event.target.value)} rows={4} maxLength={12000} placeholder="例如：根据当前企业空间的对标内容，接下来最值得做哪些选题？" />
           <div><small>{configuration?.configured ? "将调用独立项目助理模型，并保存本次对话与对标引用。" : "配置独立项目助理 API 后才能发送。"}</small><button className="inspiration-button primary send-button" disabled={!canWrite || !configuration?.configured || sending || question.trim().length < 2}><Send aria-hidden="true" />{sending ? "生成建议中" : "发送问题"}</button></div>
         </form>
