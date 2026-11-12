@@ -30,7 +30,10 @@ export async function startWebWithEnvironment({ root = defaultRoot, args = proce
   finally { closeSync(output); }
   bridge.on("error", () => {});
   try { await verifyBridge(root, ownConfiguration, bridge); }
-  catch (error) { if (bridge.exitCode === null && !bridge.killed) bridge.kill("SIGTERM"); throw error; }
+  catch {
+    if (bridge.exitCode === null && !bridge.killed) bridge.kill("SIGTERM");
+    console.warn("本地环境管理服务尚未连接，请查看当前项目的 environment-manager.log。");
+  }
   const web = spawnProcess(process.execPath, [path.join(root, "node_modules", "vinext", "dist", "cli.js"), "start", ...args], { cwd: root, env: environment, windowsHide: true, stdio: "inherit" });
   let stopping = false;
   const stop = (signal = "SIGTERM") => {
