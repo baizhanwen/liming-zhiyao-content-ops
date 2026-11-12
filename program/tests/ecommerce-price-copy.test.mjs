@@ -7,7 +7,7 @@ async function pricedFixture(t, extra = {}) {
   const f = await ecommerceGenerationFixture(t, { respond: ({ stage, result, payload }) => {
     if (["draft", "repair"].includes(stage)) {
       const segment = result.segments.find(item => item.role === "evidence");
-      segment.script = "这款合成杯当前录入价格100元，所选价格资料也标注100元，了解更多请核对当前商品卡。";
+      segment.script = "这款合成杯售价100元。先看清商品的具体信息，再根据自己的使用需要选择。";
       segment.evidenceIds = [priceEvidenceId];
       const fields = { claim: "claimIds", evidence: "evidenceIds", component: "componentIds", knowledge: "knowledgeIds", case: "caseIds" };
       result.applications = payload.context.sources.map(source => {

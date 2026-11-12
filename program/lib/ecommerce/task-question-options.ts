@@ -1,4 +1,4 @@
-import { taskBriefSchema, type ProductPublic, type TaskBrief } from "./contracts.ts";
+import { taskBriefSchema, taskReferenceMode, type ProductPublic, type TaskBrief } from "./contracts.ts";
 
 export const taskQuestionOptions = {
   user: ["个人自用者", "家庭用户", "家长与孩子", "上班族", "学生", "企业或门店用户"],
@@ -42,6 +42,17 @@ export function taskBriefForProduct(brief: TaskBrief, product: ProductPublic | n
   };
 }
 
+/** The form uses confirmed product information; references are opt-in writing inputs. */
+export function copyTaskBriefForSubmission(brief: TaskBrief): TaskBrief {
+  const referenceMode = taskReferenceMode(brief);
+  return {
+    ...brief, referenceMode,
+    benchmark: referenceMode === "benchmark" ? brief.benchmark : null,
+    caseIds: referenceMode === "benchmark" && !brief.benchmark ? brief.caseIds.slice(0, 1) : [],
+    componentIds: [], claimId: "", evidenceIds: [],
+  };
+}
+
 export function initialTaskDraft({ row, products, initialProductVersionId = "", guided = false }: {
   row?: { title: string; product_version_id: string; brief_json: string };
   products: { name: string; version_id: string; public_json: string }[];
@@ -50,7 +61,7 @@ export function initialTaskDraft({ row, products, initialProductVersionId = "", 
 }) {
   if (row) return { title: row.title, versionId: row.product_version_id, brief: JSON.parse(row.brief_json) as TaskBrief };
   const product = products.find(item => item.version_id === initialProductVersionId);
-  const empty = taskBriefSchema.parse({ audience: {} });
+  const empty = taskBriefSchema.parse({ audience: {}, referenceMode: "method" });
   return {
     title: product ? guided ? firstVideoTaskTitle(product.name) : productCopyTaskTitle(product.name) : "",
     versionId: product?.version_id ?? "",

@@ -2705,11 +2705,37 @@ a.top-content-row:hover { background: var(--brand-soft); }
 .production-creation-mode button[aria-pressed="true"] { background: #434d95; border-color: #434d95; color: white; }
 .production-creation-mode button:disabled { opacity: .6; cursor: default; }
 .production-creation-mode p { margin: 10px 0 0; color: #687086; font-size: 13px; line-height: 1.7; }
-.production-writing-intent, .production-generation-status { margin: 0 20px 16px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-soft); }
-.production-writing-intent label { display: flex; align-items: center; gap: 12px; font-size: 12px; font-weight: 700; }
-.production-writing-intent select { min-height: 34px; padding: 0 10px; border: 1px solid var(--line); border-radius: 7px; background: white; }
-.production-writing-intent p, .production-generation-status p { margin: 8px 0 0; font-size: 12px; line-height: 1.7; color: var(--subtle); overflow-wrap: anywhere; }
-.production-writing-intent small { display: block; margin-top: 8px; color: var(--brand); line-height: 1.7; }
+.production-generation-status { margin: 0 20px 16px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-soft); }
+.production-generation-status p { margin: 8px 0 0; font-size: 12px; line-height: 1.7; color: var(--subtle); overflow-wrap: anywhere; }
+.production-generation-settings { margin: 0 20px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); overflow: hidden; }
+.production-settings-row { display: flex; align-items: center; justify-content: space-between; gap: 12px 24px; padding: 14px 16px; }
+.production-settings-row > label { display: flex; align-items: center; gap: 12px; color: var(--ink); font-size: 12px; font-weight: 600; }
+.production-settings-row select { min-height: 34px; max-width: 100%; padding: 0 28px 0 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-soft); color: var(--ink); font: inherit; font-weight: 400; }
+.production-settings-label { font-size: 12px; font-weight: 600; }
+.production-current-intent { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--muted); font-size: 11px; }
+.production-current-intent > span { padding: 3px 8px; border-radius: 6px; background: var(--brand-soft); color: var(--brand-deep); font-weight: 550; }
+.production-generation-basis { border-top: 1px solid var(--line); }
+.production-generation-basis > summary { display: flex; align-items: baseline; gap: 10px 18px; padding: 11px 16px; color: var(--muted); font-size: 11px; cursor: pointer; list-style: none; }
+.production-generation-basis > summary::-webkit-details-marker { display: none; }
+.production-generation-basis > summary > span { flex: 0 0 auto; color: var(--brand); }
+.production-generation-basis > summary > span::before { content: '›'; display: inline-block; margin-right: 7px; transition: transform .15s; }
+.production-generation-basis[open] > summary > span::before { transform: rotate(90deg); }
+.production-generation-basis > summary > small { color: var(--subtle); font: inherit; overflow-wrap: anywhere; }
+.production-generation-basis-body { display: grid; gap: 16px; padding: 4px 16px 16px; font-size: 12px; line-height: 1.7; }
+.production-generation-basis-body > section + section { border-top: 1px solid var(--line); padding-top: 14px; }
+.production-generation-basis-body h3 { margin: 0 0 6px; font-size: 12px; color: var(--ink); }
+.production-generation-basis-body p { margin: 5px 0 0; color: var(--muted); overflow-wrap: anywhere; }
+.production-generation-settings .core-strategy-preview { margin: 0; padding: 14px 0 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: transparent; }
+.production-generation-settings .core-strategy-preview > strong { color: var(--ink); font-size: 12px; }
+.production-saved-basis dl { display: grid; gap: 7px; margin: 10px 0; }
+.production-saved-basis dl > div { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 12px; }
+.production-saved-basis dt { color: var(--subtle); }
+.production-saved-basis dd { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+  .production-settings-row { align-items: flex-start; flex-direction: column; }
+  .production-generation-basis > summary { flex-wrap: wrap; gap: 5px; }
+  .production-generation-basis > summary > small { flex-basis: 100%; padding-left: 12px; }
+}
 .benchmark-rewrite-comparison { margin: 16px 24px; padding: 18px; border: 1px solid #dddfee; border-radius: 10px; }
 .benchmark-rewrite-comparison header { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .benchmark-rewrite-comparison header span, .benchmark-rewrite-comparison small { color: #697183; font-size: 12px; }

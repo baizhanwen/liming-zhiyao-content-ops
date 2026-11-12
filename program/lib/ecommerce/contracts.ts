@@ -35,6 +35,10 @@ export const claimSchema = z.object({
 
 export const productPublicSchema = z.object({
   category: text(300).default(""), specification: text(1000).default(""), sellingPoints: text(3000).default(""),
+  copyFacts: z.object({
+    content: text(2500).default(""), usage: text(2000).default(""), difference: text(2000).default(""),
+    delivery: text(2000).default(""), limitations: text(1500).default(""), speakerExperience: text(2000).default(""),
+  }).strict().prefault({}),
   audience: audienceSchema, scenarios: text(2000).default(""),
   claims: z.array(claimSchema).max(30).refine(values => new Set(values.map(v => v.id)).size === values.length, "卖点 ID 重复"),
   prohibited: text(3000).default(""), purchaseConcerns: text(2000).default(""),

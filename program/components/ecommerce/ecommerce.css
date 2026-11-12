@@ -9,9 +9,6 @@
 .ec-workspace h2 { font-size: 18px; font-weight: 650; }
 .ec-workspace h3 { font-size: 15px; font-weight: 650; }
 .ec-workspace p { line-height: 1.7; }
-.ec-scope { display: flex; gap: 18px; align-items: end; padding: 16px 20px; background: white; border: 1px solid var(--line); border-radius: 12px; }
-.ec-scope .ec-field { flex: 1; margin: 0; }
-.ec-back { color: var(--brand); padding: 10px 0; white-space: nowrap; }
 .ec-panel { padding: 22px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); min-width: 0; }
 .ec-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
 .ec-panel-head p { margin-top: 5px; }
@@ -24,14 +21,16 @@
 .ec-workspace button.ec-list-item.selected { border-color: #b8c2e6; background: var(--brand-soft); }
 .ec-list-item strong { font-size: 14px; }
 .ec-list-item small { color: var(--muted); }
-.ec-field { display: grid; gap: 7px; margin: 0 0 14px; min-width: 0; font-size: 13px; }
+.ec-field { display: grid; align-content: start; gap: 7px; margin: 0 0 14px; min-width: 0; font-size: 13px; }
 .ec-field > label { font-weight: 550; }
 .ec-field > :is(input, textarea, select) { width: 100%; min-width: 0; border: 1px solid #d8dbd4; border-radius: 7px; padding: 10px 11px; color: var(--ink); background: white; }
-.ec-field textarea { resize: vertical; line-height: 1.65; }
-.ec-field small, .ec-muted { color: var(--muted); font-size: 12px; }
+.ec-field > :is(input:not([type="checkbox"]):not([type="radio"]), select) { height: 40px; min-height: 40px; padding-block: 8px; line-height: 22px; }
+.ec-field textarea { min-height: 84px; resize: vertical; line-height: 1.65; }
+.ec-field > small { display: block; margin: 0; color: var(--muted); font-size: 11px; font-weight: 400; line-height: 1.6; overflow-wrap: anywhere; }
+.ec-muted { color: var(--muted); font-size: 12px; }
 .ec-form { border: 0; margin: 0; padding: 0; min-width: 0; }
 .ec-form:disabled :is(input, select, textarea) { background: var(--surface-soft); }
-.ec-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; }
+.ec-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 0 18px; }
 .ec-workspace details { border-top: 1px solid var(--line); padding: 14px 0; min-width: 0; overflow-wrap: anywhere; }
 .ec-workspace details > summary { cursor: pointer; font-weight: 600; }
 .ec-workspace details[open] > summary { margin-bottom: 16px; }
@@ -143,18 +142,7 @@
   .ec-workspace .ec-extra-nav { margin-left: 0; }
 }
 @media (max-width: 1100px) { .ec-split { grid-template-columns: 220px minmax(0, 1fr); } .ec-grid, .ec-card-grid { grid-template-columns: 1fr; } .ec-panel { padding: 17px; } }
-@media (max-width: 760px) { .ec-scope { flex-wrap: wrap; padding: 14px; } .ec-scope .ec-field { flex-basis: 40%; } .ec-split { grid-template-columns: 1fr; } .ec-list { max-height: 300px; } .ec-panel-head { flex-wrap: wrap; } .ec-workspace { gap: 12px; } .ec-actions { align-items: stretch; } }
-
-.ec-page-heading { margin-bottom: 18px; }
-.ec-scope { padding: 10px 16px; align-items: center; gap: 14px; }
-.ec-scope .ec-field { display: flex; align-items: center; gap: 9px; }
-.ec-scope .ec-field > label { white-space: nowrap; }
-.ec-scope .ec-field > select { flex: 1; width: 0; padding: 8px 10px; }
-.ec-scope .ec-back { font-size: 12px; padding: 8px 0; }
-@media (max-width: 760px) {
-  .ec-scope .ec-field { flex-basis: 100%; }
-  .ec-scope .ec-field > label { min-width: 52px; }
-}
+@media (max-width: 760px) { .ec-split { grid-template-columns: 1fr; } .ec-list { max-height: 300px; } .ec-panel-head { flex-wrap: wrap; } .ec-workspace { gap: 12px; } .ec-actions { align-items: stretch; } }
 
 .ec-product-next { justify-content: flex-end; margin-bottom: 18px; padding-top: 0; }
 .ec-copy-modes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 14px 0 18px; min-width: 0; border: 0; padding: 0; }
@@ -166,3 +154,253 @@
 .ec-copy-mode:has(input:checked) { background: var(--brand-soft); border-color: var(--brand); }
 .ec-copy-mode:focus-within { outline: 3px solid rgb(63 77 143 / 20%); outline-offset: 2px; }
 @media (max-width: 760px) { .ec-copy-modes { grid-template-columns: 1fr; } }
+
+/* Writing workspace: keep the manuscript in focus and supporting records nearby. */
+.ec-workspace { gap: 16px; max-width: 1440px; }
+.ec-writing-layout { grid-template-columns: 220px minmax(0, 1fr); gap: 24px; }
+.ec-task-list { background: transparent; border: 0; border-radius: 0; padding: 0 14px 0 0; border-right: 1px solid var(--line); max-height: calc(100vh - 230px); }
+.ec-task-list .ec-panel-head { margin-bottom: 9px; gap: 8px; }
+.ec-task-list h2 { font-size: 14px; }
+.ec-task-list .ec-panel-head button { font-size: 12px; padding: 7px 10px; }
+.ec-list-caption { font-size: 11px; color: var(--muted); padding: 0 2px 10px; }
+.ec-task-list .ec-list-item { position: relative; border: 1px solid transparent; border-radius: 9px; padding: 13px; margin: 5px 0; gap: 6px; background: transparent; }
+.ec-workspace .ec-task-list .ec-list-item.selected { background: #fff; border-color: #c9d0e5; box-shadow: 0 2px 5px rgb(25 35 65 / 3%); }
+.ec-task-list .ec-list-item strong { line-height: 1.5; font-size: 13px; }
+.ec-task-item-state { display: flex; gap: 8px; align-items: center; color: var(--brand); font-size: 10px; }
+.ec-task-item-state > span { color: var(--muted); margin-left: auto; }
+.ec-task-list .ec-list-item small { font-size: 11px; }
+.ec-task-list .ec-list-item time { color: var(--subtle); font-size: 10px; }
+.ec-task-session { gap: 18px; }
+.ec-task-toolbar { padding: 0 0 18px; border-bottom: 1px solid var(--line); min-width: 0; }
+.ec-task-toolbar .ec-panel-head { margin-bottom: 18px; align-items: flex-start; }
+.ec-task-toolbar .ec-panel-head h2 { margin-top: 5px; font-size: 22px; letter-spacing: -.025em; line-height: 1.35; overflow-wrap: anywhere; }
+.ec-task-toolbar .ec-actions { padding: 0; gap: 6px; flex-shrink: 0; }
+.ec-task-toolbar .ec-actions button { font-size: 12px; padding: 7px 10px; }
+.ec-eyebrow { font-size: 10px; color: var(--muted); font-weight: 600; letter-spacing: .06em; }
+.ec-task-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; color: var(--muted); font-size: 11px; }
+.ec-task-meta > span + span::before { content: '·'; margin-right: 8px; color: #b2b4b8; }
+.ec-generate-row { display: flex; gap: 12px; align-items: flex-end; }
+.ec-generate-row > .ec-field { flex: 1; margin-bottom: 0; }
+.ec-generate-row > .ec-primary { padding: 11px 18px; white-space: nowrap; min-height: 41px; }
+.ec-generating { font-size: 12px; color: var(--brand); margin-top: 12px !important; display: flex; align-items: center; gap: 7px; }
+.ec-generating > span { width: 7px; height: 7px; background: var(--brand); border-radius: 50%; }
+.ec-manuscript { border: 1px solid var(--line); border-radius: 14px; background: #fff; min-width: 0; overflow: hidden; box-shadow: 0 4px 18px rgb(29 39 65 / 3%); }
+.ec-manuscript-bar { display: flex; justify-content: space-between; align-items: center; padding: 18px 24px; gap: 16px; border-bottom: 1px solid var(--line); }
+.ec-manuscript-bar p { font-size: 11px; margin-top: 4px; }
+.ec-manuscript-bar .ec-field { margin: 0; display: flex; align-items: center; gap: 10px; font-size: 11px; }
+.ec-manuscript-bar .ec-field > select { width: auto; max-width: 165px; padding: 7px 9px; font-size: 12px; }
+.ec-manuscript-bar .ec-field > label { color: var(--muted); font-weight: 400; }
+.ec-manuscript-controls { padding: 16px 24px 0; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 20px; }
+.ec-writing-tabs { display: flex; gap: 3px; flex-wrap: wrap; border-radius: 8px; padding: 3px; background: var(--surface-soft); }
+.ec-workspace .ec-writing-tabs button { border: 0; background: transparent; font-size: 11px; padding: 7px 10px; border-radius: 6px; color: var(--muted); }
+.ec-workspace .ec-writing-tabs button[aria-current=page] { background: #fff; color: var(--ink); box-shadow: 0 1px 4px rgb(20 30 50 / 8%); }
+.ec-copy-tools { padding: 0; gap: 7px; }
+.ec-workspace .ec-copy-tools button { font-size: 11px; padding: 7px 11px; }
+.ec-manuscript-notices { padding: 0 24px; }
+.ec-manuscript-notices:not(:empty) { margin-top: 14px; }
+.ec-workspace details.ec-pending { padding: 11px 14px; margin-top: 0; border: 1px solid #e8dcc7; background: #fffaf1; border-radius: 7px; font-size: 12px; color: #826234; }
+.ec-workspace details.ec-pending > summary { font-weight: 500; }
+.ec-workspace details.ec-pending p { padding-top: 10px; margin: 0; }
+.ec-reading-page { max-width: 780px; margin: 0 auto; padding: 38px 42px 26px; }
+.ec-reading-meta { display: flex; gap: 8px 18px; flex-wrap: wrap; font-size: 11px; color: var(--subtle); }
+.ec-workspace h2.ec-reading-title { font-size: clamp(22px, 2.1vw, 30px); font-weight: 720; line-height: 1.5; letter-spacing: -.025em; margin: 14px 0 28px; color: var(--ink); }
+.ec-reading-body { display: grid; gap: 17px; }
+.ec-reading-body > p { font-size: 17px; line-height: 2 !important; letter-spacing: .015em; color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; }
+.ec-reading-body > p:first-child { font-weight: 550; }
+.ec-reading-foot { display: flex; gap: 14px; justify-content: space-between; margin-top: 36px; border-top: 1px solid var(--line); padding-top: 14px; color: var(--subtle); font-size: 10px; }
+.ec-support-pane { padding: 30px 34px; min-width: 0; }
+.ec-pane-heading { margin-bottom: 18px; }
+.ec-pane-heading h3 { font-size: 17px; margin-bottom: 6px; }
+.ec-pane-heading p { color: var(--muted); font-size: 12px; }
+.ec-support-pane .ec-segment:first-child { padding-top: 10px; }
+.ec-segment-number { display: inline-block; color: #9ca4b6; margin-right: 10px; font-variant-numeric: tabular-nums; font-weight: 400; }
+.ec-segment header strong { font-weight: 550; }
+.ec-support-pane .ec-segment { padding: 20px 0; }
+.ec-support-pane .ec-spoken { font-size: 15px; }
+.ec-direction h3 { font-size: 15px; }
+.ec-direction dl, .ec-task-settings dl { display: grid; gap: 16px; margin: 20px 0; }
+.ec-direction dl > div, .ec-task-settings dl > div { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 18px; font-size: 13px; }
+.ec-direction dt, .ec-task-settings dt { color: var(--muted); font-size: 12px; }
+.ec-direction dd, .ec-task-settings dd { margin: 0; line-height: 1.8; overflow-wrap: anywhere; }
+.ec-support-pane .ec-sources { margin-top: 24px; font-size: 12px; }
+.ec-support-pane .ec-sources > details { padding-left: 12px; }
+.ec-save-draft { margin: 0 24px 24px; padding: 18px 20px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-soft); }
+.ec-save-draft > p { margin-top: 9px; }
+.ec-workspace details.ec-task-settings, .ec-workspace details.ec-run-history { border: 1px solid var(--line); border-radius: 9px; padding: 15px 18px; background: transparent; font-size: 12px; }
+.ec-task-settings summary, .ec-run-history summary { font-size: 12px; font-weight: 500 !important; }
+.ec-task-settings summary > span, .ec-run-history summary > span { float: right; font-size: 11px; font-weight: 400; color: var(--muted); }
+.ec-task-settings dl { font-size: 12px; }
+.ec-material-gap { background: #fffcf6; border: 1px solid #e7dcc7; border-radius: 10px; padding: 20px 22px; }
+.ec-material-gap .ec-eyebrow { color: #a27b38; }
+.ec-material-gap h3 { margin-top: 7px; font-size: 16px; }
+.ec-gap-list { display: grid; gap: 12px; margin: 16px 0; }
+.ec-gap-list > div { border-left: 2px solid #e2cfaa; padding-left: 12px; }
+.ec-gap-list strong { font-size: 13px; }
+.ec-gap-list p { font-size: 12px; color: #736b5d; margin: 3px 0; }
+.ec-gap-list small { font-size: 11px; color: #968d7e; }
+.ec-empty-manuscript { min-height: 370px; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; padding: 45px 28px; }
+.ec-empty-manuscript h2 { font-size: 18px; margin-bottom: 12px; }
+.ec-empty-manuscript > p { font-size: 12px; color: var(--muted); max-width: 370px; line-height: 1.8; }
+.ec-empty-flow { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; font-size: 10px; color: #929aab; margin-top: 30px; }
+.ec-empty-flow span + span:before { content: '·'; padding-right: 12px; color: #c2c8d4; }
+.ec-task-form { padding: 26px 28px; border-color: var(--line); }
+.ec-task-form > .ec-panel-head { padding-bottom: 18px; border-bottom: 1px solid var(--line); margin-bottom: 22px; }
+.ec-task-form > .ec-panel-head h2 { font-size: 21px; }
+.ec-task-form > .ec-panel-head p { max-width: 460px; line-height: 1.8; }
+.ec-task-form .ec-reference-switch { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin: 6px 0 20px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-soft); }
+.ec-reference-switch legend { float: left; padding: 0; margin: 0; font-size: 12px; }
+.ec-reference-switch .ec-question-option { border: 0; padding: 0; background: transparent; font-size: 12px; color: var(--ink); }
+.ec-reference-switch > .ec-muted { flex-basis: 100%; font-size: 11px; margin-top: 0; }
+.ec-copy-material { margin: 24px 0; padding: 22px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.ec-copy-material .ec-panel-head { margin-bottom: 16px; }
+.ec-copy-material .ec-panel-head h3 { font-size: 16px; }
+@media (max-width: 1100px) {
+  .ec-writing-layout { grid-template-columns: 185px minmax(0, 1fr); gap: 18px; }
+  .ec-task-list { padding-right: 10px; }
+  .ec-manuscript-controls { align-items: flex-start; }
+  .ec-reading-page { padding: 30px 28px 24px; }
+  .ec-manuscript-bar .ec-field > label { display: none; }
+}
+@media (max-width: 760px) {
+  .ec-writing-layout { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .ec-task-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; max-height: 220px; padding: 0 0 12px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .ec-task-list .ec-panel-head, .ec-list-caption { grid-column: 1 / -1; }
+  .ec-task-list .ec-list-item { margin: 0; padding: 10px; }
+  .ec-task-list .ec-list-item time { display: none; }
+  .ec-task-toolbar .ec-panel-head { margin-bottom: 14px; gap: 12px; }
+  .ec-task-toolbar .ec-panel-head h2 { font-size: 20px; }
+  .ec-task-toolbar .ec-actions { flex-wrap: wrap; }
+  .ec-task-meta { font-size: 10px; gap: 6px; }
+  .ec-generate-row { flex-wrap: wrap; gap: 10px; }
+  .ec-generate-row > .ec-field { flex-basis: 100%; }
+  .ec-generate-row > .ec-primary { width: 100%; }
+  .ec-manuscript { border-radius: 10px; }
+  .ec-manuscript-bar { padding: 14px 16px; gap: 10px; }
+  .ec-manuscript-controls { padding: 12px 14px 0; gap: 12px; }
+  .ec-writing-tabs { width: 100%; justify-content: space-between; }
+  .ec-workspace .ec-writing-tabs button { padding: 7px 8px; font-size: 11px; }
+  .ec-copy-tools { width: 100%; gap: 6px; }
+  .ec-copy-tools button { flex: 1; }
+  .ec-manuscript-notices { padding: 0 14px; }
+  .ec-reading-page { padding: 26px 22px 22px; }
+  .ec-reading-meta { font-size: 10px; gap: 7px 12px; }
+  .ec-workspace h2.ec-reading-title { font-size: 22px; line-height: 1.55; margin: 13px 0 23px; }
+  .ec-reading-body { gap: 14px; }
+  .ec-reading-body > p { font-size: 16px; line-height: 1.95 !important; letter-spacing: 0; }
+  .ec-support-pane { padding: 24px 20px; }
+  .ec-direction dl > div, .ec-task-settings dl > div { grid-template-columns: 1fr; gap: 4px; }
+  .ec-save-draft { margin: 0 14px 16px; padding: 15px; }
+  .ec-workspace details.ec-task-settings, .ec-workspace details.ec-run-history { padding: 13px 15px; }
+  .ec-task-form { padding: 20px; }
+  .ec-material-gap { padding: 18px; }
+}
+.ec-used-methods { margin-bottom: 22px; }
+.ec-method-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.ec-method-pair > div { border: 1px solid var(--line); border-radius: 9px; padding: 15px 17px; background: var(--surface-soft); }
+.ec-method-pair h3 { font-size: 15px; margin: 7px 0 12px; }
+.ec-method-pair details { border: 0; padding: 0; font-size: 11px; }
+.ec-method-pair details > summary { color: var(--brand); font-weight: 400; }
+.ec-method-reason { font-size: 12px; line-height: 1.8; color: var(--muted); margin-top: 14px !important; }
+.ec-editorial-check { margin: 22px 0; font-size: 12px; }
+.ec-editorial-check > p { color: var(--muted); }
+.ec-editorial-check ul { list-style: none; margin: 16px 0 0; padding: 0; display: grid; gap: 16px; }
+.ec-editorial-check li > p { margin-top: 5px; color: var(--muted); }
+.ec-editorial-check blockquote { font-size: 12px; }
+@media (max-width: 760px) { .ec-method-pair { grid-template-columns: minmax(0, 1fr); } .ec-reading-foot { flex-wrap: wrap; } }
+@media (max-width: 820px) {
+  .app-shell:has(.ec-workspace) .topbar { grid-template-columns: 32px minmax(0, 1fr) auto; gap: 10px; }
+  .app-shell:has(.ec-workspace) .project-switcher { min-width: 0; max-width: 210px; justify-self: start; }
+  .app-shell:has(.ec-workspace) .project-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .app-shell:has(.ec-workspace) .top-actions { gap: 6px; }
+  .app-shell:has(.ec-workspace) .top-actions :is(.search-button, .signout-button, .avatar) { width: 32px; height: 32px; min-width: 32px; }
+}
+.ec-mobile-task-switch { display: none; }
+@media (max-width: 760px) {
+  .ec-writing-layout > .ec-task-list { display: none; }
+  .ec-mobile-task-switch { display: block; }
+  .ec-mobile-task-switch .ec-field { display: flex; align-items: center; gap: 10px; margin: 0; }
+  .ec-mobile-task-switch .ec-field > label { font-size: 11px; color: var(--muted); white-space: nowrap; }
+  .ec-mobile-task-switch .ec-field > select { width: 0; flex: 1; min-width: 0; font-size: 12px; }
+}
+.ec-method-beats { font-size: 12px; }
+.ec-method-beats ol { margin: 16px 0 0; padding-left: 20px; display: grid; gap: 15px; }
+.ec-method-beats li > p { margin-top: 5px; color: var(--muted); }
+.ec-method-beats li > blockquote { margin-bottom: 0; }
+
+/* Follow the shared page-heading and management-toolbar styling above the workspace. */
+.ec-scope { margin-bottom: 0; }
+.ec-back { display: inline-flex; align-items: center; color: var(--brand); font-size: 12px; white-space: nowrap; }
+
+/* Reuse the application's surface, spacing and control scale inside the editor. */
+.ec-workspace { max-width: 1440px; gap: 18px; }
+.ec-workspace button { min-height: 36px; padding: 8px 13px; border-color: var(--line); border-radius: 8px; color: var(--ink); background: var(--surface); font-size: 12px; font-weight: 550; }
+.ec-workspace button.ec-primary { min-height: 38px; background: var(--brand); border-color: var(--brand); color: #fff; font-weight: 650; box-shadow: 0 2px 7px rgb(63 77 143 / 12%); }
+.ec-workspace button.ec-quiet { min-height: 34px; color: var(--muted); border-color: transparent; background: transparent; }
+.ec-panel, .ec-manuscript { border-color: var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); }
+.ec-panel { padding: 20px; }
+.ec-tabs { gap: 5px; padding-bottom: 10px; }
+.ec-workspace .ec-primary-tabs > button { min-height: 36px; padding: 8px 13px; border-color: transparent; background: transparent; color: var(--muted); font-size: 13px; font-weight: 550; }
+.ec-workspace .ec-primary-tabs > button[aria-current=page] { border-color: #d6daef; color: var(--brand-deep); background: var(--brand-soft); font-weight: 650; }
+.ec-workspace .ec-extra-nav > summary { font-size: 12px; padding: 9px 12px; }
+.ec-field > :is(input, textarea, select) { border-color: var(--line); border-radius: 8px; background: var(--surface-soft); }
+.ec-task-form { padding: 24px; }
+.ec-task-form > .ec-panel-head h2 { font-size: 20px; }
+.ec-task-form > .ec-panel-head { border-color: var(--line); margin-bottom: 20px; }
+.ec-task-list { padding: 16px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); }
+.ec-task-list .ec-panel-head { margin-bottom: 10px; }
+.ec-task-list h2 { font-size: 15px; }
+.ec-task-list .ec-panel-head button { min-height: 32px; padding: 5px 9px; font-size: 11px; }
+.ec-task-list .ec-list-item { padding: 12px 10px; margin-top: 5px; border-color: transparent; background: var(--surface); box-shadow: none; }
+.ec-workspace .ec-task-list .ec-list-item.selected { border-color: #d6daef; color: var(--brand-deep); background: var(--brand-soft); box-shadow: none; }
+.ec-task-list .ec-list-item strong { font-size: 13px; font-weight: 600; }
+.ec-task-list .ec-list-item time { color: var(--subtle); }
+.ec-task-session { gap: 16px; }
+.ec-task-toolbar { padding: 0; border-bottom: 0; }
+.ec-task-toolbar .ec-panel-head { margin: 0; align-items: center; gap: 14px; }
+.ec-task-toolbar .ec-panel-head > div:first-child { min-width: 0; }
+.ec-task-toolbar .ec-panel-head h2 { font-size: 20px; line-height: 1.4; margin: 0; font-weight: 600; }
+.ec-task-toolbar .ec-actions { align-items: center; gap: 7px; }
+.ec-task-toolbar .ec-actions button { min-height: 36px; padding: 7px 11px; font-size: 12px; }
+.ec-task-toolbar .ec-actions .ec-primary { min-height: 38px; padding: 8px 14px; }
+.ec-task-meta { margin-top: 7px; gap: 8px; font-size: 11px; }
+.ec-workspace details.ec-generation-options { padding: 10px 0 0; border: 0; font-size: 12px; }
+.ec-generation-options > summary { color: var(--muted); font-weight: 500 !important; }
+.ec-generation-options > summary > span { margin-left: 5px; color: var(--subtle); font-size: 11px; }
+.ec-workspace details.ec-generation-options[open] > summary { margin-bottom: 12px; }
+.ec-generation-options > .ec-field { margin-bottom: 0; }
+.ec-manuscript-bar { padding: 16px 22px; border-color: var(--line); }
+.ec-manuscript-controls { padding: 14px 22px 0; gap: 12px 16px; }
+.ec-writing-tabs { background: transparent; border: 1px solid var(--line); gap: 3px; padding: 3px; }
+.ec-workspace .ec-writing-tabs button { min-height: 32px; padding: 6px 10px; font-size: 12px; font-weight: 550; border: 0; border-radius: 6px; background: transparent; color: var(--muted); }
+.ec-workspace .ec-writing-tabs button[aria-current=page] { color: var(--brand-deep); background: var(--brand-soft); box-shadow: none; }
+.ec-workspace .ec-copy-tools button { min-height: 34px; padding: 7px 11px; font-size: 12px; }
+.ec-reading-page { padding-top: 30px; }
+.ec-reading-meta { color: var(--subtle); font-size: 11px; }
+.ec-workspace h2.ec-reading-title { color: var(--ink); font-size: clamp(22px, 2vw, 28px); font-weight: 650; line-height: 1.5; margin: 14px 0 24px; letter-spacing: -.025em; }
+.ec-reading-body > p { color: var(--ink); font-size: 17px; line-height: 1.95 !important; }
+.ec-reading-foot { color: var(--subtle); border-color: var(--line); font-size: 11px; }
+.ec-material-gap { border-color: #e8dcc7; background: var(--warning-soft); }
+.ec-material-gap .ec-eyebrow, .ec-gap-list p { color: var(--warning); }
+.ec-gap-list small { color: var(--muted); }
+.ec-method-pair > div { border-color: var(--line); background: var(--surface-soft); }
+.ec-workspace details.ec-task-settings, .ec-workspace details.ec-run-history { border-color: var(--line); background: var(--surface); border-radius: 10px; }
+@media (max-width: 1100px) {
+  .ec-task-list { padding: 12px; }
+  .ec-task-toolbar .ec-panel-head { align-items: flex-start; }
+  .ec-task-toolbar .ec-actions { flex-wrap: wrap; }
+}
+@media (max-width: 760px) {
+  .ec-workspace { gap: 14px; }
+  .ec-back { align-self: flex-end; }
+  .ec-task-toolbar .ec-panel-head { gap: 12px; }
+  .ec-task-toolbar .ec-panel-head h2 { font-size: 18px; }
+  .ec-task-toolbar .ec-actions { width: 100%; }
+  .ec-task-toolbar .ec-actions > .ec-primary { margin-left: auto; }
+  .ec-task-toolbar .ec-actions > .ec-quiet { display: none; }
+  .ec-manuscript-bar { padding: 14px 16px; }
+  .ec-manuscript-controls { padding: 12px 14px 0; }
+  .ec-workspace .ec-writing-tabs button { font-size: 11px; padding: 6px 8px; }
+  .ec-reading-page { padding-top: 25px; }
+  .ec-reading-body > p { font-size: 16px; }
+  .ec-reading-meta, .ec-reading-foot { font-size: 10px; }
+}

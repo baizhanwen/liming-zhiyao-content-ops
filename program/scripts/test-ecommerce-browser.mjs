@@ -80,16 +80,15 @@ try {
     await question.getByRole("radio", { name: "自行填写", exact: true }).check();
     await question.getByLabel(`填写${label}`, { exact: true }).fill(value);
   };
-  await page.getByText("电商文案未启用", { exact: true }).waitFor();
+  await page.getByRole("region", { name: "启用电商文案", exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: "制作第一条视频", exact: true }).count(), 0);
   assert.equal(await page.getByRole("button", { name: "发布与复盘", exact: true }).count(), 0);
   assert.equal(await page.getByRole("button", { name: "启用文案功能", exact: true }).isEnabled(), true);
   assert.equal(await page.getByRole("button", { name: "商品资料", exact: true }).getAttribute("aria-current"), "page");
   await page.getByLabel("商品名称 *", { exact: true }).waitFor();
   assert.equal(await page.getByLabel("商品名称 *", { exact: true }).isDisabled(), true);
-  await page.getByText("空间设置", { exact: true }).click();
-  await page.getByLabel("启用当前空间文案功能").check(); await page.getByRole("button", { name: "保存设置", exact: true }).click();
-  await page.getByText("电商文案已启用", { exact: true }).waitFor(); checks.push("默认关闭及管理员启用");
+  await page.getByRole("button", { name: "启用文案功能", exact: true }).click();
+  await page.getByRole("region", { name: "启用电商文案", exact: true }).waitFor({ state: "hidden" }); checks.push("默认关闭及管理员启用");
 
   await page.getByLabel("商品名称 *", { exact: true }).fill("合成验收杯（非真实商品）");
   assert.equal(await page.getByLabel("SKU *", { exact: true }).count(), 0);
@@ -120,7 +119,9 @@ try {
   await page.getByLabel("任务名称 *", { exact: true }).fill("合成杯规格浏览器验收");
   const productVersion = await page.getByLabel("选择商品 *", { exact: true }).locator("option").filter({ hasText: "v2（当前）" }).getAttribute("value");
   await page.getByLabel("选择商品 *", { exact: true }).selectOption(productVersion);
-  assert.equal(await page.getByRole("radio", { name: /^不参考视频，按方法论生成/ }).count(), 0);
+  assert.equal(await page.getByRole("checkbox", { name: "参考视频", exact: true }).isChecked(), false);
+  assert.equal(await page.getByLabel("选择一个对标带货视频 *", { exact: true }).count(), 0);
+  await page.getByRole("checkbox", { name: "参考视频", exact: true }).check();
   await page.getByLabel("选择一个对标带货视频 *", { exact: true }).selectOption("reference:ec-reference:ec-analysis");
   await page.getByRole("button", { name: "保存并进入生成", exact: true }).waitFor();
   const audienceDetails = page.locator("details").filter({ has: page.locator("summary", { hasText: "调整人群与使用场景" }) });
@@ -132,7 +133,7 @@ try {
   await fillTaskAnswer("承接位置与动作", "当前商品卡查看规格");
   assert.equal(await page.getByRole("group", { name: "实际拍摄条件（可多选）", exact: true }).count(), 0);
   await page.getByRole("button", { name: "保存并进入生成", exact: true }).click();
-  const generateButton = page.getByRole("button", { name: "生成文案", exact: true });
+  const generateButton = page.getByRole("button", { name: "生成完整文案", exact: true });
   await generateButton.waitFor();
   await run("UPDATE ecommerce_project_settings SET enabled=0 WHERE project_id='ec-project'");
   await generateButton.click();
@@ -167,8 +168,9 @@ try {
   checks.push("只选择商品与对标视频即可HTTP生成文案；商品事实来自不可变版本，未创建手工卖点、证据或方法卡");
   for (const [role, label] of [["hook", "只替换开头"], ["evidence", "只替换依据段"], ["cta", "只替换行动引导"]]) {
     const before = JSON.parse(history.at(-1).pack_json), expected = history.length + 1;
+    await page.getByRole("button", { name: "逐段调整", exact: true }).click();
     await page.getByRole("button", { name: label, exact: true }).click();
-    await page.waitForFunction(n => document.querySelectorAll('.ec-panel select option').length > 0 && Array.from(document.querySelectorAll('option')).some(o => o.textContent === 'v' + n + ' · 局部替换'), expected);
+    await page.getByLabel("查看文案版本", { exact: true }).locator("option").filter({ hasText: `v${expected} · 局部替换` }).waitFor({ state: "attached" });
     history = await versions(); assert.equal(history.length, expected);
     const after = JSON.parse(history.at(-1).pack_json);
     assert.deepEqual(after.segments.filter(s => s.role !== role), before.segments.filter(s => s.role !== role));
@@ -184,6 +186,7 @@ try {
   await page.getByLabel("本次修改说明 *", { exact: true }).fill("合成验收：人工调整开头措辞");
   await page.getByRole("button", { name: "保存文案新版本", exact: true }).click();
   await page.getByLabel("查看文案版本", { exact: true }).locator("option").filter({ hasText: "v5 · 人工修改" }).waitFor({ state: "attached" });
+  await page.getByRole("button", { name: "审核记录", exact: true }).click();
   await page.getByRole("button", { name: "提交审核", exact: true }).click();
   for (const label of ["商品事实与证据一致", "行动引导与承接位置正确"]) await page.getByRole("checkbox", { name: label, exact: true }).check();
   await page.getByRole("button", { name: "审核通过", exact: true }).click();
@@ -196,7 +199,7 @@ try {
   const legacyScope = { organizationId: "ec-org", projectId: "ec-project" };
   const legacyPost = async (resource, data, expected = 201) => {
     const response = await context.request.post(new URL(`/api/ecommerce/${resource}`, origin).href, { data: { ...legacyScope, ...data } });
-    const body = await response.json(); assert.equal(response.status(), expected, JSON.stringify(body)); return body;
+    const body = await response.json(); assert.equal(response.status(), expected, JSON.stringify({ resource, body })); return body;
   };
   const account = (await legacyPost("accounts", { displayName: "合成验收账号", handle: "synthetic-browser-account", platform: "douyin", confirmOwned: true })).account;
   history = await versions();
@@ -211,7 +214,7 @@ try {
   assert.equal(metrics.length, 2); assert.equal(JSON.parse(metrics[0].body_json).views, 0); assert.equal(JSON.parse(metrics[1].body_json).views, 10);
   assert.equal(metrics[1].replaces_id, metrics[0].id);
   checks.push("历史发布API保留版本绑定，旧数据真实零与未采集区别和追加修正历史");
-  await page.getByRole("button", { name: "生成新版本", exact: true }).click();
+  await page.getByRole("button", { name: "生成完整文案", exact: true }).click();
   await page.getByLabel("查看文案版本", { exact: true }).locator("option").filter({ hasText: "v6 · AI 生成" }).waitFor({ state: "attached" });
   const originalPublication = await db.prepare("SELECT * FROM ecommerce_publications WHERE id=?").bind(publication.id).first();
   assert.equal(originalPublication.version_id, history[4].id);
@@ -219,13 +222,13 @@ try {
   checks.push("新稿重新审核，旧发布与观测保持绑定原版本");
 
   const held = model.holdNext();
-  await page.getByRole("button", { name: "生成新版本", exact: true }).click();
+  await page.getByRole("button", { name: "生成完整文案", exact: true }).click();
   await Promise.race([held.started, new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error("等待测试模型开始超时")), 15000); timer.unref(); })]);
   await page.getByRole("button", { name: "取消生成", exact: true }).click();
   await page.getByText("已请求取消，已有稿件保留。", { exact: true }).waitFor();
-  assert.equal(await page.getByRole("button", { name: "生成新版本", exact: true }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "生成完整文案", exact: true }).isDisabled(), true);
   held.release();
-  await page.waitForFunction(() => Array.from(document.querySelectorAll('button')).some(b => b.textContent === '生成新版本' && !b.disabled));
+  await page.waitForFunction(() => Array.from(document.querySelectorAll('button')).some(b => b.textContent === '生成完整文案' && !b.disabled));
   assert.equal((await versions()).length, 6);
   const cancelled = await db.prepare("SELECT * FROM ecommerce_generation_runs WHERE task_id=? ORDER BY created_at DESC LIMIT 1").bind(task.id).first();
   assert.equal(cancelled.status, "failed"); assert.equal(cancelled.error_code, "RUN_CANCELLED");
@@ -241,10 +244,11 @@ try {
   checks.push("简化导航始终不显示首条向导或发布复盘入口");
 
   await page.getByLabel("企业空间", { exact: true }).selectOption("ec-other");
-  await page.getByText("电商文案未启用", { exact: true }).waitFor();
+  await page.getByRole("region", { name: "启用电商文案", exact: true }).waitFor();
   assert.equal(await page.locator(".ec-list-item").count(), 0); checks.push("切换空间清除商品与方法资料");
   await page.getByLabel("企业空间", { exact: true }).selectOption("ec-project");
-  await page.getByText("电商文案已启用", { exact: true }).waitFor();
+  await page.getByLabel("商品名称 *", { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("商品名称 *", { exact: true }).isDisabled(), false);
   await page.getByRole("link", { name: "返回普通内容", exact: true }).click();
   const sidebar = page.getByRole("complementary", { name: "主导航", exact: true });
   const ecommerceLink = sidebar.getByRole("link", { name: "电商中心", exact: true });
@@ -255,7 +259,8 @@ try {
   assert.equal(await ecommerceLink.evaluate(el => el.previousElementSibling?.textContent), "内容生产");
   // This isolated Worker has no client RSC router; actual Link clicks are covered by test-navigation-browser.mjs.
   await page.goto(new URL(await ecommerceLink.getAttribute("href"), page.url()).href);
-  await page.getByText("电商文案已启用", { exact: true }).waitFor();
+  await page.getByLabel("商品名称 *", { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("商品名称 *", { exact: true }).isDisabled(), false);
   assert.equal(new URL(page.url()).pathname, "/content/ecommerce");
   assert.equal(new URL(page.url()).searchParams.get("projectId"), "ec-project");
   assert.equal(await ecommerceLink.getAttribute("aria-current"), "page");
@@ -377,6 +382,53 @@ try {
   assert.deepEqual(await mutationSnapshot(), beforeWriteFailure); await run("DROP TRIGGER reject_manual_version");
   checks.push("实际 D1 人工版本写入失败时任务版本指针和审计整批回滚");
   assert.equal(model.calls.length, mutationCallsBefore, "人工写入与复盘不调用模型");
+  // The same entry also writes without any reference, manual method cards or space strategy.
+  await run("UPDATE content_strategies SET status='draft' WHERE project_id='ec-project'");
+  await page.getByRole("button", { name: "文案任务", exact: true }).click();
+  await page.getByRole("button", { name: "新建任务", exact: true }).click();
+  await page.getByLabel("任务名称 *", { exact: true }).fill("合成杯方法论无参考验收");
+  await page.getByLabel("选择商品 *", { exact: true }).selectOption(productVersion);
+  const referenceToggle = page.getByRole("checkbox", { name: "参考视频", exact: true });
+  assert.equal(await referenceToggle.isChecked(), false);
+  assert.equal(await page.getByLabel("选择一个对标带货视频 *", { exact: true }).count(), 0);
+  await referenceToggle.check();
+  await page.getByLabel("选择一个对标带货视频 *", { exact: true }).selectOption("reference:ec-reference:ec-analysis");
+  await referenceToggle.uncheck();
+  assert.equal(await page.getByLabel("选择一个对标带货视频 *", { exact: true }).count(), 0);
+  const methodAudience = page.locator("details").filter({ has: page.locator("summary", { hasText: "调整人群与使用场景" }) });
+  if (await methodAudience.getAttribute("open") === null) await methodAudience.locator("summary").first().click();
+  await fillTaskAnswer("主要购买障碍", "不清楚容量规格");
+  await fillTaskAnswer("承接位置与动作", "当前商品卡查看规格");
+  await page.screenshot({ path: path.join(runDir, "method-task-desktop.png"), fullPage: true });
+  const methodCallsStart = model.calls.length;
+  await page.getByRole("button", { name: "保存并进入生成", exact: true }).click();
+  await page.getByRole("button", { name: "生成完整文案", exact: true }).click();
+  await page.getByLabel("查看文案版本", { exact: true }).waitFor({ timeout: 60000 });
+  const methodTask = await db.prepare("SELECT * FROM ecommerce_tasks WHERE title='合成杯方法论无参考验收'").first();
+  const methodBrief = JSON.parse(methodTask.brief_json);
+  assert.equal(methodBrief.referenceMode, "method"); assert.equal(methodBrief.benchmark, null);
+  assert.deepEqual(methodBrief.caseIds, []); assert.deepEqual(methodBrief.componentIds, []);
+  assert.equal(methodBrief.claimId, ""); assert.deepEqual(methodBrief.evidenceIds, []);
+  assert.equal(methodTask.current_version, 1);
+  const methodCalls = model.calls.slice(methodCallsStart);
+  assert.deepEqual(methodCalls.map(call => call.stage), ["plan", "draft", "review"]);
+  assert.ok(methodCalls.every(call => call.payload.context.task.brief.referenceMode === "method" && call.payload.context.cases.length === 0 && call.payload.context.strategy === null));
+  const methodVersion = await db.prepare("SELECT * FROM ecommerce_versions WHERE task_id=?").bind(methodTask.id).first();
+  const methodPack = JSON.parse(methodVersion.pack_json);
+  assert.ok(methodPack.segments.some(segment => segment.role === "hook"));
+  assert.ok(methodPack.segments.some(segment => segment.role === "evidence"));
+  assert.equal(methodPack.segments.at(-1).role, "cta");
+  assert.ok(methodPack.applications.every(application => application.sourceType !== "case"));
+  await page.getByRole("button", { name: "方法与依据", exact: true }).click();
+  await page.getByText("本稿创作思路", { exact: true }).waitFor();
+  await page.screenshot({ path: path.join(runDir, "method-sources-desktop.png"), fullPage: true });
+  await page.getByRole("button", { name: "完整文案", exact: true }).click();
+  await page.getByRole("article", { name: "完整口播文案", exact: true }).waitFor();
+  await page.screenshot({ path: path.join(runDir, "method-copy-desktop.png"), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1), false, "方法论文案手机布局不应溢出");
+  await page.screenshot({ path: path.join(runDir, "method-copy-mobile.png"), fullPage: true });
+  checks.push("统一入口默认按方法论生成：关闭参考清除已选视频；无手工卖点证据方法卡、无内容策略也能生成完整口播与创作思路，手机布局无溢出");
   rows = await ledger(); assert.equal(rows.length, model.calls.length);
   const receipts = rows.map(row => JSON.parse(row.output_json).modelRequests[0]);
   assert.equal(receipts.filter(receipt => !receipt.usageKnown).length, 1);
@@ -386,7 +438,7 @@ try {
     buildSha256: createHash("sha256").update(readFileSync(path.join(root, "dist/server/index.js"))).digest("hex"),
     modelAccounting: { requests: model.calls.length, ledgerRows: rows.length, knownRequests: receipts.filter(r => r.usageKnown).length, unknownRequests: receipts.filter(r => !r.usageKnown).length, syntheticTokens: receipts.reduce((sum, r) => sum + (r.totalTokens ?? 0), 0) },
     metrics: { directHttpRequests: times.length, directP50Ms: times[Math.floor(times.length * .5)], directP95Ms: times[Math.floor(times.length * .95)], directMaxMs: times.at(-1), harnessRssBytes: process.memoryUsage().rss, harnessCpuMicroseconds: process.cpuUsage(cpuStart), boundary: "Direct HTTP timings only, excludes browser page requests; Node harness resources exclude browser/workerd/supplier. All accounts, materials and provider usage are synthetic; not real business acceptance." },
-    screenshots: ["products-desktop.png", "assembly-desktop.png", "assembly-mobile.png"] };
+    screenshots: ["products-desktop.png", "assembly-desktop.png", "assembly-mobile.png", "method-task-desktop.png", "method-copy-desktop.png", "method-copy-mobile.png"] };
   writeFileSync(path.join(runDir, "result.json"), JSON.stringify(result, null, 2));
   console.log(JSON.stringify({ passed: checks.length, runDir }));
 } catch (error) {

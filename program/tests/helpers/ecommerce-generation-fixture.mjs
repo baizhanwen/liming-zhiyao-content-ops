@@ -26,15 +26,23 @@ export async function ecommerceGenerationFixture(t, options = {}) {
       const currentClaimId = c.product.claim.id, currentEvidenceId = c.evidence[0].id;
       const simpleProduct = currentClaimId.startsWith("product-claim:");
       const simpleFact = c.product.specification || `${c.product.name}属于${c.product.category}`;
-      const evidenceCopy = simpleProduct ? `已确认的商品信息是：${simpleFact}。选购前请结合自己的使用需要，再核对详细资料。` : "合成杯采用旋盖，可以旋开与旋紧。先核对这一使用方式，再看看是否适合自己。";
+      const evidenceCopy = simpleProduct ? `这款商品${simpleFact}。先看这一具体信息，再按自己的使用场景选择。` : "合成杯采用旋盖，可以旋开与旋紧。开盖方式看得明白，选杯子时就少一项疑问。";
       calls.push({ stage, payload, input });
       if (options.onCall) await options.onCall({ stage, payload, f, calls });
       let result;
-      if (stage === "plan") result = {
+      if (stage === "plan") {
+        const methods = payload.generationGuide.copyMethodology.methodCandidates;
+        const selectedFramework = methods.frameworks[0];
+        const beats = selectedFramework?.beats ?? [];
+        result = {
+        methodSelection: c.task.brief.referenceMode === "benchmark" ? null : { hookId: methods.hooks[0].id, frameworkId: selectedFramework.id, supplementFrameworkId: "", reason: "用具体开盖问题和操作细节回答本次购买顾虑" },
+        sellingPointFocus: "用具体商品信息回应本次使用场景中的购买疑问",
+        factPlan: [{ sourceKey: payload.generationGuide.factRegister.find(source => source.sourceId === currentEvidenceId).sourceKey, sourceQuote: c.evidence[0].body.split("\n")[0], buyerMeaning: "帮助判断这个具体使用方式是否符合自己的需要" }],
+        copyDirection: { hook: "从使用问题建立观看理由", bridge: "从开盖顾虑衔接已确认的商品信息", proof: "只使用所选商品事实与证据，保留条件", cta: "到指定商品卡了解规格以便选择", referenceAdaptation: c.task.brief.referenceMode === "benchmark" ? "保留先问问题再解释的机制，重写表达，不迁移原作者事实" : "" },
         choices: c.candidates.map(x => ({ kind: x.card.kind, componentId: x.id, reason: "符合本次演示条件" })),
-        outline: [{ id: "h", role: "hook", purpose: "提出使用问题", durationSec: 10 }, { id: "e", role: "evidence", purpose: "演示旋盖", durationSec: 10 }, { id: "c", role: "cta", purpose: "查看商品卡", durationSec: 10 }], target: "product_click", strategyConflict: "",
-      };
-      else if (stage === "review") result = { supported: true, issues: [], claimChecks: payload.draft.segments.filter(s => s.claimIds.length).map(s => ({ segmentId: s.id, statement: s.script, supported: true, sourceIds: [currentClaimId, currentEvidenceId], reason: "仅采用旋盖事实和演示证据" })), targetMatches: true, strategyConflict: "" };
+        outline: [{ id: "h", role: "hook", purpose: "提出使用问题", methodBeats: beats.slice(0, 1), durationSec: 10 }, { id: "e", role: "evidence", purpose: "演示旋盖", methodBeats: beats.slice(1, -1), durationSec: 10 }, { id: "c", role: "cta", purpose: "查看商品卡", methodBeats: beats.slice(-1), durationSec: 10 }], target: "product_click", strategyConflict: "",
+      }; }
+      else if (stage === "review") result = { editorialReview: { verdict: "usable", summary: "合成测试稿包含具体使用问题与商品细节", missingFacts: [], checks: ["hook", "decision_value", "concrete_detail", "spoken_voice", "method_execution", "action_reason"].map(criterion => ({ criterion, passed: true, segmentIds: [payload.draft.segments[criterion === "hook" ? 0 : criterion === "action_reason" ? payload.draft.segments.length - 1 : 1].id], quote: payload.draft.segments[criterion === "hook" ? 0 : criterion === "action_reason" ? payload.draft.segments.length - 1 : 1].script, reason: "合成合同测试：本段用具体商品信息推进同一选择问题" })) }, qualityChecks: { hookFulfilled: true, singleFocus: true, spokenNatural: true, ctaClear: true, referenceAdapted: true }, supported: true, issues: [], claimChecks: payload.draft.segments.filter(s => s.claimIds.length).map(s => ({ segmentId: s.id, statement: s.script, supported: true, sourceIds: [currentClaimId, currentEvidenceId], reason: "仅采用旋盖事实和演示证据" })), targetMatches: true, strategyConflict: "" };
       else if (stage === "patch") {
         const pack = structuredClone(payload.base);
         for (const s of pack.segments) if (s.role === payload.operation) s.script = s.role === "hook" ? "先看盖子怎么打开，选杯子之前把使用方式看明白。" : s.role === "cta" ? "打开当前商品卡查看规格，确认适合自己的日常使用场景。" : simpleProduct ? evidenceCopy : "合成杯采用旋盖，可以旋开与旋紧。选杯子前先确认这种使用方式是否适合自己。";

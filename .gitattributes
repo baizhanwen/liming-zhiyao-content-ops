@@ -3,3 +3,6 @@
 
 # Preserve upstream license bytes, including original CRLF line endings.
 program/services/analyzer/liming_analyzer/douyin_collector/LICENSES/*.txt -text whitespace=cr-at-eol
+
+# Methodology provenance hashes raw source bytes; keep upstream line endings.
+内容生产方法论/02_短视频/*.md -text whitespace=cr-at-eol

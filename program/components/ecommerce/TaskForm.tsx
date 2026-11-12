@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState, type MouseEvent } from "react";
-import type { ProductPublic, TaskBrief } from "../../lib/ecommerce/contracts";
+import { taskReferenceMode, type ProductPublic, type TaskBrief } from "../../lib/ecommerce/contracts";
 import { Checks, Choice, displayTime, ecommerceApi, Field, Notices, platforms, splitLines, targets, TextField, useEcommerceAction, type ComponentRow, type Scope } from "./shared";
-import { initialTaskDraft, productCopyTaskTitle, taskBriefForProduct, taskQuestionOptions } from "../../lib/ecommerce/task-question-options";
+import { copyTaskBriefForSubmission, initialTaskDraft, productCopyTaskTitle, taskBriefForProduct, taskQuestionOptions } from "../../lib/ecommerce/task-question-options";
 import { TaskDurationQuestion, TaskQuestion } from "./TaskQuestion";
 import { isScopeCancellation } from "../../lib/client-scope-request";
 import { type BenchmarkReference, type TaskCaseOption, type TaskOptions, type TaskRow } from "./task-types";
@@ -18,7 +18,8 @@ const referenceKey = (reference: { reference_id: string; analysis_id: string }) 
 export function TaskForm({ scope, row, options, cases, references = [], enabled, dirty, saved, discard, guided = false, initialProductVersionId = "" }: TaskFormProps) {
   // Apply saved values and product defaults once; background refreshes cannot replace a draft.
   const [draft] = useState(() => initialTaskDraft({ row, products: options.products, initialProductVersionId, guided }));
-  const [title, setTitle] = useState(draft.title), [versionId, setVersionId] = useState(draft.versionId), [brief, setBrief] = useState<TaskBrief>({ ...draft.brief, referenceMode: "benchmark" });
+  const [title, setTitle] = useState(draft.title), [versionId, setVersionId] = useState(draft.versionId), [brief, setBrief] = useState<TaskBrief>({ ...draft.brief, referenceMode: taskReferenceMode(draft.brief) });
+  const usesReference = taskReferenceMode(brief) === "benchmark";
   const [excluded, setExcluded] = useState(brief.excludedConditions.join("\n")), action = useEcommerceAction();
   const [autoTranscript, setAutoTranscript] = useState(false);
   const [audienceExpanded, setAudienceExpanded] = useState(!brief.audience.user || !brief.audience.buyer || !brief.scene || !brief.barrier);
@@ -50,6 +51,10 @@ export function TaskForm({ scope, row, options, cases, references = [], enabled,
     else if (profile) change({ referenceMode: "benchmark", benchmark: null, caseIds: [profile.id] });
     else change({ referenceMode: "benchmark", benchmark: null, caseIds: [] });
   }
+  function toggleReference(enabled: boolean) {
+    setAutoTranscript(false);
+    change({ referenceMode: enabled ? "benchmark" : "method", ...(!enabled ? { benchmark: null, caseIds: [] } : {}) });
+  }
   function selectTranscript(referenceId: string, analysisId: string, transcriptId: string | null) {
     if (!mounted.current || benchmarkSelection.current?.referenceId !== referenceId || benchmarkSelection.current.analysisId !== analysisId) return;
     benchmarkSelection.current = { ...benchmarkSelection.current, transcriptId };
@@ -61,25 +66,22 @@ export function TaskForm({ scope, row, options, cases, references = [], enabled,
   const productFields = <div className="ec-grid"><TextField label="任务名称 *" required value={title} maxLength={300} onChange={value => { setTitle(value); dirty(true); }} />
     <Field label="选择商品 *"><select required value={versionId} onChange={event => selectProduct(event.target.value)}><option value="">选择一个商品版本</option>{options.products.map(item => <option key={item.version_id} value={item.version_id}>{item.name} · v{item.version}{item.version === item.current_version ? "（当前）" : "（历史）"}{item.confirmed_at ? "" : " · 未确认"}</option>)}</select></Field></div>;
 
-  return <form className="ec-panel" onSubmit={event => {
+  return <form className="ec-panel ec-task-form" onSubmit={event => {
     event.preventDefault();
     if (!product) { action.setError("请先选择已补全资料的商品。"); return; }
-    if (!brief.benchmark && !selectedCase) { action.setError("请选择一个已分析的对标带货视频。"); return; }
-    const selectedBrief = { ...brief, referenceMode: "benchmark" as const, excludedConditions: splitLines(excluded),
-      benchmark: brief.benchmark ?? null,
-      caseIds: !brief.benchmark ? brief.caseIds.slice(0, 1) : [],
-      componentIds: [], claimId: "", evidenceIds: [],
-    };
+    if (usesReference && !brief.benchmark && !selectedCase) { action.setError("请选择一个已分析的对标带货视频，或关闭参考视频后按方法论生成。"); return; }
+    const selectedBrief = copyTaskBriefForSubmission({ ...brief, excludedConditions: splitLines(excluded) });
     void action.act(async () => {
       const result = await ecommerceApi<{ task: TaskRow }>(scope, "tasks", { title, productId: product.id, productVersionId: versionId, brief: selectedBrief, ...(row ? { id: row.id, revision: row.revision } : {}) });
       if (!mounted.current) return; dirty(false); await saved(result.task.id);
     });
   }}>
-    <header className="ec-panel-head"><div><h2>{row ? "修改文案要求" : "新建文案任务"}</h2><p className="ec-muted">选好商品和一个对标带货视频，换成我们的商品来写文案。</p></div></header><Notices error={action.error} />
+    <header className="ec-panel-head"><div><span className="ec-eyebrow">创作准备</span><h2>{row ? "修改文案要求" : "新建文案任务"}</h2><p className="ec-muted">选一个商品，明确这篇要打动谁、回应什么问题。其余交给内容方法论。</p></div></header><Notices error={action.error} />
     <fieldset disabled={!enabled || action.busy} className="ec-form">
       {productFields}
       {!options.products.length && <p className="ec-muted">请先在“商品资料”补全并确认商品信息。</p>}
-      <section className="ec-inset">
+      <fieldset className="ec-question ec-reference-switch"><legend>是否参考视频</legend><label className="ec-question-option"><input type="checkbox" checked={usesReference} onChange={event => toggleReference(event.target.checked)} />参考视频</label><p className="ec-muted">{usesReference ? "借鉴一个已分析视频的结构，用自己的商品事实重新写。" : "按方法论独立创作，无需准备对标视频。"}</p></fieldset>
+      {usesReference && <section className="ec-inset">
         <Field label="选择一个对标带货视频 *"><select value={selectedBenchmarkKey} onChange={event => chooseBenchmark(event.target.value)}><option value="">请选择已分析的视频</option>
           {brief.benchmark && !selectedReference && <option value={selectedBenchmarkKey}>已选对标视频 · 来源待核对</option>}
           {!!references.length && <optgroup label="已分析的对标视频">{references.map(reference => <option key={referenceKey(reference)} value={referenceKey(reference)}>{reference.title || "未命名视频"} · {displayTime(reference.analyzed_at)}</option>)}</optgroup>}
@@ -88,7 +90,7 @@ export function TaskForm({ scope, row, options, cases, references = [], enabled,
         <p className="ec-muted">借鉴结构与表达，商品事实使用我们自己的已确认资料。</p>
         {!references.length && !cases.length && <p className="ec-muted">当前空间还没有已分析的对标视频。<a className="ec-link" href={benchmarkUrl} onClick={leaveForm}>去对标内容库添加并分析视频 →</a></p>}
         {sourceReference && <BenchmarkPreview key={`${sourceReference.referenceId}:${sourceReference.analysisId}`} scope={scope} reference={sourceReference} allowTranscriptChange={Boolean(brief.benchmark)} autoSelectTranscript={autoTranscript} onTranscriptChange={transcriptId => selectTranscript(sourceReference.referenceId, sourceReference.analysisId, transcriptId)} />}
-      </section>
+      </section>}
       <details open={audienceExpanded} onToggle={event => setAudienceExpanded(event.currentTarget.open)}><summary>调整人群与使用场景{brief.audience.user && brief.scene ? " · 已沿用商品资料" : " · 待补充"}</summary>
         <div className="ec-grid"><TaskQuestion key={`${versionId}:user`} label="本次使用者" value={brief.audience.user} options={taskQuestionOptions.user} maxLength={300} onChange={user => change({ audience: { ...brief.audience, user } })} /><TaskQuestion key={`${versionId}:buyer`} label="本次购买决定者" value={brief.audience.buyer} options={taskQuestionOptions.buyer} maxLength={300} onChange={buyer => change({ audience: { ...brief.audience, buyer } })} /></div>
         <TaskQuestion key={`${versionId}:scene`} label="购买或使用场景" value={brief.scene} options={taskQuestionOptions.scene} multiline maxLength={2000} onChange={scene => change({ scene })} />
@@ -103,7 +105,7 @@ export function TaskForm({ scope, row, options, cases, references = [], enabled,
         {options.knowledge.filter(item => brief.knowledgeIds.includes(item.id)).map(item => <details key={item.id}><summary>{item.title} · v{item.current_version}</summary><p className="ec-pre">{item.body}</p></details>)}
         <TextField label="本次禁用条件（每行一条）" multiline value={excluded} onChange={value => { setExcluded(value); dirty(true); }} />
       </details>
-      <details><summary>{options.strategy ? "内容策略 · 已读取" : "内容策略（可选）"}</summary>{options.strategy ? <><p>{options.strategy.positioning}</p><p className="ec-muted">受众：{options.strategy.targetAudience}</p><p className="ec-muted">风格：{options.strategy.styleNotes}</p></> : <p className="ec-muted">未设置时，按商品资料和所选对标视频创作文案。<a className="ec-link" href={strategyUrl} onClick={leaveForm}>设置内容策略（可选） →</a></p>}<TextField label="本次策略例外说明（可留空）" multiline value={brief.strategyException} onChange={strategyException => change({ strategyException })} /></details>
+      <details><summary>{options.strategy ? "内容策略 · 已读取" : "内容策略（可选）"}</summary>{options.strategy ? <><p>{options.strategy.positioning}</p><p className="ec-muted">受众：{options.strategy.targetAudience}</p><p className="ec-muted">风格：{options.strategy.styleNotes}</p></> : <p className="ec-muted">未设置时，按商品资料、本次要求和内容方法论创作文案。<a className="ec-link" href={strategyUrl} onClick={leaveForm}>设置内容策略（可选） →</a></p>}<TextField label="本次策略例外说明（可留空）" multiline value={brief.strategyException} onChange={strategyException => change({ strategyException })} /></details>
       <div className="ec-actions"><button className="ec-primary" type="submit" aria-busy={action.busy || autoTranscript} disabled={autoTranscript}>{autoTranscript ? "正在读取参考内容…" : row ? "保存文案要求" : "保存并进入生成"}</button>{row && <small className="ec-muted">修改条件后需生成或保存新稿，原审核不沿用。</small>}</div>
     </fieldset>
   </form>;

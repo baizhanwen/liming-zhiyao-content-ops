@@ -52,7 +52,7 @@ export const generationSourceGuard = `EXISTS (SELECT 1 FROM expected x WHERE
         AND t.full_text=json_extract(proof.value,'$.transcriptText'))))
   )))
   AND (
-    (json_extract(x.doc,'$.strategy.id') IS NULL AND json_extract(x.doc,'$.task.brief.referenceMode')='benchmark' AND (
+    (json_extract(x.doc,'$.strategy.id') IS NULL AND (
       (json_extract(x.doc,'$.optionalStrategySnapshot.id') IS NULL AND NOT EXISTS (
         SELECT 1 FROM content_strategies s WHERE s.organization_id=ecommerce_tasks.organization_id AND s.project_id=ecommerce_tasks.project_id AND s.status='active'))
       OR EXISTS (SELECT 1 FROM content_strategies s WHERE s.id=json_extract(x.doc,'$.optionalStrategySnapshot.id')

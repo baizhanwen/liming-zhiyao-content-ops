@@ -19,13 +19,13 @@ export function ProductChoiceField({ label, value, options, onChange, maxLength 
   return <div className="ec-field">
     <label htmlFor={id}>{label}</label>
     <select id={id} value={selected} onChange={event => changeChoice(event.target.value)} aria-describedby={hint ? `${id}-hint` : undefined}>
-      <option value="">请选择或自行填写</option>
+      <option value="">请选择</option>
       {options.map(option => <option key={option} value={option}>{option}</option>)}
-      <option value="__custom__">自行填写具体内容</option>
+      <option value="__custom__">自行填写</option>
     </select>
     {selected === "__custom__" && (multiline
-      ? <textarea aria-label={`${label}具体内容`} rows={2} maxLength={maxLength} value={value} onChange={event => changeText(event.target.value)} />
-      : <input aria-label={`${label}具体内容`} maxLength={maxLength} value={value} onChange={event => changeText(event.target.value)} />)}
+      ? <textarea aria-label={`${label}具体内容`} aria-describedby={hint ? `${id}-hint` : undefined} rows={2} maxLength={maxLength} value={value} onChange={event => changeText(event.target.value)} />
+      : <input aria-label={`${label}具体内容`} aria-describedby={hint ? `${id}-hint` : undefined} maxLength={maxLength} value={value} onChange={event => changeText(event.target.value)} />)}
     {hint && <small id={`${id}-hint`}>{hint}</small>}
   </div>;
 }

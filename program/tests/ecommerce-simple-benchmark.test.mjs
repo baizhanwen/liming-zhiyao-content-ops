@@ -44,13 +44,13 @@ test("a user-confirmed product without manual claims can produce benchmark copy 
   assert.deepEqual(pack.filmingChecklist, []);
 });
 
-test("the same claim-free product cannot bypass explicit-claim validation in method mode", async t => {
+test("the same confirmed claim-free product can generate by methodology without a benchmark", async t => {
   const f = await simpleFixture(t);
   f.sqlite.prepare("UPDATE ecommerce_tasks SET brief_json=? WHERE id=?").run(JSON.stringify({ ...f.simpleBrief, referenceMode: "method", benchmark: null }), f.task.id);
   const response = await f.generate();
-  assert.equal(response.status, 409);
-  assert.equal((await response.json()).error.code, "CLAIM_UNAVAILABLE");
-  assert.equal(f.calls.length, 0);
+  assert.equal(response.status, 201, await response.clone().text());
+  assert.deepEqual(f.calls[0].payload.context.cases, []);
+  assert.match(f.calls[0].payload.context.product.claim.id, /^product-claim:/);
 });
 
 test("invented virtual IDs in a task are rejected instead of accepting client-supplied facts", async t => {
@@ -127,13 +127,12 @@ test("an incomplete latest strategy stays optional for benchmark copy", async t 
   assert.equal(f.calls[0].payload.context.strategy, null);
 });
 
-test("method writing still explicitly requires a valid strategy", async t => {
+test("method writing can use task requirements when a strategy has not been configured", async t => {
   const f = await ecommerceGenerationFixture(t);
   f.sqlite.prepare("UPDATE content_strategies SET status='draft'").run();
   const response = await f.generate();
-  assert.equal(response.status, 409);
-  assert.equal((await response.json()).error.code, "STRATEGY_REQUIRED");
-  assert.equal(f.calls.length, 0);
+  assert.equal(response.status, 201, await response.clone().text());
+  assert.equal(f.calls[0].payload.context.strategy, null);
 });
 
 for (const change of ["activate", "complete", "revoke"]) test(`final transaction rejects a late benchmark strategy ${change}`, async t => {

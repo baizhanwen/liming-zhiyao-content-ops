@@ -26,17 +26,17 @@ test("evidence attachments from another space cannot be imported or used for gen
   assert.equal(f.calls.length, 0);
 });
 
-test("no eligible methods returns missing categories without starting a model call", async t => {
+test("no eligible private cards falls back to built-in methodology without requiring imports", async t => {
   const f = await ecommerceGenerationFixture(t);
   f.sqlite.prepare("UPDATE ecommerce_components SET status='revoked'").run();
   const response = await f.route("tasks/[taskId]/recommendations").GET(f.request("GET"), { params: Promise.resolve({ taskId: f.task.id }) });
   assert.equal(response.status, 200);
   const body = await response.json();
-  assert.equal(body.ready, false);
-  for (const kind of ["开头", "文案结构"]) assert.ok(body.missing.some(value => value.includes(kind)));
-  assert.equal(body.missing.some(value => /可视化|拍摄/.test(value)), false);
-  assert.equal((await f.generate()).status, 409);
-  assert.equal(f.calls.length, 0);
+  assert.equal(body.ready, true);
+  assert.deepEqual(body.candidates, []);
+  assert.deepEqual(body.missing, []);
+  assert.equal((await f.generate()).status, 201);
+  assert.equal(f.calls[0].payload.generationGuide.copyMethodology.structureAuthority.source, "builtin_methodology");
 });
 
 test("strategy conflict requires an explicit task exception and never edits the account strategy", async t => {

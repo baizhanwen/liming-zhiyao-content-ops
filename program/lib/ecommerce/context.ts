@@ -5,6 +5,7 @@ import { componentSchema, productPublicSchema, taskBriefSchema, taskReferenceMod
 import { hashJson } from "./products";
 import { readTask, validateTaskReferences } from "./tasks";
 import { readCaseSource } from "./cases";
+import { assessEcommerceCopyReadiness } from "./copy-readiness";
 
 export type MethodCard = Omit<ComponentInput, "organizationId" | "projectId" | "id" | "revision">;
 export type Candidate = { id: string; versionId: string; revision: number; scope: string; card: Omit<MethodCard, "requiredFilming">; score: number; reasons: string[] };
@@ -14,7 +15,6 @@ export type CaseSource = { id: string; revision: number; referenceId: string; an
 export type DirectCaseSnapshot = { id: string; videoId: string; reportJson: string; transcriptId: string | null; transcriptText: string };
 const targetNames = { product_click: "商品点击", live_entry: "直播进房", purchase: "成交" };
 const kinds = ["hook", "structure"] as const;
-const kindNames = { hook: "开头", structure: "文案结构" };
 export const isExpired = (value: string | null, now = Date.now()) => Boolean(value && Date.parse(value) <= now);
 
 function terms(value: string) {
@@ -50,18 +50,19 @@ export async function buildEcommerceContext(access: EcommerceAccess, taskId: str
     .bind(task.product_version_id, task.product_id, ...scope).first<{ id: string; name: string; sku: string; public_json: string; confirmed_by: string | null; version: number; current_version: number; revision: number; status: string }>();
   if (!row || row.status !== "confirmed" || !row.confirmed_by) throw new EcommerceError("PRODUCT_NOT_CONFIRMED", "请先确认所选商品版本。", 409);
   const product = productPublicSchema.parse(JSON.parse(row.public_json));
-  const simpleBenchmark = mode === "benchmark" && !brief.claimId && !brief.evidenceIds.length;
-  const virtualProductSnapshot = simpleBenchmark ? { versionId: row.id, publicJson: row.public_json, name: row.name } : null;
+  const useProductFacts = !brief.claimId && !brief.evidenceIds.length;
+  const virtualProductSnapshot = useProductFacts ? { versionId: row.id, publicJson: row.public_json, name: row.name } : null;
   let claim: typeof product.claims[number];
   const evidence: EvidenceSource[] = [];
-  if (simpleBenchmark) {
+  if (useProductFacts) {
     if (row.version !== row.current_version) throw new EcommerceError("PRODUCT_VERSION_CHANGED", "商品信息已有新版本，请重新选择当前商品版本。", 409);
     const body = ["用户确认的商品资料（不等同于外部实验或认证）", `商品名称：${row.name}`, `品类：${product.category}`,
-      product.specification ? `规格：${product.specification}` : "", product.sellingPoints ? `用户确认的录入卖点（只作表达重点，不自动证明功效、销量、资质或保证）：${product.sellingPoints}` : "", product.priceCents !== null ? `用户确认的录入价格：${product.priceCents / 100} ${product.currency}` : "",
+      product.specification ? `规格：${product.specification}` : "", product.sellingPoints ? `用户确认的商品特点：${product.sellingPoints}` : "", product.priceCents !== null ? `商品价格：${product.priceCents / 100} ${product.currency}` : "",
+      ...Object.entries({ content: "具体提供的内容", usage: "实际使用例子", difference: "具体区别与实现方式", delivery: "包含的内容与服务", limitations: "适用条件与真实限制", speakerExperience: "用户确认可公开的讲述者真实经历" }).flatMap(([key, label]) => product.copyFacts[key as keyof typeof product.copyFacts] ? [`${label}：${product.copyFacts[key as keyof typeof product.copyFacts]}`] : []),
       `使用者：${product.audience.user}`, `购买者：${product.audience.buyer}`, `使用场景：${product.scenarios}`, `表达禁区：${product.prohibited}`].filter(Boolean).join("\n");
     const evidenceId = `product-facts:${row.id}`;
     claim = { id: `product-claim:${row.id}`, statement: `${row.name}的已确认商品信息`, kind: "specification", allowedExpression: body,
-      conditions: "仅可描述上述用户确认的基础信息，不推断功效、材质、资质、销量、优惠或使用体验。", evidenceIds: [evidenceId], validUntil: null, status: "confirmed" };
+      conditions: "仅描述用户明确提供并确认的商品特点、内容、场景、经历和条件；不得进一步推断功效、材质、资质、销量、优惠或使用体验。用户确认不等于外部实验。", evidenceIds: [evidenceId], validUntil: null, status: "confirmed" };
     evidence.push({ id: evidenceId, revision: row.revision, kind: "manual_confirmation", title: "用户确认的商品资料", body,
       sourceLocator: `当前商品资料版本 ${row.version}`, conditions: claim.conditions, mediaAssetId: null, validUntil: null, virtualProductVersionId: row.id });
   } else {
@@ -82,7 +83,6 @@ export async function buildEcommerceContext(access: EcommerceAccess, taskId: str
   if (claim.kind === "offer" && !priceReady) throw new EcommerceError("OFFER_UNAVAILABLE", "价格信息需要已录入价格和已确认的价格证据；促销活动还需要有效期，已过期的价格信息不能使用。", 409);
   const configuredStrategy = strategyForTask(await readCoreContentStrategy(db, access), targetNames[brief.target]);
   const strategy = configuredStrategy?.positioning.trim() && configuredStrategy.targetAudience.trim() ? configuredStrategy : null;
-  if (!strategy && mode === "method") throw new EcommerceError("STRATEGY_REQUIRED", "请先补齐当前空间的核心内容策略。", 409);
   const missing: string[] = [];
   if (!brief.audience.user || !brief.audience.buyer) missing.push("本次购买者和使用者");
   if (!brief.scene) missing.push("购买场景"); if (!brief.barrier) missing.push("主要购买障碍");
@@ -110,11 +110,15 @@ export async function buildEcommerceContext(access: EcommerceAccess, taskId: str
     else candidates.push({ id: c.id, versionId: c.version_id, revision: c.revision, scope: c.scope, card: componentSchema.omit({ organizationId: true, projectId: true, id: true, revision: true, requiredFilming: true }).strip().parse(parsed.data), score: eligibility.score, reasons: eligibility.reasons });
   }
   for (const id of writingComponentIds) if (!candidates.some(c => c.id === id)) throw new EcommerceError("SELECTED_COMPONENT_UNSUITABLE", "指定组件不满足当前任务条件，请查看筛选原因。", 409);
-  const selectedCandidates = mode === "benchmark" ? [] : kinds.flatMap(kind => {
+  const hasCompleteWritingMethods = kinds.every(kind => candidates.some(c => c.card.kind === kind));
+  // Built-in methodology can write without importing private cards. Explicit
+  // selections still require a complete, eligible pair rather than disappearing.
+  if (mode === "method" && writingComponentIds.length && !hasCompleteWritingMethods)
+    missing.push("与指定方法配套的开头和文案结构组件");
+  const selectedCandidates = mode === "benchmark" || !hasCompleteWritingMethods ? [] : kinds.flatMap(kind => {
     const group = candidates.filter(c => c.card.kind === kind).sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
     const pinned = group.filter(c => writingComponentIds.includes(c.id));
     if (pinned.length > 1) throw new EcommerceError("DUPLICATE_COMPONENT_KIND", "每类只能指定一个组件。", 400);
-    if (!group.length) missing.push(`适配的${kindNames[kind]}组件`);
     return pinned.length ? pinned : group.slice(0, 5);
   });
   const cases: CaseSource[] = [], directCaseSnapshots: DirectCaseSnapshot[] = [];
@@ -147,13 +151,18 @@ export async function buildEcommerceContext(access: EcommerceAccess, taskId: str
   ];
   const publicProduct = { id: task.product_id, versionId: row.id, revision: row.revision, name: row.name, category: product.category,
     price: product.priceCents !== null ? { amountCents: product.priceCents, currency: product.currency, verification: "用户录入价格；只有所选商品主张或证据明确支持时才写入文案，不代表已核实优惠。" } : null,
-    specification: product.specification, sellingPoints: product.sellingPoints, prohibited: product.prohibited, purchaseConcerns: product.purchaseConcerns,
+    specification: product.specification, sellingPoints: product.sellingPoints, copyFacts: product.copyFacts, prohibited: product.prohibited, purchaseConcerns: product.purchaseConcerns,
     claim: { id: claim.id, statement: claim.statement, allowedExpression: claim.allowedExpression, conditions: claim.conditions, validUntil: claim.validUntil },
     offer: priceReady ? { priceCents: product.priceCents, currency: product.currency, offer: product.offer, validUntil: product.offerValidUntil } : null };
   const copyBrief = taskBriefSchema.omit({ filming: true, filmingNotes: true }).strip().parse({ ...brief, referenceMode: mode, benchmark: mode === "benchmark" ? brief.benchmark : null, caseIds: mode === "benchmark" ? brief.caseIds : [], componentIds: writingComponentIds });
   const input = { task: { id: task.id, title: task.title, revision: task.revision, brief: copyBrief }, product: publicProduct, strategy, evidence, knowledge, candidates: selectedCandidates, cases, sources };
+  const copyReadiness = assessEcommerceCopyReadiness({ product: { ...product, name: row.name,
+    claims: useProductFacts ? [] : [claim],
+    sellingPoints: [product.sellingPoints, ...(!useProductFacts ? [claim.allowedExpression, ...evidence.map(e => e.body)] : [])].filter(Boolean).join("\n"),
+  }, brief });
+  for (const gap of copyReadiness.missing) missing.push(gap.label);
   const manifest = await Promise.all(sources.map(async s => ({ sourceType: s.type, sourceId: s.id, version: s.version, contentHash: await hashJson(s.text), organizationId: access.organizationId, projectId: access.projectId })));
-  return { task, input, manifest, inputHash: await hashJson({ ...input, directCaseSnapshots }), ready: missing.length === 0, missing, rejected, nonWritingComponentIds, directCaseSnapshots, virtualProductSnapshot, optionalStrategySnapshot: strategy ? null : configuredStrategy };
+  return { task, input, manifest, inputHash: await hashJson({ ...input, directCaseSnapshots }), ready: missing.length === 0, missing, copyReadiness, rejected, nonWritingComponentIds, directCaseSnapshots, virtualProductSnapshot, optionalStrategySnapshot: strategy ? null : configuredStrategy };
 }
 export type EcommerceContext = Awaited<ReturnType<typeof buildEcommerceContext>>;
 

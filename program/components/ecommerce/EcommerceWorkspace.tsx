@@ -6,7 +6,7 @@ import { useWorkspaceInitialization } from "../useWorkspaceInitialization";
 import { Products } from "./Products";
 import { Tasks } from "./Tasks";
 import { Cases } from "./Cases";
-import { ecommerceApi, Field, Notices, useEcommerceAction, type Scope } from "./shared";
+import { ecommerceApi, Notices, useEcommerceAction, type Scope } from "./shared";
 import "./ecommerce.css";
 
 type Item = { id: string; name: string };
@@ -31,7 +31,7 @@ export function EcommerceWorkspace({ initialOrganizationId = "", initialProjectI
     window.addEventListener("beforeunload", warn); return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
   if (loading) return <div className="management-state" role="status">正在加载企业空间…</div>;
-  return <div className="ec-workspace"><div className="ec-scope"><Field label="公司"><select value={organizationId} onChange={event => { const id = event.target.value; if (discard()) { setDirty(false); setOrganizationId(id); void runScopedAction(() => loadProjects(id), setError); } }}>{organizations.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}</select></Field><Field label="企业空间"><select value={projectId} onChange={event => { if (discard()) { setDirty(false); setProjectId(event.target.value); rememberCurrentScope(organizationId, event.target.value); } }}>{projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></Field><a className="ec-back" href={`/content?${new URLSearchParams(scope)}`} onClick={event => { if (!discard()) event.preventDefault(); }}>返回普通内容</a></div><Notices error={error} />{projectId ? <ProjectWorkspace key={`${organizationId}:${projectId}`} scope={scope} dirty={setDirty} discard={discard} /> : <p className="ec-panel">请先选择一个可访问的企业空间。</p>}</div>;
+  return <div className="ec-workspace"><div className="management-toolbar ec-scope"><label>公司<select value={organizationId} onChange={event => { const id = event.target.value; if (discard()) { setDirty(false); setOrganizationId(id); void runScopedAction(() => loadProjects(id), setError); } }}>{organizations.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}</select></label><label>企业空间<select value={projectId} onChange={event => { if (discard()) { setDirty(false); setProjectId(event.target.value); rememberCurrentScope(organizationId, event.target.value); } }}>{projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label><a className="ec-back" href={`/content?${new URLSearchParams(scope)}`} onClick={event => { if (!discard()) event.preventDefault(); }}>返回普通内容 →</a></div><Notices error={error} />{projectId ? <ProjectWorkspace key={`${organizationId}:${projectId}`} scope={scope} dirty={setDirty} discard={discard} /> : <p className="ec-panel">请先选择一个可访问的企业空间。</p>}</div>;
 }
 
 function ProjectWorkspace({ scope, dirty, discard }: { scope: Scope; dirty: (value: boolean) => void; discard: () => boolean }) {
@@ -40,6 +40,7 @@ function ProjectWorkspace({ scope, dirty, discard }: { scope: Scope; dirty: (val
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const editorDirty = (value: boolean) => { if (mounted.current && tabRef.current === tabSelection) dirty(value); };
   const [productVersionId, setProductVersionId] = useState("");
+  const [editingProductId, setEditingProductId] = useState<string | undefined>();
   const action = useEcommerceAction();
   const load = useCallback(async () => { const result = await ecommerceApi<{ settings: Settings; canManage: boolean }>(scope, "settings"); setSettings(result.settings); setCanManage(result.canManage); }, [scope]);
   const { act } = action;
@@ -54,8 +55,8 @@ function ProjectWorkspace({ scope, dirty, discard }: { scope: Scope; dirty: (val
   return <><Notices error={action.error} message={action.message} />{!settings ? <div className="ec-panel"><p role="status">{action.error ? "电商设置未加载。" : "正在读取电商设置…"}</p>{action.error && <button type="button" onClick={() => void action.act(load)}>重新加载</button>}</div> : <>
     {!enabled && <section className="ec-panel" aria-label="启用电商文案"><p className="ec-muted">当前空间尚未启用电商文案。{canManage ? "启用后可保存商品资料并创建文案任务。" : "请联系公司管理员启用后再保存和生成。"}</p>{canManage && <div className="ec-actions"><button type="button" className="ec-primary" disabled={action.busy} onClick={() => void enable()}>启用文案功能</button></div>}</section>}
     <nav className="ec-tabs ec-primary-tabs" aria-label="电商素材工作区">{Object.entries({ products: "商品资料", tasks: "文案任务" }).map(([id, label]) => <button key={id} type="button" aria-current={tab === id ? "page" : undefined} onClick={() => openTab(id)}>{label}</button>)}<details className="ec-extra-nav"><summary>{tab === "cases" ? "参考案例" : "更多工具"}</summary><div><button type="button" aria-current={tab === "cases" ? "page" : undefined} onClick={event => { openTab("cases"); event.currentTarget.closest("details")?.removeAttribute("open"); }}>参考案例</button></div></details></nav>
-    {tab === "products" && <Products scope={scope} enabled={enabled} dirty={editorDirty} discard={discard} onCreateCopy={versionId => { setProductVersionId(versionId); openTab("tasks"); }} />}
+    {tab === "products" && <Products scope={scope} enabled={enabled} dirty={editorDirty} discard={discard} selectedProductId={editingProductId} onSelectProduct={setEditingProductId} onCreateCopy={versionId => { setProductVersionId(versionId); openTab("tasks"); }} />}
     {tab === "cases" && <Cases scope={scope} enabled={enabled} dirty={editorDirty} discard={discard} />}
-    {tab === "tasks" && <Tasks scope={scope} enabled={enabled} canManage={canManage} dirty={editorDirty} discard={discard} initialProductVersionId={productVersionId} />}
+    {tab === "tasks" && <Tasks scope={scope} enabled={enabled} canManage={canManage} dirty={editorDirty} discard={discard} initialProductVersionId={productVersionId} onEditProduct={id => { setEditingProductId(id); openTab("products"); }} />}
   </>}</>;
 }

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { getD1 } from "../../db/runtime";
 import { auditStatement, assertMutationAccess, commitMutation, writeBindings, writeGuard, EcommerceError, requireChanged, type EcommerceAccess } from "./access";
-import { buildEcommerceContext } from "./context";
+import { buildEcommerceContext, generationSourceDocument } from "./context";
 import { metricsSchema, packSchema, publicationSchema, type MetricInput } from "./contracts";
 import { hashJson } from "./products";
 import { generationActorGuard, generationSourceGuard } from "./source-guard";
@@ -26,7 +26,7 @@ export async function savePublication(request: Request, access: EcommerceAccess,
       AND ${writeGuard} AND ${generationSourceGuard} AND ${generationActorGuard}
       AND EXISTS(SELECT 1 FROM social_accounts a WHERE a.id=? AND a.organization_id=ecommerce_tasks.organization_id AND a.project_id=ecommerce_tasks.project_id AND a.account_type='owned' AND a.status='active' AND a.platform=?)
       AND NOT EXISTS(SELECT 1 FROM ecommerce_generation_runs r WHERE r.task_id=ecommerce_tasks.id AND r.status='running')`)
-      .bind(JSON.stringify(context.input), access.userId, now, taskId, ...scope, version.version, task.revision, ...writeBindings(access), access.userId, input.accountId, input.platform),
+      .bind(JSON.stringify(generationSourceDocument(context)), access.userId, now, taskId, ...scope, version.version, task.revision, ...writeBindings(access), access.userId, input.accountId, input.platform),
     db.prepare(`INSERT INTO ecommerce_publications (id,organization_id,project_id,task_id,version_id,account_id,platform,external_id,external_url,published_at,traffic,ad_plan,created_by,created_at)
       SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE changes()=1`).bind(id, ...scope, taskId, version.id, input.accountId, input.platform, input.externalId, input.externalUrl, input.publishedAt, input.traffic, input.adPlan, access.userId, now),
     auditStatement(access, "ecommerce.publication.saved", taskId, { publicationId: id, versionId: version.id }),
