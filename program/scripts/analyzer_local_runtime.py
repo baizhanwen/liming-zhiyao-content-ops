@@ -56,9 +56,9 @@ def windows_control(action: str, base_url: str | None = None):
                                    timeout=85, check=False)
         result = next((json.loads(line) for line in reversed(completed.stdout.splitlines()) if line.strip().startswith("{")), None)
         if not isinstance(result, dict) or not isinstance(result.get("workerRunning"), bool):
-            raise ValueError("invalid Windows analyzer control response")
+            raise TypeError("invalid Windows analyzer control response")
         return completed.returncode, result
-    except (OSError, subprocess.SubprocessError, ValueError):
+    except (OSError, subprocess.SubprocessError, TypeError, ValueError):
         return 1, {"workerRunning": False, "processRunning": False,
                    "message": "本项目 Windows 分析服务控制未完成，请检查环境管理日志。"}
 

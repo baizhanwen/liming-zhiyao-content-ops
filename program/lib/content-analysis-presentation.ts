@@ -1,4 +1,5 @@
 import { contentTaxonomy, getDimensionLabel, getTagLabel, type ContentAnalysis, type ContentClassification, type ContentEvidence } from "./video-content-analysis";
+import { isActiveAnalysisDimension } from "./content-report-contract";
 
 export const contentStateLabels = { known: "已判断", unknown: "无法判断", not_acquired: "未获取材料", not_applicable: "不适用" } as const;
 export const contentModuleLabels: Record<string, string> = {
@@ -70,7 +71,7 @@ export function contentAnalysisMarkdown(content: ContentAnalysis) {
   for (const [moduleKey, moduleStatus] of Object.entries(content.module_status)) {
     lines.push("", `### ${contentModuleLabels[moduleKey] || moduleKey}`, "");
     lines.push(contentModuleCoverageText(moduleStatus), "");
-    for (const dimension of contentTaxonomy.dimensions.filter(row => row.module === moduleKey)) {
+    for (const dimension of contentTaxonomy.dimensions.filter(row => isActiveAnalysisDimension(row.id) && row.module === moduleKey)) {
       const classification = content.classifications.find(row => row.dimension_id === dimension.id);
       if (!classification) continue;
       lines.push(`- ${getDimensionLabel(dimension.id)}：${classificationText(classification)}${dimension.inferred ? "〔模型推断〕" : ""}${classification.reason ? `；${contentReasonLabel(classification.reason)}` : ""}${classification.evidence_ids.length ? `〔证据：${classification.evidence_ids.join("、")}〕` : ""}`);

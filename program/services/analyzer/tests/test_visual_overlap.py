@@ -370,3 +370,35 @@ def test_extraction_failure_cannot_start_ocr_or_a_paid_vision_future(tmp_path):
     with pytest.raises(ValueError, match="synthetic extraction failure"):
         KeyframeVisualAnalyzer(ExtractorFailure(), ocr, NeverVision()).analyze(media(), tmp_path)
     assert ocr.calls == []
+
+
+def test_opted_in_exact_ocr_cache_preserves_each_frame_time_and_regions(tmp_path):
+    frames = fixture_frames(tmp_path)[:3]
+    class ExactOcr(Ocr):
+        supports_exact_image_cache = True
+        def recognize(self, path):
+            self.calls.append(path)
+            self.last_regions = [{'polygon': [[0, 0], [16, 0], [16, 4], [0, 4]], 'confidence': 92}]
+            return '相同图片的真实字幕', 92
+    ocr = ExactOcr()
+    result = KeyframeVisualAnalyzer(Extractor(frames), ocr).analyze(media(), tmp_path / 'out')
+    assert len(ocr.calls) == 1
+    assert [row.timestamp_ms for row in result.keyframes] == [0, 500, 1000]
+    assert [row.ocr_text for row in result.keyframes] == ['相同图片的真实字幕'] * 3
+    assert result.stats['ocr_engine_call_count'] == 1 and result.stats['ocr_exact_reuse_count'] == 2
+    measurements = result.stats['ocr_text_regions']['frames']
+    assert [row['timestamp_ms'] for row in measurements] == [0, 500, 1000]
+    assert all(row['text_area_ratio'] is not None for row in measurements)
+
+
+def test_exact_ocr_cache_never_reuses_a_changed_pixel_or_an_unmarked_adapter(tmp_path):
+    frames = fixture_frames(tmp_path)[:3]
+    image = Image.new('RGB', (32, 32), 'black'); image.putpixel((0, 0), (255, 255, 255)); image.save(frames[1].path)
+    class ExactOcr(Ocr):
+        supports_exact_image_cache = True
+    exact = ExactOcr()
+    result = KeyframeVisualAnalyzer(Extractor(frames), exact).analyze(media(), tmp_path / 'exact')
+    assert len(exact.calls) == 2 and result.stats['ocr_exact_reuse_count'] == 1
+    custom = Ocr()
+    ordinary = KeyframeVisualAnalyzer(Extractor(frames), custom).analyze(media(), tmp_path / 'ordinary')
+    assert len(custom.calls) == 3 and ordinary.stats['ocr_exact_reuse_count'] == 0

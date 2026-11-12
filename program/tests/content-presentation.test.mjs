@@ -30,7 +30,7 @@ function load(relative) {
   return loaded.exports;
 }
 const presentation = load("lib/content-analysis-presentation.ts");
-const { analysisReportView, unifiedReportMarkdown } = load("lib/analysis-report-view.ts");
+const { analysisReportView, editableReportSegments, unifiedReportMarkdown } = load("lib/analysis-report-view.ts");
 const { UnifiedReportContent } = load("components/UnifiedReportContent.tsx");
 const produced = JSON.parse(readFileSync(new URL("./fixtures/unified-analysis-v11.json", import.meta.url), "utf8"));
 const render = (view, props = {}) => renderToStaticMarkup(React.createElement(UnifiedReportContent, {
@@ -60,9 +60,9 @@ test("actual v11 renders one four-module report with evidence and a copyable man
 
 test("the four modules expose named core classifications directly and keep the remaining taxonomy rows in disclosures", () => {
   const view = analysisReportView("analysis.v11", produced), html = render(view);
-  assert.deepEqual(view.sections.map(section => section.classifications.filter(row => row.featured).length), [6, 6, 6, 4]);
+  assert.deepEqual(view.sections.map(section => section.classifications.filter(row => row.featured).length), [6, 6, 5, 4]);
   const rows = view.sections.flatMap(section => section.classifications);
-  assert.equal(rows.length, 65); assert.equal(new Set(rows.map(row => row.dimensionId)).size, 65);
+  assert.equal(rows.length, 64); assert.equal(new Set(rows.map(row => row.dimensionId)).size, 64);
   assert.equal(rows.filter(row => !row.featured).length, 43);
   const visible = [...html.matchAll(/<div class="report-core-classifications">([\s\S]*?)<\/dl><\/div>/g)];
   assert.equal(visible.length, 4);
@@ -168,6 +168,7 @@ test("failed canonical candidates remain reviewable but cannot be copied as an a
   }
   const view = analysisReportView("analysis.v11", report), html = render(view, { failedModuleKeys: ["canonical"], onRetry: () => {} });
   assert.equal(view.invalid, false); assert.equal(view.scriptStatus, "failed");
+  assert.equal(editableReportSegments(view)[0].text, "原文版本Opus 5.5");
   assert.match(html, /待核对候选：Opus 4.5/); assert.match(html, /保留为候选稿/);
   assert.match(html, /<button[^>]*disabled[^>]*>复制口播稿/);
   assert.equal((html.match(/重新校正口播/g) || []).length, 1);
@@ -216,4 +217,92 @@ test("v11 preflight estimates canonical plus four compact modules and keeps imag
     assert.equal(estimate.isHardCap, false); assert.equal(estimate.maximumRequestCount, profile === "max" ? 9 : 10);
     assert.ok(estimateAnalysisMaximumTokens(3_600, profile) > estimateAnalysisMaximumTokens(60, profile));
   }
+});
+
+const reviewedProduced = JSON.parse(readFileSync(new URL("./fixtures/unified-analysis-v12.json", import.meta.url), "utf8"));
+test("historical reports retain their storage schema while retired questions stay out of the page and export", () => {
+  for (const [version, source] of [["analysis.v11", produced], ["analysis.v12", reviewedProduced]]) {
+    const report = structuredClone(source);
+    assert.equal(report.content_analysis.classifications.length, 65);
+    assert.ok(report.content_analysis.classifications.some(row => row.dimension_id === "visual.cut_pattern"));
+    const view = analysisReportView(version, report);
+    assert.equal(view.invalid, false);
+    assert.equal(view.sections.flatMap(row => row.classifications).length, 64);
+    assert.ok(view.sections.flatMap(row => row.classifications).some(row => row.dimensionId === "visual.opening"));
+    assert.ok(!view.sections.flatMap(row => row.classifications).some(row => row.dimensionId === "visual.cut_pattern"));
+    assert.doesNotMatch(render(view), /镜头切换模式/);
+    assert.doesNotMatch(unifiedReportMarkdown("历史报告", view), /镜头切换模式/);
+    assert.doesNotMatch(presentation.contentAnalysisMarkdown(report.content_analysis), /镜头切换模式/);
+  }
+});
+test("export includes the displayed independent manuscript and keeps the report's own findings", () => {
+  const view = analysisReportView("analysis.v12", reviewedProduced);
+  const markdown = unifiedReportMarkdown("口播稿导出", view, ["第一段原话。", "第二段原话。"]);
+  assert.match(markdown, /第一段原话。\n\n第二段原话。/u);
+  assert.ok(markdown.includes(view.summary));
+  assert.equal(markdown.match(/## 完整口播稿/g)?.length, 1);
+  assert.ok(!markdown.includes("【待核对 00:02.30–00:02.60】"));
+});
+test("actual v12 keeps four safe analysis sections while isolating a doubtful manuscript sentence", () => {
+  const view = analysisReportView("analysis.v12", reviewedProduced);
+  assert.equal(view.invalid, false); assert.equal(view.complete, true);
+  assert.equal(view.scriptStatus, "needs_review"); assert.equal(view.reviews.length, 1);
+  const html = render(view, { canCopyScript: true, failedModuleKeys: ["canonical"], onRetry: () => {} });
+  assert.equal((html.match(/class="unified-report-section"/g) || []).length, 4);
+  assert.match(html, /1 处口播待核对|1.*处口播待核对/);
+  assert.match(html, /只补这一句/); assert.match(html, /只补待核对句/);
+  assert.match(html, /复制口播稿/); assert.doesNotMatch(html, /<button[^>]*disabled[^>]*>复制口播稿/);
+  assert.match(view.script.join("\n"), /【待核对 00:02.30–00:02.60】这部分请看画面。/);
+  const markdown = unifiedReportMarkdown("合成核对报告", view);
+  assert.match(markdown, /分析已完成，1 处口播待核对/); assert.match(markdown, /【待核对 00:02.30–00:02.60】/);
+  assert.equal(view.sections.flatMap(row => row.classifications).length, 64);
+});
+
+test("v12 candidate is visible only in review comparison and never in full copy or export", () => {
+  const body = structuredClone(reviewedProduced);
+  const row = body.unified_report.canonical.segments.find(row => row.review_status === "needs_review");
+  row.candidate_text = "未经确认的候选私有占位词";
+  body.unified_report.canonical.paragraphs = [row.candidate_text];
+  const view = analysisReportView("analysis.v12", body), html = render(view);
+  assert.equal(view.invalid, false); assert.match(html, /未采用的候选/);
+  assert.ok(html.includes(row.candidate_text)); assert.ok(!view.script.join("\n").includes(row.candidate_text));
+  assert.ok(!unifiedReportMarkdown("合成核对报告", view).includes(row.candidate_text));
+  assert.equal(view.reviews[0].sourceId, row.source_segment_id);
+  assert.equal(editableReportSegments(view)[1].text, row.original_text);
+  assert.ok(!editableReportSegments(view).some(row => row.text.includes("未经确认的候选私有占位词")));
+});
+
+test("v12 correction comparisons distinguish punctuation from contextual wording without inventing OCR support", () => {
+  const contextual = structuredClone(reviewedProduced);
+  const first = contextual.unified_report.canonical.segments[0];
+  first.original_text = first.text.replace("知道", "之道"); first.evidence_ids = [];
+  const view = analysisReportView("analysis.v12", contextual);
+  assert.equal(view.invalid, false); assert.equal(view.changes[0].basis, "语境校对");
+  assert.match(render(view), /语境校对/);
+  const punctuated = structuredClone(reviewedProduced), row = punctuated.unified_report.canonical.segments[0];
+  row.original_text = row.text.replace(/[，？]/gu, ""); row.evidence_ids = [];
+  assert.equal(analysisReportView("analysis.v12", punctuated).changes[0].basis, "标点与断句");
+});
+
+test("a pending negation change explains the actual manuscript review reason", () => {
+  const body = structuredClone(reviewedProduced);
+  const pending = body.unified_report.canonical.segments.find(row => row.review_status === "needs_review");
+  pending.issues = ["negation_changed"];
+  const view = analysisReportView("analysis.v12", body);
+  assert.equal(view.invalid, false); assert.match(view.reviews[0].reason, /否定含义/);
+  assert.match(render(view), /候选改变了否定含义，需要听原句确认/);
+  assert.doesNotMatch(render(view), /negation_changed/);
+});
+
+test("an independent transcript fills the original single card after the four analysis sections", () => {
+  const { ManuscriptCard } = load("components/ExtractedManuscript.tsx");
+  const view = analysisReportView("analysis.v11", produced);
+  const manuscript = React.createElement(ManuscriptCard, { canCopy: true, onCopy() {} },
+    React.createElement("div", { className: "report-manuscript" }, React.createElement("p", null, "新原片提取的全文")));
+  const html = render(view, { manuscript });
+  assert.equal((html.match(/class="report-script"/g) || []).length, 1);
+  assert.ok(html.indexOf('id="report-synthesis"') < html.indexOf('id="report-script"'));
+  assert.match(html, /可复制文案<\/span><h2>完整口播稿<\/h2>[\s\S]*?>复制口播稿<\/button>/);
+  assert.match(html, /class="report-manuscript"><p>新原片提取的全文<\/p>/);
+  assert.doesNotMatch(html, /查看分析时使用的口播校对稿|report-reviewed-script|同期字幕依据/);
 });

@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from liming_analyzer.api_client import AnalysisResult, AnalyzerApiError, ClaimedJob
-from liming_analyzer.process_runtime import IsolatedProcessor, ProcessingFailure, ProcessingLimits
+from liming_analyzer.process_runtime import IsolatedProcessor, ProcessingFailure, ProcessingLimits, _processing_source_stamp
 
 
 def fake_factory(_settings, _client, monitor):
@@ -58,6 +58,49 @@ class ProcessRuntimeTests(unittest.TestCase):
         second = self.run_job("ok-2")
         self.assertEqual(first.report["pid"], second.report["pid"])
         self.assertEqual(second.report["completed"], 2)
+
+    def test_changed_source_restarts_only_at_next_task_boundary_and_cleans_old_workspace(self):
+        with patch("liming_analyzer.process_runtime._processing_source_stamp", return_value="old") as stamp:
+            first = self.run_job("ok")
+            old_workspace = self.processor.workspace
+            second_job = replace(self.job, id="updated-during-task")
+
+            def heartbeat(status, progress, _stage):
+                stamp.return_value = "new"
+                self.assertTrue(old_workspace.is_dir())
+                return replace(second_job, status=status, progress=progress)
+
+            second = self.processor(second_job, heartbeat)
+            self.assertEqual(second.report["pid"], first.report["pid"])
+            self.assertEqual(second.report["completed"], 2)
+            third = self.run_job("after-update")
+            self.assertNotEqual(third.report["pid"], first.report["pid"])
+            self.assertEqual(third.report["completed"], 1)
+            self.assertFalse(old_workspace.exists())
+            new_workspace = self.processor.workspace
+            fourth = self.run_job("same-version")
+            self.assertEqual(fourth.report["pid"], third.report["pid"])
+            self.assertEqual(self.processor.workspace, new_workspace)
+            self.assertEqual(stamp.call_count, 4)
+
+    def test_shared_contract_change_restarts_idle_child_then_reuses_new_version(self):
+        root = Path(self.temporary.name)
+        source = root / "process_runtime.py"
+        source.write_text("source", encoding="utf-8")
+        resources = root / "resources"
+        resources.mkdir()
+        contract = resources / "content-report-contract.v1.json"
+        contract.write_text('{"limit":1}', encoding="utf-8")
+        with patch("liming_analyzer.process_runtime.__file__", str(source)):
+            first = self.run_job("old-contract")
+            old_workspace = self.processor.workspace
+            contract.write_text('{"limit":2}', encoding="utf-8")
+            second = self.run_job("new-contract")
+            self.assertNotEqual(first.report["pid"], second.report["pid"])
+            self.assertFalse(old_workspace.exists())
+            third = self.run_job("same-contract")
+            self.assertEqual(second.report["pid"], third.report["pid"])
+            self.assertEqual(third.report["completed"], 2)
 
     def test_uninterruptible_stage_times_out_then_next_job_runs(self):
         self.run_job("ok")
@@ -135,6 +178,40 @@ class ProcessRuntimeTests(unittest.TestCase):
         self.assertFalse(orphan.exists())
         self.assertTrue((unmarked / "keep.txt").is_file())
         self.assertTrue(self.processor.workspace.is_dir())
+
+
+class ProcessingSourceStampTests(unittest.TestCase):
+    def test_actual_source_contents_and_membership_change_the_stamp(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            module = root / "process_runtime.py"
+            module.write_text("old", encoding="utf-8")
+            with patch("liming_analyzer.process_runtime.__file__", str(module)):
+                first = _processing_source_stamp()
+                before = module.stat()
+                module.write_text("new", encoding="utf-8")
+                os.utime(module, ns=(before.st_atime_ns, before.st_mtime_ns))
+                changed = _processing_source_stamp()
+                self.assertNotEqual(changed, first)
+                (root / "helper.py").write_text("helper", encoding="utf-8")
+                added = _processing_source_stamp()
+                self.assertNotEqual(added, changed)
+                (root / "helper.py").unlink()
+                self.assertEqual(_processing_source_stamp(), changed)
+                (root / "model.bin").write_bytes(b"unrelated cached model")
+                self.assertEqual(_processing_source_stamp(), changed)
+                resources = root / "resources"
+                resources.mkdir()
+                contract = resources / "content-report-contract.v1.json"
+                contract.write_text('{"limit":1}', encoding="utf-8")
+                with_resource = _processing_source_stamp()
+                self.assertNotEqual(with_resource, changed)
+                previous = contract.stat()
+                contract.write_text('{"limit":2}', encoding="utf-8")
+                os.utime(contract, ns=(previous.st_atime_ns, previous.st_mtime_ns))
+                self.assertNotEqual(_processing_source_stamp(), with_resource)
+                contract.unlink()
+                self.assertEqual(_processing_source_stamp(), changed)
 
 
 if __name__ == "__main__":

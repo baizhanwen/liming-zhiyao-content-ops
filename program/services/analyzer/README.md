@@ -7,9 +7,9 @@
 ## 当前生产组合
 
 - FFmpeg / ffprobe：媒体探测、16 kHz 单声道音轨和图片提取；
-- 本地转写：支持 faster-whisper 的独立模型缓存与真实片段时间轴；本次本机部署沿用原 lmzy 的 `small / zh / auto`。原 FunASR `paraformer-zh`、VAD 与标点路径继续兼容；
+- Windows x64 的默认中文配置使用 Qwen3-ASR-1.7B INT8 在 CPU 上转写，Apple Silicon 在自动设备模式下使用 Qwen3-ASR-1.7B；匹配的 Whisper `large-v3-turbo` 提供时间定位。显式选择其他识别配置时按该配置执行。遇到截断、重复或模型不可用时保留已取得的有效口播及失败信息。原片有稳定的同期硬字幕时，按时间和画面位置复核，保存原识别文字及对应帧时间。
 - PaddleOCR：使用 `PP-OCRv5_mobile_det/rec` 识别短视频字幕和场景文字；
-- PySceneDetect：按镜头变化选择关键帧，无法检出镜头时退回定时抽帧；
+- FFmpeg scene-score：检测明显画面变化，并与前三秒、全片分段及结尾代表帧合并；检测失败时仍保留时间分段采样。图片使用实际解码时间，重复真实帧不会冒充独立时序证据；
 - Instructor + Pydantic：约束 DeepSeek、GLM 等 OpenAI 兼容模型的报告结构并自动重试；
 - Skill Collect 视频采集适配器：先解析官方公开页面，再按需使用独立匿名 Chromium 取得完整原片，保留目标 ID、完整字节覆盖、哈希、轨道与时长校验；平台限制导致获取失败时可上传文件。
 

@@ -14,6 +14,7 @@ import { useAnalysisProfile } from "./useAnalysisProfile";
 import TaskProgress, { initialTaskRefresh, type TaskRefreshState } from "./TaskProgress";
 import type { TaskProgressSnapshot } from "../lib/task-progress-view";
 import { createTaskSnapshotReader } from "../lib/task-snapshot-reader";
+import { mediaErrorPresentation } from "../lib/media-error-view";
 
 type Organization = { id: string; name: string };
 type Project = { id: string; name: string };
@@ -64,6 +65,8 @@ function visibleJobError(job: Job) {
   if (job.progress === 18 && (job.error_message?.includes("[WinError 2]") || job.error_message?.includes("executable was not found"))) {
     return "分析主机没有找到 FFmpeg/ffprobe 媒体运行时。";
   }
+  const mediaFailure = mediaErrorPresentation(job);
+  if (mediaFailure) return mediaFailure.message;
   if (job.error_message?.includes("本地浏览器登录态") || job.error_message?.includes("分析主机浏览器登录态")) {
     return "该历史任务使用的主机浏览器登录态不可用，请使用当前匿名采集重试，或上传原视频。";
   }
@@ -83,6 +86,8 @@ function guidanceForJob(job: Job) {
   if (job.progress === 18 && (job.error_message?.includes("[WinError 2]") || job.error_message?.includes("executable was not found"))) {
     return "请在运行局域网服务的主机上双击 tools\\setup-analyzer.bat 修复媒体运行时，重启局域网服务后再点重试。";
   }
+  const mediaFailure = mediaErrorPresentation(job);
+  if (mediaFailure) return mediaFailure.guidance;
   if (job.error_message?.includes("Invalid JSON") || job.error_message?.includes("json_invalid") || job.error_message?.includes("validation error for Report")) {
     return "JSON 自动恢复已经启用，请点击“从检查点继续”；不会重新下载或转写。";
   }

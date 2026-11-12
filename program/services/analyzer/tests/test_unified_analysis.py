@@ -143,7 +143,8 @@ def test_production_flow_calls_only_canonical_and_four_compact_modules():
     })
     assert sdk.calls[0]["task"] == "canonical_transcript"
     assert sdk.calls[-1]["task"] == "content_classification:synthesis"
-    assert all(row["max_retries"] == 1 and "max_tokens" not in row for row in sdk.calls)
+    assert all(row["max_retries"].stop.max_attempt_number == 1 and row["max_retries"].reraise
+               and "max_tokens" not in row for row in sdk.calls)
     started = [row for row in ledger.events if row["status"] == "started"]
     finished = [row for row in ledger.events if row["status"] == "completed"]
     assert {row["id"] for row in started} == {row["id"] for row in finished}
@@ -192,8 +193,7 @@ def test_real_sdk_length_exception_increases_budget_once_and_includes_failed_usa
     assert diag["total_tokens"] == 120 + 13 + expected[0]
 
 
-@pytest.mark.parametrize(("failure", "kind"), [("overloaded", "overloaded"), ("timeout", "timeout"),
-                                              ("schema", "schema_invalid")])
+@pytest.mark.parametrize(("failure", "kind"), [("overloaded", "overloaded"), ("timeout", "timeout")])
 def test_nonlength_failure_is_not_blindly_retried_and_blocks_paid_synthesis(failure, kind):
     task = "content_classification:" + MODULES[1]
     result, sdk, _ledger, checkpoints, *_rest = run_unified(sdk=OfflineSdk(failures={task: [failure]}))
@@ -451,12 +451,12 @@ def test_pipeline_persists_unified_progress_with_original_evidence_and_restores_
     assert sdk.calls == []
 
 
-def test_real_sdk_constructor_defaults_to_v11_but_legacy_injection_keeps_v9():
+def test_explicit_v11_adapter_and_legacy_injection_keep_prior_contracts():
     sdk, ledger = OfflineSdk(), Ledger()
     with patch("openai.OpenAI", return_value=object()), patch("instructor.from_openai", return_value=sdk):
         analyzer = InstructorStructureAnalyzer(
             api_key="synthetic-offline-key", base_url="https://synthetic.invalid", model="fixture",
-            provider="fixture", call_recorder=ledger,
+            provider="fixture", call_recorder=ledger, generate_reviewed_report=False,
         )
     job = ClaimedJob("factory-synthetic", "org", "project", "video", "upload", "analyzing", 84, 1, {})
     result = analyzer.analyze(job, *inputs())
@@ -545,7 +545,7 @@ def test_schema_candidate_utf8_byte_boundary_and_length_exclusion():
                                   {"failure_kind": "timeout", "finish_reason": "stop"}) is None
 
 
-def test_wrapped_schema_failure_keeps_candidate_internal_and_never_pays_for_a_retry(caplog):
+def test_repeated_wrapped_schema_failure_keeps_candidate_internal_and_bounds_format_repair(caplog):
     candidate = {"c": [{"d": 0, "s": 1, "r": "private-candidate-only"}], "g": [], "u": [], "f": []}
     wrapped = instructor_wrapper(synthetic_validation_error(), content=json.dumps(candidate))
     failures = []
@@ -557,13 +557,13 @@ def test_wrapped_schema_failure_keeps_candidate_internal_and_never_pays_for_a_re
 
     task = "content_classification:" + MODULES[1]
     with patch("liming_analyzer.unified_analysis.UnifiedRequestError", CapturingRequestError):
-        result, sdk, ledger, *_rest = run_unified(sdk=OfflineSdk(failures={task: [wrapped]}))
-    assert len([row for row in sdk.calls if row["task"] == task]) == 1
+        result, sdk, ledger, *_rest = run_unified(sdk=OfflineSdk(failures={task: [wrapped, wrapped]}))
+    assert len([row for row in sdk.calls if row["task"] == task]) == 2
     assert not any(row["task"] == "content_classification:synthesis" for row in sdk.calls)
-    assert len(failures) == 1 and failures[0].safe_candidate == candidate
+    assert len(failures) == 2 and all(failure.safe_candidate == candidate for failure in failures)
     assert failures[0].diagnostics["failure_kind"] == "schema_invalid"
     assert module_section(result, MODULES[1])["diagnostics"]["failure_kind"] == "schema_invalid"
-    assert len([row for row in ledger.events if row["status"] == "failed"]) == 1
+    assert len([row for row in ledger.events if row["status"] == "failed"]) == 2
     public = json.dumps(result.report) + json.dumps(ledger.events) + caplog.text
     for private in ("private-exception-message", "private-request-prompt", "private-api-key", "private-candidate-only"):
         assert private not in public

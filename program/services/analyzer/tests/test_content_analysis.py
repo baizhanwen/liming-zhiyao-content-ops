@@ -233,7 +233,9 @@ assert len(result['classifications']) == 65
         self.assertNotIn("visual", calls)
         self.assertEqual(result["module_status"]["visual"]["status"], "not_acquired")
         self.assertTrue(all(row["state"] == "not_acquired" for row in result["classifications"]
-                            if row["dimension_id"].startswith("visual.")))
+                            if row["dimension_id"].startswith("visual.") and row["dimension_id"] != "visual.cut_pattern"))
+        retired = next(row for row in result["classifications"] if row["dimension_id"] == "visual.cut_pattern")
+        self.assertEqual(retired["reason"], "analysis_dimension_retired")
         self.assertNotIn("temporal", {row["source"] for row in result["evidence_registry"]})
 
     def test_explicit_audio_only_marks_visual_not_applicable_and_completes_text_modules(self):
@@ -257,7 +259,8 @@ assert len(result['classifications']) == 65
         for dimension in load_taxonomy()["dimensions"]:
             if dimension["requires"] in {"visual", "temporal"}:
                 self.assertEqual(rows[dimension["id"]]["state"], "not_applicable")
-                self.assertEqual(rows[dimension["id"]]["reason"], "no_video_track")
+                self.assertEqual(rows[dimension["id"]]["reason"],
+                                 "analysis_dimension_retired" if dimension["id"] == "visual.cut_pattern" else "no_video_track")
         self.assertEqual(rows["synthesis.visual_text_relation"]["state"], "not_applicable")
         self.assertEqual(rows["topic.category"]["state"], "known")
         self.assertEqual(result["module_status"]["synthesis"]["status"], "completed")

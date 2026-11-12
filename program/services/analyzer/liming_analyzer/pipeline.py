@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Callable, Mapping
 from concurrent.futures import ALL_COMPLETED, ThreadPoolExecutor, wait
@@ -297,6 +298,12 @@ class AnalysisPipeline:
         ):
             retry_metadata["retry_module_keys"] = list(dict.fromkeys(retry_keys))
 
+        retry_ids = current.checkpoint.get("retry_review_segment_ids") if isinstance(current.checkpoint, Mapping) else None
+        if isinstance(retry_ids, list) and 0 < len(retry_ids) <= 1_000 and all(
+            isinstance(value, str) and re.fullmatch(r"transcript:\d{4,}", value) for value in retry_ids
+        ):
+            retry_metadata["retry_review_segment_ids"] = list(dict.fromkeys(retry_ids))
+
         def synchronized_heartbeat(status: str, value: int, detail: str) -> ClaimedJob:
             # The owner may commit the new version before its heartbeat ACK
             # returns over HTTP/the process pipe. Checkpoints must not observe
@@ -326,7 +333,12 @@ class AnalysisPipeline:
             def persist_unified_progress(payload: Mapping[str, Any]) -> None:
                 modules = payload.get("modules", {})
                 completed = len(modules) if isinstance(modules, Mapping) else 0
-                unified_stage[0] = f"正在生成报告，已完成 {completed}/4 个内容部分" if completed else "口播已核对，正在分析选题、文案与画面" if payload.get("canonical") else "正在结合原片文字核对口播"
+                canonical_state = payload.get("canonical")
+                needs_review = isinstance(canonical_state, Mapping) and canonical_state.get("status") in {"needs_review", "failed"}
+                unified_stage[0] = ("正在更新并核对分析报告" if completed and payload.get("protocol_version") == "unified-analysis.v2" else
+                    f"正在生成报告，已完成 {completed}/4 个内容部分" if completed else
+                    "口播疑义已单独标记，正在分析可靠文字与画面" if needs_review else
+                    "口播已核对，正在分析选题、文案与画面" if canonical_state else "正在逐句核对口播")
                 observe(heartbeat, "model_analysis", completed=completed, total=4)
                 checkpoint_payload = {**base_checkpoint, "unified_progress": dict(payload)}
                 with state_lock:
@@ -348,6 +360,8 @@ class AnalysisPipeline:
         with TemporaryDirectory(prefix="liming-analysis-") as temporary:
             workspace = Path(temporary)
             restored = _restore_evidence_checkpoint(job, workspace)
+            if isinstance(job.checkpoint, Mapping) and job.checkpoint.get("report_revalidation_only") is True and restored is None:
+                raise RuntimeError("报告复验所需的原始证据检查点无效，未重新获取或转写媒体。")
             if restored is not None:
                 media, transcript, visuals, source_metadata = restored
                 visuals = replace(visuals, stats={**visuals.stats, "evidence_reused": True})

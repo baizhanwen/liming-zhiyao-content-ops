@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -10,6 +11,8 @@ from functools import lru_cache
 from importlib.resources import files
 from itertools import pairwise
 from typing import Any, Literal
+
+from .content_report_contract import RETIRED_DIMENSION_IDS, utf16_units, validate_evidence_storage
 
 MODULES = (
     "text_topic_structure_audience",
@@ -23,6 +26,18 @@ _SEGMENT_FIELDS = {
     "id", "kind", "dimension_id", "tags", "start_ms", "end_ms", "text", "evidence_ids",
 }
 _UNIT_FIELDS = {"id", "type_tag", "text", "evidence_ids", "duplicate_of"}
+_LOCAL_CLASSIFICATION_NORMALIZATIONS = {
+    "classification_tag_index_not_in_taxonomy", "classification_reference_limit_exceeded",
+}
+
+
+def _log_local_normalizations(module: str, response: Mapping[str, Any], source: str) -> bool:
+    rows = [f"{row['dimension_id']}:{row['reason']}" for row in response["classifications"]
+            if row.get("reason") in _LOCAL_CLASSIFICATION_NORMALIZATIONS]
+    if rows:
+        logging.getLogger(__name__).info("local_normalization module=%s source=%s dimensions=%s",
+                                         module, source, ",".join(rows))
+    return bool(rows)
 
 
 @lru_cache(maxsize=1)
@@ -65,7 +80,7 @@ def _valid_time(start: Any, end: Any, duration: int | None) -> bool:
 
 
 def _text(value: Any, limit: int = 2_000) -> bool:
-    return isinstance(value, str) and bool(value.strip()) and len(value) <= limit
+    return isinstance(value, str) and bool(value.strip()) and utf16_units(value) <= limit
 
 
 def _safe_asset(value: Any) -> str | None:
@@ -73,6 +88,61 @@ def _safe_asset(value: Any) -> str | None:
     if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,160}", value):
         return value
     return None
+
+
+def _review_metadata(value: Any, transcript: Any) -> dict[str, Any] | None:
+    """Validate the v12 safe-input contract before any model request is made."""
+    if value is None:
+        return None
+    fields = {"total_segments", "accepted_segments", "uncertain_segment_ids", "uncertain_ranges",
+              "first_source_segment_id"}
+    segments = _rows(_get(transcript, "segments", ()))
+    if not isinstance(value, Mapping) or set(value) != fields:
+        raise ValueError("invalid_transcript_review_context")
+    total, accepted = value["total_segments"], value["accepted_segments"]
+    ids, ranges = value["uncertain_segment_ids"], value["uncertain_ranges"]
+    expected = {f"transcript:{index:04d}": row for index, row in enumerate(segments, 1)}
+    if (not _integer(total) or total != len(segments) or not _integer(accepted)
+            or not 0 <= accepted <= total or not isinstance(ids, list)
+            or any(not isinstance(key, str) or key not in expected for key in ids)
+            or len(set(ids)) != len(ids) or accepted + len(ids) != total
+            or not isinstance(ranges, list) or len(ranges) != len(ids)
+            or value["first_source_segment_id"] != ("transcript:0001" if total else None)):
+        raise ValueError("invalid_transcript_review_context")
+    by_id = {}
+    for row in ranges:
+        if (not isinstance(row, Mapping) or set(row) != {"source_segment_id", "start_ms", "end_ms"}
+                or row.get("source_segment_id") not in ids or row["source_segment_id"] in by_id):
+            raise ValueError("invalid_transcript_review_context")
+        source = expected[row["source_segment_id"]]
+        if (row["start_ms"], row["end_ms"]) != (_get(source, "start_ms"), _get(source, "end_ms")):
+            raise ValueError("invalid_transcript_review_context")
+        if not _valid_time(row["start_ms"], row["end_ms"], None):
+            raise ValueError("invalid_transcript_review_context")
+        by_id[row["source_segment_id"]] = dict(row)
+    return {"total_segments": total, "accepted_segments": accepted,
+            "uncertain_segment_ids": list(ids), "uncertain_ranges": [by_id[key] for key in ids],
+            "first_source_segment_id": value["first_source_segment_id"]}
+
+
+def _review_text_unavailable(review: Mapping[str, Any] | None, module: str,
+                             evidence: Sequence[Mapping[str, Any]]) -> bool:
+    # Pending speech is not trusted transcript, but independently observed
+    # screen text remains usable. A single long ASR slot must not disable every
+    # text module when the real OCR can support its own bounded conclusions.
+    return bool(review and review["total_segments"] and not review["accepted_segments"]
+                and module in MODULES[:2] and not any(
+                    row["source"] == "ocr" and isinstance(row["text"], str) and row["text"].strip()
+                    for row in evidence
+                ))
+
+
+def _review_crosses_gap(refs: Sequence[Mapping[str, Any]], review: Mapping[str, Any]) -> bool:
+    if not refs:
+        return False
+    start, end = min(row["start_ms"] for row in refs), max(row["end_ms"] for row in refs)
+    return any(row["start_ms"] < end and row["end_ms"] > start
+               for row in review["uncertain_ranges"])
 
 
 def build_evidence_registry(media: Any, transcript: Any, visuals: Any) -> list[dict[str, Any]]:
@@ -94,6 +164,22 @@ def build_evidence_registry(media: Any, transcript: Any, visuals: Any) -> list[d
             append(f"transcript:{index:04d}", "transcript", text, start, end)
 
     frames = _rows(_get(visuals, "keyframes", []))
+    stats = _get(visuals, "stats", {})
+    valid_frame_times = {
+        _get(frame, "timestamp_ms") for frame in frames
+        if _valid_time(_get(frame, "timestamp_ms"), _get(frame, "timestamp_ms"), duration)
+    }
+    marked_first = [_get(frame, "timestamp_ms") for frame in frames
+                    if "first_frame" in _rows(_get(frame, "roles", []))
+                    and _valid_time(_get(frame, "timestamp_ms"), _get(frame, "timestamp_ms"), duration)]
+    reported_first = _get(stats, "first_frame_timestamp_ms")
+    # A video stream can start after its audio track. Keep that real media
+    # timestamp instead of inventing a zero-time picture, but only trust a
+    # positive first-frame role when the extractor independently reports the
+    # same earliest extracted frame. Legacy zero-time frames stay compatible.
+    positive_first = (reported_first if _integer(reported_first) and 0 < reported_first < 3_000
+                      and marked_first == [reported_first] and valid_frame_times
+                      and min(valid_frame_times) == reported_first else None)
     frame_times: set[int] = set()
     for index, frame in enumerate(frames, 1):
         timestamp = _get(frame, "timestamp_ms")
@@ -103,7 +189,7 @@ def build_evidence_registry(media: Any, transcript: Any, visuals: Any) -> list[d
         asset = _safe_asset(_get(frame, "asset_id"))
         roles = _rows(_get(frame, "roles", []))
         append(f"frame:{index:04d}", "frame", "", timestamp, timestamp, asset,
-               "first_frame" if "first_frame" in roles else None)
+               "first_frame" if "first_frame" in roles and timestamp in {0, positive_first} else None)
         text = _get(frame, "ocr_text")
         if isinstance(text, str) and text.strip():
             append(f"ocr:{index:04d}", "ocr", text, timestamp, timestamp, asset)
@@ -118,7 +204,6 @@ def build_evidence_registry(media: Any, transcript: Any, visuals: Any) -> list[d
             if start == end:
                 vision_times.add(start)
 
-    stats = _get(visuals, "stats", {})
     seen_groups: set[str] = set()
     for group in _rows(_get(stats, "temporal_groups", [])):
         group_id = _get(group, "group_id")
@@ -139,11 +224,21 @@ def build_evidence_registry(media: Any, transcript: Any, visuals: Any) -> list[d
         start, end = timestamps[0], timestamps[-1]
         if not _valid_time(start, end, duration):
             continue
+        opening_origin = {}
+        if group_id == "opening" and start > 0:
+            if (start != positive_first or not _integer(_get(group, "first_frame_timestamp_ms"))
+                    or _get(group, "first_frame_timestamp_ms") != positive_first
+                    or _get(group, "kind") != "opening" or end >= 3_000
+                    or any(time < start for time in vision_times)):
+                continue
+            opening_origin = {"first_frame_timestamp_ms": positive_first}
         seen_groups.add(group_id)
         append(f"temporal:{group_id}", "temporal", json.dumps({
             "kind": _get(group, "kind", "ordered_frames"), "timestamps_ms": timestamps,
             "limitations": _get(group, "limitations", []),
+            **opening_origin,
         }, ensure_ascii=False), start, end, group=group_id)
+    validate_evidence_storage(registry)
     return registry
 
 
@@ -255,6 +350,7 @@ def _tags(value: Any, dimension: Mapping[str, Any]) -> bool:
 
 def _validate_classification(
     row: Any, dimension: Mapping[str, Any], evidence: Mapping[str, Any], *, complete: bool,
+    review_context: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     if not isinstance(row, Mapping) or set(row) != _CLASS_FIELDS:
         return None, "classification_shape"
@@ -283,6 +379,29 @@ def _validate_classification(
             return None, "insufficient_evidence_modality"
         if dimension["requires"] == "temporal" and "temporal" not in sources:
             return None, "ordered_frame_group_required"
+        if review_context and review_context["uncertain_segment_ids"]:
+            text_refs = [evidence[ref] for ref in refs if evidence[ref]["source"] == "transcript"]
+            opening_missing = review_context["first_source_segment_id"] in review_context["uncertain_segment_ids"]
+            if opening_missing and not review_context["accepted_segments"] and dimension["id"].startswith("hook."):
+                ocr_refs = [evidence[ref] for ref in refs if evidence[ref]["source"] == "ocr"]
+                unavailable_opening = (
+                    dimension["id"] == "hook.channel" and "hook.channel.spoken_text" in tags
+                    or ocr_refs and not any(row["start_ms"] < 3_000 and row["end_ms"] <= 3_000
+                                           for row in ocr_refs)
+                )
+                if unavailable_opening:
+                    return {"dimension_id": dimension["id"], "state": "unknown", "tags": None,
+                            "primary_tag": None, "reason": "original_opening_text_requires_review",
+                            "evidence_ids": refs}, None
+            if (dimension["id"].startswith("hook.") or dimension["id"] == "synthesis.opening_fulfillment") and (
+                text_refs and (opening_missing or not any(item["id"] == review_context["first_source_segment_id"]
+                                                         for item in text_refs)
+                               or _review_crosses_gap(text_refs, review_context))
+            ):
+                return {"dimension_id": dimension["id"], "state": "unknown", "tags": None,
+                        "primary_tag": None, "reason": "original_opening_text_requires_review",
+                        "evidence_ids": refs}, None
+            complete = False
         if not complete and (not tags or tags == [dimension["none_tag_id"]]):
             # A declared representative sample is valid input, but cannot establish
             # whole-source absence. Normalize epistemic uncertainty, do not invent
@@ -325,7 +444,7 @@ def _time_within_evidence(row: Mapping[str, Any], refs: list[str], evidence: Map
 
 def _validate_segments(rows: Any, module: str, dimensions: Mapping[str, Any],
                        evidence: Mapping[str, Any], duration: int | None,
-                       issues: list[str]) -> list[dict[str, Any]]:
+                       issues: list[str], review_context: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     kinds = set(_taxonomy()["rules"]["open_text_segment_kinds"])
     if not isinstance(rows, list) or len(rows) > 80:
@@ -371,6 +490,29 @@ def _validate_segments(rows: Any, module: str, dimensions: Mapping[str, Any],
         if row["kind"] == "structure" and (dimension_id != "structure.role" or not row["tags"]):
             issues.append(f"structure_segment_requires_role:{index}")
             continue
+        if review_context and row["kind"] in {"cta", "hook_first_sentence", "hook_first_3s"}:
+            # A literal event may use a safe uninterrupted ASR run or a single
+            # visible OCR quote. Never join text over a pending source sentence.
+            text_refs = sorted((evidence[ref] for ref in refs if evidence[ref]["source"] in {
+                "transcript", "ocr",
+            }), key=lambda item: (item["start_ms"], item["end_ms"], item["id"]))
+            spoken = [item for item in text_refs if item["source"] == "transcript"]
+            opening_missing = review_context["first_source_segment_id"] in review_context["uncertain_segment_ids"]
+            if opening_missing and row["kind"] == "hook_first_sentence":
+                # A visible line cannot certify the first spoken sentence.
+                continue
+            if row["kind"] == "hook_first_3s" and any(item["end_ms"] > 3_000 for item in text_refs):
+                continue
+            if ((spoken and _review_crosses_gap(spoken, review_context)) or (
+                row["kind"].startswith("hook_first") and spoken and opening_missing
+            )):
+                continue
+            quoted = re.sub(r"\s+", "", row["text"])
+            alternatives = [item["text"] for item in text_refs]
+            if spoken:
+                alternatives.append("".join(item["text"] for item in spoken))
+            if not any(quoted in re.sub(r"\s+", "", source) for source in alternatives):
+                continue
         if row["kind"] in {"hook_first_sentence", "hook_first_3s"}:
             text_refs = sorted((evidence[ref] for ref in refs if evidence[ref]["source"] in {
                 "transcript", "ocr",
@@ -429,12 +571,15 @@ def _validate_units(rows: Any, module: str, evidence: Mapping[str, Any],
     return result
 
 
-def _deterministic_opening(registry: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _deterministic_opening(registry: list[dict[str, Any]],
+                           review_context: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
     transcript = sorted((row for row in registry if row["source"] == "transcript"),
                         key=lambda row: (row["start_ms"], row["end_ms"], row["id"]))
     if not transcript:
         return []
     source = transcript[0]
+    if review_context and source["id"] != review_context["first_source_segment_id"]:
+        return []
     original = source["text"].strip()
     match = re.search(r"[。！？!?][”’\"']*|\.(?=\s|$)|\n", original)
     sentence = original[:match.end()].strip() if match else original
@@ -525,7 +670,9 @@ def _module_candidates(registry: list[dict[str, Any]], module: str) -> list[dict
 
 
 def _bounded_evidence(registry: list[dict[str, Any]], module: str,
-                      max_tokens: int) -> tuple[list[dict[str, Any]], bool]:
+                      max_tokens: int, *, reviewed: bool = False) -> tuple[list[dict[str, Any]], bool]:
+    if reviewed:
+        return _bounded_review_evidence(registry, module, max_tokens)
     candidates = _module_candidates(registry, module)
     if estimate_content_tokens(candidates) <= max_tokens and len(candidates) <= 200:
         return candidates, True
@@ -556,7 +703,8 @@ def _bounded_evidence(registry: list[dict[str, Any]], module: str,
         # vision context consumes their budget (in particular real CTA evidence).
         for anchor in [*words[:2], *words[-1:]]:
             add_bundle([anchor])
-    add_bundle([row for row in candidates if row["start_ms"] == 0
+    first = _first_frame_time(registry)
+    add_bundle([row for row in candidates if row["start_ms"] == first
                 and row["source"] in {"frame", "vision", "ocr"}])
     groups = [row for row in candidates if row["source"] == "temporal"]
     groups.sort(key=lambda row: (row["frame_group_id"] != "opening", row["start_ms"]))
@@ -582,15 +730,74 @@ def _bounded_evidence(registry: list[dict[str, Any]], module: str,
     return selected, len(selected) == len(candidates)
 
 
+def _bounded_review_evidence(registry: list[dict[str, Any]], module: str,
+                             max_tokens: int) -> tuple[list[dict[str, Any]], bool]:
+    """Keep visual proof atomic without bundling dense full-page OCR with it."""
+    candidates = _module_candidates(registry, module)
+    selected_ids: set[str] = set()
+    used = 0
+
+    def add(rows: list[dict[str, Any]]) -> None:
+        nonlocal used
+        fresh = [row for row in rows if row["id"] not in selected_ids]
+        size = sum(estimate_content_tokens({**row, "text": row["text"][:360]}) + 2
+                   if row["source"] == "ocr" else estimate_content_tokens(row) + 2 for row in fresh)
+        if len(selected_ids) + len(fresh) <= 200 and used + size <= max_tokens:
+            selected_ids.update(row["id"] for row in fresh)
+            used += size
+
+    words = sorted((row for row in candidates if row["source"] == "transcript"),
+                   key=lambda row: (row["start_ms"], row["end_ms"], row["id"]))
+    if module != "visual":
+        for row in [*words[:2], *words[-1:]]:
+            add([row])
+    first = _first_frame_time(registry)
+    add([row for row in candidates if row["source"] in {"frame", "vision"} and row["start_ms"] == first])
+    groups = sorted((row for row in candidates if row["source"] == "temporal"),
+                    key=lambda row: (row["frame_group_id"] != "opening", row["start_ms"]))
+    for group in groups:
+        times = set(json.loads(group["text"])["timestamps_ms"])
+        add([group, *[row for row in candidates if row["source"] in {"frame", "vision"}
+                      and row["start_ms"] == row["end_ms"] and row["start_ms"] in times]])
+    for row in candidates:
+        if row["source"] in {"frame", "vision"} and row["start_ms"] < 3_000:
+            add([row])
+    # Short visible text is an auxiliary modality. Repeated screen chrome must
+    # not consume the opening frame-group budget. Raw evidence is never edited.
+    seen_ocr: set[str] = set()
+    for row in sorted((row for row in candidates if row["source"] == "ocr"),
+                      key=lambda row: (row["start_ms"] >= 3_000, len(row["text"]), row["start_ms"])):
+        key = re.sub(r"\s+", "", row["text"])
+        if key not in seen_ocr:
+            add([row])
+            seen_ocr.add(key)
+    count = len(candidates)
+    for slot in range(min(count, 200)):
+        row = candidates[round(slot * (count - 1) / max(1, min(count, 200) - 1))]
+        if row["source"] not in {"temporal", "ocr"}:
+            add([row])
+    selected = [row for row in candidates if row["id"] in selected_ids]
+    return selected, len(selected) == len(candidates)
+
+
 def _module_payload(module: str, dimensions: list[dict[str, Any]], registry: list[dict[str, Any]],
                     prior: list[dict[str, Any]], profile: str, metrics: Mapping[str, Any],
                     transcript_source: str, *, compact: bool = False,
+                    review_context: Mapping[str, Any] | None = None,
+                    upstream_context: Mapping[str, Any] | None = None,
                     ) -> tuple[dict[str, Any], dict[str, Any], bool]:
     budget = _profile_budget(profile)["compact"] if compact else _profile_budget(profile)
     def input_estimate(value: Mapping[str, Any]) -> int:
         if compact:
             from .content_module_protocol import prepare_compact_request
-            return estimate_content_tokens(prepare_compact_request(module, value)[0])
+            wire = prepare_compact_request(module, value)[0]
+            if module == "visual" and review_context is not None:
+                # Manuscript repair must not change the selected visual sample.
+                # The actual wire excludes manuscript IDs/ranges; estimate its
+                # small coverage counters at a constant worst-case width.
+                wire["coverage"].update(complete=False, review_limited=False,
+                    uncertain_segment_count=review_context["total_segments"])
+            return estimate_content_tokens(wire)
         return estimate_content_tokens(value)
     limit = budget["input_token_limit"]
     compact_dimensions = [{
@@ -637,6 +844,12 @@ def _module_payload(module: str, dimensions: list[dict[str, Any]], registry: lis
             "原句来自转写或OCR，不将视觉模型描述冒充口播原句。",
         ],
     }
+    if review_context is not None:
+        payload["transcript_review"] = dict(review_context)
+        payload["model_evidence_excerpts"] = {row["id"]: row["text"][:360] for row in registry
+                                             if row["source"] == "ocr" and len(row["text"]) > 360}
+    if upstream_context is not None:
+        payload["upstream_modules"] = dict(upstream_context)
     prior_limit = 1_800 if profile in {"max", "deep"} else 900
     retained_prior: dict[str, Any] = {}
     for key, row in payload["prior_classifications"].items():
@@ -659,6 +872,8 @@ def _module_payload(module: str, dimensions: list[dict[str, Any]], registry: lis
         (row["source"] in {"ocr", "vision"} and row["start_ms"] < 3_000)
         or (row["source"] == "temporal" and row["frame_group_id"] == "opening")
     )]
+    if review_context is not None:
+        text_opening = [row for row in text_opening if row["source"] != "ocr"]
     text_opening_ids = {row["id"] for row in text_opening}
     protected: list[dict[str, Any]] = []
     if compact and module != "visual" and words:
@@ -682,8 +897,8 @@ def _module_payload(module: str, dimensions: list[dict[str, Any]], registry: lis
 
     def select_evidence(remaining: int) -> tuple[list[dict[str, Any]], bool]:
         if not protected:
-            return _bounded_evidence(registry, module, remaining)
-        extra, _complete = _bounded_evidence(auxiliary, module, remaining)
+            return _bounded_evidence(registry, module, remaining, reviewed=review_context is not None)
+        extra, _complete = _bounded_evidence(auxiliary, module, remaining, reviewed=review_context is not None)
         selected_ids = protected_ids | {row["id"] for row in extra}
         result = [row for row in candidates if row["id"] in selected_ids]
         return result, len(result) == len(candidates)
@@ -696,6 +911,9 @@ def _module_payload(module: str, dimensions: list[dict[str, Any]], registry: lis
     }
     opening_ids = {row["id"] for row in registry if row["source"] in {"frame", "ocr", "vision"}
                    and row["start_ms"] < 3_000}
+    if review_context is not None:
+        opening_ids = {row["id"] for row in registry if row["source"] in {"frame", "vision"}
+                       and row["start_ms"] < 3_000}
     opening_groups = {row["id"] for row in registry if row["source"] == "temporal"
                       and row["frame_group_id"] == "opening"}
     first_frame_time = _first_frame_time(registry)
@@ -717,8 +935,10 @@ def _module_payload(module: str, dimensions: list[dict[str, Any]], registry: lis
             required_opening_complete = (
                 opening_words[0]["id"] in selected_ids and text_opening_ids.issubset(selected_ids)
             )
+        excerpted = bool(set(payload.get("model_evidence_excerpts", {})) & selected_ids)
+        review_limited = bool(review_context and review_context["uncertain_segment_ids"])
         payload["source_coverage"].update(
-            complete=complete, included_evidence_count=len(selected),
+            complete=complete and not excerpted and not review_limited, included_evidence_count=len(selected),
             available_evidence_count=len(_module_candidates(registry, module)),
             opening_complete=opening_ids.issubset(selected_ids) if module != MODULES[0] else None,
             required_opening_complete=required_opening_complete,
@@ -726,6 +946,10 @@ def _module_payload(module: str, dimensions: list[dict[str, Any]], registry: lis
             temporal_groups_included=[row["id"] for row in selected if row["source"] == "temporal"],
             estimated_payload_tokens=0,
         )
+        if review_context is not None:
+            payload["source_coverage"].update(review_limited=review_limited,
+                uncertain_segment_count=len(review_context["uncertain_segment_ids"]), evidence_excerpted=excerpted,
+                evidence_complete=complete and not excerpted)
         if compact and module != "visual":
             payload["source_coverage"]["valid_transcript_complete"] = word_ids.issubset(selected_ids)
         payload["source_coverage"]["estimated_payload_tokens"] = input_estimate(payload)
@@ -736,15 +960,20 @@ def _module_payload(module: str, dimensions: list[dict[str, Any]], registry: lis
         selected, complete = select_evidence(available)
         refresh_coverage()
     evidence = {row["id"]: row for row in selected}
-    return payload, evidence, complete
+    return payload, evidence, bool(payload["source_coverage"]["complete"])
 
 
-def _initial_content_state(media: Any, transcript: Any, visuals: Any) -> tuple[
+def _initial_content_state(media: Any, transcript: Any, visuals: Any,
+                           review_context: Mapping[str, Any] | None = None, *,
+                           include_retired: bool = False) -> tuple[
     dict[str, Any], dict[str, Any], list[dict[str, Any]], dict[str, dict[str, Any]],
 ]:
     taxonomy = _taxonomy()
     dimensions = {row["id"]: row for row in taxonomy["dimensions"]}
     registry = build_evidence_registry(media, transcript, visuals)
+    if review_context is not None:
+        pending = set(review_context["uncertain_segment_ids"])
+        registry = [row for row in registry if row["id"] not in pending]
     classifications = {
         key: _empty_classification(row, _dimension_acquired(row, registry))
         for key, row in dimensions.items()
@@ -757,6 +986,17 @@ def _initial_content_state(media: Any, transcript: Any, visuals: Any) -> tuple[
         for key, dimension in dimensions.items():
             if dimension["requires"] in {"visual", "temporal"}:
                 classifications[key].update(state="not_applicable", reason="no_video_track")
+    if review_context is not None and _review_text_unavailable(review_context, MODULES[0], registry):
+        for key, dimension in dimensions.items():
+            if dimension["module"] in MODULES[:2]:
+                classifications[key] = {**_empty_classification(dimension, False),
+                                        "reason": "trusted_transcript_not_acquired"}
+    # Keep stable storage IDs for old reports while omitting retired questions
+    # from every new model request.
+    if not include_retired:
+        for key in RETIRED_DIMENSION_IDS & classifications.keys():
+            classifications[key] = {**_empty_classification(dimensions[key], False),
+                                    "state": "not_applicable", "reason": "analysis_dimension_retired"}
     return taxonomy, dimensions, registry, classifications
 
 
@@ -770,6 +1010,8 @@ def build_content_analysis(
     transcript_source: str = "asr",
     *,
     _compact_payload: bool = False,
+    review_context: Mapping[str, Any] | None = None,
+    _include_retired: bool = False,
 ) -> dict[str, Any]:
     """Make at most four bounded calls and validate every stored semantic label."""
     if transcript_source not in {"asr", "manual"}:
@@ -779,7 +1021,10 @@ def build_content_analysis(
         metrics = build_content_metrics(media, transcript, visuals)
     if not isinstance(metrics, Mapping):
         raise TypeError("metrics must be a mapping")
-    taxonomy, dimensions, registry, classifications = _initial_content_state(media, transcript, visuals)
+    review_context = _review_metadata(review_context, transcript)
+    taxonomy, dimensions, registry, classifications = _initial_content_state(
+        media, transcript, visuals, review_context, include_retired=_include_retired,
+    )
     segments: list[dict[str, Any]] = []
     units: list[dict[str, Any]] = []
     module_status: dict[str, Any] = {}
@@ -789,12 +1034,14 @@ def build_content_analysis(
     for module in MODULES:
         requested = [row for row in dimensions.values() if row["module"] == module
                      and classifications[row["id"]]["state"] != "not_applicable"
-                     and _dimension_acquired(row, registry)]
+                     and _dimension_acquired(row, registry)
+                     and not _review_text_unavailable(review_context, module, registry)]
         if not requested:
             not_applicable = all(classifications[row["id"]]["state"] == "not_applicable"
                                  for row in dimensions.values() if row["module"] == module)
             reasons = {classifications[row["id"]]["reason"] for row in dimensions.values()
-                       if row["module"] == module}
+                       if row["module"] == module
+                       and classifications[row["id"]]["reason"] != "analysis_dimension_retired"}
             module_status[module] = {
                 "status": "not_applicable" if not_applicable else "not_acquired",
                 "reason": next(iter(reasons)) if not_applicable and len(reasons) == 1 else (
@@ -803,9 +1050,27 @@ def build_content_analysis(
                 "validation": {"passed": True, "issues": []}, "source_coverage": None,
             }
             continue
+        module_registry = registry
+        upstream_context = None
+        if review_context is not None and module == "synthesis":
+            available = [key for key in MODULES[:3] if module_status.get(key, {}).get("status") == "completed"
+                         and module_status[key]["validation"]["passed"]]
+            upstream_context = {
+                "available": available,
+                "missing": [key for key in MODULES[:3] if key not in available
+                            and module_status.get(key, {}).get("status") != "not_applicable"],
+                "limited": [key for key in available if not (module_status[key].get("source_coverage") or {}).get("complete")],
+            }
+            safe_refs = {ref for key, row in classifications.items() if dimensions[key]["module"] in available
+                         and row["state"] == "known" for ref in row["evidence_ids"]}
+            safe_refs.update(ref for row in [*segments, *units]
+                             if any(row["id"].startswith((f"segment:{key}:", f"unit:{key}:")) for key in available)
+                             for ref in row["evidence_ids"])
+            module_registry = [row for row in registry if row["id"] in safe_refs]
         payload, evidence, complete = _module_payload(
-            module, requested, registry, list(classifications.values()), profile, metrics,
-            transcript_source, compact=_compact_payload,
+            module, requested, module_registry, list(classifications.values()), profile, metrics,
+            transcript_source, compact=_compact_payload, review_context=review_context,
+            upstream_context=upstream_context,
         )
         issues: list[str] = []
         source_coverage = {key: payload["source_coverage"][key] for key in (
@@ -813,6 +1078,9 @@ def build_content_analysis(
             "required_opening_complete", "temporal_groups_available", "temporal_groups_included",
             "input_token_limit", "estimated_payload_tokens",
         )}
+        if review_context is not None:
+            source_coverage.update(review_limited=payload["source_coverage"]["review_limited"],
+                                   uncertain_segment_count=len(review_context["uncertain_segment_ids"]))
         if source_coverage["required_opening_complete"] is False:
             missing_required_opening.add(module)
         locally_acquired = []
@@ -885,6 +1153,7 @@ def build_content_analysis(
             returned.add(identifier)
             valid, error = _validate_classification(
                 row, requested_by_id[identifier], evidence, complete=complete,
+                review_context=review_context,
             )
             if valid is None:
                 issues.append(f"{error}:{identifier}")
@@ -893,22 +1162,25 @@ def build_content_analysis(
         for identifier in requested_by_id.keys() - returned:
             issues.append(f"missing_dimension:{identifier}")
         segments.extend(_validate_segments(
-            response.get("segments"), module, requested_by_id, evidence, _duration(media), issues,
+            response.get("segments"), module, requested_by_id, evidence, _duration(media), issues, review_context,
         ))
         if module == "text_expression_value":
             units.extend(_validate_units(response.get("information_units"), module, evidence, issues))
         elif response.get("information_units") != []:
             issues.append("information_units_wrong_module")
+        usable_text = not (review_context is not None and module in MODULES[:2] and not any(
+            classifications[row["id"]]["state"] == "known" for row in requested
+        ))
         module_status[module] = {
-            "status": "completed",
+            "status": "completed" if usable_text else "not_acquired",
             "reason": "required_opening_evidence_incomplete" if module in missing_required_opening else (
-                None if complete else "representative_evidence_sample"
+                "trusted_text_insufficient" if not usable_text else None if complete else "representative_evidence_sample"
             ),
             "validation": {"passed": not issues, "issues": issues[:120]},
             "source_coverage": source_coverage,
         }
         all_issues.extend(f"{module}:{issue}" for issue in issues)
-    opening = _deterministic_opening(registry)
+    opening = _deterministic_opening(registry, review_context)
     for annotation in opening:
         kind = annotation["kind"]
         if kind == "hook_first_sentence":
@@ -936,6 +1208,8 @@ def build_content_analysis(
         "module_status": module_status,
         "validation": {"passed": not all_issues, "issues": all_issues[:300]},
     }
+    if review_context is not None:
+        result["methodology"]["transcript_review"] = dict(review_context)
     return result
 
 
@@ -969,31 +1243,47 @@ def _checked_bundle_module(
             continue
         valid, error = _validate_classification(
             row, definitions[key], evidence, complete=bool(payload["source_coverage"]["complete"]),
+            review_context=payload.get("transcript_review"),
         )
         selected_tags = row.get("tags") if isinstance(row.get("tags"), list) else []
         temporal_required = definitions[key]["requires"] == "temporal" or any(
             tag.get("requires") == "temporal" and tag["id"] in selected_tags
             for tag in definitions[key]["tags"]
         )
-        if (valid is None and error == "insufficient_evidence_modality" and not temporal_required
-                and not key.startswith("visual.first_frame")):
+        conservative_review_failure = payload.get("transcript_review") is not None and error in {
+            "insufficient_evidence_modality", "first_frame_evidence_required", "opening_evidence_required",
+            "ordered_frame_group_required",
+        }
+        if (valid is None and (
+            conservative_review_failure or (not temporal_required and error == "insufficient_evidence_modality"
+                                            and not key.startswith("visual.first_frame"))
+        )):
             # Legal references that do not prove the required modalities cannot
             # establish a known label. Retain uncertainty, never add evidence or
             # waive temporal/first-frame proof and other structural checks.
             uncertain = {**row, "state": "unknown", "tags": None, "primary_tag": None,
-                         "reason": "required_modalities_not_cited"}
+                         "reason": "temporal_sequence_not_proven_by_cited_evidence" if temporal_required
+                         else "first_frame_not_proven_by_cited_evidence" if key.startswith("visual.first_frame")
+                         else "opening_not_proven_by_cited_evidence" if error == "opening_evidence_required"
+                         else "required_modalities_not_cited"}
             valid, error = _validate_classification(
                 uncertain, definitions[key], evidence, complete=bool(payload["source_coverage"]["complete"]),
+                review_context=payload.get("transcript_review"),
             )
         if valid is None:
             issues.append(f"{error}:{key}")
         else:
             if valid["state"] == "known" and temporal_required:
                 try:
-                    validate_temporal_evidence(valid["evidence_ids"], evidence)
+                    validate_temporal_evidence(valid["evidence_ids"], evidence,
+                                               maximum=24 if payload.get("transcript_review") is not None else 8,
+                                               dimension_id=key)
                 except CompactProtocolError as temporal_error:
-                    issues.extend(f"{issue}:{key}" for issue in temporal_error.safe_validation_issues)
-                    continue
+                    if payload.get("transcript_review") is None:
+                        issues.extend(f"{issue}:{key}" for issue in temporal_error.safe_validation_issues)
+                        continue
+                    valid = {**valid, "state": "unknown", "tags": None, "primary_tag": None,
+                             "reason": "temporal_sequence_not_proven_by_cited_evidence"}
             rows[key] = valid
     if set(rows) != set(definitions):
         issues.append("missing_valid_dimensions")
@@ -1004,7 +1294,8 @@ def _checked_bundle_module(
     ):
         issues.append("segment_module_scope_invalid")
         raw_segments = []
-    segments = _validate_segments(raw_segments, module, definitions, evidence, duration, issues)
+    segments = _validate_segments(raw_segments, module, definitions, evidence, duration, issues,
+                                  payload.get("transcript_review"))
     raw_units = response["information_units"]
     if not isinstance(raw_units, list) or len(raw_units) > limits["information_units"]:
         issues.append("unit_module_scope_invalid")
@@ -1017,6 +1308,7 @@ def _checked_bundle_module(
     checked_findings = validate_compact_findings(
         module, findings, set(evidence), str(payload["profile"]),
         evidence_sources={key: row["source"] for key, row in evidence.items()},
+        evidence_reference_limit=24 if payload.get("transcript_review") is not None else 8,
     )
     local = {key: dict(row) for key, row in base_classifications.items()}
     local.update(rows)
@@ -1040,7 +1332,11 @@ def build_content_analysis_bundle(
     on_module_checkpoint: Callable[[str, dict[str, Any]], None] | None = None,
     on_module_failure: Callable[[str, dict[str, Any]], None] | None = None,
     resume_modules: Mapping[str, Any] | None = None,
+    resume_failures: Mapping[str, Any] | None = None,
+    retry_module_keys: Sequence[str] | None = None,
+    allow_revalidated_synthesis_cache: bool = False,
     transcript_basis: str = "canonical",
+    review_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Use compact model calls, bounded parallelism and independently verified caches.
 
@@ -1061,28 +1357,46 @@ def build_content_analysis_bundle(
         raise ValueError("transcript_basis must be canonical or original")
     if transcript_source not in {"asr", "manual"}:
         raise ValueError("transcript_source must be asr or manual")
+    if retry_module_keys is not None and (
+        not isinstance(retry_module_keys, Sequence) or isinstance(retry_module_keys, (str, bytes))
+        or any(not isinstance(key, str) or key not in {"canonical", *MODULES} for key in retry_module_keys)
+    ):
+        raise ValueError("retry_module_keys must be a sequence of known module keys")
+    explicit_retry_modules = set(retry_module_keys or ()) & set(MODULES)
     if metrics is None:
         from .content_metrics import build_content_metrics
         metrics = build_content_metrics(media, transcript, visuals)
     if not isinstance(metrics, Mapping):
         raise TypeError("metrics must be a mapping")
-    _tax, definitions, registry, base = _initial_content_state(media, transcript, visuals)
+    review_context = _review_metadata(review_context, transcript)
+    _tax, definitions, registry, base = _initial_content_state(media, transcript, visuals, review_context)
     budget = compact_budget(profile)
-    restored = resume_modules if isinstance(resume_modules, Mapping) else {}
+    # Checkpoint callbacks replace entries in the caller's mapping. Preserve the
+    # original generation inputs while migrating dependent cache signatures.
+    restored = dict(resume_modules) if isinstance(resume_modules, Mapping) else {}
+    failed_candidates = resume_failures if isinstance(resume_failures, Mapping) else {}
     findings_by_module: dict[str, list[dict[str, Any]]] = {module: [] for module in MODULES}
     module_results: dict[str, dict[str, Any]] = {}
     completed: dict[str, Any] = {}
     errors: dict[str, Exception] = {}
 
-    def prepare(module: str) -> dict[str, Any] | None:
+    def usable_result(module: str, result: Mapping[str, Any]) -> bool:
+        return not (review_context is not None and module in MODULES[:2] and not any(
+            row.get("state") == "known" for row in result.get("response", {}).get("classifications", ())
+        ))
+
+    def prepare(module: str, *, include_retired: bool = False) -> dict[str, Any] | None:
         requested = [row for row in definitions.values() if row["module"] == module
-                     and base[row["id"]]["state"] != "not_applicable"
-                     and _dimension_acquired(row, registry)]
+                     and (base[row["id"]]["state"] != "not_applicable" or (
+                         include_retired and row["id"] in RETIRED_DIMENSION_IDS
+                         and not _is_explicit_audio_only(media)))
+                     and _dimension_acquired(row, registry)
+                     and not _review_text_unavailable(review_context, module, registry)]
         if not requested:
             return None
         payload, evidence, _complete = _module_payload(
             module, requested, registry, list(base.values()), profile, metrics,
-            transcript_source, compact=True,
+            transcript_source, compact=True, review_context=review_context,
         )
         available = {row["id"] for row in requested
                      if _dimension_acquired(row, list(evidence.values()))}
@@ -1114,43 +1428,172 @@ def build_content_analysis_bundle(
                 "validation": {"passed": False, "issues": safe_issues[:120] or ["compact_response_validation_failed"]},
                 "candidate": candidate}
 
+    def retired_cache_matches(module: str, cache: Mapping[str, Any]) -> bool:
+        # Reconstruct the exact earlier request before accepting a cache whose
+        # only configuration change is a question that is no longer asked.
+        if not RETIRED_DIMENSION_IDS:
+            return False
+        if module == "synthesis":
+            previous_payload = None
+
+            def previous_request(key: str, payload: dict[str, Any], _limit: int) -> dict[str, Any]:
+                nonlocal previous_payload
+                if key == "synthesis":
+                    previous_payload = payload
+                    return {}
+                previous = restored.get(key)
+                if (not isinstance(previous, Mapping) or previous.get("status") != "completed"
+                        or not isinstance(previous.get("validation"), Mapping)
+                        or previous["validation"].get("passed") is not True):
+                    raise CompactProtocolError("retired_cache_upstream_unavailable")
+                return previous["response"]
+
+            # Replay only saved responses. This reproduces the reviewed-flow
+            # source subset and upstream coverage as well as prior labels.
+            build_content_analysis(
+                media, transcript, visuals, previous_request, profile=profile, metrics=metrics,
+                transcript_source=transcript_source, _compact_payload=True,
+                review_context=review_context, _include_retired=True,
+            )
+        elif any(definitions[key]["module"] == module
+                 for key in RETIRED_DIMENSION_IDS & definitions.keys()):
+            previous_payload = prepare(module, include_retired=True)
+        else:
+            return False
+        if previous_payload is None:
+            return False
+        previous_wire, _context = prepare_compact_request(module, previous_payload)
+        return compact_signature(previous_wire) == cache.get("signature")
+
     def execute(module: str, payload: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:
         wire, context = prepare_compact_request(module, payload)
         signature = compact_signature(wire)
         cache = restored.get(module)
-        if isinstance(cache, Mapping) and cache.get("signature") == signature and cache.get("status") == "completed" and (
+        revalidate_synthesis = (allow_revalidated_synthesis_cache and module == "synthesis"
+                                and module not in explicit_retry_modules and isinstance(cache, Mapping)
+                                and cache.get("signature") != signature)
+        revalidate_retired = False
+        if isinstance(cache, Mapping) and cache.get("signature") != signature:
+            try:
+                revalidate_retired = retired_cache_matches(module, cache)
+            except (CompactProtocolError, TypeError, ValueError, KeyError, AttributeError):
+                pass
+        if isinstance(cache, Mapping) and (cache.get("signature") == signature or revalidate_synthesis or revalidate_retired) and cache.get("status") == "completed" and (
             isinstance(cache.get("validation"), Mapping) and cache["validation"].get("passed") is True
         ):
             try:
+                cached_response = cache.get("response")
+                if revalidate_retired:
+                    cached_response = {**cached_response, "classifications": [
+                        row for row in cached_response["classifications"]
+                        if row["dimension_id"] not in RETIRED_DIMENSION_IDS
+                    ]}
                 response, findings = _checked_bundle_module(
-                    module, cache.get("response"), cache.get("findings"), payload, base, _duration(media),
+                    module, cached_response, cache.get("findings"), payload, base, _duration(media),
                 )
-                return {"signature": signature, "status": "completed",
-                        "validation": {"passed": True, "issues": []},
-                        "response": response, "findings": findings}, True
+                restored_result = {"signature": signature, "status": "completed",
+                                   "validation": {"passed": True, "issues": []},
+                                   "response": response, "findings": findings}
+                if revalidate_synthesis or revalidate_retired:
+                    restored_result["generation_signature"] = cache.get("generation_signature", cache["signature"])
+                    restored_result["revalidated_from_signature"] = cache["signature"]
+                if revalidate_retired:
+                    logging.getLogger(__name__).info("retired_dimension_cache_migrated module=%s", module)
+                if usable_result(module, restored_result):
+                    return restored_result, not (revalidate_synthesis or revalidate_retired)
             except (CompactProtocolError, TypeError, ValueError, KeyError):
-                # A matching signature never bypasses evidence and structural checks.
+                # A source match still requires all current semantic checks.
                 pass
-        try:
-            raw = request_classification(module, wire, budget["modules"][module])
-        except Exception as error:
-            candidate = failure_candidate(error, getattr(error, "safe_candidate", None), signature)
-            if candidate is not None:
-                error._compact_failure_candidate = candidate
-            raise
-        try:
+        def checked(raw: Any, source: str) -> tuple[dict[str, Any], bool]:
             decoded, findings = decode_compact_response(raw, context)
             response, findings = _checked_bundle_module(
                 module, decoded, findings, payload, base, _duration(media),
             )
-        except (CompactProtocolError, TypeError, ValueError, KeyError) as error:
-            candidate = failure_candidate(error, raw, signature)
-            if candidate is not None:
-                error._compact_failure_candidate = candidate
-            raise
-        return {"signature": signature, "status": "completed",
-                "validation": {"passed": True, "issues": []},
-                "response": response, "findings": findings}, False
+            _log_local_normalizations(module, response, source)
+            return {"signature": signature, "status": "completed",
+                    "validation": {"passed": True, "issues": []},
+                    "response": response, "findings": findings}, False
+
+        def remember(error: Exception, candidate: Any) -> None:
+            stored = failure_candidate(error, candidate, signature)
+            if stored is not None:
+                error._compact_failure_candidate = stored
+
+        failed = failed_candidates.get(module)
+        error_to_repair = None
+        raw = None
+        if isinstance(failed, Mapping) and failed.get("signature") == signature and failed.get("status") == "failed":
+            # A matching saved response is revalidated before spending anything.
+            # Only an explicit retry authorizes another call after failed recovery.
+            raw = failed.get("candidate")
+            bounded = failure_candidate(CompactProtocolError("failed_candidate_invalid"), raw, signature)
+            try:
+                if bounded is None or set(bounded["candidate"]) != {"c", "g", "u", "f"}:
+                    raise CompactProtocolError("failed_candidate_invalid")
+                return checked(bounded["candidate"], "failed_candidate")
+            except (CompactProtocolError, TypeError, ValueError, KeyError) as error:
+                remember(error, raw)
+                if module not in explicit_retry_modules:
+                    raise
+                error_to_repair = error
+        else:
+            try:
+                raw = request_classification(module, wire, budget["modules"][module])
+            except Exception as error:
+                raw = getattr(error, "safe_candidate", None)
+                remember(error, raw)
+                if raw is not None:
+                    try:
+                        return checked(raw, "sdk_candidate")
+                    except (CompactProtocolError, TypeError, ValueError, KeyError) as validation_error:
+                        remember(validation_error, raw)
+                        error_to_repair = validation_error
+                if error_to_repair is None:
+                    error_to_repair = error
+            else:
+                try:
+                    return checked(raw, "model_response")
+                except (CompactProtocolError, TypeError, ValueError, KeyError) as error:
+                    remember(error, raw)
+                    error_to_repair = error
+
+        kind = getattr(error_to_repair, "safe_failure_kind", None)
+        if kind not in {"schema_invalid", "evidence_invalid"}:
+            raise error_to_repair
+        issues = getattr(error_to_repair, "safe_validation_issues", None)
+        issues = [issue for issue in issues if isinstance(issue, str)
+                  and re.fullmatch(r"[a-zA-Z0-9_.:-]{1,180}", issue)][:24] if isinstance(issues, list) else []
+        repair_wire = {**wire, "response_repair": {
+            "issues": issues or [kind],
+            "instruction": "修复本模块上次返回的字段或引用错误，重新返回完整c/g/u/f。"
+                           "c恰好覆盖expected_d一次；c.t为标签数组，u.t为单个数字。"
+                           "已判断分类必须引用支持该标签的输入证据。不能编造引用或将不确定内容标成已确认。",
+        }}
+        if estimate_content_tokens(repair_wire) + budget["sdk_schema_reserve_tokens"] > budget["input_token_limit"]:
+            raise error_to_repair
+        def repair() -> tuple[dict[str, Any], bool]:
+            # The caller acknowledges a complete failure candidate before this
+            # additional request. All paid calls share the module's finite cap.
+            try:
+                repaired = request_classification(module, repair_wire, budget["modules"][module])
+            except Exception as error:
+                candidate = getattr(error, "safe_candidate", None)
+                if candidate is not None:
+                    try:
+                        return checked(candidate, "repair_sdk_candidate")
+                    except (CompactProtocolError, TypeError, ValueError, KeyError) as validation_error:
+                        remember(validation_error, candidate)
+                        raise validation_error from error
+                remember(error, raw)
+                raise
+            try:
+                return checked(repaired, "repair_response")
+            except (CompactProtocolError, TypeError, ValueError, KeyError) as error:
+                remember(error, repaired)
+                raise
+
+        error_to_repair._compact_repair = repair
+        raise error_to_repair
 
     plans = [(module, payload) for module in MODULES[:3] if (payload := prepare(module)) is not None]
     plans_by_key = dict(plans)
@@ -1164,13 +1607,13 @@ def build_content_analysis_bundle(
             pending[executor.submit(execute, module, payload)] = module
         while pending:
             done, _waiting = wait(pending, return_when=FIRST_COMPLETED)
+            repairs = []
             for future in done:
                 module = pending.pop(future)
                 try:
                     result, reused = future.result()
                     completed[module] = result
                 except Exception as error:  # noqa: BLE001 - isolate module failures
-                    errors[module] = error
                     candidate = getattr(error, "_compact_failure_candidate", None)
                     if candidate is not None and on_module_failure is not None:
                         try:
@@ -1179,10 +1622,15 @@ def build_content_analysis_bundle(
                             for other in pending:
                                 other.cancel()
                             raise
+                    repair = getattr(error, "_compact_repair", None)
+                    if callable(repair):
+                        repairs.append((module, repair))
+                    else:
+                        errors[module] = error
                 else:
                     if on_module_checkpoint is not None and not reused and (
                         plans_by_key[module]["source_coverage"]["required_opening_complete"] is not False
-                    ):
+                    ) and usable_result(module, result):
                         try:
                             on_module_checkpoint(module, result)
                         except BaseException:
@@ -1192,7 +1640,9 @@ def build_content_analysis_bundle(
             # Acknowledge all results already returned by this wait before any
             # new request. Set iteration order must not schedule work ahead of
             # another returned result whose checkpoint acknowledgement fails.
-            for _slot in done:
+            for module, repair in repairs:
+                pending[executor.submit(repair)] = module
+            for _slot in range(len(done) - len(repairs)):
                 next_plan = next(todo, None)
                 if next_plan is not None:
                     key, payload = next_plan
@@ -1200,8 +1650,9 @@ def build_content_analysis_bundle(
 
     synthesis_checkpoint: dict[str, Any] | None = None
     synthesis_failure: dict[str, Any] | None = None
+    checkpoint_error: BaseException | None = None
     def canonical_request(module: str, payload: dict[str, Any], _output_tokens: int) -> dict[str, Any]:
-        nonlocal synthesis_checkpoint, synthesis_failure
+        nonlocal synthesis_checkpoint, synthesis_failure, checkpoint_error
         if module == "synthesis":
             def upstream_inapplicable(key: str) -> bool:
                 return all(base[row["id"]]["state"] == "not_applicable"
@@ -1212,7 +1663,7 @@ def build_content_analysis_bundle(
                     plans_by_key[key]["source_coverage"]["required_opening_complete"] is False)
                 for key in MODULES[:3]
             )
-            if blocked:
+            if blocked and review_context is None:
                 error = CompactProtocolError("upstream_module_failed")
                 error.safe_failure_kind = "evidence_invalid"
                 error.safe_failure_reason = "upstream_module_failed"
@@ -1229,23 +1680,40 @@ def build_content_analysis_bundle(
             try:
                 result, reused = execute(module, payload)
             except Exception as error:
-                synthesis_failure = getattr(error, "_compact_failure_candidate", None)
-                raise
+                candidate = getattr(error, "_compact_failure_candidate", None)
+                repair = getattr(error, "_compact_repair", None)
+                if not callable(repair):
+                    synthesis_failure = candidate
+                    raise
+                if candidate is not None and on_module_failure is not None:
+                    try:
+                        on_module_failure(module, candidate)
+                    except BaseException as acknowledgement_error:
+                        checkpoint_error = acknowledgement_error
+                        raise
+                try:
+                    result, reused = repair()
+                except Exception as repair_error:
+                    synthesis_failure = getattr(repair_error, "_compact_failure_candidate", None)
+                    raise
             completed[module] = result
             if module == "synthesis" and not reused:
                 synthesis_checkpoint = result
         findings_by_module[module] = result["findings"]
         # A structurally valid response with incomplete required opening inputs is
         # still displayed as partial and is never checkpointed for paid-call reuse.
-        if payload["source_coverage"]["required_opening_complete"] is not False:
+        if payload["source_coverage"]["required_opening_complete"] is not False and usable_result(module, result):
             module_results[module] = result
         return result["response"]
 
     content = build_content_analysis(
         media, transcript, visuals, canonical_request, profile=profile,
         metrics=metrics, transcript_source=transcript_source, _compact_payload=True,
+        review_context=review_context,
     )
     content["methodology"]["transcript_basis"] = transcript_basis
+    if checkpoint_error is not None:
+        raise checkpoint_error
     if synthesis_failure is not None and on_module_failure is not None:
         on_module_failure("synthesis", synthesis_failure)
     if synthesis_checkpoint is not None and "synthesis" in module_results and on_module_checkpoint is not None:
@@ -1264,7 +1732,7 @@ def create_content_response_model(module_key: str | None = None) -> Any:
     config = ConfigDict(extra="forbid")
     dimension_ids = tuple(
         row["id"] for row in _taxonomy()["dimensions"]
-        if module_key is None or row["module"] == module_key
+        if row["id"] not in RETIRED_DIMENSION_IDS and (module_key is None or row["module"] == module_key)
     )
     dimension_type = Literal[dimension_ids]  # type: ignore[valid-type]
     classification = create_model(

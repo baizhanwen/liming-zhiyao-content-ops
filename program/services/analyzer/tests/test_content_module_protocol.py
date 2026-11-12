@@ -1,6 +1,7 @@
 """Offline compact-wire, bounded parallelism, and evidence-bound cache regressions."""
 
 import copy
+import hashlib
 import importlib.util
 import json
 import threading
@@ -24,10 +25,12 @@ from liming_analyzer.content_module_protocol import (
     FINDING_SECTIONS,
     PROTOCOL_VERSION,
     CompactProtocolError,
+    compact_signature,
     create_compact_response_model,
     decode_compact_response,
     omission_tolerance,
     prepare_compact_request,
+    validate_temporal_evidence,
 )
 
 
@@ -171,7 +174,184 @@ def module_payload(module, profile="max"):
     return payload
 
 
+def full_opening_payload(extra_times=()):
+    media, transcript, visuals = synthetic_inputs()
+    standard = [0, 500, 1_000, 1_500, 2_000, 2_500]
+    times = sorted({*standard, *extra_times})
+    frame, observation = visuals.keyframes[0], visuals.observations[0]
+    visuals.keyframes = [copy.copy(frame) for _ in times]
+    visuals.observations = [copy.copy(observation) for _ in times]
+    for index, time in enumerate(times):
+        visuals.keyframes[index].timestamp_ms = time
+        visuals.keyframes[index].asset_id = f"synthetic_opening_{time}"
+        visuals.keyframes[index].roles = ("first_frame",) if time == 0 else ("opening",)
+        visuals.observations[index].start_ms = visuals.observations[index].end_ms = time
+    visuals.stats["temporal_groups"][0].update(timestamps_ms=standard, end_ms=2_500)
+    _taxonomy, dimensions, registry, base = _initial_content_state(media, transcript, visuals)
+    requested = [row for row in dimensions.values() if row["module"] == "visual"]
+    payload, _evidence, _complete = _module_payload(
+        "visual", requested, registry, list(base.values()), "max",
+        {"media": {"duration_ms": 6_000}}, "asr", compact=True,
+    )
+    payload["transcript_review"] = {"uncertain_segment_ids": []}
+    return payload, base
+
+
 class CompactProtocolTests(unittest.TestCase):
+    def test_opening_group_hint_preserves_exact_old_signature_without_unbinding_evidence(self):
+        for reviewed in (False, True):
+            with self.subTest(reviewed=reviewed):
+                payload, _base = full_opening_payload()
+                if not reviewed:
+                    payload.pop("transcript_review")
+                wire, _context = prepare_compact_request("visual", payload)
+                original = copy.deepcopy(wire)
+                legacy = copy.deepcopy(wire)
+                next(row for row in legacy["d"] if row.get("anchor") == "before_3000ms").pop("group_e")
+                self.assertEqual(compact_signature(wire), compact_signature(legacy))
+                if not reviewed:
+                    old_hash = hashlib.sha256(json.dumps(legacy, ensure_ascii=False, sort_keys=True,
+                                                         separators=(",", ":")).encode("utf-8")).hexdigest()
+                    self.assertEqual(compact_signature(wire), old_hash)
+                changed = copy.deepcopy(wire)
+                next(row for row in changed["e"] if row["s"] == "v")["x"] += " 真实画面发生变化。"
+                self.assertNotEqual(compact_signature(wire), compact_signature(changed))
+                self.assertEqual(wire, original, "signature normalization must not alter the model request")
+
+    def test_opening_wire_exposes_its_own_group_instead_of_all_cut_groups(self):
+        payload, _base = full_opening_payload((2_817,))
+        group = next(row for row in payload["evidence_registry"] if row["id"] == "temporal:opening")
+        payload["evidence_registry"].append({**group, "id": "temporal:cut", "frame_group_id": "cut"})
+        wire, _context = prepare_compact_request("visual", payload)
+        opening = next(row for row in wire["d"] if row["n"] == "前3秒画面")
+        self.assertEqual([wire["e"][index]["s"] for index in opening["group_e"]], ["g"])
+        self.assertEqual(len(opening["group_e"]), 1)
+        self.assertEqual(len(wire["e"][opening["group_e"][0]]["v"]), 6)
+
+    def test_opening_completes_real_sequence_with_two_refs_and_supplemental_cut_frames(self):
+        for extra_times, selected_times in (
+            ((), {1_500}),
+            ((), {1_500, 2_000}),
+            ((2_817,), {0, 500, 1_000, 1_500, 2_000, 2_500, 2_817}),
+            ((1_667,), {0, 500, 1_000, 1_500, 1_667, 2_000, 2_500}),
+            ((2_492, 2_617, 2_742, 2_867, 2_992),
+             {0, 500, 1_000, 1_500, 2_000, 2_492, 2_500, 2_617, 2_742, 2_867, 2_992}),
+        ):
+            with self.subTest(extra_times=extra_times):
+                payload, base = full_opening_payload(extra_times)
+                wire, context = prepare_compact_request("visual", payload)
+                opening = next(row for row in wire["d"] if row["n"] == "前3秒画面")
+                refs = [row["i"] for row in wire["e"] if row["s"] == "v" and row["a"] in selected_times]
+                raw = compact_synthetic_response("visual", wire, 6_000)
+                raw["c"][opening["i"]] = {"d": opening["i"], "s": 0,
+                    "t": [wire_label_index(opening["t"], "动作进行中")], "e": refs}
+                decoded, findings = decode_compact_response(raw, context)
+                checked, _findings = _checked_bundle_module("visual", decoded, findings, payload, base, 6_000)
+                row = next(row for row in checked["classifications"] if row["dimension_id"] == "visual.opening")
+                self.assertEqual(row["state"], "known", row)
+                self.assertEqual(row["tags"], ["visual.opening.ongoing_action"])
+                registry = {row["id"]: row for row in context.evidence}
+                self.assertIn("temporal:opening", row["evidence_ids"])
+                self.assertEqual({registry[ref]["start_ms"] for ref in row["evidence_ids"]
+                                  if registry[ref]["source"] == "vision"},
+                                 {0, 500, 1_000, 1_500, 2_000, 2_500, *extra_times})
+                validate_temporal_evidence(row["evidence_ids"], registry, maximum=24,
+                                           dimension_id="visual.opening")
+                with self.assertRaises(CompactProtocolError):
+                    validate_temporal_evidence([registry_ref for registry_ref in row["evidence_ids"]
+                                               if registry_ref != "temporal:opening"], registry,
+                                              maximum=24, dimension_id="visual.opening")
+
+    def test_opening_cannot_complete_from_missing_or_wrong_window_sources(self):
+        for variation in ("missing_group", "missing_member", "ambiguous_group", "wrong_kind",
+                          "non_point", "empty_observation", "ocr_only", "group_only",
+                          "later_frame", "negative_frame", "out_of_window_group", "cross_group",
+                          "not_opening_id", "later_text", "over_budget"):
+            with self.subTest(variation=variation):
+                payload, _base = full_opening_payload((3_500,))
+                wire, context = prepare_compact_request("visual", payload)
+                evidence = copy.deepcopy(list(context.evidence))
+                opening = next(row for row in wire["d"] if row["n"] == "前3秒画面")
+                group = next(i for i, row in enumerate(evidence) if row["id"] == "temporal:opening")
+                refs = [i for i, row in enumerate(evidence) if row["source"] == "vision"
+                        and row["start_ms"] in {1_500, 2_000}]
+                expected = "opening_group_missing_or_ambiguous"
+                if variation == "missing_group":
+                    evidence[group]["source"] = "ocr"
+                elif variation == "missing_member":
+                    next(row for row in evidence if row["source"] == "vision"
+                         and row["start_ms"] == 500)["source"] = "ocr"
+                    expected = "opening_group_member_missing"
+                elif variation == "ambiguous_group":
+                    evidence.append({**evidence[group], "id": "temporal:duplicate"})
+                elif variation == "wrong_kind":
+                    evidence[group]["text"] = json.dumps({"kind": "cut", "timestamps_ms": [0, 500, 1_000]})
+                    expected = "opening_group_invalid"
+                elif variation in {"non_point", "empty_observation", "negative_frame"}:
+                    field, value = {"non_point": ("end_ms", 1_501),
+                                    "empty_observation": ("text", ""),
+                                    "negative_frame": ("start_ms", -1)}[variation]
+                    evidence[refs[0]][field] = value
+                    expected = "opening_refs_outside_window"
+                elif variation == "ocr_only":
+                    refs = [next(i for i, row in enumerate(evidence) if row["source"] == "ocr")]
+                    expected = "opening_requires_vision_ref"
+                elif variation == "group_only":
+                    refs = [group]
+                    expected = "opening_requires_vision_ref"
+                elif variation == "later_frame":
+                    refs.append(next(i for i, row in enumerate(evidence) if row["source"] == "vision"
+                                     and row["start_ms"] == 3_500))
+                    expected = "opening_refs_outside_window"
+                elif variation == "out_of_window_group":
+                    evidence[group]["text"] = json.dumps({"kind": "opening", "timestamps_ms": [0, 500, 3_500]})
+                    expected = "opening_group_invalid"
+                elif variation == "cross_group":
+                    evidence.append({**evidence[group], "id": "temporal:cut", "frame_group_id": "cut"})
+                    refs.append(len(evidence) - 1)
+                    expected = "opening_cross_group_refs"
+                elif variation == "not_opening_id":
+                    evidence[group]["id"] = "temporal:unrelated"
+                    expected = "opening_group_invalid"
+                elif variation == "later_text":
+                    evidence.append({**evidence[refs[0]], "id": "transcript:later", "source": "transcript",
+                                     "start_ms": 3_000, "end_ms": 3_500})
+                    refs.append(len(evidence) - 1)
+                    expected = "opening_requires_visual_sequence_refs"
+                else:
+                    for number in range(20):
+                        evidence.append({**evidence[refs[0]], "id": f"vision:duplicate-{number}"})
+                    expected = "opening_reference_limit"
+                raw = compact_synthetic_response("visual", wire, 6_000)
+                # These mutations apply only to the opening proof; isolate other
+                # temporal dimensions so they cannot hide the intended result.
+                for row in raw["c"]:
+                    row.update(s=1, t=[], e=[])
+                    row.pop("p", None)
+                raw["c"][opening["i"]] = {"d": opening["i"], "s": 0,
+                    "t": [wire_label_index(opening["t"], "动作进行中")], "e": refs}
+                decoded, _findings = decode_compact_response(raw, replace(context, evidence=tuple(evidence)))
+                row = next(row for row in decoded["classifications"] if row["dimension_id"] == "visual.opening")
+                self.assertEqual((row["state"], row["tags"], row["primary_tag"], row["reason"]),
+                                 ("unknown", None, None, expected))
+
+    def test_opening_keeps_selected_static_tags_when_motion_cannot_be_proven(self):
+        payload, base = full_opening_payload()
+        group = next(row for row in payload["evidence_registry"] if row["id"] == "temporal:opening")
+        payload["evidence_registry"].remove(group)
+        wire, context = prepare_compact_request("visual", payload)
+        opening = next(row for row in wire["d"] if row["n"] == "前3秒画面")
+        raw = compact_synthetic_response("visual", wire, 6_000)
+        raw["c"][opening["i"]] = {"d": opening["i"], "s": 0,
+            "t": [wire_label_index(opening["t"], label) for label in ("动作进行中", "屏幕演示")],
+            "e": [next(row["i"] for row in wire["e"] if row["s"] == "v")]}
+        decoded, findings = decode_compact_response(raw, context)
+        checked, _findings = _checked_bundle_module("visual", decoded, findings, payload, base, 6_000)
+        row = next(row for row in checked["classifications"] if row["dimension_id"] == "visual.opening")
+        self.assertEqual((row["state"], row["tags"], row["primary_tag"], row["reason"]),
+                         ("known", ["visual.opening.screen_demo"], "visual.opening.screen_demo",
+                          "opening_temporal_tags_not_proven_by_cited_evidence"))
+
     def test_missing_non_temporal_required_modality_is_unknown_with_legal_refs_preserved(self):
         for missing in ("visual", "text"):
             with self.subTest(missing=missing):
@@ -637,9 +817,11 @@ class CompactProtocolTests(unittest.TestCase):
         for variation in ("sdk_complete", "sdk_no_candidate", "over_64k", "synthesis"):
             with self.subTest(variation=variation):
                 failures = {}
+                calls = []
                 module = "synthesis" if variation == "synthesis" else MODULES[0]
                 caller = threading.get_ident()
                 def request(key, wire, budget, module=module, variation=variation):
+                    calls.append(key)
                     raw = compact_synthetic_response(key, wire, budget)
                     if key != module:
                         return raw
@@ -658,12 +840,13 @@ class CompactProtocolTests(unittest.TestCase):
                     self.assertEqual(threading.get_ident(), caller)
                     failures[key] = value
                 result = build_content_analysis_bundle(*synthetic_inputs(), request, on_module_failure=checkpoint)
-                expected = {module} if variation in {"sdk_complete", "synthesis"} else set()
+                expected = {module} if variation == "synthesis" else set()
                 self.assertEqual(set(failures), expected)
                 if variation == "sdk_complete":
-                    self.assertEqual(failures[module]["validation"]["issues"], ["sdk_schema_invalid"])
+                    self.assertEqual(calls.count(module), 1)
+                    self.assertEqual(result["content_analysis"]["module_status"][module]["status"], "completed")
                 self.assertNotIn("candidate", json.dumps(result))
-                self.assertEqual(result["content_analysis"]["status"], "partial")
+                self.assertEqual(result["content_analysis"]["status"], "complete" if variation == "sdk_complete" else "partial")
 
     def test_failure_checkpoint_ack_stops_new_calls_and_is_not_swallowed(self):
         for failing_module in (MODULES[0], "synthesis"):

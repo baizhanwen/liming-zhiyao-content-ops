@@ -1,4 +1,4 @@
-import { readAnalysisModuleRetryState, parseAnalysisModuleRetryKeys, type AnalysisModuleRetryKey } from "../../../../../lib/analysis-module-retry";
+import { readAnalysisModuleRetryState, parseAnalysisModuleRetryKeys, parseReviewSegmentIds, type AnalysisModuleRetryKey } from "../../../../../lib/analysis-module-retry";
 import { executeAnalysisJobAction, AnalysisJobActionStatusUnknownError } from "../../../../../lib/analysis-job-action";
 import { createProjectWriteAssertion, ProjectWriteAccessChangedError } from "../../../../../lib/project-write-access";
 import { ACTIVE_ANALYSIS_STATUSES_SQL } from "../../../../../lib/analysis-jobs";
@@ -23,12 +23,18 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     const { jobId } = await context.params;
     const rawPayload = await request.json().catch(() => ({}));
     if (!isPlainRecord(rawPayload)) return apiError("INVALID_RETRY_TARGET", "重试参数格式无效。", 400);
-    const payload = rawPayload as { segmentKey?: unknown; scriptVersion?: unknown; moduleKeys?: unknown };
+    const payload = rawPayload as { segmentKey?: unknown; scriptVersion?: unknown; moduleKeys?: unknown; reviewSegmentIds?: unknown; revalidateOnly?: unknown };
+    if (payload.revalidateOnly !== undefined && typeof payload.revalidateOnly !== "boolean") return apiError("REPORT_REVALIDATION_INVALID", "报告复验参数必须为布尔值。", 400);
+    const requestedRevalidation = payload.revalidateOnly === true;
     const requestedSegmentKey = typeof payload.segmentKey === "string" ? payload.segmentKey.trim() : "";
     const requestedScriptVersion = typeof payload.scriptVersion === "string" ? payload.scriptVersion.trim() : "";
-    const requestedModules = payload.moduleKeys === undefined ? undefined : parseAnalysisModuleRetryKeys(payload.moduleKeys);
+    const requestedReview = payload.reviewSegmentIds === undefined ? undefined : parseReviewSegmentIds(payload.reviewSegmentIds);
+    if (requestedReview === null) return apiError("REVIEW_SEGMENTS_INVALID", "请选择有效的待核对句子，每次最多1000句。", 400);
+    const requestedModules = payload.moduleKeys === undefined ? requestedReview ? ["canonical" as const] : undefined : parseAnalysisModuleRetryKeys(payload.moduleKeys);
     if (requestedModules === null) return apiError("MODULE_RETRY_INVALID", "必须选择有效的失败模块。", 400);
+    if (requestedRevalidation && (requestedModules || requestedSegmentKey || requestedScriptVersion || requestedReview)) return apiError("RETRY_TARGET_CONFLICT", "报告复验不能与模型模块、口播或分段重试混用。", 400);
     if (requestedModules && (requestedSegmentKey || requestedScriptVersion)) return apiError("RETRY_TARGET_CONFLICT", "模块重试不能与分段或旧口播重试混用。", 400);
+    if (requestedReview && !requestedModules?.includes("canonical")) return apiError("REVIEW_TARGET_CONFLICT", "指定待核对句子时必须同时选择口播核对。", 400);
     if (requestedSegmentKey && requestedScriptVersion) return apiError("RETRY_TARGET_CONFLICT", "不能同时重试长视频分段和口播版本。", 400);
     if (requestedScriptVersion && !(requestedScriptVersion in scriptVersionLabels)) return apiError("SCRIPT_VERSION_INVALID", "口播版本参数无效。", 400);
 
@@ -39,9 +45,15 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     if (!access || !canWriteProjectAccess(access)) return apiError("WRITE_ACCESS_REQUIRED", "当前角色不能重试分析任务。", 403);
 
     if (job.idempotency_key?.startsWith("material-import:")) return apiError("IMPORTED_REPORT_REANALYSIS_REQUIRED", "导入报告没有可续跑的处理检查点，请打开素材详情主动重新分析；新任务会核对分析额度。", 409);
+    const latest = await db.prepare("SELECT schema_version,report_json FROM video_analyses WHERE analysis_job_id=? AND organization_id=? AND project_id=? AND video_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1")
+      .bind(jobId, job.organization_id, job.project_id, job.video_id).first<{ schema_version: string; report_json: string }>();
+    let latestReport: unknown = null;
+    try { latestReport = latest ? JSON.parse(latest.report_json) : null; } catch { /* Never infer retry targets from corrupt reports. */ }
+    const moduleState = readAnalysisModuleRetryState(job.checkpoint_json, latest?.schema_version, latestReport, job.status);
+    const completedReviewRepair = job.status === "completed" && latest?.schema_version === "analysis.v12" && Boolean(moduleState?.available && moduleState.canonicalNeedsReview);
     const now = new Date().toISOString();
     const staleLease = !["pending", "completed", "partial", "failed", "cancelled"].includes(job.status) && Boolean(job.lease_expires_at && job.lease_expires_at <= now);
-    if (job.status !== "partial" && job.status !== "failed" && job.status !== "cancelled" && !staleLease) {
+    if (job.status !== "partial" && job.status !== "failed" && job.status !== "cancelled" && !staleLease && !completedReviewRepair) {
       return apiError("JOB_NOT_RETRYABLE", "只有部分完成、失败、已取消或租约过期的任务可以恢复。", 409);
     }
     const user = await ensureUser(identity);
@@ -84,24 +96,35 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
       }
     }
 
+    let reportRevalidationOnly = false;
     let moduleKeys: AnalysisModuleRetryKey[] | null = null;
+    let reviewSegmentIds: string[] | null = null;
     if (!requestedSegmentKey && !requestedScriptVersion) {
-      const latest = await db.prepare("SELECT schema_version,report_json FROM video_analyses WHERE analysis_job_id=? AND organization_id=? AND project_id=? AND video_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1")
-        .bind(jobId, job.organization_id, job.project_id, job.video_id).first<{ schema_version: string; report_json: string }>();
-      let latestReport: unknown = null;
-      try { latestReport = latest ? JSON.parse(latest.report_json) : null; } catch { /* Never infer failed modules from corrupt report bodies. */ }
-      if (latest?.schema_version === "analysis.v11" || requestedModules) {
-        const state = readAnalysisModuleRetryState(job.checkpoint_json, latest?.schema_version, latestReport);
-        if (!["partial", "failed"].includes(job.status) || !canResume || !state?.available || !state.checkpoint) return apiError("MODULE_RETRY_UNAVAILABLE", "当前报告没有可复用的有效模块检查点，请查看最新报告或主动重新分析。", 409);
-        moduleKeys = requestedModules ?? (state.failedModuleKeys.includes("canonical") ? ["canonical"] : state.failedModuleKeys);
-        if (moduleKeys.some(key => !state.failedModuleKeys.includes(key))) return apiError("MODULE_NOT_FAILED", "只能重试最新报告中明确失败的模块，已完成结果会保留。", 409);
-        if (requestedModules?.includes("synthesis") && state.incompleteUpstream.some(key => !moduleKeys!.includes(key))) return apiError("MODULE_DEPENDENCY_INCOMPLETE", "请先补充未完成的内容分析，再重试综合判断；也可同时重试所有失败部分。", 409);
-        retryCheckpointJson = JSON.stringify({ ...state.checkpoint, retry_module_keys: moduleKeys });
+      if (["analysis.v11", "analysis.v12"].includes(latest?.schema_version ?? "") || requestedModules) {
+        const state = moduleState;
+        if ((!completedReviewRepair && !["partial", "failed"].includes(job.status)) || !canResume || !state?.available || !state.checkpoint) return apiError("MODULE_RETRY_UNAVAILABLE", "当前报告没有可复用的有效模块检查点，请查看最新报告或主动重新分析。", 409);
+        reportRevalidationOnly = Boolean(state.reportRevalidationAvailable && (requestedRevalidation || !requestedModules));
+        if (requestedRevalidation && !reportRevalidationOnly) return apiError("REPORT_REVALIDATION_UNAVAILABLE", "报告缺少完整且来源一致的成功检查点，不能仅复验。", 409);
+        moduleKeys = reportRevalidationOnly ? [] : requestedModules ?? state.defaultModuleKeys;
+        if (moduleKeys.some(key => !state.failedModuleKeys.includes(key))) return apiError("MODULE_NOT_FAILED", "只能重试最新报告中未完成的模块或待核对口播，已完成结果会保留。", 409);
+        if (state.schema === "analysis.v11" && requestedModules?.includes("synthesis") && state.incompleteUpstream.some(key => !moduleKeys!.includes(key))) return apiError("MODULE_DEPENDENCY_INCOMPLETE", "请先补充未完成的内容分析，再重试综合判断；也可同时重试所有失败部分。", 409);
+        if (requestedReview && requestedReview.some(id => !state.reviewSegmentIds.includes(id))) return apiError("REVIEW_SEGMENT_NOT_PENDING", "只能选择最新报告中仍待核对的句子，已核对文本不会重复处理。", 409);
+        if (moduleKeys.includes("canonical") && state.reviewSegmentIds.length) reviewSegmentIds = requestedReview ?? state.reviewSegmentIds;
+        const retryCheckpoint: Record<string, unknown> = { ...state.checkpoint, retry_module_keys: moduleKeys, retry_review_segment_ids: reviewSegmentIds };
+        delete retryCheckpoint.report_revalidation_only;
+        if (reportRevalidationOnly) retryCheckpoint.report_revalidation_only = true;
+        retryCheckpointJson = JSON.stringify(retryCheckpoint);
         if (retryCheckpointJson.length > 1_000_000) return apiError("MODULE_RETRY_CHECKPOINT_TOO_LARGE", "模块重试检查点体积超限，请主动重新分析。", 409);
       }
     }
+    if (!reportRevalidationOnly && retryCheckpointJson) {
+      const retryCheckpoint = JSON.parse(retryCheckpointJson) as Record<string, unknown>;
+      delete retryCheckpoint.report_revalidation_only;
+      retryCheckpointJson = JSON.stringify(retryCheckpoint);
+    }
     const scriptVersion = requestedScriptVersion as ScriptVersion | "";
-    const stage = moduleKeys ? "等待仅重试失败的内容模块" : scriptVersion
+    if (requestedRevalidation && !reportRevalidationOnly) return apiError("REPORT_REVALIDATION_UNAVAILABLE", "报告缺少完整且来源一致的成功检查点，不能仅复验。", 409);
+    const stage = reportRevalidationOnly ? "等待复验已保存的完整报告" : reviewSegmentIds ? `等待核对${reviewSegmentIds.length}句口播` : moduleKeys ? "等待仅重试未完成的内容模块" : scriptVersion
       ? `等待单独重试${scriptVersionLabels[scriptVersion]}`
       : canResume
         ? "等待从证据检查点继续结构分析"
@@ -112,13 +135,13 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     const progress = canResume ? 82 : 0;
     const state = await executeAnalysisJobAction(db, {
       scope, job, action: "retried", now, toStatus: "pending", progress,
-      metadata: { previousStatus: job.status, retryCount: job.retry_count + 1, staleLease, checkpointStage: job.checkpoint_stage, canResume, segmentKey: requestedSegmentKey || null, segmentRetryTarget: retryTarget, scriptVersion: scriptVersion || null, moduleKeys },
-      guard: `(status IN ('partial', 'failed', 'cancelled') OR (status NOT IN ('pending', 'completed', 'partial', 'failed', 'cancelled') AND lease_expires_at <= ?))
+      metadata: { previousStatus: job.status, retryCount: job.retry_count + 1, staleLease, checkpointStage: job.checkpoint_stage, canResume, segmentKey: requestedSegmentKey || null, segmentRetryTarget: retryTarget, scriptVersion: scriptVersion || null, moduleKeys, reviewSegmentIds, reportRevalidationOnly },
+      guard: `(status IN ('partial', 'failed', 'cancelled') OR (?=1 AND status='completed') OR (status NOT IN ('pending', 'completed', 'partial', 'failed', 'cancelled') AND lease_expires_at <= ?))
         AND EXISTS (SELECT 1 FROM videos v WHERE v.id = analysis_jobs.video_id AND v.organization_id = analysis_jobs.organization_id AND v.project_id = analysis_jobs.project_id AND v.deleted_at IS NULL)
         AND NOT EXISTS (SELECT 1 FROM analysis_jobs other WHERE other.organization_id = analysis_jobs.organization_id
           AND other.project_id = analysis_jobs.project_id AND other.video_id = analysis_jobs.video_id AND other.id != analysis_jobs.id
           AND other.status IN (${ACTIVE_ANALYSIS_STATUSES_SQL}))`,
-      guardBindings: [now],
+      guardBindings: [completedReviewRepair ? 1 : 0, now],
       mutate: (marker, markerId) => db.prepare(`UPDATE analysis_jobs SET status = 'pending', progress = CASE WHEN checkpoint_stage IN ('evidence_ready', 'segment_progress') THEN 82 ELSE 0 END,
         checkpoint_json = COALESCE(?, checkpoint_json), checkpoint_updated_at = COALESCE(?, checkpoint_updated_at), current_stage = ?, error_code = NULL, error_message = NULL,
         completed_at = NULL, started_at = NULL, stage_started_at = NULL, last_progress_at = ?, progress_json = NULL, retry_count = retry_count + 1, recovery_attempt_count = 0, queue_user_id = ?, enqueued_at = ?, lease_owner = NULL, lease_expires_at = NULL,
@@ -131,7 +154,7 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
         .bind(job.video_id, job.organization_id, job.project_id).first()) return apiError("VIDEO_NOT_FOUND", "素材已删除，不能重试分析。", 404);
       return apiError("JOB_STATE_CHANGED", "任务状态已经变化，或该视频已有其他分析任务，请刷新后重试。", 409);
     }
-    return Response.json({ job: { ...state, segmentKey: requestedSegmentKey || null, scriptVersion: scriptVersion || null, moduleKeys } });
+    return Response.json({ job: { ...state, segmentKey: requestedSegmentKey || null, scriptVersion: scriptVersion || null, moduleKeys, reviewSegmentIds, revalidationOnly: reportRevalidationOnly } });
   } catch (error) {
     if (error instanceof ProjectWriteAccessChangedError) return apiError(error.code, "登录状态或项目权限已改变，本次任务操作未执行。请刷新确认权限后再操作。", 403);
     if (error instanceof AnalysisJobActionStatusUnknownError) return apiError(error.code, error.message, 503);

@@ -2248,13 +2248,19 @@ class SparseTailFallbackSpeechRecognizer:
         return TranscriptOutput(primary.language, tuple(merged), confidence)
 
 class PaddleOcrEngine:
+    supports_exact_image_cache = True  # Builtin OCR depends on image bytes, not frame filename/time.
+
     def __init__(
         self,
         engine: Any | None = None,
         *,
         detection_model: str = "PP-OCRv5_mobile_det",
         recognition_model: str = "PP-OCRv5_mobile_rec",
+        recognition_batch_size: int = 1,
     ) -> None:
+        if not isinstance(recognition_batch_size, int) or isinstance(recognition_batch_size, bool) or recognition_batch_size < 1:
+            raise ValueError("recognition_batch_size must be a positive integer")
+        builtin_engine = engine is None
         if engine is None:
             try:
                 from paddleocr import PaddleOCR
@@ -2263,12 +2269,14 @@ class PaddleOcrEngine:
             engine = PaddleOCR(
                 text_detection_model_name=detection_model,
                 text_recognition_model_name=recognition_model,
+                text_recognition_batch_size=recognition_batch_size,
                 use_doc_orientation_classify=False,
                 use_doc_unwarping=False,
                 use_textline_orientation=False,
                 enable_mkldnn=False,
             )
         self.engine = engine
+        self.supports_exact_image_cache = builtin_engine or getattr(engine, "supports_exact_image_cache", False) is True
         self.last_regions: list[dict[str, Any]] | None = None
         self.regions_truncated = False
 
@@ -2384,9 +2392,12 @@ class PySceneDetectFrameExtractor:
             "first_frame": "first_decodable_frame",
             "opening_interval_ms": 500, "opening_end_exclusive_ms": 3_000,
             "temporal_interval_ms": 125, "temporal_window_offsets_ms": [-375, -250, -125, 0, 125, 250],
-            "temporal_window_limit": 8 if self.analysis_profile == "max" else 4,
+            "temporal_window_limit": 2 if self.analysis_profile == "max" else 1,
             "representative_frame_limit": profile_limit,
             "temporal_frames_exempt_from_deduplication": True,
+            "scene_representative_offset_ms": 250,
+            "minimum_raw_scene_duration_ms": 125,
+            "same_scene_deduplication": "near_identical_with_timeline_segment_guard.v1",
             "scene_threshold": 0.32,
         }
 
@@ -2449,12 +2460,15 @@ class PySceneDetectFrameExtractor:
             _, profile_limit = self._target_frame_count(max(0, media.info.duration_ms / 1000))
             self.last_stats = {
                 "strategy": "audio_only", "scene_count": 0, "anchor_count": 0, "candidate_count": 0,
-                "evidence_version": "visual-evidence.v2", "sampling_strategy_id": "content-frames.v2",
+                "evidence_version": "visual-evidence.v2", "sampling_strategy_id": "content-frames.v3",
                 "sampling_config": self._sampling_config(profile_limit),
                 "first_frame_timestamp_ms": None, "opening_timestamps_ms": [], "temporal_groups": [],
                 "shot_detection": {"status": "not_applicable", "method": "ffmpeg_scene_score.v1", "threshold": 0.32, "boundaries_ms": []},
             }
             return []
+        frame_timing = self.processor.video_frame_timing(media.source_path)
+        sampling_duration_ms = min(media.info.duration_ms, frame_timing.video_end_ms) if frame_timing.video_end_ms is not None else media.info.duration_ms
+        sampling_duration_ms = max(1, sampling_duration_ms)
         detection_error = None
         self._raw_detection_boundaries_ms = []
         try:
@@ -2462,44 +2476,60 @@ class PySceneDetectFrameExtractor:
         except Exception as error:  # noqa: BLE001 - keep representative frames if scene detection fails
             scenes = []
             detection_error = f"{type(error).__name__}: {error}"[:300]
-        duration_seconds = max(0.0, media.info.duration_ms / 1000)
+        duration_seconds = max(0.0, sampling_duration_ms / 1000)
         if self._external_detector and detection_error is None and duration_seconds > 0:
             self._raw_detection_boundaries_ms = sorted({
-                0, media.info.duration_ms,
+                0, sampling_duration_ms,
                 *(round(value * 1000) for scene in scenes for value in scene if 0 < value < duration_seconds),
             })
+        else:
+            self._raw_detection_boundaries_ms = sorted({0, sampling_duration_ms, *(
+                stamp for stamp in self._raw_detection_boundaries_ms if 0 < stamp < sampling_duration_ms
+            )})
         target_count, profile_limit = self._target_frame_count(duration_seconds)
-        scene_timestamps = [max(0.0, start + max(0.0, end - start) / 2) for start, end in scenes]
-        if len(scene_timestamps) > profile_limit:
-            step = len(scene_timestamps) / profile_limit
-            scene_timestamps = [
-                scene_timestamps[min(len(scene_timestamps) - 1, round(index * step))]
-                for index in range(profile_limit)
-            ]
+        raw_scene_intervals = list(pairwise(self._raw_detection_boundaries_ms))
+        representative_scenes = [(start / 1000, end / 1000) for start, end in raw_scene_intervals
+                                 if end - start >= 125]
+        # A frame just after a cut preserves the new scene/composition; taking
+        # only a midpoint can miss brief inserts and tutorial result screens.
+        # Use raw boundaries: the one-second merge is only a summary count and
+        # must not erase a real subsecond B-roll insert from the evidence budget.
+        scene_timestamps = [max(0.0, start + min(.25, max(0.0, end - start) / 2)) for start, end in representative_scenes]
         anchor_timestamps = (
             [duration_seconds * index / max(1, target_count - 1) for index in range(target_count)]
             if duration_seconds > 0
             else []
         )
-        timestamps: list[float] = []
-        minimum_gap = max(2.0, min(15.0, duration_seconds / max(1, target_count * 5)))
-        for timestamp in sorted([*scene_timestamps, *anchor_timestamps]):
-            bounded = min(max(0.0, timestamp), max(0.0, duration_seconds - 0.25)) if duration_seconds else max(0.0, timestamp)
-            if not timestamps or all(abs(bounded - existing) >= minimum_gap for existing in timestamps):
-                timestamps.append(bounded)
-        if len(timestamps) > profile_limit:
-            indices = sorted({round(index * (len(timestamps) - 1) / (profile_limit - 1)) for index in range(profile_limit)})
-            timestamps = [timestamps[index] for index in indices]
+        def bounded_time(value: float, ending_margin: float = .25) -> float:
+            if duration_seconds:
+                return min(max(0.0, value), max(0.0, duration_seconds - ending_margin))
+            return max(0.0, value)
+        # Keep full-length anchors, including the ending, before allocating the
+        # remaining representative budget to scene changes. Similarity filtering
+        # may merge repeated views later, but cannot empty a timeline segment.
+        timestamps = sorted({bounded_time(value) for value in anchor_timestamps})
+        # A brief scene at the very end must not be clamped back into the
+        # preceding scene by the general anchors' 250ms ending margin.
+        additional = sorted({bounded_time(value, .001) for value in scene_timestamps} - set(timestamps))
+        remaining = max(0, profile_limit - len(timestamps))
+        if len(additional) > remaining:
+            additional = ([additional[round(index * (len(additional) - 1) / max(1, remaining - 1))]
+                           for index in range(remaining)] if remaining else [])
+        timestamps = sorted({*timestamps, *additional})
         # Required evidence has its own bounded budget and cannot be removed by
         # general timeline sampling, contrast filtering, or perceptual deduplication.
         role_map: dict[int, set[str]] = {round(value * 1000): {"representative"} for value in timestamps}
         role_map.setdefault(0, set()).add("first_frame")
-        opening_timestamps = list(range(0, min(max(1, media.info.duration_ms), 3_000), 500))
+        ending_timestamp_ms = max(0, sampling_duration_ms - 250)
+        role_map.setdefault(ending_timestamp_ms, set()).add("ending")
+        for value in additional:
+            role_map[round(value * 1000)].add("scene_change")
+        opening_timestamps = list(range(0, min(sampling_duration_ms, 3_000), 500))
         for timestamp in opening_timestamps:
             role_map.setdefault(timestamp, set()).update({"opening", "temporal:opening"})
         temporal_groups = [{
             "group_id": "opening", "kind": "opening", "start_ms": 0,
-            "end_ms": min(media.info.duration_ms, 3_000), "timestamps_ms": opening_timestamps,
+            "end_ms": min(sampling_duration_ms, 3_000), "timestamps_ms": opening_timestamps,
             "source": "ordered_sampled_frames",
             "limitations": "每0.5秒抽样，不是逐帧运动跟踪；快速变化可能漏采。",
         }]
@@ -2510,12 +2540,16 @@ class PySceneDetectFrameExtractor:
         for value in cut_candidates:
             if not selected_cuts or value - selected_cuts[-1] >= 750:
                 selected_cuts.append(value)
-        window_limit = 8 if self.analysis_profile == "max" else 4
+        body_cuts = [value for value in selected_cuts if value >= 3_000]
+        if body_cuts:
+            selected_cuts = body_cuts
+        window_limit = 2 if self.analysis_profile == "max" else 1
         if len(selected_cuts) > window_limit:
-            selected_cuts = [selected_cuts[round(index * (len(selected_cuts) - 1) / (window_limit - 1))] for index in range(window_limit)]
+            selected_cuts = ([selected_cuts[len(selected_cuts) // 2]] if window_limit == 1 else
+                             [selected_cuts[round(index * (len(selected_cuts) - 1) / (window_limit - 1))] for index in range(window_limit)])
         for index, cut in enumerate(selected_cuts, 1):
             group_id = f"cut-{index:03d}"
-            samples = sorted({max(0, min(media.info.duration_ms - 1, cut + offset)) for offset in (-375, -250, -125, 0, 125, 250)})
+            samples = sorted({max(0, min(sampling_duration_ms - 1, cut + offset)) for offset in (-375, -250, -125, 0, 125, 250)})
             for timestamp in samples:
                 role_map.setdefault(timestamp, set()).add(f"temporal:{group_id}")
             temporal_groups.append({
@@ -2524,45 +2558,94 @@ class PySceneDetectFrameExtractor:
                 "source": "ordered_sampled_frames",
                 "limitations": "检测切换附近8fps短时抽样；切换可能误检，不代表连续视频或全片运动覆盖。",
             })
+        segment_count = max(1, target_count // 2)
+        timeline_segments = [{
+            "id": f"coverage:{index + 1:04d}",
+            "start_ms": round(index * sampling_duration_ms / segment_count),
+            "end_ms": round((index + 1) * sampling_duration_ms / segment_count),
+        } for index in range(segment_count)]
+        scene_intervals = [{
+            "id": f"scene:{index + 1:04d}", "start_ms": start, "end_ms": end,
+            "representative_required": end - start >= 125,
+        } for index, (start, end) in enumerate(raw_scene_intervals)]
         output_dir.mkdir(parents=True, exist_ok=True)
-        frames: list[Keyframe] = []
+        actual_roles: dict[int, set[str]] = {}
+        actual_paths: dict[int, Path] = {}
+        resolved_times: dict[int, int] = {}
+        requested_cache: dict[int, int] = {}
         for index, timestamp_ms in enumerate(sorted(role_map)):
             path = output_dir / f"scene-{index + 1:04d}.jpg"
-            seek = ["-ss", f"{timestamp_ms / 1000:.3f}"] if timestamp_ms else []
-            self.processor._execute(
-                [
-                    self.processor.ffmpeg,
-                    "-nostdin",
-                    "-y",
-                    "-v",
-                    "error",
-                    *seek,
-                    "-i",
-                    str(media.source_path),
-                    "-frames:v",
-                    "1",
-                    "-q:v",
-                    "2",
-                    str(path),
-                ]
-            )
-            frames.append(Keyframe(timestamp_ms, path, roles=tuple(sorted(role_map[timestamp_ms]))))
+            target = max(frame_timing.video_start_ms, timestamp_ms)
+            if frame_timing.video_end_ms is not None:
+                target = min(target, max(frame_timing.video_start_ms, frame_timing.video_end_ms - 1))
+            if target in requested_cache:
+                actual = requested_cache[target]
+            else:
+                actual = self.processor.extract_video_frame(media.source_path, target, path, frame_timing)
+                requested_cache[target] = actual
+                if actual in actual_paths:
+                    path.unlink(missing_ok=True)
+                else:
+                    actual_paths[actual] = path
+            resolved_times[timestamp_ms] = actual
+            actual_roles.setdefault(actual, set()).update(role_map[timestamp_ms])
+        # Every timestamp and temporal role now describes a real decoded image.
+        # Multiple requests can resolve to one final/VFR frame; never repeat it
+        # under invented times just to fill a six-image motion group.
+        rebuilt_groups = []
+        for group in temporal_groups:
+            stamps = sorted({resolved_times[stamp] for stamp in group["timestamps_ms"]})
+            valid = len(stamps) >= 3 and all(right - left <= 750 for left, right in pairwise(stamps))
+            if group["kind"] == "opening":
+                valid = valid and stamps[0] == resolved_times[0] and stamps[-1] < 3_000
+            if valid:
+                rebuilt_groups.append({**group, "start_ms": stamps[0], "end_ms": stamps[-1], "timestamps_ms": stamps,
+                                       **({"first_frame_timestamp_ms": resolved_times[0]} if group["kind"] == "opening" else {})})
+            else:
+                for roles in actual_roles.values():
+                    roles.discard(f"temporal:{group['group_id']}")
+        temporal_groups = rebuilt_groups
+        opening_timestamps = sorted({resolved_times[stamp] for stamp in opening_timestamps if resolved_times[stamp] < 3_000})
+        ending_timestamp_ms = resolved_times[ending_timestamp_ms]
+        frames = []
+        for actual, roles in sorted(actual_roles.items()):
+            if actual >= 3_000:
+                roles.discard("opening")
+            segment_index = min(segment_count - 1, actual * segment_count // sampling_duration_ms)
+            roles.add(timeline_segments[segment_index]["id"])
+            for scene in scene_intervals:
+                if scene["start_ms"] <= actual < scene["end_ms"]:
+                    roles.add(scene["id"])
+                    break
+            frames.append(Keyframe(actual, actual_paths[actual], roles=tuple(sorted(roles))))
         self.last_stats = {
             "strategy": "scene_plus_timeline",
             "scene_count": len(scenes),
+            "merged_scene_count": len(scenes),
+            "raw_scene_count": len(raw_scene_intervals),
+            "representative_scene_count": len(representative_scenes),
             "anchor_count": len(anchor_timestamps),
             "candidate_count": len(frames),
+            "requested_frame_count": len(role_map),
+            "resolved_duplicate_count": len(role_map) - len(frames),
+            "timestamp_basis": "decoded_frame_pts",
+            "video_sampling_end_ms": sampling_duration_ms,
             "target_count": target_count,
             "maximum_frames": profile_limit,
             "configured_maximum_frames": self.maximum_frames,
-            "maximum_total_frames": profile_limit + 6 + window_limit * 6,
+            "maximum_total_frames": profile_limit + 7 + window_limit * 6,
             "analysis_profile": self.analysis_profile,
             "anchor_interval_seconds": round(duration_seconds / max(1, target_count - 1), 1) if target_count > 1 else None,
             "evidence_version": "visual-evidence.v2",
-            "sampling_strategy_id": "content-frames.v2",
+            "sampling_strategy_id": "content-frames.v3",
             "sampling_config": self._sampling_config(profile_limit),
-            "first_frame_timestamp_ms": 0,
+            "first_frame_timestamp_ms": resolved_times[0],
             "opening_timestamps_ms": opening_timestamps,
+            "ending_timestamp_ms": ending_timestamp_ms,
+            "timeline_segments": timeline_segments,
+            "scene_intervals": scene_intervals,
+            "temporal_sampling": {"selected_cut_count": len(selected_cuts), "detected_cut_count": len(cut_candidates),
+                                  "full_video_motion_coverage": False},
             "temporal_groups": temporal_groups,
             "shot_detection": {
                 "status": "failed" if detection_error else "measured",
@@ -2593,6 +2676,7 @@ class InstructorStructureAnalyzer:
         generate_script_variants: bool | None = None,
         generate_content_features: bool | None = None,
         generate_unified_report: bool | None = None,
+        generate_reviewed_report: bool | None = None,
         call_recorder: Callable | None = None,
     ) -> None:
         client_was_injected = client is not None
@@ -2800,6 +2884,9 @@ class InstructorStructureAnalyzer:
         self.generate_unified_report = self.generate_content_features and (
             not client_was_injected if generate_unified_report is None else generate_unified_report
         )
+        self.generate_reviewed_report = self.generate_unified_report and (
+            not client_was_injected if generate_reviewed_report is None else generate_reviewed_report
+        )
         self._segment_checkpoint: Callable[[Mapping[str, Any]], None] | None = None
         self._unified_checkpoint: Callable[[Mapping[str, Any]], None] | None = None
 
@@ -2816,6 +2903,20 @@ class InstructorStructureAnalyzer:
         transcript: TranscriptOutput,
         visuals: VisualOutput,
     ) -> StructureOutput:
+        if self.generate_reviewed_report:
+            progress = job.checkpoint.get("unified_progress", {}) if isinstance(job.checkpoint, Mapping) else {}
+            retry_keys = job.checkpoint.get("retry_module_keys") if isinstance(job.checkpoint, Mapping) else None
+            if isinstance(progress, Mapping) and progress.get("protocol_version") == "unified-analysis.v1" and (
+                isinstance(retry_keys, list) and retry_keys and "canonical" not in retry_keys
+            ):
+                # A targeted historical retry must retain its verified v11
+                # manuscript/modules. A fresh analysis uses v12 as usual.
+                from .unified_analysis import analyze_unified
+
+                return analyze_unified(self, job, media, transcript, visuals)
+            from .reviewed_analysis import analyze_reviewed
+
+            return analyze_reviewed(self, job, media, transcript, visuals)
         if self.generate_unified_report:
             from .unified_analysis import analyze_unified
 

@@ -1,5 +1,6 @@
+import { libraryContentColumns, libraryContentFilterOptions, libraryContentSqlFilters, libraryContentSearchSql, matchesLibraryContentFilters, readLibraryContentFilters, serializeLibraryContent } from "../../../lib/library-content-metadata";
 import { materialAnalysisColumns } from "../../../lib/material-analysis-state";
-import { canAccessOrganizationVideoLibrary, canManageOrganizationVideoLibrary, ensureUser, getD1, getOrganizationAccess } from "../../../db/runtime";
+import { canAccessOrganizationVideoLibrary, canManageOrganizationVideoLibrary, canWriteProjectAccess, ensureUser, getD1, getOrganizationAccess, getProjectAccess } from "../../../db/runtime";
 import { apiError, errorResponse } from "../../../lib/api-response";
 import { readRequestIdentity } from "../../../lib/request-auth";
 
@@ -31,6 +32,8 @@ export async function GET(request: Request) {
   const projectId = url.searchParams.get("projectId")?.trim() ?? "";
   const q = url.searchParams.get("q")?.trim().slice(0, 100) ?? "";
   const category = url.searchParams.get("category")?.trim() ?? "";
+  const contentFilters = readLibraryContentFilters(url);
+  if (!contentFilters) return apiError("INVALID_CONTENT_FILTER", "内容分类、形式、时长或标签筛选无效。", 400);
   const platform = url.searchParams.get("platform")?.trim() ?? "";
   const status = url.searchParams.get("status")?.trim() ?? "";
   if (!organizationId) return apiError("ORGANIZATION_REQUIRED", "缺少公司范围。", 400);
@@ -44,18 +47,21 @@ export async function GET(request: Request) {
     const clauses = ["library.organization_id = ?", "v.deleted_at IS NULL"];
     const bindings: unknown[] = [organizationId];
     if (q) {
-      clauses.push("(COALESCE(v.title, '') LIKE ? OR COALESCE(v.author_name, '') LIKE ? OR COALESCE(a.display_name, '') LIKE ? OR COALESCE(library.tags_json, '') LIKE ? OR COALESCE(p.name, '') LIKE ?)");
+      const automaticTags = libraryContentSearchSql(q);
+      clauses.push(`(COALESCE(v.title, '') LIKE ? OR COALESCE(v.author_name, '') LIKE ? OR COALESCE(a.display_name, '') LIKE ? OR COALESCE(library.tags_json, '') LIKE ? OR COALESCE(p.name, '') LIKE ? OR (${automaticTags.sql}))`);
       const term = `%${q.replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
-      bindings.push(term, term, term, term, term);
+      bindings.push(term, term, term, term, term, ...automaticTags.bindings);
     }
     if (category) { clauses.push("library.category = ?"); bindings.push(category); }
     if (platform) { clauses.push("v.platform = ?"); bindings.push(platform); }
     if (status) { clauses.push("v.status = ?"); bindings.push(status); }
+    const contentConditions = libraryContentSqlFilters(contentFilters);
+    clauses.push(...contentConditions.clauses); bindings.push(...contentConditions.bindings);
     const rows = await db.prepare(`
       SELECT library.id, library.category, library.tags_json, library.notes, library.created_at, library.updated_at,
         v.id AS video_id, v.platform, v.source_type, v.source_url, v.title, v.author_name, v.published_at, v.duration_sec, v.status,
         p.id AS source_project_id, p.name AS source_project_name, a.display_name AS account_name,
-        j.status AS job_status, j.progress AS job_progress, j.current_stage, ${materialAnalysisColumns},
+        j.status AS job_status, j.progress AS job_progress, j.current_stage, ${materialAnalysisColumns}, ${libraryContentColumns},
         (SELECT COUNT(*) FROM project_video_references refs WHERE refs.organization_id = library.organization_id AND refs.library_entry_id = library.id AND refs.purpose = 'benchmark' AND refs.status = 'active') AS reference_count,
         CASE WHEN ? != '' AND EXISTS (
           SELECT 1 FROM project_video_references own_ref
@@ -75,13 +81,14 @@ export async function GET(request: Request) {
       LIMIT 300
     `).bind(projectId, projectId, ...bindings).all<Record<string, unknown>>();
     const canManage = await canManageOrganizationVideoLibrary(access);
+    const targetProject = projectId ? await getProjectAccess(identity.authSubject, organizationId, projectId) : null;
+    const entries = rows.results.map(serializeLibraryContent).filter(entry => matchesLibraryContentFilters(entry, contentFilters));
     return Response.json({
-      entries: rows.results.map((row) => ({
-        ...row,
-        tags: (() => { try { return JSON.parse(String(row.tags_json ?? "[]")); } catch { return []; } })(),
-        tags_json: undefined,
+      entries: entries.map(row => ({ ...row,
         cover_url: row.cover_asset_id ? `/api/video-library/${row.id}/cover?organizationId=${encodeURIComponent(organizationId)}${projectId ? `&projectId=${encodeURIComponent(projectId)}` : ""}` : null,
       })),
+      filterOptions: libraryContentFilterOptions(entries),
+      canImportToProject: Boolean(targetProject && canWriteProjectAccess(targetProject)),
       canManage,
     });
   } catch (error) { return errorResponse(error); }

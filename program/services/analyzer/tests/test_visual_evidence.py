@@ -39,6 +39,13 @@ class Processor:
     def _execute(self, command):
         return subprocess.CompletedProcess(command, 0, "", "")
 
+    def video_frame_timing(self, _source):
+        from liming_analyzer.ffmpeg import VideoFrameTiming
+        return VideoFrameTiming()
+
+    def extract_video_frame(self, _source, timestamp_ms, _path, _timing):
+        return timestamp_ms
+
 
 def test_required_opening_and_cut_windows_ignore_general_frame_cap(tmp_path):
     extractor = PySceneDetectFrameExtractor(Processor(), maximum_frames=3, detector=lambda _: [(0, 4), (4, 7), (7, 10)])
@@ -48,7 +55,7 @@ def test_required_opening_and_cut_windows_ignore_general_frame_cap(tmp_path):
     assert "first_frame" in frames[0].roles
     assert len(frames) <= extractor.last_stats["maximum_total_frames"]
     groups = extractor.last_stats["temporal_groups"]
-    assert len(groups) == 3
+    assert len(groups) == 2  # Opening plus one bounded standard-profile cut window.
     for group in groups:
         assert len(group["timestamps_ms"]) >= 3
         assert all(any(frame.timestamp_ms == stamp and f"temporal:{group['group_id']}" in frame.roles for frame in frames) for stamp in group["timestamps_ms"])
@@ -74,7 +81,8 @@ def test_measurements_keep_rapid_boundaries_merged_only_for_representative_sampl
     extractor.extract(NormalizedMedia(Path("video.mp4"), None, MediaInfo(10_000, 160, 90, "h264", None)), tmp_path)
     assert extractor.last_stats["shot_detection"]["boundaries_ms"] == [0, 400, 500, 2000, 10_000]
     assert extractor.last_stats["scene_count"] == 2  # Representative scene sampling still merges short intervals.
-    assert extractor.last_stats["temporal_groups"][1]["start_ms"] < 400
+    assert len(extractor.last_stats["temporal_groups"]) == 2
+    assert extractor.last_stats["temporal_groups"][1]["start_ms"] < 2000
 
 
 def test_temporal_batches_preserve_windows_and_reject_sparse_single_images(tmp_path):
@@ -194,10 +202,110 @@ def test_real_synthetic_video_keeps_black_first_frame_and_opening_sequence(tmp_p
     output = KeyframeVisualAnalyzer(PySceneDetectFrameExtractor(processor), EmptyOcr()).analyze(media, tmp_path / "evidence")
     opening = [frame for frame in output.keyframes if "opening" in frame.roles]
     assert [frame.timestamp_ms for frame in opening] == [0, 500, 1000, 1500]
-    assert output.stats["low_contrast_removed"] == 0
+    assert output.stats["sampling_coverage"]["opening_complete"]
+    assert output.stats["sampling_coverage"]["ending_retained"]
+    assert output.stats["sampling_coverage"]["timeline_complete"]
+    assert output.stats["sampling_coverage"]["detected_scenes_complete"]
     assert output.stats["similar_removed"] == 0
     with Image.open(opening[0].path) as image:
         assert ImageStat.Stat(image.convert("L")).mean[0] < 5
     with Image.open(opening[-1].path) as image:
         assert ImageStat.Stat(image.convert("L")).mean[0] > 245
     assert output.stats["shot_detection"]["boundaries_ms"] == [0, 1000, 2000]
+
+
+@pytest.mark.parametrize("profile,cut_count", [("standard", 1), ("max", 2)])
+def test_sparse_cut_windows_keep_opening_timeline_ending_and_each_scene(tmp_path, profile, cut_count):
+    scenes = [(start, start + 4) for start in range(0, 80, 4)]
+    extractor = PySceneDetectFrameExtractor(Processor(), analysis_profile=profile, detector=lambda _: scenes)
+    frames = extractor.extract(NormalizedMedia(Path("video.mp4"), None, MediaInfo(80_000, 160, 90, "h264", None)), tmp_path)
+    stats = extractor.last_stats
+    assert stats["sampling_strategy_id"] == "content-frames.v3"
+    assert [frame.timestamp_ms for frame in frames if "opening" in frame.roles] == [0, 500, 1000, 1500, 2000, 2500]
+    assert any(frame.timestamp_ms == 79_750 and "ending" in frame.roles for frame in frames)
+    cut_groups = [group for group in stats["temporal_groups"] if group["kind"] == "detected_cut"]
+    assert len(cut_groups) == cut_count
+    assert stats["temporal_sampling"]["selected_cut_count"] == cut_count
+    assert stats["temporal_sampling"]["detected_cut_count"] == 19
+    assert stats["temporal_sampling"]["full_video_motion_coverage"] is False
+    assert all(len(group["timestamps_ms"]) == 6 for group in cut_groups)
+    group_ids = {group["group_id"] for group in stats["temporal_groups"]}
+    assert {role.removeprefix("temporal:") for frame in frames for role in frame.roles if role.startswith("temporal:")} == group_ids
+    for interval in [*stats["timeline_segments"], *stats["scene_intervals"]]:
+        assert any(interval["id"] in frame.roles for frame in frames)
+    # Clear scene changes still get a representative after the boundary even
+    # when no dense motion window was spent on that cut.
+    assert all(any(frame.timestamp_ms == start * 1000 + 250 for frame in frames) for start, _ in scenes)
+
+
+def test_same_scene_dedup_preserves_changed_slides_coverage_and_motion_groups(tmp_path, monkeypatch):
+    plain = tmp_path / "plain.jpg"
+    changed = tmp_path / "changed.jpg"
+    Image.new("RGB", (160, 90), (80, 120, 180)).save(plain)
+    Image.new("RGB", (160, 90), (100, 120, 180)).save(changed)
+
+    class Extractor:
+        last_stats = {
+            "sampling_strategy_id": "content-frames.v3", "opening_timestamps_ms": [0], "ending_timestamp_ms": 8000,
+            "timeline_segments": [{"id": "coverage:0001"}, {"id": "coverage:0002"}],
+            "scene_intervals": [{"id": "scene:0001"}, {"id": "scene:0002"}],
+            "temporal_groups": [{"group_id": "cut-001", "timestamps_ms": [7000, 7125, 7250]}],
+        }
+
+        def extract(self, *_args):
+            rows = [(0, plain, ("first_frame",)), (1000, plain, ()), (2000, changed, ()),
+                    (5000, plain, ()), (6000, plain, ()), (7000, plain, ("temporal:cut-001",)),
+                    (7125, plain, ("temporal:cut-001",)), (7250, plain, ("temporal:cut-001",)),
+                    (8000, plain, ("ending",))]
+            return [Keyframe(time, path, roles=(*roles, "scene:0001" if time < 6000 else "scene:0002",
+                                               "coverage:0001" if time < 5000 else "coverage:0002"))
+                    for time, path, roles in rows]
+
+    class Ocr:
+        def recognize(self, _path):
+            return "", None
+
+    analyzer = KeyframeVisualAnalyzer(Extractor(), Ocr())
+    # Coarse image hashes can collide on different slides. Pixel similarity is
+    # still required, so the changed slide cannot disappear on a hash collision.
+    monkeypatch.setattr(analyzer, "_image_signature", lambda _path: (0, 100))
+    output = analyzer.analyze(NormalizedMedia(Path("fixture.mp4"), None, MediaInfo(9000, 160, 90, "h264", None)), tmp_path / "output")
+    assert [frame.timestamp_ms for frame in output.keyframes] == [0, 2000, 5000, 6000, 7000, 7125, 7250, 8000]
+    assert output.stats["same_scene_removed"] == 1
+    coverage = output.stats["sampling_coverage"]
+    assert coverage["timeline_complete"] and coverage["detected_scenes_complete"]
+    assert coverage["ending_retained"] and coverage["opening_complete"]
+    assert coverage["temporal_groups"] == [{"group_id": "cut-001", "retained_timestamps_ms": [7000, 7125, 7250], "complete": True}]
+
+
+def test_short_insert_between_merged_boundaries_gets_its_own_representative(tmp_path):
+    class DetectProcessor(Processor):
+        def _execute(self, command):
+            return subprocess.CompletedProcess(command, 0, "", " ".join(f"pts_time:{value}" for value in (10, 20, 30, 30.2, 40, 50, 60, 70, 80, 90, 99.8)))
+
+        def probe(self, _source):
+            return MediaInfo(100_000, 160, 90, "h264", None)
+
+    extractor = PySceneDetectFrameExtractor(DetectProcessor(), analysis_profile="max")
+    frames = extractor.extract(NormalizedMedia(Path("video.mp4"), None, MediaInfo(100_000, 160, 90, "h264", None)), tmp_path)
+    insert = next(row for row in extractor.last_stats["scene_intervals"] if row["start_ms"] == 30_000)
+    assert insert["end_ms"] == 30_200 and insert["representative_required"] is True
+    assert any(frame.timestamp_ms == 30_100 and insert["id"] in frame.roles for frame in frames)
+    assert any(frame.timestamp_ms == 99_900 for frame in frames)
+    assert extractor.last_stats["raw_scene_count"] > extractor.last_stats["merged_scene_count"]
+    assert not any(group["start_ms"] <= 30_100 <= group["end_ms"] for group in extractor.last_stats["temporal_groups"])
+
+
+def test_exhausted_scene_budget_reports_missing_raw_coverage(tmp_path):
+    class Ocr:
+        def recognize(self, _path):
+            return "", None
+
+    extractor = PySceneDetectFrameExtractor(Processor(), maximum_frames=3, detector=lambda _: [(start, start + 2) for start in range(0, 20, 2)])
+    result = KeyframeVisualAnalyzer(extractor, Ocr()).analyze(
+        NormalizedMedia(Path("video.mp4"), None, MediaInfo(20_000, 160, 90, "h264", None)), tmp_path)
+    coverage = result.stats["sampling_coverage"]
+    assert coverage["timeline_complete"] and coverage["opening_complete"] and coverage["ending_retained"]
+    assert coverage["detected_scenes_complete"] is False
+    assert coverage["representative_scenes_complete"] is False
+    assert any(not row["retained_timestamps_ms"] for row in coverage["detected_scenes"])

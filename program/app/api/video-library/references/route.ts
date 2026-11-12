@@ -1,5 +1,6 @@
+import { libraryContentColumns, libraryContentFilterOptions, libraryContentSqlFilters, libraryContentSearchSql, matchesLibraryContentFilters, readLibraryContentFilters, serializeLibraryContent } from "../../../../lib/library-content-metadata";
 import { materialAnalysisColumns } from "../../../../lib/material-analysis-state";
-import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess } from "../../../../db/runtime";
+import { canManageOrganizationVideoLibrary, canWriteProjectAccess, ensureUser, getD1, getOrganizationAccess, getProjectAccess } from "../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../lib/api-response";
 import { readRequestIdentity } from "../../../../lib/request-auth";
 import { importBenchmarkReferences, removeBenchmarkReference } from "../../../../lib/library-reference-write";
@@ -16,20 +17,24 @@ export async function GET(request: Request) {
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再访问对标内容库。", 401);
   const url = new URL(request.url); const organizationId = url.searchParams.get("organizationId")?.trim() ?? ""; const projectId = url.searchParams.get("projectId")?.trim() ?? "";
   const q = url.searchParams.get("q")?.trim().slice(0, 100) ?? ""; const category = url.searchParams.get("category")?.trim() ?? "";
+  const contentFilters = readLibraryContentFilters(url);
+  if (!contentFilters) return apiError("INVALID_CONTENT_FILTER", "内容分类、形式、时长或标签筛选无效。", 400);
   if (!organizationId || !projectId) return apiError("PROJECT_SCOPE_REQUIRED", "缺少公司或项目范围。", 400);
   try {
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
     if (!access) return apiError("ACCESS_DENIED", "无权访问该项目的对标内容库。", 403);
     const clauses = ["refs.organization_id = ?", "refs.project_id = ?", "refs.purpose = 'benchmark' AND refs.status = 'active'", "v.deleted_at IS NULL"];
     const bindings: unknown[] = [organizationId, projectId];
-    if (q) { const term = `%${q}%`; clauses.push("(COALESCE(v.title, '') LIKE ? OR COALESCE(v.author_name, '') LIKE ? OR COALESCE(library.tags_json, '') LIKE ?)"); bindings.push(term, term, term); }
+    if (q) { const term = `%${q}%`, automaticTags = libraryContentSearchSql(q); clauses.push(`(COALESCE(v.title, '') LIKE ? OR COALESCE(v.author_name, '') LIKE ? OR COALESCE(library.tags_json, '') LIKE ? OR (${automaticTags.sql}))`); bindings.push(term, term, term, ...automaticTags.bindings); }
     if (category) { clauses.push("library.category = ?"); bindings.push(category); }
+    const contentConditions = libraryContentSqlFilters(contentFilters);
+    clauses.push(...contentConditions.clauses); bindings.push(...contentConditions.bindings);
     const rows = await getD1().prepare(`
-      SELECT refs.id AS reference_id, refs.created_at AS imported_at, library.id, library.category, library.tags_json, library.notes,
+      SELECT refs.id AS reference_id, refs.created_at AS imported_at, library.id, library.category, library.tags_json, library.notes, library.updated_at,
         v.id AS video_id, v.platform, v.source_type, v.source_url, v.title, v.author_name, v.duration_sec, v.status,
         p.id AS source_project_id, p.name AS source_project_name, account.display_name AS account_name,
         j.status AS job_status, j.progress AS job_progress, j.current_stage,
-        ${materialAnalysisColumns},
+        ${materialAnalysisColumns}, ${libraryContentColumns},
         (SELECT frame.id FROM media_assets frame WHERE frame.organization_id = v.organization_id AND frame.project_id = v.project_id AND frame.video_id = v.id AND frame.kind = 'keyframe' AND frame.status = 'active' ORDER BY frame.is_cover DESC, COALESCE(frame.quality_score, 0) DESC, frame.created_at ASC LIMIT 1) AS cover_asset_id
       FROM project_video_references refs
       INNER JOIN video_library_entries library ON library.id = refs.library_entry_id AND library.organization_id = refs.organization_id
@@ -41,13 +46,16 @@ export async function GET(request: Request) {
       WHERE ${clauses.join(" AND ")}
       ORDER BY refs.created_at DESC LIMIT 300
     `).bind(...bindings).all<Record<string, unknown>>();
+    const organization = await getOrganizationAccess(identity.authSubject, organizationId);
+    const canManage = Boolean(organization && await canManageOrganizationVideoLibrary(organization));
+    const entries = rows.results.map(serializeLibraryContent).filter(entry => matchesLibraryContentFilters(entry, contentFilters));
     return Response.json({
-      entries: rows.results.map((row) => ({
+      entries: entries.map((row) => ({
         ...row,
-        tags: (() => { try { return JSON.parse(String(row.tags_json ?? "[]")); } catch { return []; } })(),
-        tags_json: undefined,
         cover_url: row.cover_asset_id ? `/api/video-library/${row.id}/cover?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}` : null,
       })),
+      filterOptions: libraryContentFilterOptions(entries),
+      canManage,
       canWrite: canWriteProjectAccess(access),
     });
   } catch (error) { return errorResponse(error); }

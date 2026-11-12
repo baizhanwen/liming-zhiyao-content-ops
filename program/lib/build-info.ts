@@ -12,6 +12,6 @@ const runtime = env as BuildEnv;
 export const buildInfo = {
   buildId: runtime.BUILD_ID?.trim() || "codex-gate6-20260820",
   databaseMigrationVersion: runtime.DATABASE_MIGRATION_VERSION?.trim() || "0028_project_assistant_memory_chat",
-  analysisContractVersion: runtime.ANALYSIS_CONTRACT_VERSION?.trim() || "analysis.v11",
+  analysisContractVersion: runtime.ANALYSIS_CONTRACT_VERSION?.trim() || "analysis.v12",
   localRuntimeSourceId: runtime.LOCAL_RUNTIME_SOURCE_ID?.trim() || null,
 } as const;

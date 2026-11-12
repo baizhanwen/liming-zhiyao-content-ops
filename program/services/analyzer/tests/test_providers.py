@@ -79,6 +79,14 @@ class FakeProcessor:
     def _execute(self, command):
         self.commands.append(command)
 
+    def video_frame_timing(self, _source):
+        from liming_analyzer.ffmpeg import VideoFrameTiming
+        return VideoFrameTiming()
+
+    def extract_video_frame(self, _source, timestamp_ms, _path, _timing):
+        self.commands.append(("extract_video_frame", timestamp_ms))
+        return timestamp_ms
+
 
 class FakeReport:
     def model_dump(self, mode="json"):
@@ -399,6 +407,49 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(text, "管理增长")
         self.assertEqual(confidence, 91)
 
+    def test_paddle_constructor_passes_supported_recognition_batch_without_changing_models_or_geometry(self):
+        # Verify the media-library boundary without loading/downloading weights.
+        # This keyword is also exercised by the private real PaddleOCR benchmark.
+        calls = []
+        injected = FakeOcr()
+
+        def construct(*, text_detection_model_name, text_recognition_model_name,
+                      text_recognition_batch_size, use_doc_orientation_classify,
+                      use_doc_unwarping, use_textline_orientation, enable_mkldnn):
+            calls.append({"det": text_detection_model_name, "rec": text_recognition_model_name,
+                          "batch": text_recognition_batch_size,
+                          "geometry": (use_doc_orientation_classify, use_doc_unwarping,
+                                       use_textline_orientation, enable_mkldnn)})
+            return injected
+
+        module = ModuleType("paddleocr")
+        module.PaddleOCR = construct
+        with patch.dict(sys.modules, {"paddleocr": module}):
+            default = PaddleOcrEngine()
+            custom = PaddleOcrEngine(detection_model="custom-det", recognition_model="custom-rec",
+                                    recognition_batch_size=3)
+        self.assertIs(default.engine, injected)
+        self.assertIs(custom.engine, injected)
+        self.assertEqual(calls, [
+            {"det": "PP-OCRv5_mobile_det", "rec": "PP-OCRv5_mobile_rec", "batch": 1,
+             "geometry": (False, False, False, False)},
+            {"det": "custom-det", "rec": "custom-rec", "batch": 3,
+             "geometry": (False, False, False, False)},
+        ])
+        self.assertTrue(default.supports_exact_image_cache)
+
+    def test_paddle_recognition_batch_rejects_invalid_configuration_before_loading_model(self):
+        for value in (0, -1, True, False, 1.5, "1", None):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "positive integer"):
+                PaddleOcrEngine(recognition_batch_size=value)
+
+    def test_paddle_injected_engine_is_retained_without_reconfiguration(self):
+        engine = FakeOcr()
+        adapter = PaddleOcrEngine(engine=engine, recognition_batch_size=3)
+        self.assertIs(adapter.engine, engine)
+        self.assertFalse(adapter.supports_exact_image_cache)
+        self.assertEqual(adapter.recognize(Path("frame.jpg")), ("管理增长", 91))
+
     def test_scene_detector_combines_scenes_with_full_timeline_anchors(self):
         processor = FakeProcessor()
         extractor = PySceneDetectFrameExtractor(
@@ -449,8 +500,9 @@ class ProviderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             frames = extractor.extract(media, Path(directory))
         self.assertGreaterEqual(len(frames), 37)
-        self.assertLessEqual(sum("representative" in frame.roles for frame in frames), 40)
-        self.assertLessEqual(len(frames), 40 + 6 + 4 * 6)
+        representative_limit = extractor.last_stats["target_count"] + extractor.last_stats["representative_scene_count"]
+        self.assertLessEqual(sum("representative" in frame.roles for frame in frames), representative_limit)
+        self.assertLessEqual(len(frames), representative_limit + 6 + 6)
         self.assertEqual(frames[0].timestamp_ms, 0)
         self.assertGreaterEqual(frames[-1].timestamp_ms, 1_028_000)
         self.assertEqual(extractor.last_stats["target_count"], 37)

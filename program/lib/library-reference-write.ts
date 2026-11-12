@@ -58,7 +58,15 @@ export async function importBenchmarkReferences(db: D1Database, scope: ProjectWr
   await assertAccess();
   const results = await db.batch(statements);
   if (!results[0].meta.changes) { await assertProjectWriteAccess(db, scope); return apiError("LIBRARY_IMPORT_CHANGED", "素材或导入状态已被其他成员改变，本批未导入。请刷新后重新选择。", 409); }
-  return Response.json({ imported: entryIds.length, entryIds, actions }, { status: 201 });
+  return Response.json({
+    imported: entryIds.length,
+    synchronized: entryIds.length,
+    created: actions.filter(action => action.action === "created").length,
+    reactivated: actions.filter(action => action.action === "reactivated").length,
+    alreadyActive: actions.filter(action => action.action === "already_active").length,
+    entryIds,
+    actions,
+  }, { status: 201 });
 }
 
 export async function removeBenchmarkReference(db: D1Database, scope: ProjectWriteScope, referenceId: string, assertAccess: () => Promise<void>) {

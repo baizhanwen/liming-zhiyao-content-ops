@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { readUnifiedReport } from "./unified-report.ts";
 
 const text = (max: number) => z.string().trim().min(1).max(max);
 export const BENCHMARK_REWRITE_VERSION = "content-draft.v18-benchmark-revision";
@@ -39,6 +40,12 @@ const record = (value: unknown): Record<string, unknown> => value && typeof valu
 export function readBenchmarkRewriteSource(reportJson: string, transcriptText?: string | null) {
   let report: Record<string, unknown> = {};
   try { report = record(JSON.parse(reportJson)); } catch { /* transcript fallback */ }
+  if (record(report.analysis_meta).contract_version === "analysis.v12" || record(report.unified_report).version === "unified-report.v2") {
+    const unified = readUnifiedReport(report);
+    if (!unified || unified.version !== "unified-report.v2" || unified.outcome.manuscript !== "verified") return null;
+    const sourceScript = unified.canonical.segments.filter(segment => segment.review_status === "accepted").map(segment => segment.text).join("\n\n").trim();
+    return sourceScript ? { sourceScript, sourceKind: "corrected_original" as const } : null;
+  }
   const corrected = record(record(report.spoken_script_set).corrected_original);
   const correctedText = typeof corrected?.text === "string" ? corrected.text.trim() : "";
   if (corrected.status === "completed" && record(corrected.validation).passed !== false && correctedText) {

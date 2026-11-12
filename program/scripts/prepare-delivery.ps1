@@ -246,7 +246,7 @@ export function deliveryFeatureEnabled(feature: DeliveryFeature) {
     Copy-Item -LiteralPath $guideSource -Destination (Join-Path $packageRoot "DELIVERY-GUIDE.txt")
     # Only reviewed customer documentation is copied; internal audit reports and
     # other future docs remain outside the runtime directory allowlist.
-    foreach ($document in @("docs\产品使用手册.html", "docs\产品使用手册.md", "docs\operations\备份恢复与升级操作.md", "docs\电商素材使用说明.md", "docs\releases\full-v20261111.7.md", "docs\releases\windows-qwen-v20261112.1.md")) {
+    foreach ($document in @("docs\产品使用手册.html", "docs\产品使用手册.md", "docs\operations\备份恢复与升级操作.md", "docs\电商素材使用说明.md", "docs\releases\full-v20261111.8.md", "docs\releases\windows-qwen-v20261112.1.md")) {
         $documentTarget = Join-Path $packageRoot $document
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $documentTarget) | Out-Null
         Copy-Item -LiteralPath (Join-Path $projectRoot $document) -Destination $documentTarget

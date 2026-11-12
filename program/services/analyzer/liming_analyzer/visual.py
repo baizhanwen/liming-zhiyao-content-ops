@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import copy
+import hashlib
 import json
 import time
 from collections.abc import Mapping, Sequence
@@ -502,6 +504,12 @@ class KeyframeVisualAnalyzer:
         ocr_errors: list[dict[str, Any]] = []
         accepted_signatures: list[tuple[int, int]] = []
         candidates = self.extractor.extract(media, output_dir / "keyframes")
+        extractor_stats = getattr(self.extractor, "last_stats", {})
+        scene_aware = isinstance(extractor_stats, Mapping) and extractor_stats.get("sampling_strategy_id") == "content-frames.v3"
+        seen_coverage: set[str] = set()
+        seen_scenes: set[str] = set()
+        scene_signatures: list[tuple[Keyframe, int, str]] = []
+        same_scene_removed = 0
         extraction_elapsed_ms = round((time.monotonic() - extraction_started) * 1000)
         filtering_started = time.monotonic()
         self._set_progress({
@@ -530,24 +538,41 @@ class KeyframeVisualAnalyzer:
                 "sampled_frames": len(selected_frames), "ocr_completed": 0,
             })
             signature = self._image_signature(frame.path)
-            forced = any(role == "first_frame" or role == "opening" or role.startswith("temporal:") for role in frame.roles)
-            if signature is not None and not forced:
+            forced = any(role in {"first_frame", "opening", "ending"} or role.startswith("temporal:") for role in frame.roles)
+            scene_id = next((role for role in frame.roles if role.startswith("scene:")), "")
+            coverage_id = next((role for role in frame.roles if role.startswith("coverage:")), "")
+            coverage_guard = scene_aware and ((coverage_id and coverage_id not in seen_coverage) or (scene_id and scene_id not in seen_scenes))
+            if signature is not None and not forced and not coverage_guard:
                 image_hash, contrast = signature
                 is_boundary = candidate_index in {0, len(candidates) - 1}
                 if contrast < 4.0 and not is_boundary:
                     low_contrast_removed += 1
                     completed_candidates += 1
                     continue
-                if any(
+                repeated_scene = scene_aware and scene_id and any(
+                    previous_scene == scene_id and (image_hash ^ previous_hash).bit_count() <= 2
+                    and self._near_identical_images(frame.path, previous_frame.path)
+                    for previous_frame, previous_hash, previous_scene in scene_signatures
+                )
+                repeated_local = (not scene_aware or not scene_id) and any(
                     abs(frame.timestamp_ms - previous_timestamp) <= local_similarity_window_ms
                     and (image_hash ^ previous_hash).bit_count() <= 5
                     for previous_timestamp, previous_hash in accepted_signatures
-                ):
+                )
+                if repeated_scene or repeated_local:
                     similar_removed += 1
+                    same_scene_removed += int(bool(repeated_scene))
                     completed_candidates += 1
                     continue
-                accepted_signatures.append((frame.timestamp_ms, image_hash))
+            if signature is not None:
+                accepted_signatures.append((frame.timestamp_ms, signature[0]))
+                if scene_id:
+                    scene_signatures.append((frame, signature[0], scene_id))
             selected_frames.append(frame)
+            if coverage_id:
+                seen_coverage.add(coverage_id)
+            if scene_id:
+                seen_scenes.add(scene_id)
             completed_candidates += 1
 
         filtering_elapsed_ms = round((time.monotonic() - filtering_started) * 1000)
@@ -596,6 +621,9 @@ class KeyframeVisualAnalyzer:
         vision_observations: Sequence[VisualObservation] = ()
         vision_stats: dict[str, Any] = {"status": "unavailable", "reason": self.vision_unavailable_reason, "observation_count": 0}
         vision_future = None
+        exact_ocr_cache: dict[str, tuple[str, int | None, Any]] = {}
+        ocr_engine_calls = 0
+        ocr_exact_reused = 0
         overlap_allowed = self.vision is not None and getattr(self.vision, "supports_ocr_overlap", False) is True
         update_progress()
         try:
@@ -606,8 +634,22 @@ class KeyframeVisualAnalyzer:
                 for frame in selected_frames:
                     healthy = True
                     try:
-                        text, confidence = self.ocr.recognize(frame.path)
-                        regions = None if getattr(self.ocr, "regions_truncated", False) else getattr(self.ocr, "last_regions", None)
+                        digest = None
+                        if getattr(self.ocr, "supports_exact_image_cache", False) is True:
+                            try:
+                                digest = hashlib.sha256(frame.path.read_bytes()).hexdigest()
+                            except OSError:
+                                pass
+                        if digest is not None and digest in exact_ocr_cache:
+                            text, confidence, cached_regions = exact_ocr_cache[digest]
+                            regions = copy.deepcopy(cached_regions)
+                            ocr_exact_reused += 1
+                        else:
+                            ocr_engine_calls += 1
+                            text, confidence = self.ocr.recognize(frame.path)
+                            regions = None if getattr(self.ocr, "regions_truncated", False) else getattr(self.ocr, "last_regions", None)
+                            if digest is not None:
+                                exact_ocr_cache[digest] = (text, confidence, copy.deepcopy(regions))
                     except Exception as error:  # noqa: BLE001 - a failed OCR frame must not erase image evidence
                         healthy = False
                         text, confidence, regions = "", None, None
@@ -664,8 +706,11 @@ class KeyframeVisualAnalyzer:
             "candidate_count": len(candidates),
             "low_contrast_removed": low_contrast_removed,
             "similar_removed": similar_removed,
+            "same_scene_removed": same_scene_removed,
             "kept_count": len(keyframes),
             "ocr_observation_count": len(unique_ocr),
+            "ocr_engine_call_count": ocr_engine_calls,
+            "ocr_exact_reuse_count": ocr_exact_reused,
             "ocr_error_count": len(ocr_errors), "ocr_errors": ocr_errors[:20],
             "vision_observation_count": len(vision_observations),
             "visual_understanding": vision_stats,
@@ -686,6 +731,26 @@ class KeyframeVisualAnalyzer:
             },
             "local_similarity_window_seconds": round(local_similarity_window_ms / 1000, 1),
         }
+        if scene_aware:
+            retained_times = {frame.timestamp_ms for frame in keyframes}
+            timeline = [{**row, "retained_timestamps_ms": [frame.timestamp_ms for frame in keyframes if row["id"] in frame.roles]}
+                        for row in extractor_stats.get("timeline_segments", [])]
+            scenes = [{**row, "retained_timestamps_ms": [frame.timestamp_ms for frame in keyframes if row["id"] in frame.roles]}
+                      for row in extractor_stats.get("scene_intervals", [])]
+            expected_opening = extractor_stats.get("opening_timestamps_ms", [])
+            stats["sampling_coverage"] = {
+                "scope": "sampled_frames_only", "full_video_motion_coverage": False,
+                "timeline_segments": timeline, "timeline_complete": all(row["retained_timestamps_ms"] for row in timeline),
+                "detected_scenes": scenes, "detected_scenes_complete": bool(scenes) and all(row["retained_timestamps_ms"] for row in scenes),
+                "scene_interval_source": "raw_detected_boundaries",
+                "representative_scenes_complete": bool(scenes) and all(row["retained_timestamps_ms"] for row in scenes if row.get("representative_required", True)),
+                "opening_complete": all(timestamp in retained_times for timestamp in expected_opening),
+                "ending_retained": extractor_stats.get("ending_timestamp_ms") in retained_times,
+                "temporal_groups": [{"group_id": group["group_id"],
+                    "retained_timestamps_ms": [timestamp for timestamp in group["timestamps_ms"] if timestamp in retained_times],
+                    "complete": all(timestamp in retained_times for timestamp in group["timestamps_ms"])}
+                    for group in extractor_stats.get("temporal_groups", [])],
+            }
         current_progress = self.progress_snapshot()
         self._set_progress({
             **current_progress,
@@ -697,6 +762,23 @@ class KeyframeVisualAnalyzer:
             "ocr_completed": len(keyframes), "ocr_total": len(keyframes),
         })
         return VisualOutput(tuple(keyframes), tuple(combined), stats)
+
+    @staticmethod
+    def _near_identical_images(left: Path, right: Path) -> bool:
+        """Require pixel similarity as well as a coarse hash before merging scenes.
+
+        A perceptual hash alone often treats different slides and text overlays
+        as identical. The small pixel comparison preserves those visible changes.
+        """
+        try:
+            from PIL import Image, ImageChops, ImageStat
+
+            with Image.open(left) as left_image, Image.open(right) as right_image:
+                difference = ImageChops.difference(
+                    left_image.convert("RGB").resize((160, 90)), right_image.convert("RGB").resize((160, 90)))
+                return max(ImageStat.Stat(difference).mean) <= 1.5
+        except (OSError, ValueError):
+            return False
 
     @staticmethod
     def _image_signature(path: Path) -> tuple[int, float] | None:

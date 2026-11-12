@@ -33,9 +33,9 @@ test("material center supports search, classification, tags, import and removal"
     read("../components/VideoLibraryWorkspace.tsx"), read("../app/api/video-library/route.ts"), read("../app/api/video-library/references/route.ts"),
   ]);
   assert.match(component, /搜索标题、作者、账号、标签或来源项目/);
-  assert.match(component, /\["published", "已发布的视频"\]/);
+  assert.match(component, /content_category_label/);
   assert.match(libraryRoute, /"published", "benchmark"/);
-  assert.match(component, /导入当前项目/);
+  assert.match(component, /同步到当前企业空间/);
   assert.match(component, /移出项目/);
   assert.match(component, /library-grid/);
   assert.match(component, /cover_url/);
@@ -95,4 +95,32 @@ test("material-center detail keeps same-space enterprise performance data", asyn
   assert.match(detailRoute, /canReadOwnedPerformance \? db\.prepare\(`/);
   assert.match(detailRoute, /platform_metric_snapshots/);
   assert.match(detailRoute, /w\.match_status = 'confirmed'/);
+});
+
+
+test("library pages keep content filters and metadata while retiring comparison selection", async () => {
+  const component = await read("../components/VideoLibraryWorkspace.tsx");
+  assert.doesNotMatch(component, /ContentComparisonPanel|comparisonIds|content-compare-select|生成内容对比/);
+  for (const label of ["选题类别", "内容形式", "时长分组", "全部标签"]) assert.ok(component.includes(label));
+  assert.match(component, /content_category_label/);
+  for (const label of ["选题类别", "内容形式", "时长分组", "标签"]) assert.ok(component.includes(`aria-label="${label}"`));
+  assert.doesNotMatch(component, /素材用途|补充标签|未指定用途|tagDrafts|saveMetadata/);
+  assert.match(component, /entry\.tags\.slice\(0, 6\)/);
+  assert.match(component, /查看全部/);
+  assert.match(component, /if \(projId\) params\.set\("projectId", projId\)/);
+  assert.match(component, /同步到对标内容库/);
+  assert.match(component, /canImportToProject/);
+  assert.match(component, /className="library-select"/);
+  assert.match(component, /for \(const \[key, value\] of Object\.entries\(content\)\)/);
+});
+
+
+test("material card action labels stay whole and reserve danger styling for removal", async () => {
+  const component = await read("../components/VideoLibraryWorkspace.tsx"), css = await read("../app/globals.css");
+  assert.match(component, /className="library-card-source"/);
+  assert.match(component, /className="library-card-actions"/);
+  assert.match(component, /className="library-remove-reference"/);
+  assert.match(css, /\.library-card-actions a, \.library-card-actions button \{[^}]*white-space: nowrap/);
+  assert.match(css, /button\.library-remove-reference \{ color: var\(--danger\)/);
+  assert.doesNotMatch(css, /\.library-card footer button \{ color: var\(--danger\)/);
 });

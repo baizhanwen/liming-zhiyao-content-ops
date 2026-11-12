@@ -116,10 +116,10 @@ export async function GET(request: Request, context: { params: Promise<{ videoId
     const newestForJob = job ? await db.prepare("SELECT id FROM video_analyses WHERE analysis_job_id=? AND organization_id=? AND project_id=? AND video_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1")
       .bind(job.id, organizationId, sourceProjectId, videoId).first<{ id: string }>() : null;
     const moduleRetry = job && selected && newestForJob?.id === selected.id
-      ? readAnalysisModuleRetryState(typeof job.checkpoint_json === "string" ? job.checkpoint_json : null, selected.schema_version, selected.report) : null;
+      ? readAnalysisModuleRetryState(typeof job.checkpoint_json === "string" ? job.checkpoint_json : null, selected.schema_version, selected.report, typeof job.status === "string" ? job.status : undefined) : null;
     const retryableModuleKeys = moduleRetry?.failedModuleKeys.filter(key => !moduleRetry.blockedModuleKeys.includes(key)) ?? [];
     const safeJob = job ? { ...job, checkpoint_json: undefined, segment_progress: summarizeSegmentProgress(job.checkpoint_json),
-      module_retry: { available: !sharedReference && canWriteProjectAccess(access) && ["evidence_ready", "segment_progress"].includes(String(job.checkpoint_stage)) && ["partial", "failed"].includes(String(job.status)) && Boolean(moduleRetry?.available) && retryableModuleKeys.length > 0, failedModuleKeys: retryableModuleKeys } } : null;
+      module_retry: { available: !sharedReference && canWriteProjectAccess(access) && ["evidence_ready", "segment_progress"].includes(String(job.checkpoint_stage)) && (["partial", "failed"].includes(String(job.status)) || job.status === "completed" && moduleRetry?.canonicalNeedsReview === true) && Boolean(moduleRetry?.available) && retryableModuleKeys.length > 0, failedModuleKeys: retryableModuleKeys, reviewSegmentIds: moduleRetry?.reviewSegmentIds ?? [] } } : null;
     const safeLatestJob = latestJob ? { ...latestJob, checkpoint_json: undefined, segment_progress: summarizeSegmentProgress(latestJob.checkpoint_json) } : null;
     return Response.json({
       video: { ...video, filename: media?.filename ?? video.filename, content_type: media?.content_type ?? video.content_type,

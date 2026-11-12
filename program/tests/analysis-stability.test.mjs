@@ -142,7 +142,7 @@ test("new analysis tasks support standard and max while legacy values remain rea
   assert.match(provider, /single_pass_standard/);
 });
 
-test("analysis submissions show v11 text estimates and retain per-request output caps", async () => {
+test("analysis submissions show v12 text estimates and retain per-request output caps", async () => {
   const [profiles, workspace, provider, modelCompat, detail] = await Promise.all([
     readFile(new URL("../lib/analysis-profile.ts", import.meta.url), "utf8"),
     readFile(new URL("../components/AnalysisWorkspace.tsx", import.meta.url), "utf8"),
@@ -152,7 +152,7 @@ test("analysis submissions show v11 text estimates and retain per-request output
   ]);
 
   assert.match(profiles, /estimateMediaSourceTokens/);
-  assert.match(profiles, /pipelineVersion: "analysis\.v11"/);
+  assert.match(profiles, /pipelineVersion: "analysis\.v12"/);
   assert.match(profiles, /visualTokens: null/);
   assert.match(workspace, /readMediaDuration/);
   assert.match(workspace, /短视频文字预算参考/);

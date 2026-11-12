@@ -1,5 +1,5 @@
 import { assertProjectWriteAccess, projectWriteAccessBindings, projectWriteAccessCondition, type ProjectWriteScope } from "./project-write-access.ts";
-import { readUnifiedReport } from "./unified-report.ts";
+import { readUnifiedReport, projectSafeAnalysisReport } from "./unified-report.ts";
 import { readContentAnalysis } from "./video-content-analysis.ts";
 
 type Prepared = {
@@ -21,10 +21,12 @@ function values(value: unknown) {
 
 export async function extractVideoKnowledgeAtomsFromReport(db: Database, input: { organizationId: string; libraryEntryId: string; analysisId: string; report: Record<string, unknown>; reportHash: string; extractorVersion: string; now: string; requireCurrentAnalysis?: boolean; reportJson?: string; writeScope?: ProjectWriteScope; assertWriteAccess?: () => Promise<void> }) {
   const unified = readUnifiedReport(input.report);
+  const safeReport = projectSafeAnalysisReport(input.report);
+  if (!safeReport) return { status: "unsupported", count: 0, libraryEntryId: input.libraryEntryId };
   const registry = new Map((unified ? readContentAnalysis(input.report)?.evidence_registry : [])?.map(row => [row.id, row]) ?? []);
   const findings = unified?.sections.flatMap(section => section.findings) ?? [];
-  const reportEvidence = values(input.report.evidence);
-  const atomInputs = atomFields.flatMap((field) => values(input.report[field]).map((item, index) => {
+  const reportEvidence = values(safeReport.evidence);
+  const atomInputs = atomFields.flatMap((field) => values(safeReport[field]).map((item, index) => {
     const evidence = reportEvidence.find((quote) => item.includes(quote) || quote.includes(item));
     const linked = findings.filter(finding => finding.text === item || item.includes(finding.text));
     const evidenceIds = [...new Set(linked.flatMap(finding => finding.evidence_ids))];

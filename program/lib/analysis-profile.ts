@@ -28,7 +28,7 @@ export const canonicalBudgetAssumptions = {
   charactersPerMinute: 320,
   secondsPerAsrSegment: 2,
   charactersPerBatch: 4_000,
-  segmentsPerBatch: 96,
+  segmentsPerBatch: 48,
   defaultMaxOutputTokens: 6_000,
 } as const;
 
@@ -114,6 +114,10 @@ export function estimateUnifiedAnalysisBudget(durationSeconds: number, profile: 
   // is an allowance for planning, not a claim that canonical inputs are capped.
   const inputTokensEstimate = batchCount ? Math.max(sourceTokensEstimate, batchCount * budget.input_token_limit) : 0;
   const outputTokenBudgets = batchCount ? outputAttempts(profile, configuredLimit, configuredLimit) : [];
+  // Canonical v2 may spend its second and final batch call on directed repair,
+  // even when the first response reached the configured output cap. Length
+  // growth and that repair share this same two-call allowance.
+  if (outputTokenBudgets.length === 1) outputTokenBudgets.push(outputTokenBudgets[0]);
   const canonical = {
     batchCountEstimate: batchCount,
     batchCountBasis: options.canonicalBatchCount === undefined ? "duration_assumption" as const : "provided" as const,
@@ -127,7 +131,7 @@ export function estimateUnifiedAnalysisBudget(durationSeconds: number, profile: 
   };
   const modules = classificationBudgets(profile, configuredLimit);
   return {
-    pipelineVersion: "analysis.v11" as const, profile,
+    pipelineVersion: "analysis.v12" as const, profile,
     durationKnown: durationForEstimate(durationSeconds) > 0, configuredMaxOutputTokens: configuredLimit,
     sourceTokensEstimate, canonical, modules,
     initialInputTokensEstimate: canonical.inputTokensEstimate + modules.reduce((sum, row) => sum + row.inputTokenLimit, 0),

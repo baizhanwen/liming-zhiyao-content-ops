@@ -41,7 +41,7 @@ test("each unified-analysis producer, reader and API change invalidates the runn
     "services/analyzer/liming_analyzer/artifacts.py", "services/analyzer/liming_analyzer/model_calls.py",
     "services/analyzer/liming_analyzer/minimax_vision.py", "services/analyzer/liming_analyzer/visual.py",
     "lib/unified-report.ts", "lib/analysis-report-view.ts", "lib/analysis-module-retry.ts", "lib/analysis-media.ts",
-    "lib/analysis-quality.ts", "lib/video-content-analysis.ts", "lib/script-rewrite.ts", "lib/video-knowledge-atom-state.ts",
+    "lib/analysis-quality.ts", "lib/material-analysis-state.ts", "lib/video-content-analysis.ts", "lib/script-rewrite.ts", "lib/video-knowledge-atom-state.ts",
     "app/api/internal/analysis-jobs/[jobId]/complete/route.ts", "app/api/internal/analysis-jobs/[jobId]/artifacts/route.ts",
     "app/api/internal/analysis-jobs/[jobId]/model-calls/route.ts", "app/api/analysis-jobs/[jobId]/retry/route.ts",
     "app/api/videos/[videoId]/route.ts", "app/api/videos/[videoId]/media/route.ts", "app/api/video-library/[entryId]/media/route.ts",

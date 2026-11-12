@@ -21,6 +21,10 @@ test("only uncapped MCP vision accepts the internal unknown-cap sentinel and usa
   const stored = f.sqlite.prepare("SELECT output_budget,input_tokens,output_tokens,total_tokens FROM analysis_model_calls").get();
   assert.deepEqual({ ...stored }, { output_budget: 0, input_tokens: null, output_tokens: null, total_tokens: null });
   assert.equal((await record({ id: "call:canonical-0000001", task: "canonical_transcript", outputBudget: 1200 })).status, 200);
+  for (const task of ["canonical_review", "canonical_repair"]) {
+    assert.equal((await record({ id: `call:${task.replaceAll("_", "-")}-zero-budget`, task })).status, 400);
+    assert.equal((await record({ id: `call:${task.replaceAll("_", "-")}-bounded`, task, outputBudget: 6000 })).status, 200);
+  }
   f.sqlite.prepare("UPDATE analysis_jobs SET status='cancelled'").run();
   assert.equal((await record({ id: "call:revoked-vision-0001", outputBudget: 4800 })).status, 409);
 });

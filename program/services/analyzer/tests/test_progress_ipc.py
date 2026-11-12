@@ -7,7 +7,7 @@ from dataclasses import replace
 from unittest.mock import patch
 
 from liming_analyzer.api_client import AnalysisResult, ClaimedJob
-from liming_analyzer.process_runtime import IsolatedProcessor, ProcessingLimits, _child_main
+from liming_analyzer.process_runtime import IsolatedProcessor, ProcessingLimits, _child_main, _processing_source_stamp
 
 
 def job(name="test-job"):
@@ -80,6 +80,7 @@ def test_owner_forwards_whitelisted_observations_before_heartbeat_and_accepts_le
         with tempfile.TemporaryDirectory() as folder:
             processor = IsolatedProcessor(None, Client(), root=folder, limits=ProcessingLimits(poll=0.01))
             processor.process = object()  # Existing child, so no process or model is started.
+            processor._source_stamp = _processing_source_stamp()
             processor.connection = connection
             assert processor(current, heartbeat).schema_version == "analysis.v1"
         if len(payload) == 4:

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { runtimeFixture } from "./helpers/runtime-fixture.mjs";
 import { analysisReportFixture, contentAnalysisFixture, unifiedAnalysisReportFixture } from "./helpers/content-analysis-fixture.mjs";
+const reviewed = JSON.parse(readFileSync(new URL("./fixtures/unified-analysis-v12.json", import.meta.url), "utf8"));
 
 async function fixture(t) {
   const f = runtimeFixture(t);
@@ -31,6 +33,22 @@ for (const schema of ["analysis.v7", "analysis.v8", "analysis.v9", "analysis.v10
   assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS count FROM project_memory_events").get().count, 1);
   assert.equal((await (await f.complete(schema, report)).json()).idempotent, true);
   assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS count FROM video_analyses").get().count, 1);
+});
+
+test("v12 completes safe modules with an explicit pending-manuscript notice and preserves the repair checkpoint", async t => {
+  const f = await fixture(t), report = structuredClone(reviewed);
+  const checkpoint = { checkpoint_version: 1, media: {}, transcript: {}, visuals: {}, unified_progress: { version: "unified-progress.v2", protocol_version: "unified-analysis.v2", source_signature: report.unified_report.source_signature, canonical: { pending: true }, modules: {} } };
+  f.sqlite.prepare("UPDATE analysis_jobs SET checkpoint_stage='evidence_ready',checkpoint_json=? WHERE id=?").run(JSON.stringify(checkpoint), f.jobId);
+  const response = await f.complete("analysis.v12", report); assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json(); assert.equal(body.job.status, "completed"); assert.equal(body.job.manuscriptStatus, "needs_review");
+  assert.match(body.job.message, /1句口播待核对/);
+  const saved = f.sqlite.prepare("SELECT checkpoint_stage,checkpoint_json,current_stage,error_code FROM analysis_jobs WHERE id=?").get(f.jobId);
+  assert.equal(saved.checkpoint_stage, "evidence_ready"); assert.deepEqual(JSON.parse(saved.checkpoint_json).unified_progress, checkpoint.unified_progress);
+  assert.match(saved.current_stage, /1句口播待核对/); assert.equal(saved.error_code, null);
+  const pending = report.unified_report.canonical.segments.find(row => row.review_status === "needs_review").text;
+  const atoms = f.sqlite.prepare("SELECT content FROM video_knowledge_atoms").all(); assert.ok(atoms.length);
+  assert.ok(atoms.every(row => !row.content.includes(pending)));
+  assert.equal((await (await f.complete("analysis.v12", report)).json()).idempotent, true);
 });
 
 for (const [label, schema, body] of [

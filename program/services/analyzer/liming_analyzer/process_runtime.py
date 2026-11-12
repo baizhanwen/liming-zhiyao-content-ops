@@ -1,6 +1,8 @@
 """Reusable analysis subprocess with bounded lifetime for every task/stage."""
 from __future__ import annotations
 
+import hashlib
+import logging
 import multiprocessing
 import os
 import shutil
@@ -14,6 +16,23 @@ from typing import Callable
 from .platform_runtime import InstanceLock, ProcessTree, installation_root, prepare_processing_child
 from .worker import ProcessingFailure, classify_worker_error
 from .task_progress import ProgressObservations, observe, safe_observation
+
+
+logger = logging.getLogger(__name__)
+
+
+def _processing_source_stamp() -> str:
+    """Version imported source and its small shared protocol resources."""
+    source_root = Path(__file__).resolve().parent
+    digest = hashlib.sha256()
+    sources = list(source_root.rglob("*.py"))
+    sources.extend((source_root / "resources").glob("*.json"))
+    for source in sorted(sources):
+        digest.update(source.relative_to(source_root).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(source.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 @dataclass(frozen=True)
@@ -109,6 +128,7 @@ class IsolatedProcessor:
         self.process = self.connection = self.tree = self.workspace = None
         self.resources_released = True
         self._child_attached = False
+        self._source_stamp = None
 
     def _start(self, job):
         context = multiprocessing.get_context("spawn")
@@ -196,6 +216,7 @@ class IsolatedProcessor:
             shutil.rmtree(self.workspace, ignore_errors=True)
             self.workspace = None
         self.resources_released = True
+        self._source_stamp = None
 
     def _send(self, value):
         try:
@@ -204,9 +225,16 @@ class IsolatedProcessor:
             raise ProcessingFailure("ANALYZER_PROCESS_CRASHED", "分析处理进程通信中断，已释放资源，后续任务将继续。") from error
 
     def __call__(self, job, heartbeat):
+        # Check only between jobs. A running task keeps its existing processor
+        # and workspace even when code is updated while it is working.
+        source_stamp = _processing_source_stamp()
+        if self.process is not None and self._source_stamp != source_stamp:
+            logger.info("Analyzer source changed; restarting idle processing subprocess")
+            self.close()
         self.resources_released = False
         if self.process is None:
             self._start(job)
+            self._source_stamp = source_stamp
         started = phase_started = time.monotonic()
         phase = "initialization"
         duration = 0.0

@@ -99,13 +99,17 @@ test('source deletion between lookup and transaction rejects the entire import',
 test('successful import, replay and reactivation preserve reference and memory identities', async t => {
   const f = await fixture(t), analysisId = f.seed('video_analyses', { video_id: f.entries[0].video, schema_version: 'analysis.v1', report_json: '{}' });
   const response = await f.importEntries(); assert.equal(response.status, 201); const body = await response.json(); assert.equal(body.imported, 2);
+  assert.deepEqual([body.synchronized, body.created, body.reactivated, body.alreadyActive], [2, 2, 0, 0]);
   const first = f.snapshot(), reference = first.project_video_references.find(row => row.library_entry_id === f.entries[0].id);
   assert.equal(first.project_memory_events.length, 1);
   const event = first.project_memory_events[0], payload = JSON.parse(event.payload_json);
   assert.equal(event.project_id, f.target); assert.equal(event.created_by, f.owner.userId); assert.equal(payload.benchmarkReferenceId, reference.id); assert.equal(payload.analysisId, analysisId);
-  assert.equal((await f.importEntries()).status, 201); assert.deepEqual(f.snapshot().project_memory_events, first.project_memory_events);
+  const replay = await f.importEntries(); assert.equal(replay.status, 201); const replayBody = await replay.json();
+  assert.deepEqual([replayBody.synchronized, replayBody.created, replayBody.reactivated, replayBody.alreadyActive], [2, 0, 0, 2]);
+  assert.deepEqual(f.snapshot().project_memory_events, first.project_memory_events);
   assert.equal((await f.remove(reference.id)).status, 200); assert.equal(f.snapshot().project_video_references.find(row => row.id === reference.id).status, 'revoked');
-  const reactivated = await f.importEntries([f.entries[0].id]); assert.equal(reactivated.status, 201); assert.equal((await reactivated.json()).actions[0].action, 'reactivated');
+  const reactivated = await f.importEntries([f.entries[0].id]); assert.equal(reactivated.status, 201); const reactivatedBody = await reactivated.json(); assert.equal(reactivatedBody.actions[0].action, 'reactivated');
+  assert.deepEqual([reactivatedBody.synchronized, reactivatedBody.created, reactivatedBody.reactivated, reactivatedBody.alreadyActive], [1, 0, 1, 0]);
   const final = f.snapshot(); assert.equal(final.project_video_references.find(row => row.id === reference.id).status, 'active'); assert.deepEqual(final.project_memory_events, first.project_memory_events);
 });
 
@@ -156,4 +160,25 @@ test('analysis completed after selection requires refreshed import instead of mi
   const f = await fixture(t), before = f.snapshot();
   const injected = beforeCommit(f, () => f.seed('video_analyses', { video_id: f.entries[0].video, schema_version: 'analysis.v1', report_json: '{}' }));
   const response = await f.importEntries(); injected(); assert.equal(response.status, 409); assert.deepEqual(f.snapshot(), before);
+});
+
+test('asset synchronization status follows the selected target project and preserves source records', async t => {
+  const f = await fixture(t);
+  f.runtime.canAccessOrganizationVideoLibrary = async () => true;
+  const list = async projectId => {
+    const query = new URLSearchParams({ organizationId: f.owner.organizationId, projectId });
+    const response = await f.load('app/api/video-library/route.ts').GET(new Request('http://localhost/api/video-library?' + query));
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  const before = await list(f.target);
+  assert.equal(before.entries.find(entry => entry.id === f.entries[0].id).imported_to_project, 0);
+  assert.equal((await f.importEntries([f.entries[0].id])).status, 201);
+  const target = await list(f.target), source = await list(f.source);
+  assert.equal(target.entries.find(entry => entry.id === f.entries[0].id).imported_to_project, 1);
+  assert.equal(source.entries.find(entry => entry.id === f.entries[0].id).imported_to_project, 0);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM videos').get().n, 2);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM video_library_entries').get().n, 2);
+  assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM project_video_references WHERE status='active'").get().n, 1);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM analysis_model_calls').get().n, 0);
 });

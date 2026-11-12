@@ -114,6 +114,7 @@ try {
       "resources/media-tools/asr-check-zh.wav", "docs/releases/windows-qwen-v20261112.1.md",
       "services/analyzer/liming_analyzer/canonical_transcript.py", "services/analyzer/liming_analyzer/content_module_protocol.py",
       "services/analyzer/liming_analyzer/unified_analysis.py", "services/analyzer/liming_analyzer/content_analysis.py",
+      "services/analyzer/liming_analyzer/canonical_review.py", "services/analyzer/liming_analyzer/reviewed_analysis.py",
       "services/analyzer/liming_analyzer/content_metrics.py", "lib/unified-report.ts", "lib/analysis-report-view.ts",
       "lib/analysis-quality.ts", "lib/video-content-analysis.ts", "lib/analysis-module-retry.ts", "lib/analysis-media.ts",
       "components/UnifiedReportContent.tsx",

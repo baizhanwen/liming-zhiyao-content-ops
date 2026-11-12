@@ -18,8 +18,8 @@ test("fresh short media budgets exactly one canonical batch and four compact mod
     ["standard", 46_500, 106_500, [3000, 6000], [4500, 6000], 10],
     ["max", 84_000, 156_000, [4500, 6000], [6000], 9],
   ]) {
-    const estimate = estimateUnifiedAnalysisBudget(114.816, profile);
-    assert.equal(estimate.pipelineVersion, "analysis.v11");
+    const estimate = estimateUnifiedAnalysisBudget(60, profile);
+    assert.equal(estimate.pipelineVersion, "analysis.v12");
     assert.equal(estimate.canonical.batchCountEstimate, 1);
     assert.deepEqual(estimate.canonical.outputTokenBudgets, output);
     assert.equal(estimate.initialRequestCount, 5); assert.equal(estimate.maximumRequestCount, maximumCalls);
@@ -41,12 +41,12 @@ test("inputs are charged again for four modules and their potential retries", ()
   assert.ok(estimate.modules.some(row => row.key === "visual")); // This is a text-classification call, not an image-model bill.
 });
 
-test("configured output caps constrain each actual attempt without inventing retries at the cap", () => {
+test("configured caps prevent repeated module length attempts while preserving a bounded canonical repair", () => {
   const { estimateUnifiedAnalysisBudget } = load();
   const low = estimateUnifiedAnalysisBudget(60, "max", { maxOutputTokens: 2500 });
-  assert.equal(low.maximumRequestCount, 5);
-  assert.equal(low.initialTextTokensEstimate, low.retryTextTokensEstimate);
-  assert.deepEqual(low.canonical.outputTokenBudgets, [2500]);
+  assert.equal(low.maximumRequestCount, 6);
+  assert.equal(low.retryTextTokensEstimate - low.initialTextTokensEstimate, 12_000 + 2500);
+  assert.deepEqual(low.canonical.outputTokenBudgets, [2500, 2500]);
   assert.ok(low.modules.every(row => row.outputTokenBudgets.join() === "2500"));
   const high = estimateUnifiedAnalysisBudget(60, "max", { maxOutputTokens: 12_000 });
   assert.deepEqual(high.canonical.outputTokenBudgets, [4500, 9000]);
@@ -58,8 +58,12 @@ test("configured output caps constrain each actual attempt without inventing ret
 
 test("long media grows canonical batches, never legacy report passes or module count", () => {
   const { estimateUnifiedAnalysisBudget, estimateCanonicalBatchCount } = load();
-  assert.equal(estimateCanonicalBatchCount(192), 1);
-  assert.equal(estimateCanonicalBatchCount(192.01), 2);
+  assert.equal(estimateCanonicalBatchCount(96), 1);
+  assert.equal(estimateCanonicalBatchCount(96.01), 2);
+  const actualShort = estimateUnifiedAnalysisBudget(114.816, "max");
+  assert.equal(actualShort.canonical.batchCountEstimate, 2);
+  assert.equal(actualShort.maximumRequestCount, 11);
+  assert.equal(actualShort.retryTextTokensEstimate, 190_500);
   const short = estimateUnifiedAnalysisBudget(60, "max"), long = estimateUnifiedAnalysisBudget(3600, "max");
   assert.ok(long.canonical.batchCountEstimate > short.canonical.batchCountEstimate);
   assert.deepEqual(long.modules, short.modules);

@@ -3,6 +3,7 @@ import { apiError, errorResponse } from "../../../lib/api-response";
 import { readRequestIdentity } from "../../../lib/request-auth";
 import { topicBackground } from "../../../lib/topic-reference-policy";
 import { commitContentWorkflowWrite, nextWriteTimestamp } from "../../../lib/content-workflow-write";
+import { projectSafeAnalysisReport } from "../../../lib/unified-report";
 
 const MAX_KNOWLEDGE_SOURCES = 20;
 
@@ -14,7 +15,8 @@ function knowledgeSourceIds(payload: Record<string, unknown>) {
 
 function analysisQuote(reportJson: string) {
   try {
-    const report = JSON.parse(reportJson) as Record<string, unknown>;
+    const report = projectSafeAnalysisReport(JSON.parse(reportJson));
+    if (!report) return null;
     const list = (key: string) => Array.isArray(report[key]) ? (report[key] as unknown[]).filter((item): item is string => typeof item === "string") : [];
     const parts = [
       typeof report.summary === "string" ? `核心结论：${report.summary}` : "",

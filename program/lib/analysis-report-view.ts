@@ -1,5 +1,6 @@
 import { readUnifiedReport, unifiedModuleKeys, type UnifiedModuleKey } from "./unified-report";
 import { readContentAnalysis, getDimensionLabel, getTagLabel, contentTaxonomy, type ContentClassification, type ContentEvidence } from "./video-content-analysis";
+import { isActiveAnalysisDimension } from "./content-report-contract";
 
 export const reportModuleNames: Record<UnifiedModuleKey, string> = {
   text_topic_structure_audience: "选题、结构与人群",
@@ -26,7 +27,8 @@ export type ReportClassificationView = {
   value: string; reason: string | null; featured: boolean;
 };
 export type ReportSectionView = { key: UnifiedModuleKey; name: string; status: string; reason: string | null; findings: ReportFindingView[]; classifications: ReportClassificationView[] };
-export type AnalysisReportView = { legacy: boolean; invalid: boolean; complete: boolean; summary: string; sections: ReportSectionView[]; script: string[]; scriptStatus: string; changes: Array<{ sourceId: string; before: string; after: string; evidenceIds: string[] }>; evidence: ContentEvidence[]; content: ReturnType<typeof readContentAnalysis>; unified: ReturnType<typeof readUnifiedReport> };
+export type ScriptReviewView = { sourceId: string; startMs: number; endMs: number; original: string; candidate: string | null; reason: string };
+export type AnalysisReportView = { legacy: boolean; invalid: boolean; complete: boolean; summary: string; sections: ReportSectionView[]; script: string[]; scriptStatus: string; reviews: ScriptReviewView[]; changes: Array<{ sourceId: string; before: string; after: string; evidenceIds: string[]; basis?: string }>; evidence: ContentEvidence[]; content: ReturnType<typeof readContentAnalysis>; unified: ReturnType<typeof readUnifiedReport> };
 const legacyGroups: Record<UnifiedModuleKey, Array<[string, string]>> = {
   text_topic_structure_audience: [["hook", "开头"], ["hook_analysis", "开头设计"], ["structure", "结构"], ["audience", "目标人群"]],
   text_expression_value: [["language", "文案表达"], ["emotion_curve", "文案情绪"], ["viral_points", "内容价值"], ["conversion_design", "行动引导"]],
@@ -36,7 +38,7 @@ const legacyGroups: Record<UnifiedModuleKey, Array<[string, string]>> = {
 const featuredDimensions: Record<UnifiedModuleKey, readonly string[]> = {
   text_topic_structure_audience: ["topic.category", "topic.problem", "topic.purpose", "structure.type", "audience.role", "audience.need"],
   text_expression_value: ["hook.type", "emotion.expressed", "value.type", "value.actionability", "language.tone", "cta.action"],
-  visual: ["content.form", "visual.first_frame_style", "visual.opening", "visual.broll", "visual.composition", "visual.cut_pattern"],
+  visual: ["content.form", "visual.first_frame_style", "visual.opening", "visual.broll", "visual.composition"],
   synthesis: ["synthesis.visual_text_relation", "synthesis.retention", "synthesis.opening_fulfillment", "synthesis.problem"],
 };
 const classificationStateNames = { known: "未发现该特征", unknown: "无法判断", not_acquired: "未取得所需材料", not_applicable: "不适用" };
@@ -94,7 +96,12 @@ export function analysisReportView(schema: string, body: unknown): AnalysisRepor
   const report = record(body) ?? {}, content = readContentAnalysis(body), unified = readUnifiedReport(body);
   const canonical = unified?.canonical;
   const scriptSet = record(report.spoken_script_set), corrected = record(scriptSet?.corrected_original) ?? record(scriptSet?.faithful_full);
-  const script = canonical?.paragraphs ?? (texts(corrected?.paragraphs).length ? texts(corrected?.paragraphs) : texts(corrected?.text).length ? texts(corrected?.text) : texts(report.spoken_script));
+  const reviewed = unified?.version === "unified-report.v2" ? unified.canonical : null;
+  const reviews = reviewed?.segments.filter(row => row.review_status === "needs_review").map(row => ({ sourceId: row.source_segment_id, startMs: row.start_ms, endMs: row.end_ms, original: row.original_text, candidate: row.candidate_text, reason: manuscriptReviewReason(row.issues) })) ?? [];
+  // Build pending copy from the verified source mapping, never candidate text or
+  // an arbitrary stored paragraph claiming to be the complete manuscript.
+  const script = reviewed && reviews.length ? reviewedParagraphs(reviewed.segments)
+    : canonical?.paragraphs ?? (texts(corrected?.paragraphs).length ? texts(corrected?.paragraphs) : texts(corrected?.text).length ? texts(corrected?.text) : texts(report.spoken_script));
   const scriptStatus = canonical?.status ?? (typeof corrected?.status === "string" ? corrected.status : script.length ? "historical" : "failed");
   const evidence: ContentEvidence[] = [...(content?.evidence_registry ?? [])];
   const legacyEvidence = Array.isArray(report.evidence) ? report.evidence : [];
@@ -108,7 +115,7 @@ export function analysisReportView(schema: string, body: unknown): AnalysisRepor
     const sectionRecord = unified?.sections.find(row => row.key === key);
     const legacyState = content?.module_status[key];
     const classifications = legacyState?.status === "completed" && (!sectionRecord || sectionRecord.status === "completed")
-      ? content!.classifications.filter(row => contentTaxonomyModule(row.dimension_id) === key).map(row => classificationView(row, key)) : [];
+      ? content!.classifications.filter(row => isActiveAnalysisDimension(row.dimension_id) && contentTaxonomyModule(row.dimension_id) === key).map(row => classificationView(row, key)) : [];
     const used = new Set<string>();
     const findings: ReportFindingView[] = sectionRecord ? sectionRecord.findings.map(row => ({ id: row.id, title: row.title, text: row.text, evidenceIds: row.evidence_ids })) :
       legacyGroups[key].flatMap(([field, title]) => texts(report[field]).flatMap((text, index) => {
@@ -127,23 +134,72 @@ export function analysisReportView(schema: string, body: unknown): AnalysisRepor
       reason: failure ? reportFailureNames[failure] || "本模块未完成" : sectionRecord?.status === "not_applicable" ? reportFailureNames[sectionRecord.reason || ""] || "本素材不适用这一项" : null, findings, classifications };
   });
   const meta = record(report.analysis_meta), audit = record(meta?.quality_audit);
-  return { legacy: !unified, invalid: schema === "analysis.v11" && !unified,
-    complete: schema === "analysis.v11" && !unified ? false : unified ? unified.status === "complete" : audit?.acceptance_passed === true,
-    summary: unified?.summary || texts(report.summary).join("\n"), sections, script, scriptStatus,
-    changes: canonical?.changes.map(row => ({ sourceId: row.source_segment_id, before: row.before, after: row.after, evidenceIds: row.evidence_ids })) ?? [],
+  const newSchema = ["analysis.v11", "analysis.v12"].includes(schema);
+  return { legacy: !unified, invalid: newSchema && !unified,
+    complete: newSchema && !unified ? false : unified ? unified.status === "complete" : audit?.acceptance_passed === true,
+    summary: unified?.summary || texts(report.summary).join("\n"), sections, script, scriptStatus, reviews,
+    changes: reviewed ? reviewed.segments.filter(row => row.review_status === "accepted" && row.original_text !== row.text).map(row => ({ sourceId: row.source_segment_id, before: row.original_text, after: row.text, evidenceIds: row.evidence_ids,
+      basis: correctionBasis(row.original_text, row.text, row.evidence_ids) }))
+      : unified?.version === "unified-report.v1" ? unified.canonical.changes.map(row => ({ sourceId: row.source_segment_id, before: row.before, after: row.after, evidenceIds: row.evidence_ids })) : [],
     evidence, content, unified };
+}
+
+function reviewedParagraphs(rows: Array<{ text: string; original_text: string; start_ms: number; end_ms: number; review_status: string }>) {
+  const paragraphs: string[] = []; let current = "";
+  const flush = () => { if (current) paragraphs.push(current); current = ""; };
+  for (const row of rows) {
+    if (row.review_status === "needs_review") {
+      flush(); paragraphs.push(`【待核对 ${reviewTime(row.start_ms)}–${reviewTime(row.end_ms)}】${row.original_text}`); continue;
+    }
+    if (current.length + row.text.length > 180) flush();
+    const space = /[A-Za-z0-9]$/u.test(current) && /^[A-Za-z0-9]/u.test(row.text) ? " " : "";
+    current += space + row.text;
+    if (current.length >= 80 && /[。！？!?]$/u.test(row.text)) flush();
+  }
+  flush(); return paragraphs;
+}
+
+function reviewTime(ms: number) { return `${Math.floor(ms / 60_000).toString().padStart(2, "0")}:${(ms / 1000 % 60).toFixed(2).padStart(5, "0")}`; }
+
+function correctionBasis(before: string, after: string, evidenceIds: string[]) {
+  const wording = (value: string) => value.normalize("NFKC").replace(/[\p{P}\p{Z}\s]/gu, "");
+  if (wording(before) === wording(after)) return "标点与断句";
+  return evidenceIds.some(id => id.startsWith("ocr:")) ? "含画面文字佐证" : "语境校对";
+}
+
+function manuscriptReviewReason(issues: string[]) {
+  const reasons = issues.join(" ");
+  if (/negation/u.test(reasons)) return "候选改变了否定含义，需要听原句确认。";
+  if (/unit|currency/u.test(reasons)) return "候选涉及单位或币种变化，需要核对。";
+  if (/numeric|number|version/u.test(reasons)) return "候选涉及数字或版本变化，需要核对。";
+  if (/entity|confirmed_name|technical_identifier/u.test(reasons)) return "候选涉及专名变化，需要核对。";
+  if (/actor|speaker|subject/u.test(reasons)) return "候选可能改变说话主体，需要核对。";
+  if (/polarity|direction|fact_change|fact_concept/u.test(reasons)) return "候选可能改变原句含义，需要核对。";
+  if (/strong_subtitle_conflict/u.test(reasons)) return "候选与对应画面文字有出入，需要对照原片核对。";
+  if (/common_phonetic_mismatch/u.test(reasons)) return "候选与原词发音差异较大，需要听原片确认。";
+  if (/common_phonetic_unavailable/u.test(reasons)) return "自动校对暂不可用，请听原片确认。";
+  if (/ordinary.*(?:budget|ratio|length|composition)|common_edit_cumulative_limit|rewrite_too_large/u.test(reasons)) return "这句改动较多，超出自动小词校对范围，需要核对。";
+  return "这句仍有未确认的识别疑义，建议对照原片核对。";
+}
+
+/** An edit starts from accepted text or raw ASR, never a rejected historical draft. */
+export function editableReportSegments(view: AnalysisReportView | null) {
+  const canonical = view?.unified?.canonical;
+  if (!canonical) return null;
+  return canonical.segments.map(row => ({ startMs: row.start_ms, endMs: row.end_ms,
+    text: canonical.version === "canonical-transcript.v2" || canonical.status === "completed" ? row.text : row.original_text }));
 }
 
 const dimensionModules = new Map(contentTaxonomy.dimensions.map(row => [row.id, row.module]));
 const contentTaxonomyModule = (id: string) => dimensionModules.get(id);
 
 export function unifiedReportMarkdown(title: string, view: AnalysisReportView, currentManuscript?: readonly string[]) {
-  const status = view.invalid ? "报告尚未通过格式检查。" : view.legacy ? "历史分析报告。" : view.complete ? "分析已完成。" : "部分内容尚未完成，请结合各部分提示核对。";
+  const status = view.invalid ? "报告尚未通过格式检查。" : view.legacy ? "历史分析报告。" : view.complete ? view.reviews.length ? `分析已完成，${view.reviews.length} 处口播待核对。待核对原文已标记，未用于分析结论。` : "分析已完成。" : view.unified?.version === "unified-report.v2" ? "部分结果可用，请结合各部分提示核对。" : "部分内容尚未完成，请结合各部分提示核对。";
   const lines = [`# ${title}`, "", status, "", view.summary, ""];
   if (currentManuscript?.length) lines.push("## 完整口播稿", "", "此处采用当前口播稿。下文分析与依据对应所选报告版本。", "",
     ...currentManuscript.flatMap(text => [text, ""]));
   else if (view.script.length) lines.push(view.scriptStatus === "failed" ? "## 待核对口播候选稿" : "## 完整口播稿", "",
-    ...(view.scriptStatus === "failed" ? ["校正稿尚未通过核对，以下内容保留为候选稿。", ""] : []), ...view.script.flatMap(text => [text, ""]));
+    ...(view.reviews.length ? ["待核对位置保留原始转写，未采用未经确认的候选改写。", ""] : view.scriptStatus === "failed" ? ["校正稿尚未通过核对，以下内容保留为候选稿。", ""] : []), ...view.script.flatMap(text => [text, ""]));
   const evidence = new Map(view.evidence.map(row => [row.id, row]));
   for (const section of view.sections) {
     lines.push(`## ${section.name}`, "");

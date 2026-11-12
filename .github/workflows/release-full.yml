@@ -6,7 +6,7 @@ on:
       release_tag:
         description: "New full-v release tag (must have matching release notes)"
         required: true
-        default: "full-v20261111.7"
+        default: "full-v20261111.8"
         type: string
   push:
     tags:
@@ -52,14 +52,15 @@ jobs:
           python -m venv .local/runtime-tests
           $testPython = Join-Path (Get-Location) '.local/runtime-tests/Scripts/python.exe'
           # Offline contract tests need the SDK/schema stack, never the large ASR/media extras.
-          $testRequirements = & $testPython -c "import tomllib; data = tomllib.load(open('services/analyzer/uv.lock', 'rb')); print('\n'.join(package['name'] + '==' + package['version'] for package in data['package'] if package['name'] in {'pytest', 'httpx', 'openai', 'instructor', 'pydantic', 'pillow', 'setuptools'}))"
+          $testRequirements = & $testPython -c "import tomllib; data = tomllib.load(open('services/analyzer/uv.lock', 'rb')); print('\n'.join(package['name'] + '==' + package['version'] for package in data['package'] if package['name'] in {'pytest', 'httpx', 'openai', 'instructor', 'pydantic', 'pypinyin', 'pillow', 'setuptools'}))"
           if ($LASTEXITCODE -ne 0) { throw 'Cannot read the locked test dependency.' }
           & $testPython -m pip install --disable-pip-version-check @testRequirements
           if ($LASTEXITCODE -ne 0) { throw 'Cannot prepare the isolated runtime tests.' }
+          "PYTHON=$testPython" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           $env:PYTHONPATH = Join-Path (Get-Location) 'services/analyzer'
           & $testPython -m pytest services/analyzer/tests/test_analyzer_local_runtime.py services/analyzer/tests/test_analyzer_windows_control.py services/analyzer/tests/test_prepare_analyzer_models.py services/analyzer/tests/collector/test_adapter.py services/analyzer/tests/test_skill_collect_source.py -q
           if ($LASTEXITCODE -ne 0) { throw 'Python runtime isolation tests failed.' }
-          & $testPython -m pytest services/analyzer/tests/test_canonical_transcript.py services/analyzer/tests/test_content_module_protocol.py services/analyzer/tests/test_unified_analysis.py services/analyzer/tests/test_vision_batch_runtime.py services/analyzer/tests/test_visual_overlap.py services/analyzer/tests/test_pipeline_checkpoint_synchronization.py services/analyzer/tests/test_unified_manual_batching.py services/analyzer/tests/test_content_analysis.py services/analyzer/tests/test_content_metrics.py services/analyzer/tests/test_no_audio_content.py services/analyzer/tests/test_content_provider_integration.py services/analyzer/tests/test_content_packaging.py services/analyzer/tests/test_visual_evidence.py services/analyzer/tests/test_ffmpeg.py services/analyzer/tests/test_minimax_vision.py services/analyzer/tests/test_minimax_flash_compat.py services/analyzer/tests/test_providers.py services/analyzer/tests/test_correction_token_retry.py services/analyzer/tests/test_model_calls.py -q
+          & $testPython -m pytest services/analyzer/tests/test_canonical_transcript.py services/analyzer/tests/test_canonical_review.py services/analyzer/tests/test_instructor_single_attempt.py services/analyzer/tests/test_reviewed_analysis.py services/analyzer/tests/test_content_review.py services/analyzer/tests/test_content_module_protocol.py services/analyzer/tests/test_unified_analysis.py services/analyzer/tests/test_vision_batch_runtime.py services/analyzer/tests/test_visual_overlap.py services/analyzer/tests/test_pipeline_checkpoint_synchronization.py services/analyzer/tests/test_unified_manual_batching.py services/analyzer/tests/test_content_analysis.py services/analyzer/tests/test_content_metrics.py services/analyzer/tests/test_no_audio_content.py services/analyzer/tests/test_content_provider_integration.py services/analyzer/tests/test_content_packaging.py services/analyzer/tests/test_visual_evidence.py services/analyzer/tests/test_ffmpeg.py services/analyzer/tests/test_minimax_vision.py services/analyzer/tests/test_minimax_flash_compat.py services/analyzer/tests/test_providers.py services/analyzer/tests/test_correction_token_retry.py services/analyzer/tests/test_model_calls.py services/analyzer/tests/test_frame_boundaries.py services/analyzer/tests/test_opening_frame_origin.py services/analyzer/tests/test_retired_analysis_dimensions.py services/analyzer/tests/test_ocr_only_review_analysis.py services/analyzer/tests/test_module_response_repair.py services/analyzer/tests/test_compact_shape_repair.py services/analyzer/tests/test_compact_evidence_repair.py services/analyzer/tests/test_report_revalidation.py services/analyzer/tests/test_content_report_contract.py services/analyzer/tests/test_canonical_text_contract.py -q
           if ($LASTEXITCODE -ne 0) { throw 'Windows unified content analysis or wheel resource regression failed.' }
       - name: Check source and run regression tests
         working-directory: program

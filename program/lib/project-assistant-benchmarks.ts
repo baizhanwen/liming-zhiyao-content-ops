@@ -1,4 +1,5 @@
 import { analysisReportSourceText } from "./content-production.ts";
+import { projectSafeAnalysisReport } from "./unified-report.ts";
 import type { ProjectAssistantDatabase } from "./project-memory-events.ts";
 
 type BenchmarkRow = {
@@ -78,18 +79,23 @@ function relevanceScore(item: ProjectAssistantBenchmark, queryTokens: Set<string
 }
 
 function serializeBenchmark(row: BenchmarkRow): ProjectAssistantBenchmark {
+  let safe: Record<string, unknown> | null = null;
+  try {
+    const parsed = JSON.parse(row.report_json);
+    if (parsed?.analysis_meta?.contract_version === "analysis.v12" || parsed?.unified_report?.version === "unified-report.v2") safe = projectSafeAnalysisReport(parsed) ?? {};
+  } catch { /* Legacy report fallback remains in analysisReportSourceText. */ }
   return {
     id: String(row.benchmark_id),
     analysisId: String(row.analysis_id),
     title: text(row.title, 500) || "未命名对标内容",
     authorName: text(row.author_name, 200) || null,
-    summary: text(row.summary, 2_400),
-    hook: text(row.hook, 1_200),
-    audience: text(row.audience, 1_200),
-    structure: stringList(row.structure_json, 16, 500),
-    highlights: stringList(row.highlights_json, 12, 700),
-    recommendations: stringList(row.recommendations_json, 12, 700),
-    spokenScript: stringList(row.spoken_script_json, 8, 1_500),
+    summary: text(safe ? safe.summary : row.summary, 2_400),
+    hook: text(safe ? safe.hook : row.hook, 1_200),
+    audience: text(safe ? safe.audience : row.audience, 1_200),
+    structure: stringList(safe ? JSON.stringify(safe.structure ?? []) : row.structure_json, 16, 500),
+    highlights: stringList(safe ? JSON.stringify(safe.highlights ?? []) : row.highlights_json, 12, 700),
+    recommendations: stringList(safe ? JSON.stringify(safe.recommendations ?? []) : row.recommendations_json, 12, 700),
+    spokenScript: stringList(safe ? JSON.stringify((safe.review_coverage as { manuscript?: string } | undefined)?.manuscript === "verified" ? safe.spoken_script : []) : row.spoken_script_json, 8, 1_500),
     content: analysisReportSourceText(row.report_json).slice(0, 12_000),
     performance: {
       plays: row.plays === null ? null : Number(row.plays),

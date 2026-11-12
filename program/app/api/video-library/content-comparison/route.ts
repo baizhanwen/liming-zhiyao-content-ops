@@ -46,11 +46,11 @@ export async function POST(request: Request) {
     // Measure before reading large JSON, including all structured revisions needed to
     // find the latest accepted one. Never silently truncate the selected sample.
     const cost = await db.prepare(`SELECT COUNT(*) AS report_count, COALESCE(SUM(length(CAST(report_json AS BLOB))),0) AS report_bytes FROM video_analyses
-      WHERE organization_id=? AND video_id IN (SELECT value FROM json_each(?)) AND schema_version IN ('analysis.v10','analysis.v11')`).bind(organizationId, videos).first<{ report_count: number; report_bytes: number }>();
+      WHERE organization_id=? AND video_id IN (SELECT value FROM json_each(?)) AND schema_version IN ('analysis.v10','analysis.v11','analysis.v12')`).bind(organizationId, videos).first<{ report_count: number; report_bytes: number }>();
     if (Number(cost?.report_bytes) > MAX_REPORT_BYTES || Number(cost?.report_count) > 5_000) return apiError("CONTENT_COMPARISON_TOO_LARGE", "所选报告总量过大，请减少素材后再比较；本次未截取部分样本。", 413);
     const [reports, available] = await Promise.all([
-      db.prepare("SELECT id, video_id, schema_version, report_json, created_at FROM video_analyses WHERE organization_id=? AND video_id IN (SELECT value FROM json_each(?)) AND schema_version IN ('analysis.v10','analysis.v11') ORDER BY created_at DESC, rowid DESC").bind(organizationId, videos).all<AnalysisRow>(),
-      db.prepare("SELECT video_id, COUNT(*) AS report_count, MAX(CASE WHEN schema_version NOT IN ('analysis.v1','analysis.v2','analysis.v3','analysis.v4','analysis.v5','analysis.v6','analysis.v7','analysis.v8','analysis.v9','analysis.v10','analysis.v11') THEN 1 ELSE 0 END) AS unknown_schema FROM video_analyses WHERE organization_id=? AND video_id IN (SELECT value FROM json_each(?)) GROUP BY video_id").bind(organizationId, videos).all<{ video_id: string; report_count: number; unknown_schema: number }>(),
+      db.prepare("SELECT id, video_id, schema_version, report_json, created_at FROM video_analyses WHERE organization_id=? AND video_id IN (SELECT value FROM json_each(?)) AND schema_version IN ('analysis.v10','analysis.v11','analysis.v12') ORDER BY created_at DESC, rowid DESC").bind(organizationId, videos).all<AnalysisRow>(),
+      db.prepare("SELECT video_id, COUNT(*) AS report_count, MAX(CASE WHEN schema_version NOT IN ('analysis.v1','analysis.v2','analysis.v3','analysis.v4','analysis.v5','analysis.v6','analysis.v7','analysis.v8','analysis.v9','analysis.v10','analysis.v11','analysis.v12') THEN 1 ELSE 0 END) AS unknown_schema FROM video_analyses WHERE organization_id=? AND video_id IN (SELECT value FROM json_each(?)) GROUP BY video_id").bind(organizationId, videos).all<{ video_id: string; report_count: number; unknown_schema: number }>(),
     ]);
     const accepted = new Map<string, { row: AnalysisRow; content: ContentComparisonInput["contentAnalysis"] }>();
     const rejected = new Map<string, ContentComparisonExclusion>();
@@ -92,10 +92,10 @@ export async function POST(request: Request) {
     if ((await readRequestIdentity(request))?.authSubject !== identity.authSubject || !await canRead()) return apiError("ACCESS_DENIED", "登录状态或读取权限已改变，请刷新后重试。", 403);
     const currentSelection = (await db.prepare(selectedQuery).bind(...selectedBindings).all<LibraryRow>()).results;
     if (currentSelection.length !== entryIds.length || currentSelection.some(row => byEntry.get(row.entry_id)?.video_id !== row.video_id)) return apiError("CONTENT_COMPARISON_SELECTION_CHANGED", "素材或对标引用在读取期间已改变，请重新选择后比较。", 409);
-    const schemaVersions = [...new Set(aggregateRows.map(row => accepted.get(row.videoId)!.row.schema_version as "analysis.v10" | "analysis.v11"))].sort();
+    const schemaVersions = [...new Set(aggregateRows.map(row => accepted.get(row.videoId)!.row.schema_version as "analysis.v10" | "analysis.v11" | "analysis.v12"))].sort();
     const result: ContentComparisonResponse = {
       version: "content-comparison.v1", scope,
-      snapshot: { analysisSchemaVersion: schemaVersions.length === 1 ? schemaVersions[0] : schemaVersions.length ? "mixed" : null, analysisSchemaVersions: schemaVersions, contentSchemaVersion: "content-analysis.v1", taxonomyVersion: contentTaxonomy.version, selection: "latest_accepted_per_video", requestedEntryIds: entryIds, filters, generatedAt: new Date().toISOString(), analyses: aggregateRows.map(row => ({ entryId: row.entryId, videoId: row.videoId, analysisId: row.analysisId, createdAt: row.analysisCreatedAt, schemaVersion: accepted.get(row.videoId)!.row.schema_version as "analysis.v10" | "analysis.v11" })) },
+      snapshot: { analysisSchemaVersion: schemaVersions.length === 1 ? schemaVersions[0] : schemaVersions.length ? "mixed" : null, analysisSchemaVersions: schemaVersions, contentSchemaVersion: "content-analysis.v1", taxonomyVersion: contentTaxonomy.version, selection: "latest_accepted_per_video", requestedEntryIds: entryIds, filters, generatedAt: new Date().toISOString(), analyses: aggregateRows.map(row => ({ entryId: row.entryId, videoId: row.videoId, analysisId: row.analysisId, createdAt: row.analysisCreatedAt, schemaVersion: accepted.get(row.videoId)!.row.schema_version as "analysis.v10" | "analysis.v11" | "analysis.v12" })) },
       summary: { selectedEntries: entryIds.length, selectedVideos: videoIds.length, includedVideos: aggregateRows.length, excludedVideos: videoIds.length - aggregateRows.length },
       entries, excluded, ...aggregateContentComparison(aggregateRows),
     };

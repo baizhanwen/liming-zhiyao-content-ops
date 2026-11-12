@@ -7,6 +7,7 @@ import uuid
 from collections.abc import Callable
 
 from .api_client import AnalysisResult, AnalyzerApiClient, AnalyzerApiError, ClaimedJob, Processor
+from .ffmpeg import FrameExtractionError, MediaProcessingError
 from .source_errors import SourceDownloadError
 from .task_progress import ProgressObservations
 
@@ -35,6 +36,10 @@ def classify_worker_error(error: Exception) -> tuple[str, str]:
         return error.code, str(error)
     if isinstance(error, SourceDownloadError):
         return error.code, str(error)
+    if isinstance(error, FrameExtractionError):
+        return "VISUAL_EXTRACTION_FAILED", str(error)
+    if isinstance(error, MediaProcessingError):
+        return "MEDIA_PROCESSING_FAILED", str(error)
     message = str(error).strip() or "分析失败"
     lowered = message.lower()
     if "cookie" in lowered:
@@ -98,6 +103,8 @@ def _process_claimed(client: AnalyzerApiClient, processor: Processor, job: Claim
     except Exception as error:  # noqa: BLE001 - worker boundary converts failures into job state
         error_code, error_message = classify_worker_error(error)
         logger.warning("Analysis task failed: job=%s code=%s progress=%s", job.id, error_code, current.progress)
+        if error_code in {"MEDIA_PROCESSING_FAILED", "VISUAL_EXTRACTION_FAILED"}:
+            logger.warning("Media processing diagnostic: job=%s detail=%s", job.id, error_message[:4000])
         try:
             client.fail(current, result_key, error_code, error_message[:1000], "分析失败", current.progress)
         except AnalyzerApiError as failure_error:

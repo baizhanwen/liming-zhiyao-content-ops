@@ -128,38 +128,6 @@ def _pinyin(text):
     return tuple(lazy_pinyin(text))
 
 
-@lru_cache(maxsize=4096)
-def _syllables(character: str) -> tuple[str, ...]:
-    from pypinyin import Style, pinyin
-
-    rows = pinyin(character, style=Style.NORMAL, heteronym=True, strict=False)
-    return tuple(sorted({value.lower().replace("ü", "v").replace("u:", "v")
-                         for value in rows[0] if re.fullmatch(r"[a-zü:]+", value.lower())}))
-
-
-def _one_spelling_edit(left: str, right: str) -> bool:
-    if len(left) == len(right):
-        return sum(a != b for a, b in zip(left, right, strict=True)) <= 1
-    shorter, longer = sorted((left, right), key=len)
-    return len(longer) - len(shorter) == 1 and any(longer[:i] + longer[i + 1:] == shorter for i in range(len(longer)))
-
-
-def _near_syllables(left: str, right: str) -> bool:
-    if left == right or _one_spelling_edit(left, right):
-        return True
-    pattern = r"^(zh|ch|sh|[bpmfdtnlgkhjqxrzcsyw]?)(.*)$"
-    before, after = re.fullmatch(pattern, left), re.fullmatch(pattern, right)
-    if not before or not after:
-        return False
-    initial_groups = ({"z", "zh"}, {"c", "ch"}, {"s", "sh"}, {"n", "l", "r"}, {"f", "h"})
-    # General Mandarin/ASR confusions, not a table of words or video answers.
-    final_groups = ({"an", "ang"}, {"en", "eng", "un", "uen"}, {"in", "ing"},
-                    {"ian", "iang"}, {"uan", "uang"}, {"i", "u", "v"})
-    initial = before[1] == after[1] or any(before[1] in group and after[1] in group for group in initial_groups)
-    final = before[2] == after[2] or any(before[2] in group and after[2] in group for group in final_groups)
-    return initial and final
-
-
 def _edits_supported(left, right, *, audio_confirmed=False):
     protected = r"[a-z0-9]+|[零一二三四五六七八九十百千万亿两]+"
     if re.findall(protected, left) != re.findall(protected, right):
@@ -185,6 +153,7 @@ def _edits_supported(left, right, *, audio_confirmed=False):
                     if (word in lexicon and replacement not in lexicon and target_start >= 0
                             and right[target_start:target_start + length] == replacement):
                         return False
+            from .canonical_review import _near_syllables, _syllables
             # Preserve the vowel and final consonant while allowing retroflex
             # Mandarin initials and polyphonic readings (e.g. "chong" in 去重).
             def initial(sound):

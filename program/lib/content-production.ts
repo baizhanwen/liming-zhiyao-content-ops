@@ -626,8 +626,9 @@ function appendAnalysisSection(sections: string[], label: string, lines: string[
 export function analysisReportSourceText(reportJson: string) {
   try {
     const parsed = JSON.parse(reportJson) as unknown;
-    const report = analysisRecord(parsed);
-    if (!report) return cleanAnalysisText(reportJson, ANALYSIS_REPORT_SOURCE_TEXT_LIMIT);
+    if (!analysisRecord(parsed)) return cleanAnalysisText(reportJson, ANALYSIS_REPORT_SOURCE_TEXT_LIMIT);
+    const report = analysisRecord(projectSafeAnalysisReport(parsed));
+    if (!report) return "";
     const sections: string[] = [];
     const sectionBudgets: Record<string, number> = {
       summary: 600, hook: 250, structure: 600, audience: 250, hook_analysis: 300,
@@ -639,7 +640,9 @@ export function analysisReportSourceText(reportJson: string) {
       appendAnalysisSection(sections, label, lines, sectionBudgets[key] ?? 300);
     }
     const script = spokenScriptSection(report);
-    if (script) appendAnalysisSection(sections, "经校正原版口播", [script], 3_200);
+    if (script) appendAnalysisSection(sections, report.review_coverage ? "已核对口播片段（以覆盖范围为准）" : "经校正原版口播", [script], 3_200);
+    const reviewCoverage = analysisRecord(report.review_coverage);
+    if (reviewCoverage) appendAnalysisSection(sections, "口播核对范围", [`仅采用已核对${reviewCoverage.accepted_segments}段，共${reviewCoverage.total_segments}段；${reviewCoverage.uncertain_segments}段待核对，未作为事实来源。`], 300);
     const evidence = collectAnalysisEvidence(report);
     appendAnalysisSection(sections, "分析覆盖摘要", analysisCoverageLines(report), 400);
     appendAnalysisSection(sections, "带时间码的 ASR／OCR／关键帧证据", evidence.map((row) => {
@@ -659,3 +662,4 @@ export function analysisReportSourceText(reportJson: string) {
     return cleanAnalysisText(reportJson, ANALYSIS_REPORT_SOURCE_TEXT_LIMIT);
   }
 }
+import { projectSafeAnalysisReport } from "./unified-report.ts";

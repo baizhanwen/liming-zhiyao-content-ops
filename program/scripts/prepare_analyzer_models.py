@@ -8,7 +8,13 @@ import subprocess
 import time
 from pathlib import Path
 
-from analyzer_local_runtime import ROOT, expects_windows_qwen, interpreter, model_cache_path, runtime_environment
+from analyzer_local_runtime import (
+    ROOT,
+    expects_windows_qwen,
+    interpreter,
+    model_cache_path,
+    runtime_environment,
+)
 
 
 def emit(phase: str, **values):

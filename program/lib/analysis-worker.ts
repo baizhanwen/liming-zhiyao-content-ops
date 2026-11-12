@@ -2,6 +2,7 @@ import { safeProgressObservation } from "./analysis-task-progress";
 import { isLeasedAnalysisStatus } from "./analysis-jobs";
 import { analysisJobStatuses, canTransitionAnalysisJob, type AnalysisJobStatus } from "./analysis-jobs";
 import { isPlainRecord, normalizeLeaseSeconds, normalizeWorkerId } from "./service-auth";
+import { CONTENT_REPORT_MAX_UTF16_UNITS } from "./content-report-contract";
 
 const SAFE_KEY = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{7,191}$/;
 const SAFE_CODE = /^[A-Z][A-Z0-9_]{2,63}$/;
@@ -69,7 +70,7 @@ export function parseCompletionPayload(value: unknown) {
   if (!workerId || !resultKey || version === null || !analysis || !schemaVersion || !report || confidence === undefined) return null;
 
   const reportJson = JSON.stringify(report);
-  if (reportJson.length > 1_000_000) return null;
+  if (reportJson.length > CONTENT_REPORT_MAX_UTF16_UNITS) return null;
   let transcript: null | { language: string; fullText: string; segmentsJson: string; confidence: number | null } = null;
   if (value.transcript !== undefined && value.transcript !== null) {
     if (!isPlainRecord(value.transcript)) return null;

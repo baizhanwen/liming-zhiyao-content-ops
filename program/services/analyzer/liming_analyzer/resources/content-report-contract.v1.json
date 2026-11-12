@@ -1,0 +1,6 @@
+{
+  "version": "content-report-contract.v1",
+  "report_max_utf16_units": 1000000,
+  "evidence_registry_max_entries": 30000,
+  "retired_dimension_ids": ["visual.cut_pattern"]
+}

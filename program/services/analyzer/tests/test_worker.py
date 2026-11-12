@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from liming_analyzer.__main__ import build_lazy_processor
 from liming_analyzer.api_client import AnalysisResult, AnalyzerApiError, ClaimedJob
+from liming_analyzer.ffmpeg import FrameExtractionError, MediaProcessingError
 from liming_analyzer.worker import classify_worker_error, process_once, run_forever, _is_transient_api_error
 
 
@@ -85,6 +86,26 @@ class WorkerTests(unittest.TestCase):
             )[0],
             "MODEL_OUTPUT_INVALID",
         )
+
+    def test_media_failure_types_do_not_depend_on_ffmpeg_stderr_wording(self):
+        raw = "[mjpeg @ 0x0] Non full-range YUV is non-standard. Nothing was written into output file."
+        self.assertEqual(classify_worker_error(MediaProcessingError(raw)), ("MEDIA_PROCESSING_FAILED", raw))
+        self.assertEqual(classify_worker_error(FrameExtractionError(raw)), ("VISUAL_EXTRACTION_FAILED", raw))
+        self.assertEqual(classify_worker_error(FrameExtractionError("返回成功但没有可用图片"))[0], "VISUAL_EXTRACTION_FAILED")
+
+    def test_classified_media_failure_retains_diagnostic_in_logs_and_failure_payload(self):
+        raw = "[mjpeg @ 0x0] Non full-range YUV is non-standard. Nothing was written into output file."
+        client = FakeClient(self.job)
+        failures = []
+        client.fail = lambda *args: failures.append(args)
+
+        def processor(*_):
+            raise FrameExtractionError(raw)
+
+        with self.assertLogs("liming_analyzer.worker", level="WARNING") as captured:
+            self.assertTrue(process_once(client, processor))
+        self.assertEqual(failures[0][2:4], ("VISUAL_EXTRACTION_FAILED", raw))
+        self.assertTrue(any(raw in line for line in captured.output))
 
     def test_success_submits_completion_once(self):
         client = FakeClient(self.job)

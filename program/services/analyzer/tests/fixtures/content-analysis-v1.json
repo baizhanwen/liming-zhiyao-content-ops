@@ -648,10 +648,10 @@
       "evidence_ids": []
     },
     {
-      "reason": "合成样本材料不足，保留无法判断。",
+      "reason": "analysis_dimension_retired",
       "tags": null,
       "primary_tag": null,
-      "state": "unknown",
+      "state": "not_applicable",
       "dimension_id": "visual.cut_pattern",
       "evidence_ids": []
     },
@@ -946,7 +946,7 @@
           "temporal:opening"
         ],
         "input_token_limit": 6000,
-        "estimated_payload_tokens": 3408
+        "estimated_payload_tokens": 3265
       }
     },
     "synthesis": {

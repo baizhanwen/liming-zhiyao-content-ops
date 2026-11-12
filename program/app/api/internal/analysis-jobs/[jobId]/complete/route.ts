@@ -6,7 +6,7 @@ import { isPlainRecord, requireAnalyzerService } from "../../../../../../lib/ser
 import { extractVideoKnowledgeAtoms } from "../../../../../../lib/video-knowledge-atoms";
 import { enqueueBenchmarkVideoAnalysisMemoryEventsWithDb } from "../../../../../../lib/benchmark-memory-events";
 import type { ProjectAssistantDatabase } from "../../../../../../lib/project-memory-events";
-import { assessAnalysisQuality } from "../../../../../../lib/analysis-quality";
+import { assessAnalysisQuality, analysisCompletionMessage } from "../../../../../../lib/analysis-quality";
 
 export const dynamic = "force-dynamic";
 
@@ -76,14 +76,11 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     const quality = assessAnalysisQuality(payload.analysis.schemaVersion, report);
     const finalStatus: "completed" | "partial" = quality.accepted ? "completed" : "partial";
     const qualityIssues = quality.issues;
-    const partialMessage = finalStatus === "partial"
-      ? qualityIssues.length > 0
-        ? `报告已生成，但有质量项未通过：${qualityIssues.slice(0, 3).join("；")}`
-        : "报告已生成，但质量审计或契约校验未通过。"
-      : null;
+    const completionMessage = analysisCompletionMessage(payload.analysis.schemaVersion, report, quality);
+    const partialMessage = finalStatus === "partial" ? completionMessage : null;
     let partialCheckpointStage: "evidence_ready" | "segment_progress" | null = null;
     let partialCheckpointJson: string | null = null;
-    if (finalStatus === "partial" && job.checkpoint_json) {
+    if ((finalStatus === "partial" || quality.manuscriptStatus === "needs_review") && job.checkpoint_json) {
       try {
         const checkpoint = JSON.parse(job.checkpoint_json) as unknown;
         if (
@@ -93,6 +90,8 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
           && isPlainRecord(checkpoint.transcript)
           && isPlainRecord(checkpoint.visuals)
         ) {
+          // Report-only revalidation applies to this attempt, never to a later repair.
+          delete checkpoint.report_revalidation_only;
           const previousSpokenScriptSet = isPlainRecord(report) && isPlainRecord(report.spoken_script_set)
             ? report.spoken_script_set
             : {};
@@ -101,6 +100,7 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
             previous_spoken_script_set: previousSpokenScriptSet,
             retry_script_version: null,
             retry_module_keys: null,
+            retry_review_segment_ids: null,
           });
           if (augmented.length <= 1_000_000) {
             partialCheckpointStage = job.checkpoint_stage === "segment_progress" ? "segment_progress" : "evidence_ready";
@@ -112,7 +112,7 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
         partialCheckpointJson = null;
       }
     }
-    const finalStage = finalStatus === "completed" ? "分析完成" : "分析部分完成，等待复核或重试";
+    const finalStage = finalStatus === "completed" ? quality.reviewSegmentCount ? `分析完成，${quality.reviewSegmentCount}句口播待核对` : "分析完成" : "分析部分完成，等待复核或重试";
     const actor = `service:${payload.workerId}`;
     const finalVersion = payload.version + 1;
     const analysisId = crypto.randomUUID();
@@ -165,7 +165,7 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
       db.prepare("UPDATE videos SET status = 'ready', error_message = ?, updated_by = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND EXISTS (SELECT 1 FROM analysis_jobs j WHERE j.id = ? AND j.video_id = videos.id AND j.status IN ('completed', 'partial') AND j.result_key = ? AND j.version = ?)")
         .bind(partialMessage, actor, nowIso, job.video_id, job.organization_id, job.project_id, jobId, payload.resultKey, finalVersion),
       db.prepare("INSERT INTO analysis_job_events (id, organization_id, project_id, job_id, video_id, event_type, from_status, to_status, progress, worker_id, details_json, created_at) SELECT ?, organization_id, project_id, id, video_id, ?, ?, ?, 100, ?, ?, ? FROM analysis_jobs WHERE id = ? AND result_key = ? AND version = ?")
-        .bind(crypto.randomUUID(), finalStatus, job.status, finalStatus, payload.workerId, JSON.stringify({ schemaVersion: payload.analysis.schemaVersion, hasTranscript: Boolean(payload.transcript), hasSourceMetadata: Boolean(payload.sourceMetadata), qualityAuditStatus: qualityAudit?.status ?? null, qualityIssues }), nowIso, jobId, payload.resultKey, finalVersion),
+        .bind(crypto.randomUUID(), finalStatus, job.status, finalStatus, payload.workerId, JSON.stringify({ schemaVersion: payload.analysis.schemaVersion, hasTranscript: Boolean(payload.transcript), hasSourceMetadata: Boolean(payload.sourceMetadata), qualityAuditStatus: qualityAudit?.status ?? null, qualityIssues, reviewSegmentCount: quality.reviewSegmentCount ?? 0, manuscriptStatus: quality.manuscriptStatus ?? null, message: completionMessage }), nowIso, jobId, payload.resultKey, finalVersion),
     );
     const results = await db.batch(statements);
     if (!results[0].meta.changes) return apiError("JOB_STATE_CHANGED", "任务状态已变化，结果未写入。", 409);
@@ -188,7 +188,7 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
         message: eventError instanceof Error ? eventError.message : "unknown",
       });
     }
-    return Response.json({ job: { id: jobId, status: finalStatus, progress: 100, version: finalVersion }, idempotent: false });
+    return Response.json({ job: { id: jobId, status: finalStatus, progress: 100, version: finalVersion, reviewSegmentCount: quality.reviewSegmentCount ?? 0, manuscriptStatus: quality.manuscriptStatus ?? null, message: completionMessage }, idempotent: false });
   } catch (error) {
     return errorResponse(error);
   }

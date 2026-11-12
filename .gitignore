@@ -30,3 +30,6 @@
 *.log
 **/.cache/
 **/model-cache/
+
+# Locally generated update handout, not part of the source release.
+/program/output/pdf/利明智耀工作台-更新日志-2026-11-10.pdf

@@ -3,7 +3,7 @@ import { apiError, errorResponse } from "../../../../../../lib/api-response";
 import { LEASED_ANALYSIS_STATUSES_SQL } from "../../../../../../lib/analysis-jobs";
 import { normalizeWorkerId, requireAnalyzerService } from "../../../../../../lib/service-auth";
 
-const tasks = new Set(["canonical_transcript", "vision_batch", "report", "report_continuation", "corrected_original", "light_rewrite", "restructure_plan", "restructure_section", "insight_evidence",
+const tasks = new Set(["canonical_transcript", "canonical_review", "canonical_repair", "vision_batch", "report", "report_continuation", "corrected_original", "light_rewrite", "restructure_plan", "restructure_section", "insight_evidence",
   "content_classification:text_topic_structure_audience", "content_classification:text_expression_value",
   "content_classification:visual", "content_classification:synthesis"]);
 const counter = (value: unknown) => value === null || value === undefined ? null : Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= 1_000_000_000 ? Number(value) : undefined;
