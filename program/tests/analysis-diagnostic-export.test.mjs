@@ -121,6 +121,17 @@ test("raw visual timing survives export while normalized timings preserve measur
   assert.ok(body.diagnostics.notes.some(note => /不包含.*GPU/.test(note)));
 });
 
+test("JSON downloads retain a complete emoji at a long Chinese filename boundary", async t => {
+  const f = await fixture(t);
+  f.sqlite.prepare("UPDATE videos SET title=? WHERE id=?").run("字".repeat(79) + "😀/后续标题", f.videoId);
+  const { response } = await f.exportJson();
+  assert.equal(response.status, 200);
+  const filename = decodeURIComponent(response.headers.get("content-disposition").split("filename*=UTF-8''")[1]);
+  assert.ok(filename.includes("😀"));
+  assert.ok(filename.endsWith(".json"));
+  assert.ok(!/[\\/:*?"<>|]/.test(filename));
+});
+
 test("reused evidence timing remains historical evidence, never new report execution", async t => {
   const report = measuredReport();
   report.analysis_meta.evidence_reused = true;

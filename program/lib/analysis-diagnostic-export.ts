@@ -38,7 +38,7 @@ export function diagnosticJobSnapshot(value: Row | null) {
 }
 
 export function analysisDiagnosticFilename(title: unknown, id: unknown) {
-  const name = (typeof title === "string" ? title : "视频分析").replace(/[\\/:*?"<>|\p{Cc}]/gu, "-").slice(0, 80).replace(/[. ]+$/g, "").trim() || "视频分析";
+  const name = Array.from((typeof title === "string" ? title : "视频分析").toWellFormed().replace(/[\\/:*?"<>|\p{Cc}]/gu, "-")).slice(0, 80).join("").replace(/[. ]+$/g, "").trim() || "视频分析";
   const suffix = typeof id === "string" ? id.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 16) : "snapshot";
   return `${name}-分析诊断-${suffix || "snapshot"}.json`;
 }

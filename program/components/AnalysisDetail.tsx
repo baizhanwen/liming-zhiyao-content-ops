@@ -180,7 +180,7 @@ export function AnalysisDetail({ videoId, organizationId, projectId, libraryEntr
       if (!response.ok) throw new Error(await readApiError(response));
       const blob = await response.blob();
       if (activeUrl.current !== sourceUrl) return;
-      const safeTitle = title.slice(0, 40).replace(/[\\/:*?"<>|\p{Cc}]/gu, "-").replace(/[. ]+$/u, "") || "视频分析";
+      const safeTitle = Array.from(title).slice(0, 40).join("").replace(/[\\/:*?"<>|\p{Cc}]/gu, "-").replace(/[. ]+$/u, "") || "视频分析";
       const version = selectedId.replace(/[^a-zA-Z0-9_-]/gu, "-").slice(0, 48) || "latest";
       const timestamp = new Date().toISOString().replace(/[-:]/gu, "").replace(/\.\d{3}Z$/u, "Z");
       href = URL.createObjectURL(blob);
