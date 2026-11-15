@@ -51,12 +51,36 @@ export function parseCheckpointPayload(value: unknown) {
   if (!isPlainRecord(value)) return null;
   const workerId = normalizeWorkerId(value.workerId);
   const version = typeof value.version === "number" && Number.isInteger(value.version) && value.version >= 0 ? value.version : null;
-  const stage = value.stage === "evidence_ready" || value.stage === "segment_progress" ? value.stage : null;
+  const attempt = value.attempt === undefined ? null : typeof value.attempt === "number" && Number.isSafeInteger(value.attempt) && value.attempt > 0 ? value.attempt : undefined;
+  const stage = value.stage === "transcript_ready" || value.stage === "evidence_ready" || value.stage === "segment_progress" ? value.stage : null;
   const checkpoint = isPlainRecord(value.checkpoint) ? value.checkpoint : null;
-  if (!workerId || version === null || !stage || !checkpoint) return null;
+  if (!workerId || version === null || attempt === undefined || !stage || !checkpoint) return null;
+  if (stage === "transcript_ready" && !readTranscriptCheckpoint(checkpoint)) return null;
   const checkpointJson = JSON.stringify(checkpoint);
   if (checkpointJson.length <= 2 || checkpointJson.length > 1_000_000) return null;
-  return { workerId, version, stage, checkpointJson };
+  return { workerId, version, attempt, stage, checkpoint, checkpointJson };
+}
+
+/** Raw ASR is resumable before OCR or visual analysis has completed. */
+export function readTranscriptCheckpoint(value: unknown) {
+  if (!isPlainRecord(value) || value.checkpoint_version !== 2 || !isPlainRecord(value.media) || !isPlainRecord(value.transcript) || !isPlainRecord(value.source_asset)) return null;
+  const asset = value.source_asset, transcript = value.transcript;
+  const hash = (item: unknown) => typeof item === "string" && /^[a-f0-9]{64}$/i.test(item);
+  if (typeof asset.id !== "string" || !asset.id || asset.id.length > 100 || !hash(asset.sha256)
+    || !Number.isSafeInteger(asset.size_bytes) || Number(asset.size_bytes) <= 0 || !["source_video", "source_audio"].includes(String(asset.kind))
+    || !hash(value.asr_fingerprint) || !hash(value.transcript_sha256) || (value.manual_source_hash !== null && !hash(value.manual_source_hash))
+    || typeof value.transcript_review_enabled !== "boolean"
+    || !Number.isSafeInteger(value.media.duration_ms) || Number(value.media.duration_ms) < 0
+    || typeof transcript.language !== "string" || !transcript.language || transcript.language.length > 32
+    || !Array.isArray(transcript.segments) || transcript.segments.length > 5_000) return null;
+  let previous = -1;
+  for (const row of transcript.segments) {
+    if (!isPlainRecord(row) || !Number.isSafeInteger(row.start_ms) || !Number.isSafeInteger(row.end_ms)
+      || Number(row.start_ms) < 0 || Number(row.start_ms) < previous || Number(row.end_ms) < Number(row.start_ms)
+      || typeof row.text !== "string" || !row.text.trim() || row.text.length > 20_000) return null;
+    previous = Number(row.start_ms);
+  }
+  return { assetId: asset.id, sha256: asset.sha256 as string, sizeBytes: Number(asset.size_bytes), kind: asset.kind as string };
 }
 
 export function parseCompletionPayload(value: unknown) {

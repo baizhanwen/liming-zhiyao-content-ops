@@ -2,11 +2,11 @@
 import copy
 
 import pytest
-
-from liming_analyzer.content_analysis import MODULES, build_content_analysis_bundle
 from test_content_review import failed_visual_candidate, reviewed_inputs
 from test_reviewed_analysis import ReviewedSdk, run_reviewed
 from test_unified_analysis import module_section, payload_of, run_unified
+
+from liming_analyzer.content_analysis import MODULES, build_content_analysis_bundle
 
 
 @pytest.mark.parametrize("reviewed", [False, True])
@@ -81,7 +81,7 @@ def test_explicit_saved_candidate_repair_carries_error_and_requests_only_failed_
     result = build_content_analysis_bundle(*inputs, request, review_context=review,
         resume_modules=current["module_results"], resume_failures={"visual": failed}, retry_module_keys=("visual",))
     assert [module for module, _wire in calls] == ["visual"]
-    assert calls[0][1]["response_repair"]["issues"] == ["compact_evidence_index"]
+    assert "compact_evidence_index" in calls[0][1]["response_repair"]["issues"]
     assert result["content_analysis"]["status"] == "complete"
 
 
@@ -108,6 +108,7 @@ def test_targeted_repair_revalidates_existing_synthesis_without_a_new_summary_ca
 
 def test_changed_source_cannot_revalidate_a_previous_synthesis_on_targeted_retry():
     from dataclasses import replace
+
     from test_reviewed_analysis import review_inputs
 
     _first, _sdk, _ledger, checkpoints = run_reviewed()

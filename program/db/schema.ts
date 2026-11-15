@@ -151,6 +151,7 @@ export const videoAnalyses = sqliteTable("video_analyses", {
 }, (table) => [index("idx_video_analyses_video_created").on(table.organizationId, table.projectId, table.videoId, table.createdAt), index("idx_video_analyses_analysis_job").on(table.analysisJobId)]);
 
 export const analysisJobs = sqliteTable("analysis_jobs", {
+  transcriptReviewEnabled: integer("transcript_review_enabled", { mode: "boolean" }).notNull().default(true),
   queueUserId: text("queue_user_id").references(() => users.id), enqueuedAt: text("enqueued_at"), recoveryAttemptCount: integer("recovery_attempt_count").notNull().default(0),
   id: id(), organizationId: text("organization_id").notNull().references(() => organizations.id), projectId: text("project_id").notNull().references(() => projects.id),
   videoId: text("video_id").references(() => videos.id),

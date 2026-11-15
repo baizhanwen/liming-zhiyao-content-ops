@@ -102,7 +102,7 @@ def test_apple_chinese_uses_verified_audio_model_and_only_downloads_during_setup
 
 
 @pytest.mark.parametrize("failure_stage", ["load", "decode"])
-def test_ct2_auto_recovers_gpu_failures_without_partial_or_duplicate_output(tmp_path, monkeypatch, failure_stage):
+def test_ct2_auto_recovers_gpu_failures_without_partial_or_duplicate_output(tmp_path, monkeypatch, failure_stage, caplog):
     folder = tmp_path / f"faster-whisper-{TURBO_MODEL}"
     folder.mkdir()
     for name in ("model.bin", "config.json", "tokenizer.json", "preprocessor_config.json"):
@@ -129,5 +129,10 @@ def test_ct2_auto_recovers_gpu_failures_without_partial_or_duplicate_output(tmp_
     assert recognizer.transcribe(Path("audio.wav")).full_text == "完整原话"
     assert recognizer.transcribe(Path("other.wav")).full_text == "完整原话"
     assert devices == ["cuda", "cpu"]
+    assert recognizer.runtime_state["device"] == "cpu"
+    assert recognizer.runtime_state["gpu_verified"] is False
+    expected = "CUDA_LIBRARY_UNAVAILABLE" if failure_stage == "load" else "CUDA_OUT_OF_MEMORY"
+    assert recognizer.last_gpu_failure["code"] == expected
+    assert expected in caplog.text
     with pytest.raises(RuntimeError, match="cuBLAS|CUDA"):
         FasterWhisperSpeechRecognizer(TURBO_MODEL, model_cache=tmp_path, device="cuda").transcribe(Path("audio.wav"))

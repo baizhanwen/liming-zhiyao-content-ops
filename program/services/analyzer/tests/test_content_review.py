@@ -520,7 +520,7 @@ def test_v12_multiple_temporal_groups_are_only_unknown_and_cache_cannot_bypass_t
     assert row["state"] == "unknown"
 
 
-@pytest.mark.parametrize("violation", ["duplicate", "out_of_range", "finding_duplicate"])
+@pytest.mark.parametrize("violation", ["out_of_range", "finding_duplicate"])
 def test_v12_large_classification_limit_keeps_reference_hard_gates(violation):
     inputs, review = extended_reviewed_inputs()
     _, definitions, registry, base = _initial_content_state(*inputs, review_context=review)
@@ -531,8 +531,6 @@ def test_v12_large_classification_limit_keeps_reference_hard_gates(violation):
     response = compact_synthetic_response("visual", wire, 1_000)
     if violation == "finding_duplicate":
         response["f"][0]["e"] = [0, 0]
-    elif violation == "duplicate":
-        response["c"][0]["e"] = [0, 0]
     else:
         response["c"][0]["e"] = [len(wire["e"])]
     with pytest.raises(CompactProtocolError):
@@ -592,7 +590,7 @@ def test_visual_selection_and_signature_are_independent_of_large_review_metadata
 
 @pytest.mark.parametrize("field", ["g", "u", "f"])
 @pytest.mark.parametrize("invalid", ["duplicate", "out_of_range", "over_24"])
-def test_v12_event_unit_finding_refs_still_reject_invalid_evidence(field, invalid):
+def test_v12_refs_deduplicate_or_omit_overflow_without_accepting_foreign_evidence(field, invalid):
     inputs, review = extended_reviewed_inputs()
     _, definitions, registry, base = _initial_content_state(*inputs, review_context=review)
     requested = [row for row in definitions.values() if row["module"] == MODULES[1]]
@@ -601,10 +599,21 @@ def test_v12_event_unit_finding_refs_still_reject_invalid_evidence(field, invali
     wire, context = prepare_compact_request(MODULES[1], payload)
     response = compact_synthetic_response(MODULES[1], wire, 1_000)
     assert response[field]
-    refs = [0, 0] if invalid == "duplicate" else [len(wire["e"])] if invalid == "out_of_range" else list(range(25))
+    expected = decode_compact_response(response, context)
+    refs = response[field][0]["e"] * 2 if invalid == "duplicate" else [len(wire["e"])] if invalid == "out_of_range" else list(range(25))
     response[field][0]["e"] = refs
-    with pytest.raises(CompactProtocolError):
-        decode_compact_response(response, context)
+    if invalid == "out_of_range":
+        with pytest.raises(CompactProtocolError):
+            decode_compact_response(response, context)
+    else:
+        recovery = []
+        result = decode_compact_response(response, context, local_recovery=recovery)
+        assert any(row["path"] == f"{field}.0.e" and row["action"] == (
+            "deduplicated" if invalid == "duplicate" else "omitted") for row in recovery)
+        if invalid == "duplicate":
+            assert result == expected
+        else:
+            assert len(response[field][0]["e"]) == 25
 
 
 def overflow_reviewed_payload(module="visual"):

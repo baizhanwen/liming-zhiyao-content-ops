@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import threading
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlencode
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -240,10 +242,11 @@ class AnalyzerApiClient:
         return configuration
 
     def save_checkpoint(self, job: ClaimedJob, stage: str, checkpoint: Mapping[str, Any]) -> Mapping[str, Any]:
-        if stage not in {"evidence_ready", "segment_progress"}:
+        if stage not in {"transcript_ready", "evidence_ready", "segment_progress"}:
             raise ValueError("unsupported analysis checkpoint stage")
         response = self._post(f"/api/internal/analysis-jobs/{job.id}/checkpoint", {
             "workerId": self.worker_id, "version": job.version, "stage": stage, "checkpoint": checkpoint,
+            **({"attempt": job.attempt_count} if job.attempt_count > 0 else {}),
         })
         assert response is not None
         return response
@@ -299,6 +302,8 @@ class AnalyzerApiClient:
             "X-Artifact-Kind": kind,
             "X-Artifact-Filename": path.name,
         }
+        if job.attempt_count > 0:
+            headers["X-Worker-Attempt"] = str(job.attempt_count)
         if timestamp_ms is not None:
             headers["X-Artifact-Timestamp-Ms"] = str(timestamp_ms)
         if confidence is not None:
@@ -328,22 +333,50 @@ class AnalyzerApiClient:
     def download_upload_source(self, job: ClaimedJob, destination: Path, max_bytes: int = 2_000_000_000) -> Path:
         if job.source_type != "upload":
             raise ValueError("only uploaded jobs use the private source endpoint")
+        return self._download_source(job, destination, max_bytes=max_bytes,
+            expected_size=job.source.get("size_bytes"), expected_sha256=job.source.get("sha256"))
+
+    def download_checkpoint_source(self, job: ClaimedJob, destination: Path, asset: Mapping[str, Any]) -> Path:
+        """Download only the private source bound to this checkpoint/attempt."""
+        return self._download_source(job, destination, max_bytes=2_000_000_000,
+            asset_id=str(asset["id"]), expected_size=asset["size_bytes"], expected_sha256=asset["sha256"])
+
+    def _download_source(self, job: ClaimedJob, destination: Path, *, max_bytes: int,
+                         asset_id: str | None = None, expected_size: Any = None,
+                         expected_sha256: Any = None) -> Path:
+        headers = {"Authorization": f"Bearer {self._token}", "X-Worker-Id": self.worker_id,
+                   "Accept": "application/octet-stream"}
+        if job.attempt_count > 0:
+            headers["X-Worker-Attempt"] = str(job.attempt_count)
+        query = "?" + urlencode({"assetId": asset_id}) if asset_id else ""
         request = urllib.request.Request(
-            f"{self.base_url}/api/internal/analysis-jobs/{job.id}/source",
-            headers={"Authorization": f"Bearer {self._token}", "X-Worker-Id": self.worker_id, "Accept": "application/octet-stream"},
+            f"{self.base_url}/api/internal/analysis-jobs/{job.id}/source{query}",
+            headers=headers,
             method="GET",
         )
         destination.parent.mkdir(parents=True, exist_ok=True); partial = destination.with_name(f"{destination.name}.part"); written = 0
+        digest = hashlib.sha256()
         try:
             with urllib.request.urlopen(request, timeout=120) as response, partial.open("wb") as output:
                 content_length = response.headers.get("Content-Length")
-                if content_length and int(content_length) > max_bytes:
+                declared = int(content_length) if content_length else None
+                if declared is not None and (declared < 0 or declared > max_bytes):
                     raise AnalyzerApiError(413, "SOURCE_TOO_LARGE", "source exceeds worker limit")
                 while chunk := response.read(1024 * 1024):
                     written += len(chunk)
                     if written > max_bytes:
                         raise AnalyzerApiError(413, "SOURCE_TOO_LARGE", "source exceeds worker limit")
                     output.write(chunk)
+                    digest.update(chunk)
+            if written == 0:
+                raise AnalyzerApiError(502, "EMPTY_SOURCE", "source media is empty")
+            if declared is not None and written != declared:
+                raise AnalyzerApiError(502, "SOURCE_INCOMPLETE", "source byte count does not match Content-Length")
+            if type(expected_size) is int and expected_size >= 0 and written != expected_size:
+                raise AnalyzerApiError(502, "SOURCE_INTEGRITY_MISMATCH", "source size differs from the durable asset")
+            if isinstance(expected_sha256, str) and expected_sha256 and digest.hexdigest() != expected_sha256.lower():
+                raise AnalyzerApiError(502, "SOURCE_INTEGRITY_MISMATCH", "source hash differs from the durable asset")
+            partial.replace(destination)
         except urllib.error.HTTPError as error:
             partial.unlink(missing_ok=True)
             payload = json.loads(error.read().decode("utf-8")) if error.fp else {}
@@ -352,10 +385,6 @@ class AnalyzerApiClient:
         except Exception:
             partial.unlink(missing_ok=True)
             raise
-        if written == 0:
-            partial.unlink(missing_ok=True)
-            raise AnalyzerApiError(502, "EMPTY_SOURCE", "source media is empty")
-        partial.replace(destination)
         return destination
 
     def download_cookie_snapshot(self, job: ClaimedJob, destination: Path, max_bytes: int = 1024 * 1024) -> bool:

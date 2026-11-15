@@ -2903,6 +2903,12 @@ class InstructorStructureAnalyzer:
         transcript: TranscriptOutput,
         visuals: VisualOutput,
     ) -> StructureOutput:
+        if self.generate_unified_report and job.source.get("transcript_review_enabled") is False:
+            # A mode switch must never route a reviewed historical checkpoint
+            # through v11 or launch a canonical correction request.
+            from .reviewed_analysis import analyze_reviewed
+
+            return analyze_reviewed(self, job, media, transcript, visuals)
         if self.generate_reviewed_report:
             progress = job.checkpoint.get("unified_progress", {}) if isinstance(job.checkpoint, Mapping) else {}
             retry_keys = job.checkpoint.get("retry_module_keys") if isinstance(job.checkpoint, Mapping) else None

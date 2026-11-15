@@ -28,6 +28,31 @@ def fake_factory(_settings, _client, monitor):
     return processor
 
 
+def phase_factory(_settings, _client, monitor):
+    completed = 0
+    def processor(job, heartbeat):
+        nonlocal completed
+        if job.id == "split-phases":
+            for phase in ("speech", "subtitle", "visual"):
+                monitor("phase", phase)
+                heartbeat("transcribing", 40, "synthetic " + phase)
+                time.sleep(.10)
+        elif job.id == "revisit-speech":
+            for phase, delay in (("speech", .10), ("visual", .02), ("speech", .10)):
+                monitor("phase", phase)
+                heartbeat("transcribing", 40, "synthetic " + phase)
+                time.sleep(delay)
+        elif job.id in {"visual-timeout", "artifact-transcribing", "artifact-processing"}:
+            phase = "visual" if job.id == "visual-timeout" else "artifacts"
+            monitor("phase", phase)
+            heartbeat("processing" if job.id == "artifact-processing" else "transcribing", 40, "synthetic save boundary")
+            while True:
+                time.sleep(.02)
+        completed += 1
+        return AnalysisResult("analysis.v7", {"pid": os.getpid(), "completed": completed})
+    return processor
+
+
 class ControlClient:
     def __init__(self):
         self.cancel_at = None
@@ -212,6 +237,49 @@ class ProcessingSourceStampTests(unittest.TestCase):
                 self.assertNotEqual(_processing_source_stamp(), with_resource)
                 contract.unlink()
                 self.assertEqual(_processing_source_stamp(), changed)
+
+
+@unittest.skipUnless(os.name in {"nt", "posix"}, "native process isolation")
+class PrecisePhaseRuntimeTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.limits = ProcessingLimits(initialization=5, evidence=.16, speech=.16,
+            subtitle=.16, visual=.16, artifacts=.16, task=3, poll=.01)
+        self.processor = IsolatedProcessor(None, ControlClient(), root=Path(self.temporary.name),
+            limits=self.limits, factory=phase_factory)
+        self.addCleanup(self.processor.close)
+
+    def run_job(self, name):
+        job = ClaimedJob(name, "org", "project", "video", "url", "queued", 1, 1, {})
+        return self.processor(job, lambda status, progress, _stage: replace(job, status=status, progress=progress))
+
+    def test_each_precise_evidence_phase_gets_its_own_budget(self):
+        result = self.run_job("split-phases")
+        self.assertEqual(result.report["completed"], 1)
+
+    def test_transcribing_heartbeat_does_not_erase_visual_budget_and_next_job_recovers(self):
+        self.processor.limits = replace(self.limits, evidence=2)
+        with self.assertRaises(ProcessingFailure) as caught:
+            self.run_job("visual-timeout")
+        self.assertEqual(caught.exception.code, "ANALYZER_STAGE_TIMEOUT")
+        self.assertIn("visual", str(caught.exception))
+        self.assertTrue(self.processor.resources_released)
+        self.assertEqual(self.run_job("next").report["completed"], 1)
+
+    def test_raw_checkpoint_artifact_budget_survives_legacy_public_status(self):
+        self.processor.limits = replace(self.limits, evidence=2, media=2)
+        for name in ("artifact-transcribing", "artifact-processing"):
+            with self.subTest(name=name), self.assertRaises(ProcessingFailure) as caught:
+                self.run_job(name)
+            self.assertEqual(caught.exception.code, "ANALYZER_STAGE_TIMEOUT")
+            self.assertIn("artifacts", str(caught.exception))
+
+    def test_revisiting_a_phase_cannot_reset_its_total_time_budget(self):
+        with self.assertRaises(ProcessingFailure) as caught:
+            self.run_job("revisit-speech")
+        self.assertEqual(caught.exception.code, "ANALYZER_STAGE_TIMEOUT")
+        self.assertIn("speech", str(caught.exception))
 
 
 if __name__ == "__main__":

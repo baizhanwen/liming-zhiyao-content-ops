@@ -111,6 +111,11 @@ try {
       assert.ok(existsSync(path.join(packageRoot, filename)), `Missing video environment dependency: ${filename}`);
     if (features.videoAnalysis) for (const filename of [
       "services/analyzer/liming_analyzer/qwen_windows.py", "services/analyzer/liming_analyzer/qwen_speech.py",
+      "services/analyzer/liming_analyzer/gpu_diagnostics.py", "services/analyzer/liming_analyzer/faster_whisper_asr.py",
+      "services/analyzer/liming_analyzer/cuda_runtime.py", "scripts/prepare_analyzer_cuda.py", "scripts/check_analyzer_cuda.py",
+      "services/analyzer/liming_analyzer/pipeline.py", "services/analyzer/liming_analyzer/process_runtime.py",
+      "services/analyzer/liming_analyzer/api_client.py", "services/analyzer/liming_analyzer/artifacts.py",
+      "drizzle/0052_analysis_transcript_review.sql",
       "resources/media-tools/asr-check-zh.wav", "docs/releases/windows-qwen-v20261112.1.md",
       "services/analyzer/liming_analyzer/canonical_transcript.py", "services/analyzer/liming_analyzer/content_module_protocol.py",
       "services/analyzer/liming_analyzer/unified_analysis.py", "services/analyzer/liming_analyzer/content_analysis.py",

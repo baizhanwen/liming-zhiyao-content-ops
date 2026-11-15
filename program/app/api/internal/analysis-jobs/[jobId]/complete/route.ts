@@ -1,7 +1,7 @@
 import { readEvidenceCheckpoint, parseAnalysisModuleRetryKeys } from "../../../../../../lib/analysis-module-retry";
 import { getD1 } from "../../../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../../../lib/api-response";
-import { parseCompletionPayload, type WorkerJobRow } from "../../../../../../lib/analysis-worker";
+import { parseCompletionPayload, readTranscriptCheckpoint, type WorkerJobRow } from "../../../../../../lib/analysis-worker";
 import { isPlainRecord, requireAnalyzerService } from "../../../../../../lib/service-auth";
 import { extractVideoKnowledgeAtoms } from "../../../../../../lib/video-knowledge-atoms";
 import { enqueueBenchmarkVideoAnalysisMemoryEventsWithDb } from "../../../../../../lib/benchmark-memory-events";
@@ -20,10 +20,10 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     const db = getD1();
     const nowIso = new Date().toISOString();
     const job = await db.prepare(`
-      SELECT j.id, j.organization_id, j.project_id, j.video_id, j.input_transcript_id, j.idempotency_key, j.status, j.progress, j.current_stage, j.lease_owner, j.lease_expires_at, j.attempt_count, j.version, j.result_key, j.checkpoint_stage, j.checkpoint_json
+      SELECT j.id, j.organization_id, j.project_id, j.video_id, j.input_transcript_id, j.idempotency_key, j.transcript_review_enabled, j.status, j.progress, j.current_stage, j.lease_owner, j.lease_expires_at, j.attempt_count, j.version, j.result_key, j.checkpoint_stage, j.checkpoint_json
       FROM analysis_jobs j INNER JOIN videos v ON v.id = j.video_id AND v.organization_id = j.organization_id AND v.project_id = j.project_id
       WHERE j.id = ?
-    `).bind(jobId).first<WorkerJobRow & { input_transcript_id: string | null; idempotency_key: string }>();
+    `).bind(jobId).first<WorkerJobRow & { input_transcript_id: string | null; idempotency_key: string; transcript_review_enabled: number }>();
     if (!job) return apiError("JOB_NOT_FOUND", "分析任务不存在。", 404);
     const transcriptOnly = job.idempotency_key.startsWith("transcript:");
     if (transcriptOnly !== (payload.analysis.schemaVersion === "transcript.v1")) {
@@ -72,13 +72,28 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
 
     const report = JSON.parse(payload.analysis.reportJson) as unknown;
     const analysisMeta = isPlainRecord(report) && isPlainRecord(report.analysis_meta) ? report.analysis_meta : null;
+    if (job.transcript_review_enabled === 0
+      ? payload.analysis.schemaVersion !== "analysis.v12" || analysisMeta?.transcript_review_enabled !== false
+      : analysisMeta?.transcript_review_enabled === false) {
+      return apiError("TRANSCRIPT_REVIEW_MODE_MISMATCH", "分析结果与提交时选择的口播采用方式不一致，请更新分析服务后重试。", 409);
+    }
+    if (job.transcript_review_enabled === 0 && !job.input_transcript_id) {
+      const unified = isPlainRecord(report) && isPlainRecord(report.unified_report) ? report.unified_report : null;
+      const outcome = unified && isPlainRecord(unified.outcome) ? unified.outcome : null;
+      if (!outcome || !["original", "not_applicable"].includes(String(outcome.manuscript))) {
+        return apiError("TRANSCRIPT_REVIEW_MODE_MISMATCH", "原始转写任务不能保存自动校正的稿件，请更新分析服务后重试。", 409);
+      }
+    }
+    if (job.transcript_review_enabled === 0 && job.input_transcript_id && analysisMeta?.transcript_source_kind !== "manual") {
+      return apiError("TRANSCRIPT_REVIEW_MODE_MISMATCH", "本次任务应使用已保存的人工校正版，未接收其他来源的稿件。", 409);
+    }
     const qualityAudit = analysisMeta && isPlainRecord(analysisMeta.quality_audit) ? analysisMeta.quality_audit : null;
     const quality = assessAnalysisQuality(payload.analysis.schemaVersion, report);
     const finalStatus: "completed" | "partial" = quality.accepted ? "completed" : "partial";
     const qualityIssues = quality.issues;
     const completionMessage = analysisCompletionMessage(payload.analysis.schemaVersion, report, quality);
     const partialMessage = finalStatus === "partial" ? completionMessage : null;
-    let partialCheckpointStage: "evidence_ready" | "segment_progress" | null = null;
+    let partialCheckpointStage: "transcript_ready" | "evidence_ready" | "segment_progress" | null = null;
     let partialCheckpointJson: string | null = null;
     if ((finalStatus === "partial" || quality.manuscriptStatus === "needs_review") && job.checkpoint_json) {
       try {
@@ -106,6 +121,10 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
             partialCheckpointStage = job.checkpoint_stage === "segment_progress" ? "segment_progress" : "evidence_ready";
             partialCheckpointJson = augmented;
           }
+        } else if (job.checkpoint_stage === "transcript_ready" && readTranscriptCheckpoint(checkpoint)) {
+          // A failed evidence-checkpoint write must not erase the earlier paid ASR.
+          partialCheckpointStage = "transcript_ready";
+          partialCheckpointJson = job.checkpoint_json;
         }
       } catch {
         partialCheckpointStage = null;

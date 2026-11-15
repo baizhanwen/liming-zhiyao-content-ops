@@ -78,6 +78,7 @@ def _canonical_diagnostics(records: list[dict[str, Any]], *, reused: bool) -> di
 
 def analyze_reviewed(analyzer: Any, job: Any, media: Any, transcript: Any, visuals: Any) -> StructureOutput:
     from .canonical_review import (
+        build_original_transcript,
         build_reviewed_transcript,
         create_repair_response_model,
         create_review_response_model,
@@ -88,7 +89,11 @@ def analyze_reviewed(analyzer: Any, job: Any, media: Any, transcript: Any, visua
 
     started = time.monotonic()
     profile = "max" if job.analysis_profile == "max" else "standard"
+    review_enabled = job.source.get("transcript_review_enabled") is not False
+    manual = bool(job.source.get("manual_transcript"))
+    original_mode = not review_enabled and not manual
     signature = _hash({"pipeline": PIPELINE_VERSION, "provider": analyzer.provider,
+                       **({"transcript_review_enabled": False} if not review_enabled else {}),
                        "model": analyzer.model, "taxonomy": load_taxonomy(),
                        "media": vars(media.info), "transcript": [vars(row) for row in transcript.segments],
                        "frames": [{"time": row.timestamp_ms, "text": row.ocr_text,
@@ -187,11 +192,16 @@ def analyze_reviewed(analyzer: Any, job: Any, media: Any, transcript: Any, visua
     # canonical failure that otherwise has no successful output to checkpoint.
     checkpoint()
     canonical_started = time.monotonic()
-    canonical_result = restore_reviewed_transcript(progress.get("canonical"), transcript, visuals,
-                                                     trusted_manual=bool(job.source.get("manual_transcript")))
+    canonical_result = (build_original_transcript(transcript, visuals) if original_mode else
+        restore_reviewed_transcript(progress.get("canonical"), transcript, visuals, trusted_manual=manual))
+    if original_mode:
+        if revalidation_only and progress.get("canonical") != canonical_result.to_checkpoint():
+            raise RuntimeError("保存的原始转写检查点未通过复验，未调用模型。")
+        progress["canonical"] = canonical_result.to_checkpoint()
+        checkpoint()
     if revalidation_only and canonical_result is None:
         raise RuntimeError("保存的口播检查点未通过复验，未调用模型。")
-    if canonical_result is None or repair_ids or ("canonical" in targets and canonical_result.status in {"needs_review", "failed"}):
+    if not original_mode and (canonical_result is None or repair_ids or ("canonical" in targets and canonical_result.status in {"needs_review", "failed"})):
         def correct(task: str, payload: dict[str, Any], ceiling: int) -> dict[str, Any]:
             if targets and "canonical" not in targets:
                 raise UnifiedRequestError({**_empty_diagnostics(), "failure_kind": "canonical_failed"})
@@ -210,21 +220,22 @@ def analyze_reviewed(analyzer: Any, job: Any, media: Any, transcript: Any, visua
         progress["canonical"] = canonical_result.to_checkpoint()
         checkpoint()
     else:
-        diagnostics["canonical_review"] = _empty_diagnostics(reused=True)
+        diagnostics["canonical_review"] = _empty_diagnostics(
+            reused=not original_mode or existing.get("canonical") == canonical_result.to_checkpoint())
     canonical = canonical_result.to_dict()
     canonical_transcript = canonical_result.analysis_transcript
     if not transcript.segments and media.info.audio_codec is None:
         canonical.update(status="not_applicable", validation={"passed": True, "issues": []})
-    accepted = [row for row in canonical["segments"] if row["review_status"] == "accepted"]
+    accepted = [row for row in canonical["segments"] if row["review_status"] in {"accepted", "original"}]
     safe_paragraphs = [row["text"] for row in _paragraphs(accepted)]
     # Compatibility consumers receive only accepted text. Full manuscript and
     # candidates live exclusively in canonical v2 and the review presentation.
     script_set = {"corrected_original": {
-        "status": "completed" if canonical["status"] == "completed" else "not_applicable" if canonical["status"] == "not_applicable" else "failed",
+        "status": "original" if canonical["status"] == "original" else "completed" if canonical["status"] == "completed" else "not_applicable" if canonical["status"] == "not_applicable" else "failed",
         "text": "\n\n".join(safe_paragraphs), "paragraphs": safe_paragraphs,
         "source_segment_ids": [row["source_segment_id"] for row in accepted],
         "validation": canonical["validation"], "error": None,
-        "provenance": {"source": "accepted_canonical_segments", "prompt_version": PIPELINE_VERSION},
+        "provenance": {"source": "original_transcript_review_disabled" if original_mode else "accepted_canonical_segments", "prompt_version": PIPELINE_VERSION},
     }}
     canonical_ms = round((time.monotonic() - canonical_started) * 1000)
 
@@ -252,6 +263,7 @@ def analyze_reviewed(analyzer: Any, job: Any, media: Any, transcript: Any, visua
     modules_started = time.monotonic()
     bundle = build_content_analysis_bundle(media, canonical_transcript, visuals, classify, profile=profile,
         metrics=build_content_metrics(media, transcript, visuals),
+        transcript_basis="original" if original_mode else "canonical", transcript_review_enabled=review_enabled,
         transcript_source="manual" if job.source.get("manual_transcript") else "asr",
         max_workers=2, on_module_checkpoint=module_completed, on_module_failure=module_failed,
         resume_modules=progress.get("modules"), resume_failures=progress.get("failed_modules"), retry_module_keys=tuple(targets),
@@ -272,6 +284,8 @@ def analyze_reviewed(analyzer: Any, job: Any, media: Any, transcript: Any, visua
                     for index, row in enumerate(findings_by_module.get(module, []), 1)]
         diag = diagnostics.get("content_classification:" + module, _empty_diagnostics(
             reused=module in bundle.get("module_results", {}) and (module in existing.get("modules", {}) or module in existing.get("failed_modules", {}))))
+        if bundle.get("local_recovery", {}).get(module):
+            diag = {**diag, "local_recovery": bundle["local_recovery"][module]}
         status = state["status"]
         if status == "failed" and diag["failure_kind"] is None and state.get("reason") != "not_requested":
             diag = {**diag, "failure_kind": "evidence_invalid" if state.get("reason") == "upstream_module_failed" else "schema_invalid"}
@@ -300,12 +314,12 @@ def analyze_reviewed(analyzer: Any, job: Any, media: Any, transcript: Any, visua
     compatibility = _compatibility_fields(sections, findings_by_module, content, {**canonical, "paragraphs": safe_paragraphs})
     document = {"version": "unified-report.v2",
                 "outcome": {"processing": "completed", "report": "complete" if complete else "partial",
-                    "manuscript": {"completed": "verified", "needs_review": "needs_review", "failed": "unavailable", "not_applicable": "not_applicable"}[canonical["status"]],
+                    "manuscript": {"original": "original", "completed": "verified", "needs_review": "needs_review", "failed": "unavailable", "not_applicable": "not_applicable"}[canonical["status"]],
                     "review_segment_count": sum(row["review_status"] == "needs_review" for row in canonical["segments"])}, "status": "complete" if complete else "partial",
                 "summary": compatibility["summary"], "sections": sections, "canonical": canonical,
                 "source_signature": signature,
                 "methodology": {"pipeline_version": PIPELINE_VERSION, "canonical_version": "canonical-transcript.v2",
-                    "module_protocol_version": "content-module-wire.v1", "transcript_basis": "canonical", "evidence_version": "content-evidence.v1"},
+                    "module_protocol_version": "content-module-wire.v1", "transcript_basis": "original" if original_mode else "canonical", "evidence_version": "content-evidence.v1"},
                 "timing": {"elapsed_ms": round((time.monotonic() - started) * 1000),
                     "canonical_elapsed_ms": canonical_ms, "modules_elapsed_ms": modules_ms,
                     "cache_reused_count": sum(row["diagnostics"]["reused"] for row in sections)},
@@ -315,12 +329,13 @@ def analyze_reviewed(analyzer: Any, job: Any, media: Any, transcript: Any, visua
     vision_records = [{**row, "task": "vision_batch"} for row in visual_batches if isinstance(row, Mapping)] if not visuals.stats.get("evidence_reused") else []
     records = [*vision_records, *records]
     counts = {key: _sum_known(records, key) for key in ("input_tokens", "output_tokens", "total_tokens")}
-    audit = {"status": "passed" if complete else "review", "label": "分析完成，口播待核对" if complete and canonical["status"] == "needs_review" else "分析已完成" if complete else "部分结果可用",
+    audit = {"status": "passed" if complete else "review", "label": "分析已完成，使用未自动校对的原始转写" if complete and original_mode else "分析完成，口播待核对" if complete and canonical["status"] == "needs_review" else "分析已完成" if complete else "部分结果可用",
              "score": None, "acceptance_passed": complete, "requires_review": not complete or canonical["status"] in {"needs_review", "failed"},
              "completion_status": "complete" if complete else "partial", "checks": [], "issues": issues}
     report = {**compatibility, "spoken_script_set": script_set, "content_analysis": content,
               "unified_report": document, "analysis_meta": {
                   "contract_version": "analysis.v12", "analysis_profile": profile,
+                  "transcript_review_enabled": review_enabled, "transcript_source_kind": "manual" if manual else "asr",
                   "generation_strategy": "unified_modules", "quality_audit": audit,
                   "analysis_passes": len(records), "model_requests": records,
                   "actual_input_tokens": counts["input_tokens"], "actual_output_tokens": counts["output_tokens"],

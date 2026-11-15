@@ -99,7 +99,7 @@ def test_unrequested_empty_placeholder_is_removed_only_after_reference_validatio
 def test_foreign_claims_or_bad_references_cannot_disappear_as_placeholders(extra):
     context, raw, _model = fixture()
     raw["c"].append({"d": len(context.dimensions), "s": 1, "e": [0], **extra})
-    with pytest.raises(CompactProtocolError, match="compact_c_count"):
+    with pytest.raises(CompactProtocolError, match="compact_c_count|compact_evidence_index"):
         decode_compact_response(raw, context)
 
 
@@ -119,5 +119,5 @@ def test_json_type_differences_are_not_treated_as_identical_duplicate_evidence()
     row = next(row for row in raw["c"] if row.get("s") == 0)
     row["e"] = [0]
     raw["c"].append({**copy.deepcopy(row), "e": [False]})
-    with pytest.raises(CompactProtocolError, match="compact_c_count"):
+    with pytest.raises(CompactProtocolError, match="compact_evidence_index"):
         decode_compact_response(raw, context)

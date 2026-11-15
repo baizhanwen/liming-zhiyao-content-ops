@@ -51,6 +51,29 @@ test("v12 completes safe modules with an explicit pending-manuscript notice and 
   assert.equal((await (await f.complete("analysis.v12", report)).json()).idempotent, true);
 });
 
+test("bounded local-recovery diagnostics survive the actual completion and stored report roundtrip", async t => {
+  const f = await fixture(t), report = structuredClone(reviewed);
+  const recoveries = [{ path: "choices.0.evidence_refs", action: "deduplicated", original_count: 25, retained_count: 24, limit: 24 }];
+  report.unified_report.sections[1].diagnostics.local_recovery = recoveries;
+  assert.ok(f.load("lib/unified-report.ts").readUnifiedReport(report));
+  const response = await f.complete("analysis.v12", report); assert.equal(response.status, 200, await response.clone().text());
+  assert.equal((await response.json()).job.status, "completed");
+  const stored = JSON.parse(f.sqlite.prepare("SELECT report_json FROM video_analyses WHERE analysis_job_id=?").get(f.jobId).report_json);
+  assert.deepEqual(stored.unified_report.sections[1].diagnostics.local_recovery, recoveries);
+});
+
+for (const [name, recoveries] of [
+  ["unknown action", [{ path: "choices.0.evidence_refs", action: "silently_truncated", original_count: 25, retained_count: 24, limit: 24 }]],
+  ["oversized list", Array.from({ length: 129 }, () => ({ path: "choices.0.evidence_refs", action: "omitted", original_count: 25, retained_count: 0, limit: 24 }))],
+]) test(`invalid local-recovery diagnostics cannot pass report acceptance: ${name}`, async t => {
+  const f = await fixture(t), report = structuredClone(reviewed);
+  report.unified_report.sections[1].diagnostics.local_recovery = recoveries;
+  assert.equal(f.load("lib/unified-report.ts").readUnifiedReport(report), null);
+  const response = await f.complete("analysis.v12", report); assert.equal(response.status, 200);
+  assert.equal((await response.json()).job.status, "partial", "Malformed reports remain recoverable but are never marked accepted");
+  assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS count FROM video_knowledge_atoms").get().count, 0);
+});
+
 for (const [label, schema, body] of [
   ["missing audit", "analysis.v9", { summary: "保留这份部分报告" }],
   ["unknown contract", "analysis.future", analysisReportFixture()],

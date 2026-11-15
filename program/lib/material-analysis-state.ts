@@ -41,5 +41,8 @@ export function materialCardState(entry: { analysis_id?: string | null; analysis
     const count = Number.isSafeInteger(entry.analysis_review_segment_count) && Number(entry.analysis_review_segment_count) > 0 ? `${entry.analysis_review_segment_count}句` : "";
     return { label: `${entry.is_imported_job ? "已迁入报告" : "分析完成"} · ${count}口播待核对`, tone: "warning", hint: "内容报告已完成；待核对口播保留原文，不作为已确认事实。" };
   }
+  if (entry.analysis_schema_version === "analysis.v12" && entry.analysis_manuscript_status === "original") return {
+    label: `${entry.is_imported_job ? "已迁入报告" : "分析完成"} · 原始转写`, tone: "success", hint: "本次直接采用原始转写，未启用自动校对或生成纠错候选。",
+  };
   return { label: entry.is_imported_job ? "已迁入报告" : "分析完成", tone: "success", hint: "" };
 }

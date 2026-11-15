@@ -5,9 +5,11 @@ import logging
 import math
 import os
 import re
+import sys
 from pathlib import Path
 
 from .adapters import TranscriptOutput, TranscriptSegment
+from .gpu_diagnostics import gpu_failure_details
 
 TURBO_MODEL = "large-v3-turbo"
 LOCAL_MODELS = frozenset({"tiny", "base", "small", "medium", "large-v3", "distil-large-v3", TURBO_MODEL})
@@ -34,6 +36,10 @@ class FasterWhisperSpeechRecognizer:
         self.model = model
         self.model_path = Path(model_cache).resolve() / f"faster-whisper-{model}"
         self._retry_on_cpu = False
+        self.device = "unknown" if engine is not None else device
+        self.gpu_verified = False
+        self.last_gpu_failure = None
+        self.cuda_runtime = {"status": "not_activated"}
         if engine is None:
             import ctranslate2
             from faster_whisper.utils import download_model
@@ -53,16 +59,37 @@ class FasterWhisperSpeechRecognizer:
                 if device == "auto":
                     actual_device = "cuda" if ctranslate2.get_cuda_device_count() else "cpu"
                     self._retry_on_cpu = actual_device == "cuda"
+                self.device = actual_device
                 engine = self._load_engine(actual_device)
             except (RuntimeError, ValueError) as error:
                 if device != "auto" or actual_device == "cpu" or not _cuda_failure(error):
                     raise
-                logger.warning("Automatic Whisper GPU initialization failed; using CPU int8.")
+                self._record_gpu_failure("initialization", error)
                 self._retry_on_cpu = False
+                self.device = "cpu"
                 engine = self._load_engine("cpu")
         self.engine = engine
 
+    @property
+    def runtime_state(self):
+        return {"backend": self.backend, "model": self.model, "device": self.device,
+                "gpu_verified": self.gpu_verified, "gpu_failure": self.last_gpu_failure,
+                "cuda_runtime": self.cuda_runtime}
+
+    def _record_gpu_failure(self, phase, error):
+        self.last_gpu_failure = gpu_failure_details(error)
+        logger.warning("Whisper GPU %s failed; using CPU int8. code=%s type=%s detail=%s",
+                       phase, self.last_gpu_failure["code"], self.last_gpu_failure["error_type"],
+                       self.last_gpu_failure["detail"])
+
     def _load_engine(self, device):
+        if device == "cuda" and sys.platform == "win32":
+            from .cuda_runtime import activate_windows_cuda
+            try:
+                self.cuda_runtime = activate_windows_cuda(self.model_path.parent)
+            except RuntimeError:
+                self.cuda_runtime = {"status": "failed", "reason": "CUDA_RUNTIME_ACTIVATION_FAILED"}
+                raise
         from faster_whisper import WhisperModel
 
         return WhisperModel(
@@ -72,14 +99,19 @@ class FasterWhisperSpeechRecognizer:
 
     def transcribe(self, audio):
         try:
-            return self._decode(audio)
+            result = self._decode(audio)
+            # VAD can return no rows without ever invoking a GPU decoder.
+            self.gpu_verified = self.device == "cuda" and (self.gpu_verified or bool(result.segments))
+            return result
         except (RuntimeError, ValueError) as error:
             if not self._retry_on_cpu or not _cuda_failure(error):
                 raise
+            self._record_gpu_failure("transcription", error)
         # CUDA libraries and memory are sometimes first exercised while iterating
         # the lazy segments. Discard the partial pass and restart from the source.
-        logger.warning("Automatic Whisper GPU transcription failed; restarting the recording on CPU int8.")
         self._retry_on_cpu = False
+        self.device = "cpu"
+        self.gpu_verified = False
         self.engine = self._load_engine("cpu")
         return self._decode(audio)
 

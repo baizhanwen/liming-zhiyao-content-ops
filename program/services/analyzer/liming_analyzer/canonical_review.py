@@ -485,7 +485,7 @@ class ReviewedTranscriptResult:
 
     @property
     def paragraphs(self) -> list[str]:
-        displayed = [{**row, "text": row["text"] if row["review_status"] == "accepted" else
+        displayed = [{**row, "text": row["text"] if row["review_status"] in {"accepted", "original"} else
                       f"【待核对 {_time(row['start_ms'])}】{row['original_text']}"} for row in self.segments]
         return [row["text"] for row in _paragraphs(displayed)]
 
@@ -511,6 +511,18 @@ class ReviewedTranscriptResult:
                 "source_hash": self.source_hash, "trusted_manual": self.trusted_manual,
                 "segments": copy.deepcopy(self.segments),
                 "selections": copy.deepcopy(self.selections), "diagnostics": copy.deepcopy(self.diagnostics)}
+
+
+def build_original_transcript(transcript: TranscriptOutput, visuals: VisualOutput) -> ReviewedTranscriptResult:
+    """Adopt ASR verbatim for analysis without claiming it has been reviewed."""
+    rows = [{"source_segment_id": f"transcript:{index:04d}", "start_ms": source.start_ms,
+             "end_ms": source.end_ms, "text": source.text, "original_text": source.text,
+             "candidate_text": None, "review_status": "original", "issues": [], "evidence_ids": []}
+            for index, source in enumerate(transcript.segments, 1)]
+    signature = hashlib.sha256(("original-transcript.v1:" + _source_hash(transcript, visuals, False)).encode()).hexdigest()
+    return ReviewedTranscriptResult("original" if rows else "not_applicable", signature, rows,
+        {"passed": True, "issues": []}, transcript,
+        {"review_enabled": False, "request_count": 0}, {}, False)
 
 
 def _result(transcript: TranscriptOutput, visuals: VisualOutput, selections: Mapping[str, Any],

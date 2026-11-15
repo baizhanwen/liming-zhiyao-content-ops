@@ -96,7 +96,8 @@ test("worker artifacts are lease-bound, tenant-scoped, and persisted through R2 
     readFile(new URL("../drizzle/0030_analysis_artifact_runs.sql", import.meta.url), "utf8"),
   ]);
   assert.match(artifacts, /j\.lease_owner = \?/);
-  assert.match(artifacts, /j\.version = \?/);
+  assert.match(artifacts, /attemptHeader === null \? "version" : "attempt_count"/);
+  assert.match(artifacts, /x-worker-attempt/);
   assert.match(artifacts, /j\.lease_expires_at > \?/);
   assert.match(artifacts, /getMediaBucket\(\)\.put/);
   assert.match(artifacts, /organization_id, project_id, video_id/);

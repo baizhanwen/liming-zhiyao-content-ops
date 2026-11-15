@@ -8,7 +8,7 @@ export const isLegacyAnalysisSchema = (value: unknown) => typeof value === "stri
 export const isKnownAnalysisSchema = (value: unknown) => isQualityGatedAnalysisSchema(value) || isLegacyAnalysisSchema(value);
 export const hasPassedQualityAudit = (audit: Record<string, unknown> | null) => audit?.status === "passed" && audit.acceptance_passed === true && audit.completion_status === "complete";
 
-export type AnalysisQuality = { accepted: boolean; known: boolean; legacy: boolean; issues: string[]; reviewSegmentCount?: number; manuscriptStatus?: "verified" | "needs_review" | "unavailable" | "not_applicable" };
+export type AnalysisQuality = { accepted: boolean; known: boolean; legacy: boolean; issues: string[]; reviewSegmentCount?: number; manuscriptStatus?: "verified" | "original" | "needs_review" | "unavailable" | "not_applicable" };
 
 /** Read-only: historical report bodies and persisted task states are never rewritten. */
 export function assessAnalysisQuality(schemaVersion: unknown, report: unknown): AnalysisQuality {
@@ -43,7 +43,10 @@ export function assessAnalysisQuality(schemaVersion: unknown, report: unknown): 
       if (unified.value.version === "unified-report.v2") {
         reviewSegmentCount = unified.value.outcome.review_segment_count;
         manuscriptStatus = unified.value.outcome.manuscript;
-        const safeScript = unified.value.canonical.segments.filter(segment => segment.review_status === "accepted").map(segment => segment.text).join("").replace(/\s/gu, "");
+        const originalMode = unified.value.outcome.manuscript === "original";
+        if (originalMode && meta?.transcript_review_enabled !== false) { validContract = false; issues.push("原始转写报告必须明确记录未启用口播校对。"); }
+        const safeScript = unified.value.canonical.segments.filter(segment => segment.review_status === "accepted"
+          || originalMode && segment.review_status === "original").map(segment => segment.text).join("").replace(/\s/gu, "");
         const compatibilityScript = Array.isArray(body.spoken_script) && body.spoken_script.every(item => typeof item === "string") ? body.spoken_script.join("").replace(/\s/gu, "") : null;
         if (compatibilityScript !== safeScript) { validContract = false; issues.push("兼容口播字段必须只包含已核对片段，不能把待核对原文或候选稿作为事实。"); }
         const scriptSet = record(body.spoken_script_set), corrected = record(scriptSet?.corrected_original);
@@ -52,7 +55,9 @@ export function assessAnalysisQuality(schemaVersion: unknown, report: unknown): 
           || unified.value.outcome.manuscript !== "verified" && corrected.status === "completed")) { validContract = false; issues.push("旧版完整口播入口不能把待核对稿标为已完成。"); }
       }
     }
-    if (content.status === "valid" && content.value.methodology.transcript_basis !== "canonical") { validContract = false; issues.push("新版报告必须以同一份校正文本为分析依据。"); }
+    const expectedBasis = manuscriptStatus === "original" || schemaVersion === "analysis.v12"
+      && meta?.transcript_review_enabled === false && meta?.transcript_source_kind !== "manual" ? "original" : "canonical";
+    if (content.status === "valid" && content.value.methodology.transcript_basis !== expectedBasis) { validContract = false; issues.push("新版报告必须以所选的同一份口播文本为分析依据。"); }
   }
   return { accepted: (unifiedContract || hasPassedQualityAudit(audit)) && validContract, known, legacy, issues: [...new Set(issues)], ...(schemaVersion === "analysis.v12" ? { reviewSegmentCount, manuscriptStatus } : {}) };
 }
@@ -62,7 +67,7 @@ export function analysisCompletionMessage(schemaVersion: unknown, report: unknow
   const body = record(report), content = readVideoContentAnalysis(body?.content_analysis);
   const unified = readVideoUnifiedReport(body?.unified_report, content.status === "valid" ? content.value : null);
   const review = quality.reviewSegmentCount ? `${quality.reviewSegmentCount}句口播待核对` : "";
-  if (quality.accepted) return review ? `分析完成，${review}。` : "分析完成。";
+  if (quality.accepted) return review ? `分析完成，${review}。` : quality.manuscriptStatus === "original" ? "分析完成，使用原始转写（未自动校对）。" : "分析完成。";
   const names = { text_topic_structure_audience: "选题、结构与人群", text_expression_value: "文案、价值与行动", visual: "画面与镜头", synthesis: "综合判断与建议" };
   const reasons: Record<string, string> = { length: "输出被截断", overloaded: "模型服务繁忙", timeout: "响应超时", provider_error: "调用未完成", schema_invalid: "返回格式不符合约定", evidence_invalid: "结论依据不足", input_budget: "材料超出处理范围", canonical_failed: "口播校正未通过核对", not_requested: "本次未重试", upstream_module_failed: "上游内容未完成" };
   const validationCause = (issues: string[]) => issues.flatMap(issue => {

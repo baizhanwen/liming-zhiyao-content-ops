@@ -19,6 +19,10 @@ export const unifiedDiagnosticsSchema = z.object({
   finish_reason: text(40).nullable(), attempts: count, elapsed_ms: z.number().finite().nonnegative(),
   input_tokens: count.nullable(), output_tokens: count.nullable(), total_tokens: count.nullable(),
   reasoning_tokens: count.nullable(), output_budget: count.nullable(), reused: z.boolean(),
+  local_recovery: z.array(z.object({
+    path: text(200).min(1), action: z.enum(["deduplicated", "omitted", "unknown"]),
+    original_count: count, retained_count: count, limit: z.union([z.literal(8), z.literal(24)]),
+  }).strict()).max(128).optional(),
 }).strict();
 const finding = z.object({ id, title: text(80).min(1), text: text(500).min(1), evidence_ids: references.min(1) }).strict();
 const section = z.object({ key: z.enum(unifiedModuleKeys), status: z.enum(["completed", "failed", "not_acquired", "not_applicable"]),
@@ -38,16 +42,16 @@ const unifiedV1Schema = z.object({
     modules_elapsed_ms: z.number().finite().nonnegative(), cache_reused_count: count }).strict(), validation,
 }).strict();
 const canonicalV2Schema = z.object({
-  version: z.literal("canonical-transcript.v2"), status: z.enum(["completed", "needs_review", "failed", "not_applicable"]),
-  segments: z.array(canonicalSegment.extend({ candidate_text: manuscriptText.nullable(), review_status: z.enum(["accepted", "needs_review"]), issues: z.array(text(300)).max(100) }).strict()).max(50_000),
+  version: z.literal("canonical-transcript.v2"), status: z.enum(["completed", "original", "needs_review", "failed", "not_applicable"]),
+  segments: z.array(canonicalSegment.extend({ candidate_text: manuscriptText.nullable(), review_status: z.enum(["accepted", "original", "needs_review"]), issues: z.array(text(300)).max(100) }).strict()).max(50_000),
   paragraphs: z.array(manuscriptText).max(10_000), validation,
 }).strict();
 const unifiedV2Schema = unifiedV1Schema.extend({
   version: z.literal("unified-report.v2"), canonical: canonicalV2Schema,
   outcome: z.object({ processing: z.literal("completed"), report: z.enum(["complete", "partial"]),
-    manuscript: z.enum(["verified", "needs_review", "unavailable", "not_applicable"]), review_segment_count: count }).strict(),
+    manuscript: z.enum(["verified", "original", "needs_review", "unavailable", "not_applicable"]), review_segment_count: count }).strict(),
   methodology: z.object({ pipeline_version: z.literal("unified-analysis.v2"), canonical_version: z.literal("canonical-transcript.v2"),
-    module_protocol_version: z.literal("content-module-wire.v1"), transcript_basis: z.literal("canonical"), evidence_version: z.literal("content-evidence.v1") }).strict(),
+    module_protocol_version: z.literal("content-module-wire.v1"), transcript_basis: z.enum(["canonical", "original"]), evidence_version: z.literal("content-evidence.v1") }).strict(),
 }).strict();
 const unifiedSchema = z.discriminatedUnion("version", [unifiedV1Schema, unifiedV2Schema]);
 export type UnifiedReportV1 = z.infer<typeof unifiedV1Schema>;
@@ -112,8 +116,14 @@ export function readVideoUnifiedReport(value: unknown, content: ContentAnalysis 
   const uncertainIds = new Set(uncertain.map(segment => segment.source_segment_id));
   if (reviewed) {
     if (reviewed.outcome.report !== reviewed.status) add("统一报告处理结果与安全内容状态不一致。");
-    const expectedManuscript = { completed: "verified", needs_review: "needs_review", failed: "unavailable", not_applicable: "not_applicable" }[reviewed.canonical.status];
+    const expectedManuscript = { completed: "verified", original: "original", needs_review: "needs_review", failed: "unavailable", not_applicable: "not_applicable" }[reviewed.canonical.status];
     if (reviewed.outcome.manuscript !== expectedManuscript || reviewed.outcome.review_segment_count !== uncertain.length) add("稿件核对状态或待核对句数不一致。");
+    const originalMode = reviewed.canonical.status === "original";
+    if (originalMode && reviewed.methodology.transcript_basis !== "original"
+      || !originalMode && reviewed.canonical.status !== "not_applicable" && reviewed.methodology.transcript_basis !== "canonical"
+      || content?.methodology.transcript_basis !== reviewed.methodology.transcript_basis) add("口播采用方式与分析依据不一致。");
+    if (originalMode && reviewed.canonical.paragraphs.join("").replace(/\s/gu, "")
+      !== reviewed.canonical.segments.map(segment => segment.original_text).join("").replace(/\s/gu, "")) add("原始转写全文与原始片段不一致。");
     const coverage = content?.methodology.transcript_review;
     if (!coverage || coverage.total_segments !== reviewed.canonical.segments.length
       || coverage.accepted_segments !== reviewed.canonical.segments.length - uncertain.length
@@ -124,6 +134,9 @@ export function readVideoUnifiedReport(value: unknown, content: ContentAnalysis 
       if (segment.source_segment_id !== `transcript:${String(index + 1).padStart(4, "0")}`) add("逐句核对必须保留原始编号与全部片段，不能跳段或重新编号。");
       if (segment.review_status === "needs_review" && (segment.text !== segment.original_text || !segment.issues.length)) add("待核对句必须保留原文和明确疑点，不能把候选稿当作正文。");
       if (segment.review_status === "accepted" && segment.issues.length) add("已核对句不能同时保留未处理疑点。");
+      if (originalMode && (segment.review_status !== "original" || segment.text !== segment.original_text
+        || segment.candidate_text !== null || segment.issues.length)
+        || !originalMode && segment.review_status === "original") add("原始转写模式必须逐字保留原文，不能混入校正或候选结果。");
     });
     if (reviewed.canonical.status === "needs_review" && (!uncertain.length || reviewed.canonical.validation.passed)
       || reviewed.canonical.status === "completed" && uncertain.length) add("逐句核对状态与待核对片段不一致。");
@@ -148,7 +161,7 @@ export function readVideoUnifiedReport(value: unknown, content: ContentAnalysis 
     if (!segment || change.before !== segment.original_text || change.after !== segment.text || change.evidence_ids.some(ref => !registry.has(ref))) add("校正改动与其来源文本或证据不一致。");
   }
   for (const gate of [report.validation, report.canonical.validation]) if (gate.passed !== (gate.issues.length === 0)) add("统一报告验收状态与问题列表不一致。");
-  if (report.canonical.status === "completed" && (!report.canonical.validation.passed || !report.canonical.segments.length || !report.canonical.paragraphs.some(row => row.trim()))) add("校正成功状态缺少有效全文或验收结果。");
+  if (["completed", "original"].includes(report.canonical.status) && (!report.canonical.validation.passed || !report.canonical.segments.length || !report.canonical.paragraphs.some(row => row.trim()))) add("口播可用状态缺少有效全文或验收结果。");
   if (report.canonical.status === "not_applicable" && (report.canonical.segments.length || report.canonical.paragraphs.length || !report.canonical.validation.passed)) add("不适用的口播校正状态与文本内容不一致。");
   if (report.canonical.status === "not_applicable" && [...registry.values()].some(row => row.source === "transcript" && row.text.trim())) add("已有口播转写时不能将口播校正标为不适用。");
   if (report.status === "complete" && (!report.validation.passed || !reviewed && (report.canonical.status === "failed" || !report.canonical.validation.passed) || report.sections.some(row => !["completed", "not_applicable"].includes(row.status)))) add("统一报告完整状态与模块验收不一致。");
@@ -172,7 +185,8 @@ export function projectSafeAnalysisReport(value: unknown): Record<string, unknow
   if (!unified || unified.version !== "unified-report.v2" || !content) return null;
   const byModule = (key: UnifiedModuleKey) => unified.sections.find(section => section.key === key)?.findings ?? [];
   const asText = (key: UnifiedModuleKey) => byModule(key).map(finding => finding.text);
-  const accepted = unified.canonical.segments.filter(segment => segment.review_status === "accepted");
+  const accepted = unified.canonical.segments.filter(segment => segment.review_status === "accepted"
+    || unified.canonical.status === "original" && segment.review_status === "original");
   return {
     summary: asText("synthesis").join("\n") || asText("text_topic_structure_audience")[0] || "",
     structure: asText("text_topic_structure_audience"), viral_points: asText("text_expression_value"),

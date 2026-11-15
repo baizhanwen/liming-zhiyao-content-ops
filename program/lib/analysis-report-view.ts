@@ -196,6 +196,7 @@ const contentTaxonomyModule = (id: string) => dimensionModules.get(id);
 export function unifiedReportMarkdown(title: string, view: AnalysisReportView, currentManuscript?: readonly string[]) {
   const status = view.invalid ? "报告尚未通过格式检查。" : view.legacy ? "历史分析报告。" : view.complete ? view.reviews.length ? `分析已完成，${view.reviews.length} 处口播待核对。待核对原文已标记，未用于分析结论。` : "分析已完成。" : view.unified?.version === "unified-report.v2" ? "部分结果可用，请结合各部分提示核对。" : "部分内容尚未完成，请结合各部分提示核对。";
   const lines = [`# ${title}`, "", status, "", view.summary, ""];
+  if (view.scriptStatus === "original") lines.push("口播采用方式：原始转写。未启用自动校对或生成纠错候选。", "");
   if (currentManuscript?.length) lines.push("## 完整口播稿", "", "此处采用当前口播稿。下文分析与依据对应所选报告版本。", "",
     ...currentManuscript.flatMap(text => [text, ""]));
   else if (view.script.length) lines.push(view.scriptStatus === "failed" ? "## 待核对口播候选稿" : "## 完整口播稿", "",

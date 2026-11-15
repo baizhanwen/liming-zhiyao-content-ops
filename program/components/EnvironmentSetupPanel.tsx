@@ -13,7 +13,7 @@ type EnvironmentSnapshot = {
   processRunning?: boolean;
   restartRequired?: boolean;
   ready: boolean;
-  checks: Array<{ id: string; label: string; status: "ready" | "missing" | "error" | "checking"; message?: string }>;
+  checks: Array<{ id: string; label: string; status: "ready" | "missing" | "error" | "checking" | "warning"; message?: string; required?: boolean }>;
   job?: {
     id: string;
     action: string;
@@ -25,12 +25,15 @@ type EnvironmentSnapshot = {
   message?: string;
 };
 
-const checkLabels = { ready: "就绪", missing: "未安装", error: "异常", checking: "检查中" };
+const checkLabels = { ready: "就绪", missing: "未安装", error: "异常", checking: "检查中", warning: "提示" };
 const jobLabels = { running: "正在执行", succeeded: "执行完成", failed: "执行失败" };
 
 function readableLog(line: string) {
   try {
-    const event = JSON.parse(line) as { phase?: string; ready?: boolean; workerRunning?: boolean; message?: string };
+    const event = JSON.parse(line) as { phase?: string; ready?: boolean; workerRunning?: boolean; message?: string; downloaded_bytes?: number; total_bytes?: number };
+    if (event.phase === "cuda_runtime_download" && typeof event.downloaded_bytes === "number" && typeof event.total_bytes === "number") {
+      return `正在下载 GPU 运行库：${Math.floor(event.downloaded_bytes / 1048576)} / ${Math.ceil(event.total_bytes / 1048576)} MiB…`;
+    }
     const phases: Record<string, string> = {
       preparing_project_installer: "正在准备本项目安装工具…",
       installing_media_dependencies: "正在安装视频分析依赖…",
@@ -38,6 +41,13 @@ function readableLog(line: string) {
       installing_browser: "正在准备独立 Chromium 浏览器…",
       preparing_local_models: "正在下载并验证本地转写和文字识别模型…",
       checking_windows_native_runtime: "正在检查 Windows 本地推理所需的 Microsoft Visual C++ 运行库…",
+      preparing_cuda_runtime: "正在准备本项目的 Whisper GPU 运行库…",
+      cuda_runtime_download_verified: "GPU 运行库下载已校验，尚未验证 GPU 实际转写。",
+      cuda_runtime_extract: "正在解压本项目的 GPU 运行库…",
+      cuda_runtime_verify: "正在校验 GPU 运行库文件…",
+      cuda_runtime_prepared: "GPU 运行库文件已准备，继续验证实际转写…",
+      cuda_runtime_failed: "Whisper GPU 运行库准备未完成，继续验证 CPU 分析环境…",
+      verifying_whisper_timing: "正在用测试录音验证 Whisper 时间定位的实际解码…",
       preparing_windows_qwen: "正在准备 Qwen3-ASR-1.7B 本地模型…",
       verifying_windows_qwen: "正在用 Qwen3-ASR-1.7B 转写中文测试录音…",
       asr_inference_passed: "本地语音模型已通过转写验证。",
@@ -111,9 +121,10 @@ export function EnvironmentSetupPanel({ organizationId, canManage }: { organizat
   const disabled = !canManage || !snapshot?.available || Boolean(submitting) || jobRunning;
   return <article id="analyzer-environment" className="panel operations-panel">
     <div className="panel-heading"><div><p className="section-kicker">本项目独立运行环境</p><h2>视频分析服务</h2></div><span>{snapshot?.restartRequired ? "服务需要重新启动" : snapshot?.workerRunning ? "服务运行中" : snapshot?.processRunning ? "服务已启动，等待连接" : "服务未启动"}</span></div>
-    <p className={styles.intro}>在这里安装缺少的依赖、准备模型并启动服务。首次配置会联网下载模型。验证通过后，下次启动时可直接复用。</p>
+    <p className={styles.intro}>在这里安装缺少的依赖、准备模型并启动服务。首次配置会联网下载模型和适用的 GPU 运行库。验证通过后可复用；CPU 分析可用不代表 GPU 已验证。</p>
+    <p className={styles.intro}>「重新检查」只检测，点击「一键配置环境并启动」才下载。Windows NVIDIA GPU 运行库首次约 541 MiB；下载完成后仍需实际转写验证。</p>
     <div className={styles.body}>
-      <div className={styles.status}><strong>{error && !submitting ? "环境状态需重新检查" : !snapshot ? "正在检查环境…" : snapshot.ready ? "分析环境已就绪" : snapshot.available ? "分析环境需要准备" : "环境管理暂不可用"}</strong>{snapshot?.job?.status === "running" && <span role="status">正在执行，页面会自动更新进度</span>}</div>
+      <div className={styles.status}><strong>{error && !submitting ? "环境状态需重新检查" : !snapshot ? "正在检查环境…" : snapshot.ready ? snapshot.checks.some(check => check.status === "warning") ? "分析环境可用，GPU 状态见下方" : "分析环境已就绪" : snapshot.available ? "分析环境需要准备" : "环境管理暂不可用"}</strong>{snapshot?.job?.status === "running" && <span role="status">正在执行，页面会自动更新进度</span>}</div>
       {snapshot?.message && <p className={styles.message}>{snapshot.message}</p>}
       {snapshot && snapshot.checks.length > 0 && <ul className={styles.checks}>{snapshot.checks.map(check => <li className={`${styles.check} ${styles[check.status] ?? ""}`} key={check.id}><span className={styles.indicator} aria-hidden="true">{check.status === "ready" ? "✓" : check.status === "checking" ? "…" : "!"}</span><div><strong>{check.label} · {checkLabels[check.status]}</strong>{check.message && <small>{check.message}</small>}</div></li>)}</ul>}
       <div className={styles.actions}>

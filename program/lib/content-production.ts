@@ -640,9 +640,12 @@ export function analysisReportSourceText(reportJson: string) {
       appendAnalysisSection(sections, label, lines, sectionBudgets[key] ?? 300);
     }
     const script = spokenScriptSection(report);
-    if (script) appendAnalysisSection(sections, report.review_coverage ? "已核对口播片段（以覆盖范围为准）" : "经校正原版口播", [script], 3_200);
     const reviewCoverage = analysisRecord(report.review_coverage);
-    if (reviewCoverage) appendAnalysisSection(sections, "口播核对范围", [`仅采用已核对${reviewCoverage.accepted_segments}段，共${reviewCoverage.total_segments}段；${reviewCoverage.uncertain_segments}段待核对，未作为事实来源。`], 300);
+    const originalMode = reviewCoverage?.manuscript === "original";
+    if (script) appendAnalysisSection(sections, originalMode ? "原始转写（未自动校对）" : reviewCoverage ? "已核对口播片段（以覆盖范围为准）" : "经校正原版口播", [script], 3_200);
+    if (reviewCoverage) appendAnalysisSection(sections, originalMode ? "口播采用方式" : "口播核对范围", [originalMode
+      ? `用户选择直接采用原始转写，共${reviewCoverage.total_segments}段；未生成自动纠错候选，不代表识别文字已被核实。`
+      : `仅采用已核对${reviewCoverage.accepted_segments}段，共${reviewCoverage.total_segments}段；${reviewCoverage.uncertain_segments}段待核对，未作为事实来源。`], 300);
     const evidence = collectAnalysisEvidence(report);
     appendAnalysisSection(sections, "分析覆盖摘要", analysisCoverageLines(report), 400);
     appendAnalysisSection(sections, "带时间码的 ASR／OCR／关键帧证据", evidence.map((row) => {

@@ -5,6 +5,12 @@ import { request } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import React from "react";
+import * as jsx from "react/jsx-runtime";
+import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
+import ts from "typescript";
+import { runtimeFixture } from "./helpers/runtime-fixture.mjs";
 import { createAnalyzerEnvironmentBridge, runRuntimeCommand } from "../scripts/analyzer-environment-bridge.mjs";
 import { runtimeInstallationId, runtimeSourceId } from "../scripts/local-runtime-identity.mjs";
 
@@ -49,6 +55,71 @@ test("loopback environment control rejects missing credentials, browser origins 
   const body = await response.json();
   assert.equal(body.ready, true);
   assert.doesNotMatch(JSON.stringify(body), /private-cache|\bpid\b|synthetic-runtime-token/);
+});
+
+test("an optional GPU warning stays nonblocking through the runtime bridge and Web snapshot", async t => {
+  const input = { ready: true, workerRunning: false, checks: [{
+    id: "whisper_timing_gpu", label: "Whisper GPU 时间定位", status: "warning", required: false,
+    message: "上次 GPU 验证失败：CUDA_LIBRARY_UNAVAILABLE；CPU 分析可用。",
+  }] };
+  const runtime = await bridge(t, async () => ({ code: 0, result: input }));
+  const bridged = await (await runtime.get()).json();
+  assert.equal(bridged.ready, true);
+  assert.equal(bridged.checks[0].status, "warning");
+  assert.equal(bridged.checks[0].required, false);
+  const f = runtimeFixture(t);
+  f.mockModule("cloudflare:workers", { env: {
+    LOCAL_RUNTIME_URL: new URL("/", runtime.base).href, LOCAL_RUNTIME_TOKEN: token,
+    LOCAL_RUNTIME_INSTALLATION_ID: runtimeInstallationId(privateRoot), LOCAL_RUNTIME_SOURCE_ID: runtimeSourceId(privateRoot),
+  } });
+  const snapshot = await f.load("lib/analyzer-environment.ts").requestAnalyzerEnvironment();
+  assert.equal(snapshot.ready, true);
+  assert.deepEqual(snapshot.checks, input.checks);
+});
+
+function renderEnvironmentPanel(snapshot) {
+  let stateIndex = 0;
+  const hooks = { ...React, useState: initial => [stateIndex++ === 0 ? snapshot : initial, () => {}],
+    useEffect() {}, useCallback: callback => callback };
+  const source = ts.transpileModule(readFileSync(new URL("../components/EnvironmentSetupPanel.tsx", import.meta.url), "utf8"), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
+  }).outputText;
+  const loaded = { exports: {} };
+  const require = name => {
+    if (name === "react") return hooks;
+    if (name === "react/jsx-runtime") return jsx;
+    if (name.endsWith(".module.css")) return { default: {} };
+    if (name === "../lib/client-scope") return { scopedFetch: () => { throw new Error("SSR must not request services"); } };
+    if (name === "../lib/client-scope-request") return { isScopeCancellation: () => false };
+    if (name === "../lib/client-format") return { readApiError: () => "synthetic error" };
+    throw new Error("Unexpected panel dependency: " + name);
+  };
+  new Function("require", "module", "exports", source)(require, loaded, loaded.exports);
+  return renderToStaticMarkup(React.createElement(loaded.exports.EnvironmentSetupPanel, { organizationId: "synthetic", canManage: true }));
+}
+
+test("the settings panel distinguishes usable CPU from historical or failed GPU inference", () => {
+  const snapshot = { available: true, ready: true, workerRunning: false, checks: [{
+    id: "whisper_timing_gpu", label: "Whisper GPU 时间定位", status: "warning", required: false,
+    message: "上次 Whisper GPU 实际转写验证失败；CPU 分析仍可用。",
+  }] };
+  const warning = renderEnvironmentPanel(snapshot);
+  assert.match(warning, /分析环境可用，GPU 状态见下方/);
+  assert.match(warning, /上次 Whisper GPU 实际转写验证失败/);
+  assert.doesNotMatch(warning, /Whisper GPU 时间定位 · 未安装/);
+  assert.match(warning, /541 MiB/);
+  assert.match(warning, /「重新检查」只检测/);
+  assert.match(warning, /下载完成后仍需实际转写验证/);
+  snapshot.job = { id: "synthetic", action: "setup", status: "running", startedAt: "2026-11-15T00:00:00Z", logTail: [
+    JSON.stringify({ phase: "cuda_runtime_download", downloaded_bytes: 1048576, total_bytes: 566698679 }),
+    JSON.stringify({ phase: "cuda_runtime_prepared" }),
+  ] };
+  const downloading = renderEnvironmentPanel(snapshot);
+  assert.match(downloading, /正在下载 GPU 运行库：1 \/ 541 MiB/);
+  assert.match(downloading, /GPU 运行库文件已准备，继续验证实际转写/);
+  delete snapshot.job;
+  snapshot.checks[0] = { ...snapshot.checks[0], status: "ready", message: "上次已通过 CUDA 实际转写验证；当前未重新运行 GPU 探测。" };
+  assert.match(renderEnvironmentPanel(snapshot), /上次已通过 CUDA 实际转写验证/);
 });
 
 test("only fixed environment actions are accepted, with no command or path inputs", async t => {

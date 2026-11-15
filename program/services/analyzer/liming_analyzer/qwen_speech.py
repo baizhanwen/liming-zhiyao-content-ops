@@ -198,6 +198,21 @@ class QwenSpeechRecognizer:
         self.vad = vad or self._detect_speech
         self._timing_lock = Lock()
         self._last_timing: tuple[Path, TranscriptOutput | None] | None = None
+        self._progress = None
+
+    def set_progress(self, callback):
+        self._progress = callback
+
+    def _observe_windows(self, completed, total):
+        if self._progress:
+            self._progress({"phase": "model_transcription", "transcribed_chunks": completed,
+                            "total_chunks": total})
+
+    @property
+    def runtime_state(self):
+        return {"backend": self.backend, "model": self.model,
+                "device": "cpu" if self.backend == "sherpa-onnx" else "metal",
+                "timing": getattr(self.timing, "runtime_state", None)}
 
     def _detect_speech(self, samples):
         from faster_whisper.vad import get_speech_timestamps
@@ -292,15 +307,20 @@ class QwenSpeechRecognizer:
         qwen_windows = 0
         whisper_windows = 0
         language = anchors.language
+        windows = []
         start = 0
         while start < duration:
             end = min(start + self.max_window_ms, duration)
             if end < duration:
                 # Prefer a pause or the start of the next Whisper cue near the window edge.
                 end = max(
-                    (t for t in starts if end - 8_000 <= t <= end),
-                    default=max((t for t in speech_ends if end - 8_000 <= t <= end), default=end),
+                    (t for t in starts if max(start + 1, end - 8_000) <= t <= end),
+                    default=max((t for t in speech_ends if max(start + 1, end - 8_000) <= t <= end), default=end),
                 )
+            windows.append((start, end))
+            start = end
+        self._observe_windows(0, len(windows))
+        for window_index, (start, end) in enumerate(windows):
             rows = [r for r in anchors.segments if start <= r.start_ms < end]
             voiced = [
                 (max(start, interval["start"] // 16), min(end, (interval["end"] + 15) // 16))
@@ -351,7 +371,7 @@ class QwenSpeechRecognizer:
                 if rows:
                     whisper_windows += 1
                 cues.extend(rows)
-            start = end
+            self._observe_windows(window_index + 1, len(windows))
         if not require_qwen and qwen_windows:
             if whisper_windows:
                 logger.info(

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import shutil
 import sys
@@ -326,6 +328,21 @@ def _paddlex_cache_paths(settings: AnalyzerSettings) -> tuple[Path, ...]:
     )
 
 
+def _asr_fingerprint(settings, speech) -> str:
+    """Version only local ASR inputs; cloud credentials never enter this hash."""
+    values = {name: getattr(settings, name) for name in (
+        "asr_model", "asr_engine", "asr_language", "asr_fallback_model", "asr_device")}
+    def identity(recognizer):
+        return {"class": type(recognizer).__module__ + "." + type(recognizer).__qualname__,
+                "backend": getattr(recognizer, "backend", ""), "model": getattr(recognizer, "model", ""),
+                "timing": identity(recognizer.timing) if getattr(recognizer, "timing", None) is not None else None}
+    values["recognizer"] = identity(speech)
+    digest = hashlib.sha256(json.dumps(values, sort_keys=True).encode())
+    for name in ("bootstrap.py", "faster_whisper_asr.py", "quality_speech.py", "qwen_speech.py", "qwen_windows.py", "providers.py"):
+        digest.update((Path(__file__).parent / name).read_bytes())
+    return digest.hexdigest()
+
+
 def build_pipeline(settings: AnalyzerSettings, client: AnalyzerApiClient, *, transcript_only: bool = False) -> AnalysisPipeline:
     model_cache = Path(settings.model_cache).expanduser().resolve()
     model_cache.mkdir(parents=True, exist_ok=True)
@@ -375,7 +392,9 @@ def build_pipeline(settings: AnalyzerSettings, client: AnalyzerApiClient, *, tra
         logging.getLogger(__name__).warning("字幕识别模型未就绪，本次仅使用原声转写")
         ocr = None
     if transcript_only:
-        return AnalysisPipeline(source, media, speech, None, None, artifact_store, manuscript_ocr=ocr)
+        pipeline = AnalysisPipeline(source, media, speech, None, None, artifact_store, artifact_store, manuscript_ocr=ocr)
+        pipeline.asr_fingerprint = _asr_fingerprint(settings, speech)
+        return pipeline
     vision_values = (
         settings.vision_api_key,
         settings.vision_base_url,
@@ -424,4 +443,6 @@ def build_pipeline(settings: AnalyzerSettings, client: AnalyzerApiClient, *, tra
         provider=settings.llm_provider,
         call_recorder=client.record_model_call,
     )
-    return AnalysisPipeline(source, media, speech, visual, structure, artifact_store, artifact_store, manuscript_ocr=ocr)
+    pipeline = AnalysisPipeline(source, media, speech, visual, structure, artifact_store, artifact_store, manuscript_ocr=ocr)
+    pipeline.asr_fingerprint = _asr_fingerprint(settings, speech)
+    return pipeline

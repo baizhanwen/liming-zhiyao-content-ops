@@ -3,6 +3,12 @@
 .analysis-layout .analysis-input-help { margin: 0 0 16px; color: var(--muted); font-size: 12px; }
 .analysis-layout .analysis-input-help > summary { width: fit-content; color: var(--brand); cursor: pointer; }
 .analysis-layout .analysis-input-help p { margin: 8px 0 0; font-size: 12px; line-height: 1.7; }
+.analysis-layout .analysis-url-note { display: grid; gap: 6px; min-width: 0; }
+.analysis-layout .analysis-url-note-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+.analysis-layout .analysis-transcript-review-toggle { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-weight: 450; }
+.analysis-layout .analysis-transcript-review-toggle input { flex: 0 0 15px; width: 15px; height: 15px; min-height: 15px; margin: 0; padding: 0; accent-color: var(--brand); }
+.analysis-layout .analysis-transcript-review-toggle:has(input:disabled) { cursor: default; opacity: .65; }
+.analysis-layout .analysis-transcript-review-help { margin: 0; color: var(--subtle); font-size: 11px; line-height: 1.6; }
 .analysis-layout .analysis-completed-record { grid-column: 1 / -1; padding-top: 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
 .analysis-layout .analysis-completed-record > summary { width: fit-content; cursor: pointer; }
 .analysis-layout .analysis-completed-record > section { margin-top: 10px; }

@@ -7,7 +7,7 @@ export type AnalyzerEnvironmentSnapshot = {
   workerRunning: boolean;
   processRunning?: boolean;
   restartRequired?: boolean;
-  checks: Array<{ id: string; label: string; status: "ready" | "missing" | "error" | "checking"; message?: string }>;
+  checks: Array<{ id: string; label: string; status: "ready" | "missing" | "error" | "checking" | "warning"; message?: string; required?: boolean }>;
   job?: { id: string; action: string; status: "running" | "succeeded" | "failed"; logTail: string[]; startedAt: string; error?: string };
   message?: string;
 };
@@ -31,8 +31,9 @@ function publicSnapshot(value: unknown, secret: string): AnalyzerEnvironmentSnap
     processRunning: data.processRunning === true || data.workerRunning === true, restartRequired: data.restartRequired === true,
     checks: Array.isArray(data.checks) ? data.checks.slice(0, 30).map((item: Record<string, unknown>, index) => ({
       id: text(item.id) || String(index), label: text(item.label),
-      status: ["ready", "missing", "error", "checking"].includes(String(item.status)) ? item.status as "ready" | "missing" | "error" | "checking" : "error",
+      status: ["ready", "missing", "error", "checking", "warning"].includes(String(item.status)) ? item.status as "ready" | "missing" | "error" | "checking" | "warning" : "error",
       ...(item.message ? { message: text(item.message) } : {}),
+      ...(typeof item.required === "boolean" ? { required: item.required } : {}),
     })) : [],
     ...(data.message ? { message: text(data.message) } : {}),
   };

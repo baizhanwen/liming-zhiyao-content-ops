@@ -10,15 +10,66 @@ from pathlib import Path
 
 from analyzer_local_runtime import (
     ROOT,
+    cuda_readiness_files,
     expects_windows_qwen,
     interpreter,
     model_cache_path,
     runtime_environment,
+    timing_implementation_fingerprint,
 )
 
 
 def emit(phase: str, **values):
     print(json.dumps({"phase": phase, **values}, ensure_ascii=False), flush=True)
+
+
+def prepare_cuda_runtime(cache: Path, engine: str, device: str) -> dict:
+    if engine != "faster-whisper":
+        return {"status": "skipped", "reason": "OTHER_ASR_ENGINE"}
+    if os.name != "nt":
+        return {"status": "skipped", "reason": "WINDOWS_ONLY"}
+    if device == "cpu":
+        return {"status": "skipped", "reason": "CPU_REQUESTED"}
+    emit("preparing_cuda_runtime")
+    try:
+        from prepare_analyzer_cuda import ensure_cuda_runtime
+
+        result = ensure_cuda_runtime(cache, device=device, progress=lambda event: print(
+            json.dumps(event, ensure_ascii=False), flush=True))
+        if not isinstance(result, dict) or result.get("status") not in {"ready", "prepared", "skipped", "failed"}:
+            raise ValueError("Invalid CUDA preparation result")
+        return result
+    except Exception as error:  # noqa: BLE001 - optional GPU setup must preserve the usable CPU path
+        code = getattr(error, "code", "CUDA_RUNTIME_PREPARATION_FAILED")
+        result = {"status": "failed", "code": code,
+                  "message": "GPU 运行库准备未完成，继续验证 CPU 分析环境。"}
+        if isinstance(getattr(error, "code", None), str):
+            # The installer exposes only a deliberately sanitized public message.
+            result["detail"] = str(error)[:400]
+        emit("cuda_runtime_failed", code=code, message=result["message"])
+        return result
+
+
+def timing_probe_report(speech, configuration: dict, cache: Path, cuda_runtime: dict, *, probed: bool) -> dict:
+    timing = getattr(speech, "timing", speech)
+    state = getattr(timing, "runtime_state", None)
+    state = state if isinstance(state, dict) else {}
+    failure = state.get("gpu_failure")
+    verified = probed and state.get("gpu_verified") is True and state.get("device") == "cuda"
+    status = "verified" if verified else "failed" if failure or cuda_runtime.get("status") == "failed" else "not_verified"
+    result = {"status": status, "device": state.get("device", "unavailable"), "gpuVerified": verified,
+              "checkedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+              "configuration": configuration, "implementation": timing_implementation_fingerprint()}
+    if probed:
+        result["probe"] = "asr-check-zh.v1"
+    if isinstance(failure, dict):
+        result["failure"] = failure
+    if cuda_runtime.get("status") in {"ready", "prepared"}:
+        try:
+            cuda_runtime["requiredFiles"] = cuda_readiness_files(cache)
+        except (ImportError, OSError, RuntimeError, TypeError, ValueError):
+            cuda_runtime.update(status="failed", code="CUDA_RUNTIME_READINESS_FILES_INVALID")
+    return result
 
 
 def child() -> int:
@@ -39,6 +90,7 @@ def child() -> int:
     language = os.environ.get("ANALYZER_ASR_LANGUAGE") or "zh"
     device = os.environ.get("ANALYZER_ASR_DEVICE") or "auto"
     windows_qwen = expects_windows_qwen(engine, model, language, device)
+    cuda_runtime = prepare_cuda_runtime(cache, engine, device)
     emit("preparing_windows_qwen" if windows_qwen else "loading_asr")
     if engine == "faster-whisper":
         speech = build_quality_recognizer(
@@ -66,6 +118,7 @@ def child() -> int:
     emit("ocr_inference_passed", recognized_characters=len(text))
     sample = ROOT / ".local/verification/live-video/source.mp4"
     transcript_chars = None
+    timing_probed = False
     if windows_qwen:
         if (getattr(speech, "backend", None), getattr(speech, "model", None)) != ("sherpa-onnx", "Qwen3-ASR-1.7B"):
             raise RuntimeError("Windows Qwen3-ASR-1.7B 未成功加载，请重新配置环境。")
@@ -74,10 +127,18 @@ def child() -> int:
         # Exercise the native decoder, without a Whisper fallback or a user's media.
         probe = ROOT / "resources/media-tools/asr-check-zh.wav"
         recognized = speech.transcribe_verified(probe).full_text
+        timing_probed = True  # Qwen's verification already runs its Whisper timing recognizer.
         normalized = "".join(letter for letter in recognized if letter.isalnum())
         if not ("欢迎" in normalized and "语音识别" in normalized):
             raise RuntimeError("Qwen3-ASR-1.7B 未能识别验证录音中的中文词句。")
         transcript_chars = len(normalized)
+    elif os.name == "nt" and engine == "faster-whisper":
+        emit("verifying_whisper_timing")
+        result = speech.transcribe(ROOT / "resources/media-tools/asr-check-zh.wav")
+        transcript_chars = len(result.full_text.strip())
+        timing_probed = True
+        if not transcript_chars:
+            raise RuntimeError("Local ASR returned no text for the bundled verification speech sample.")
     elif sample.is_file():
         audio = verification / "asr-sample.wav"
         subprocess.run([os.environ["ANALYZER_FFMPEG"], "-nostdin", "-v", "error", "-y", "-i", str(sample), "-t", "8", "-vn", "-ac", "1", "-ar", "16000", str(audio)], check=True)
@@ -91,6 +152,9 @@ def child() -> int:
               "asrVerified": transcript_chars is not None, "transcribedCharacters": transcript_chars,
               "asrModel": getattr(speech, "model", model),
               "modelCache": str(cache), "elapsedSeconds": round(time.monotonic() - started, 2)}
+    report["cudaRuntime"] = cuda_runtime
+    report["timingAsr"] = timing_probe_report(speech, {"engine": engine, "model": model,
+        "language": language, "device": device}, cache, cuda_runtime, probed=timing_probed)
     if windows_qwen:
         report["asrProbe"] = "asr-check-zh.v1"
     # Unrelated downloaded or abandoned weights do not determine readiness.

@@ -28,7 +28,19 @@ _SEGMENT_FIELDS = {
 _UNIT_FIELDS = {"id", "type_tag", "text", "evidence_ids", "duplicate_of"}
 _LOCAL_CLASSIFICATION_NORMALIZATIONS = {
     "classification_tag_index_not_in_taxonomy", "classification_reference_limit_exceeded",
+    "annotation_reference_limit_exceeded",
 }
+
+
+def _merge_validation_issues(error: Exception, *sources: Any) -> None:
+    """Keep SDK field/count diagnostics when context-aware recovery also fails."""
+    values = []
+    for source in (*sources, getattr(error, "safe_validation_issues", None)):
+        items = getattr(source, "safe_validation_issues", source)
+        if isinstance(items, list):
+            values.extend(item for item in items if isinstance(item, str)
+                          and re.fullmatch(r"[a-zA-Z0-9_.:-]{1,180}", item))
+    error.safe_validation_issues = list(dict.fromkeys(values))[:120]
 
 
 def _log_local_normalizations(module: str, response: Mapping[str, Any], source: str) -> bool:
@@ -1336,6 +1348,7 @@ def build_content_analysis_bundle(
     retry_module_keys: Sequence[str] | None = None,
     allow_revalidated_synthesis_cache: bool = False,
     transcript_basis: str = "canonical",
+    transcript_review_enabled: bool = True,
     review_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Use compact model calls, bounded parallelism and independently verified caches.
@@ -1350,6 +1363,7 @@ def build_content_analysis_bundle(
         compact_signature,
         decode_compact_response,
         prepare_compact_request,
+        safe_local_recovery,
     )
     if not isinstance(max_workers, int) or isinstance(max_workers, bool) or max_workers not in {1, 2}:
         raise ValueError("max_workers must be 1 or 2")
@@ -1398,6 +1412,8 @@ def build_content_analysis_bundle(
             module, requested, registry, list(base.values()), profile, metrics,
             transcript_source, compact=True, review_context=review_context,
         )
+        if not transcript_review_enabled:
+            payload["transcript_review_enabled"] = False
         available = {row["id"] for row in requested
                      if _dimension_acquired(row, list(evidence.values()))}
         payload["dimensions"] = [row for row in payload["dimensions"] if row["id"] in available]
@@ -1494,6 +1510,9 @@ def build_content_analysis_bundle(
                 restored_result = {"signature": signature, "status": "completed",
                                    "validation": {"passed": True, "issues": []},
                                    "response": response, "findings": findings}
+                recovery = safe_local_recovery(cache.get("local_recovery"))
+                if recovery:
+                    restored_result["local_recovery"] = recovery
                 if revalidate_synthesis or revalidate_retired:
                     restored_result["generation_signature"] = cache.get("generation_signature", cache["signature"])
                     restored_result["revalidated_from_signature"] = cache["signature"]
@@ -1505,14 +1524,19 @@ def build_content_analysis_bundle(
                 # A source match still requires all current semantic checks.
                 pass
         def checked(raw: Any, source: str) -> tuple[dict[str, Any], bool]:
-            decoded, findings = decode_compact_response(raw, context)
+            recovery: list[dict[str, Any]] = []
+            decoded, findings = decode_compact_response(raw, context, local_recovery=recovery)
             response, findings = _checked_bundle_module(
                 module, decoded, findings, payload, base, _duration(media),
             )
             _log_local_normalizations(module, response, source)
+            if recovery:
+                logging.getLogger(__name__).info("compact_local_recovery module=%s source=%s changes=%s",
+                                                module, source, json.dumps(recovery, separators=(",", ":")))
             return {"signature": signature, "status": "completed",
                     "validation": {"passed": True, "issues": []},
-                    "response": response, "findings": findings}, False
+                    "response": response, "findings": findings,
+                    **({"local_recovery": recovery} if recovery else {})}, False
 
         def remember(error: Exception, candidate: Any) -> None:
             stored = failure_candidate(error, candidate, signature)
@@ -1532,6 +1556,8 @@ def build_content_analysis_bundle(
                     raise CompactProtocolError("failed_candidate_invalid")
                 return checked(bounded["candidate"], "failed_candidate")
             except (CompactProtocolError, TypeError, ValueError, KeyError) as error:
+                validation = failed.get("validation")
+                _merge_validation_issues(error, validation.get("issues") if isinstance(validation, Mapping) else None)
                 remember(error, raw)
                 if module not in explicit_retry_modules:
                     raise
@@ -1539,13 +1565,14 @@ def build_content_analysis_bundle(
         else:
             try:
                 raw = request_classification(module, wire, budget["modules"][module])
-            except Exception as error:
+            except Exception as error:  # noqa: BLE001 - SDK failures may retain a safe response candidate
                 raw = getattr(error, "safe_candidate", None)
                 remember(error, raw)
                 if raw is not None:
                     try:
                         return checked(raw, "sdk_candidate")
                     except (CompactProtocolError, TypeError, ValueError, KeyError) as validation_error:
+                        _merge_validation_issues(validation_error, error)
                         remember(validation_error, raw)
                         error_to_repair = validation_error
                 if error_to_repair is None:
@@ -1567,6 +1594,9 @@ def build_content_analysis_bundle(
             "issues": issues or [kind],
             "instruction": "修复本模块上次返回的字段或引用错误，重新返回完整c/g/u/f。"
                            "c恰好覆盖expected_d一次；c.t为标签数组，u.t为单个数字。"
+                           f"每条c/g/u/f.e最多{24 if context.review_context is not None else 8}个不同的有效索引。"
+                           "too_long的actual/limit是实际条数/允许上限；先核对标出的精确字段位置。"
+                           "不得截短事件范围或删掉关键依据来保留原判断；无法完整支持时省略该事件/结论并将相应分类标为无法判断。"
                            "已判断分类必须引用支持该标签的输入证据。不能编造引用或将不确定内容标成已确认。",
         }}
         if estimate_content_tokens(repair_wire) + budget["sdk_schema_reserve_tokens"] > budget["input_token_limit"]:
@@ -1582,6 +1612,7 @@ def build_content_analysis_bundle(
                     try:
                         return checked(candidate, "repair_sdk_candidate")
                     except (CompactProtocolError, TypeError, ValueError, KeyError) as validation_error:
+                        _merge_validation_issues(validation_error, error)
                         remember(validation_error, candidate)
                         raise validation_error from error
                 remember(error, raw)
@@ -1653,6 +1684,8 @@ def build_content_analysis_bundle(
     checkpoint_error: BaseException | None = None
     def canonical_request(module: str, payload: dict[str, Any], _output_tokens: int) -> dict[str, Any]:
         nonlocal synthesis_checkpoint, synthesis_failure, checkpoint_error
+        if not transcript_review_enabled:
+            payload["transcript_review_enabled"] = False
         if module == "synthesis":
             def upstream_inapplicable(key: str) -> bool:
                 return all(base[row["id"]]["state"] == "not_applicable"
@@ -1719,7 +1752,9 @@ def build_content_analysis_bundle(
     if synthesis_checkpoint is not None and "synthesis" in module_results and on_module_checkpoint is not None:
         on_module_checkpoint("synthesis", synthesis_checkpoint)
     return {"content_analysis": content, "findings_by_module": findings_by_module,
-            "module_results": module_results}
+            "module_results": module_results,
+            "local_recovery": {module: safe_local_recovery(result.get("local_recovery"))
+                               for module, result in completed.items() if result.get("local_recovery")}}
 
 
 @lru_cache(maxsize=5)

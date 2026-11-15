@@ -109,7 +109,7 @@ export function readAnalysisModuleRetryState(checkpointJson: string | null | und
       && record(module.validation) && module.validation.passed === true && record(module.response) && Array.isArray(module.findings);
   });
   const reportRevalidationAvailable = Boolean(["partial", "failed"].includes(jobStatus ?? "") && matchingCheckpoint && completeCache && record(progress?.canonical)
-    && ["completed", "needs_review", "not_applicable"].includes(String(progress.canonical.status))
+    && ["completed", "original", "needs_review", "not_applicable"].includes(String(progress.canonical.status))
     && unified.value.sections.every(section => section.status === "completed"));
   const available = matchingCheckpoint && Boolean(failedModuleKeys.length || reportRevalidationAvailable);
   return { available, reportRevalidationAvailable, failedModuleKeys, defaultModuleKeys, recoverableTextModuleKeys, blockedModuleKeys, incompleteUpstream, checkpoint, sourceSignature: unified.value.source_signature, reviewSegmentIds, canonicalNeedsReview, schema };

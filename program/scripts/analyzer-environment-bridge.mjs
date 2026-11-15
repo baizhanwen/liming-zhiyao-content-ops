@@ -138,7 +138,8 @@ function publicRuntimeStatus(result, redact) {
     checks: Array.isArray(data.checks) ? data.checks.slice(0, 30).map((check, index) => ({
       id: typeof check.id === "string" ? check.id.slice(0, 80) : String(index),
       label: redact(check.label ?? check.name ?? "运行环境"),
-      status: ["ready", "missing", "error", "checking"].includes(check.status) ? check.status : check.ok ? "ready" : "missing",
+      status: ["ready", "missing", "error", "checking", "warning"].includes(check.status) ? check.status : check.ok ? "ready" : "missing",
+      ...(typeof check.required === "boolean" ? { required: check.required } : {}),
       ...(typeof check.message === "string" ? { message: redact(check.message) } : {}),
     })) : [],
     ...(typeof data.message === "string" ? { message: redact(data.message) } : {}),

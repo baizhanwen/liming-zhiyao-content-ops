@@ -57,7 +57,8 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
       return apiError("JOB_NOT_RETRYABLE", "只有部分完成、失败、已取消或租约过期的任务可以恢复。", 409);
     }
     const user = await ensureUser(identity);
-    const canResume = job.checkpoint_stage === "evidence_ready" || job.checkpoint_stage === "segment_progress";
+    const transcriptResume = job.checkpoint_stage === "transcript_ready";
+    const canResume = transcriptResume || job.checkpoint_stage === "evidence_ready" || job.checkpoint_stage === "segment_progress";
     let retryCheckpointJson: string | null = null;
     let retryTarget: SegmentRetryTarget | null = null;
     if (requestedSegmentKey) {
@@ -100,7 +101,7 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     let moduleKeys: AnalysisModuleRetryKey[] | null = null;
     let reviewSegmentIds: string[] | null = null;
     if (!requestedSegmentKey && !requestedScriptVersion) {
-      if (["analysis.v11", "analysis.v12"].includes(latest?.schema_version ?? "") || requestedModules) {
+      if ((!transcriptResume && ["analysis.v11", "analysis.v12"].includes(latest?.schema_version ?? "")) || requestedModules) {
         const state = moduleState;
         if ((!completedReviewRepair && !["partial", "failed"].includes(job.status)) || !canResume || !state?.available || !state.checkpoint) return apiError("MODULE_RETRY_UNAVAILABLE", "当前报告没有可复用的有效模块检查点，请查看最新报告或主动重新分析。", 409);
         reportRevalidationOnly = Boolean(state.reportRevalidationAvailable && (requestedRevalidation || !requestedModules));
@@ -126,13 +127,15 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     if (requestedRevalidation && !reportRevalidationOnly) return apiError("REPORT_REVALIDATION_UNAVAILABLE", "报告缺少完整且来源一致的成功检查点，不能仅复验。", 409);
     const stage = reportRevalidationOnly ? "等待复验已保存的完整报告" : reviewSegmentIds ? `等待核对${reviewSegmentIds.length}句口播` : moduleKeys ? "等待仅重试未完成的内容模块" : scriptVersion
       ? `等待单独重试${scriptVersionLabels[scriptVersion]}`
-      : canResume
+      : transcriptResume
+        ? "等待复用已保存原片与口播稿，继续画面取证"
+        : canResume
         ? "等待从证据检查点继续结构分析"
         : "等待重新进入分析队列";
     const scope = { organizationId: job.organization_id, projectId: job.project_id, userId: user.id };
     const assertAccess = createProjectWriteAssertion(db, scope, async () => (await readRequestIdentity(request))?.authSubject === identity.authSubject);
     await assertAccess();
-    const progress = canResume ? 82 : 0;
+    const progress = canResume && !transcriptResume ? 82 : 0;
     const state = await executeAnalysisJobAction(db, {
       scope, job, action: "retried", now, toStatus: "pending", progress,
       metadata: { previousStatus: job.status, retryCount: job.retry_count + 1, staleLease, checkpointStage: job.checkpoint_stage, canResume, segmentKey: requestedSegmentKey || null, segmentRetryTarget: retryTarget, scriptVersion: scriptVersion || null, moduleKeys, reviewSegmentIds, reportRevalidationOnly },

@@ -87,7 +87,7 @@ function bytes(value: number): string {
 export function taskMetricItems(metrics: Record<string, unknown> | null | undefined, phase: string): string[] {
   const values = metrics || {}, items: string[] = [];
   if (measuredTaskMetric(values.completed) && measuredTaskMetric(values.total) && values.total > 0) items.push(`${taskProgressPhases[phase] || "本步骤"}：${values.completed} / ${values.total}`);
-  if (measuredTaskMetric(values.transcribed_chunks)) items.push(`已转写音频段：${values.transcribed_chunks}${measuredTaskMetric(values.total_chunks) ? ` / ${values.total_chunks}` : ""}`);
+  if (measuredTaskMetric(values.transcribed_chunks)) items.push(`已处理音频分段：${values.transcribed_chunks}${measuredTaskMetric(values.total_chunks) ? ` / ${values.total_chunks}` : ""}`);
   if (measuredTaskMetric(values.sampled_frames)) items.push(`已准备抽样画面：${values.sampled_frames}${measuredTaskMetric(values.total_frames) ? ` / ${values.total_frames}` : ""}`);
   if (measuredTaskMetric(values.candidates_checked)) items.push(`已检查候选画面：${values.candidates_checked}${measuredTaskMetric(values.candidates_total) ? ` / ${values.candidates_total}` : ""}`);
   if (measuredTaskMetric(values.vision_batches_completed)) items.push(`已完成视觉分析批次：${values.vision_batches_completed}${measuredTaskMetric(values.vision_batches_total) ? ` / ${values.vision_batches_total}` : ""}`);

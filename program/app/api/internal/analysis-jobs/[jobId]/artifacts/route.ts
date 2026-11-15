@@ -45,6 +45,7 @@ type ArtifactJob = {
   lease_owner: string;
   lease_expires_at: string;
   version: number;
+  attempt_count: number;
 };
 
 export async function POST(request: Request, context: { params: Promise<{ jobId: string }> }) {
@@ -52,10 +53,14 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
   if ("error" in service) return service.error;
   const workerId = normalizeWorkerId(request.headers.get("x-worker-id"));
   const version = integerHeader(request, "x-job-version", 0, Number.MAX_SAFE_INTEGER);
+  const attemptHeader = request.headers.get("x-worker-attempt");
+  const attempt = integerHeader(request, "x-worker-attempt", 1, Number.MAX_SAFE_INTEGER);
+  const ownershipColumn = attemptHeader === null ? "version" : "attempt_count";
+  const ownershipValue = attemptHeader === null ? version : attempt;
   const kind = request.headers.get("x-artifact-kind")?.trim() ?? "";
   const rawContentType = request.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() ?? "";
   const filename = safeFilename(request.headers.get("x-artifact-filename") ?? "artifact");
-  if (!workerId || version === null) return apiError("INVALID_ARTIFACT_OWNER", "Worker 标识或任务版本无效。", 400);
+  if (!workerId || version === null || ownershipValue === null) return apiError("INVALID_ARTIFACT_OWNER", "Worker 标识或任务版本无效。", 400);
   if (!artifactKinds.has(kind) || !contentTypes[kind]?.has(rawContentType)) return apiError("INVALID_ARTIFACT_TYPE", "分析产物类型无效。", 415);
   const maxBytes = kind === "subtitle" && filename === "manuscript.json" && rawContentType === "application/json"
     ? 16 * 1024 * 1024 : sizeLimits[kind];
@@ -70,11 +75,11 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     const now = new Date().toISOString();
     const db = getD1();
     const job = await db.prepare(`
-      SELECT j.id, j.organization_id, j.project_id, j.video_id, j.status, j.lease_owner, j.lease_expires_at, j.version
+      SELECT j.id, j.organization_id, j.project_id, j.video_id, j.status, j.lease_owner, j.lease_expires_at, j.version, j.attempt_count
       FROM analysis_jobs j
       INNER JOIN videos v ON v.id = j.video_id AND v.organization_id = j.organization_id AND v.project_id = j.project_id
-      WHERE j.id = ? AND j.lease_owner = ? AND j.version = ? AND j.lease_expires_at > ? AND v.deleted_at IS NULL
-    `).bind(jobId, workerId, version, now).first<ArtifactJob>();
+      WHERE j.id = ? AND j.lease_owner = ? AND j.${ownershipColumn} = ? AND j.lease_expires_at > ? AND v.deleted_at IS NULL
+    `).bind(jobId, workerId, ownershipValue, now).first<ArtifactJob>();
     if (!job || !isLeasedAnalysisStatus(job.status)) return apiError("ARTIFACT_LEASE_INVALID", "任务租约已失效，分析产物未接收。", 409);
     const bytes = await request.arrayBuffer();
     if (bytes.byteLength <= 0 || bytes.byteLength > maxBytes) return apiError("INVALID_ARTIFACT_SIZE", "分析产物大小无效。", 413);
@@ -91,6 +96,9 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
       LIMIT 1
     `).bind(job.organization_id, job.project_id, job.video_id, jobId, kind, filename, sha256).first<Record<string, unknown>>();
     if (existing) {
+      const owned = await db.prepare(`SELECT j.id FROM analysis_jobs j INNER JOIN videos v ON v.id=j.video_id AND v.organization_id=j.organization_id AND v.project_id=j.project_id
+        WHERE j.id=? AND j.lease_owner=? AND j.${ownershipColumn}=? AND j.lease_expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now') AND j.status IN (${LEASED_ANALYSIS_STATUSES_SQL}) AND v.deleted_at IS NULL`).bind(jobId, workerId, ownershipValue).first();
+      if (!owned) return apiError("ARTIFACT_LEASE_INVALID", "任务执行轮次已结束，附件回执未接收。", 409);
       return Response.json({
         asset: { id: existing.id, kind: existing.kind, filename: existing.filename, contentType: existing.content_type, sizeBytes: existing.size_bytes, sha256: existing.sha256, timestampMs, confidence },
         reused: true,
@@ -123,11 +131,11 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?
       WHERE EXISTS(SELECT 1 FROM analysis_jobs j INNER JOIN videos v
         ON v.id=j.video_id AND v.organization_id=j.organization_id AND v.project_id=j.project_id
-        WHERE j.id=? AND j.lease_owner=? AND j.version=? AND j.lease_expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        WHERE j.id=? AND j.lease_owner=? AND j.${ownershipColumn}=? AND j.lease_expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now')
           AND j.status IN (${LEASED_ANALYSIS_STATUSES_SQL}) AND v.deleted_at IS NULL)
         AND NOT EXISTS(SELECT 1 FROM media_assets WHERE organization_id=? AND project_id=? AND video_id=? AND analysis_job_id=? AND kind=? AND filename=? AND sha256=? AND status='active')
         AND (? IS NULL OR (SELECT COALESCE(SUM(MAX(size_bytes,0)),0) FROM media_assets WHERE organization_id=? AND status='active') + ? <= ?)
-    `).bind(assetId, job.organization_id, job.project_id, job.video_id, jobId, kind, storedKey, filename, rawContentType, bytes.byteLength, sha256, `service:${workerId}`, `service:${workerId}`, now, now, jobId, workerId, version, job.organization_id, job.project_id, job.video_id, jobId, kind, filename, sha256, storageQuota, job.organization_id, bytes.byteLength, storageQuota);
+    `).bind(assetId, job.organization_id, job.project_id, job.video_id, jobId, kind, storedKey, filename, rawContentType, bytes.byteLength, sha256, `service:${workerId}`, `service:${workerId}`, now, now, jobId, workerId, ownershipValue, job.organization_id, job.project_id, job.video_id, jobId, kind, filename, sha256, storageQuota, job.organization_id, bytes.byteLength, storageQuota);
     const results = sourceMedia ? await db.batch([statement, db.prepare(`
       UPDATE videos SET media_asset_id=?, updated_by=?, updated_at=? WHERE id=? AND organization_id=? AND project_id=? AND media_asset_id IS NULL
         AND EXISTS(SELECT 1 FROM media_assets WHERE id=? AND organization_id=? AND project_id=? AND video_id=? AND analysis_job_id=? AND status='active')
@@ -135,7 +143,7 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     const result = results[0];
     if (!result.meta.changes) {
       const stillOwned = await db.prepare(`SELECT j.id FROM analysis_jobs j INNER JOIN videos v ON v.id=j.video_id AND v.organization_id=j.organization_id AND v.project_id=j.project_id
-        WHERE j.id=? AND j.lease_owner=? AND j.version=? AND j.lease_expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now') AND j.status IN (${LEASED_ANALYSIS_STATUSES_SQL}) AND v.deleted_at IS NULL`).bind(jobId, workerId, version).first();
+        WHERE j.id=? AND j.lease_owner=? AND j.${ownershipColumn}=? AND j.lease_expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now') AND j.status IN (${LEASED_ANALYSIS_STATUSES_SQL}) AND v.deleted_at IS NULL`).bind(jobId, workerId, ownershipValue).first();
       const winner = await db.prepare(`SELECT id,kind,filename,content_type,size_bytes,sha256 FROM media_assets WHERE organization_id=? AND project_id=? AND video_id=? AND analysis_job_id=? AND kind=? AND filename=? AND sha256=? AND status='active' LIMIT 1`).bind(job.organization_id, job.project_id, job.video_id, jobId, kind, filename, sha256).first<Record<string, unknown>>();
       if (winner && stillOwned) {
         await getMediaBucket().delete(storedKey);

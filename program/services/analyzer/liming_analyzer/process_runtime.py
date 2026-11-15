@@ -9,14 +9,13 @@ import shutil
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 from .platform_runtime import InstanceLock, ProcessTree, installation_root, prepare_processing_child
-from .worker import ProcessingFailure, classify_worker_error
 from .task_progress import ProgressObservations, observe, safe_observation
-
+from .worker import ProcessingFailure, classify_worker_error
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +40,9 @@ class ProcessingLimits:
     download: float = 900
     media: float = 900
     evidence: float = 1800
+    speech: float | None = None
+    subtitle: float | None = None
+    visual: float | None = None
     artifacts: float = 600
     model: float = 1800
     task: float = 7200
@@ -49,7 +51,7 @@ class ProcessingLimits:
     @classmethod
     def from_environment(cls):
         values = {}
-        for name in ("initialization", "download", "media", "evidence", "artifacts", "model", "task"):
+        for name in ("initialization", "download", "media", "evidence", "speech", "subtitle", "visual", "artifacts", "model", "task"):
             raw = os.environ.get(f"ANALYZER_TIMEOUT_{name.upper()}_SECONDS", "").strip()
             if raw:
                 value = float(raw)
@@ -60,10 +62,12 @@ class ProcessingLimits:
 
     def stage_seconds(self, phase: str, duration: float, profile: str):
         base = getattr(self, phase)
+        if base is None:
+            base = self.evidence  # Existing environment budgets remain compatible.
         # Long recordings get a larger finite budget; initialization is separate.
         factor = 2 if profile in {"max", "deep"} else 1
         extra = min(14400, max(0, duration - 600) * factor)
-        return base + (extra if phase in {"media", "evidence", "model"} else 0)
+        return base + (extra if phase in {"media", "evidence", "speech", "subtitle", "visual", "model"} else 0)
 
 
 def _build_processor(settings, client, monitor):
@@ -98,7 +102,7 @@ def _child_main(connection, settings, root, workspace, factory, owner_pid=None):
                     return
                 observations = ProgressObservations()
 
-                def heartbeat(status, progress, stage):
+                def heartbeat(status, progress, stage, observations=observations):
                     with channel_lock:
                         connection.send(("heartbeat", (status, progress, stage, observations.snapshot())))
                         response, value = connection.recv()
@@ -110,7 +114,7 @@ def _child_main(connection, settings, root, workspace, factory, owner_pid=None):
                 try:
                     result = processor(job, heartbeat)
                     connection.send(("result", result))
-                except Exception as error:  # process boundary: only safe, classified errors cross IPC
+                except Exception as error:  # noqa: BLE001 - safe classified process boundary
                     connection.send(("failure", classify_worker_error(error)))
     except (EOFError, BrokenPipeError):
         return
@@ -237,16 +241,30 @@ class IsolatedProcessor:
             self._source_stamp = source_stamp
         started = phase_started = time.monotonic()
         phase = "initialization"
+        phase_elapsed = {}
         duration = 0.0
         next_control = started
+        def change_phase(new_phase):
+            nonlocal phase, phase_started
+            if new_phase == phase:
+                return
+            now = time.monotonic()
+            phase_elapsed[phase] = phase_elapsed.get(phase, 0.0) + now - phase_started
+            logger.info("Analyzer stage %s finished interval; cumulative_elapsed=%.1fs", phase, phase_elapsed[phase])
+            phase, phase_started = new_phase, now
+            logger.info("Analyzer stage %s started; budget=%.1fs", phase,
+                        self.limits.stage_seconds(phase, duration, job.analysis_profile))
         try:
             self._send(("run", job))
             while True:
                 now = time.monotonic()
                 if now - started > self.limits.task + min(14400, duration * 2):
                     raise ProcessingFailure("ANALYZER_TASK_TIMEOUT", "分析超过本条任务的总时限，已回收处理进程；可从已有检查点重试。")
-                if now - phase_started > self.limits.stage_seconds(phase, duration, job.analysis_profile):
-                    raise ProcessingFailure("ANALYZER_STAGE_TIMEOUT", f"分析阶段 {phase} 超过处理时限，已回收处理进程；后续任务将继续。")
+                elapsed = phase_elapsed.get(phase, 0.0) + now - phase_started
+                budget = self.limits.stage_seconds(phase, duration, job.analysis_profile)
+                if elapsed > budget:
+                    logger.error("Analyzer stage timeout: phase=%s elapsed=%.1fs budget=%.1fs", phase, elapsed, budget)
+                    raise ProcessingFailure("ANALYZER_STAGE_TIMEOUT", f"分析阶段 {phase} 超过处理时限（{round(elapsed)}秒 / {round(budget)}秒），已回收处理进程；可从已有检查点重试。")
                 if now >= next_control:
                     # Read-only control probe does not change the job version.
                     self.client.check_control(job)
@@ -267,12 +285,19 @@ class IsolatedProcessor:
                             "downloading": "download", "processing": "media", "transcribing": "evidence",
                             "extracting": "artifacts", "analyzing": "model",
                         }.get(status, phase)
-                        if new_phase != phase:
-                            phase, phase_started = new_phase, time.monotonic()
+                        # Public status stays 'transcribing' for these evidence
+                        # stages. It must not undo the child's precise boundary.
+                        if new_phase == "evidence" and phase in {"speech", "subtitle", "visual", "artifacts"}:
+                            new_phase = phase
+                        if new_phase == "media" and phase == "artifacts":
+                            new_phase = phase
+                        change_phase(new_phase)
                         current = heartbeat(status, progress, stage)
                         self._send(("ok", current))
                     elif kind == "duration":
                         duration = max(0, min(86400, float(value)))
+                    elif kind == "phase" and value in {"download", "media", "speech", "subtitle", "visual", "artifacts", "model"}:
+                        change_phase(value)
                     elif kind == "result":
                         self.resources_released = True
                         return value

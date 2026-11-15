@@ -109,9 +109,22 @@ def test_no_speech_window_skips_decoder_and_preserves_a_valid_timing_cue(tmp_pat
 def test_long_input_has_independent_monotonic_windows(tmp_path):
     engine = Engine(["第一句话", "第二句话", "第三句话"])
     worker = recognizer(tmp_path, [], engine, [(0, 91000)])
+    progress = []
+    worker.set_progress(progress.append)
     rows = worker.transcribe(sample(tmp_path, 91000)).segments
     assert [(r.start_ms, r.end_ms) for r in rows] == [(0, 45000), (45000, 90000), (90000, 91000)]
     assert all(length <= 45000 * 16 for length, _ in engine.calls)
+    assert [(p["transcribed_chunks"], p["total_chunks"]) for p in progress] == [(0, 3), (1, 3), (2, 3), (3, 3)]
+
+
+def test_window_edge_at_previous_start_makes_progress_and_counts_silent_windows(tmp_path):
+    engine = Engine(["原声"])
+    worker = recognizer(tmp_path, [(0, 1000, "原声")], engine, [(0, 1000)])
+    worker.max_window_ms = 2000
+    progress = []
+    worker.set_progress(progress.append)
+    assert worker.transcribe(sample(tmp_path, 5000)).full_text == "原声"
+    assert [(p["transcribed_chunks"], p["total_chunks"]) for p in progress] == [(0, 3), (1, 3), (2, 3), (3, 3)]
 
 
 def test_model_preparation_validates_pinned_files_and_does_not_network_on_cache_hit(

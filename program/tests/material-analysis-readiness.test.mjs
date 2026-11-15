@@ -54,6 +54,32 @@ test('v7 report missing its quality audit does not become fully completed by mig
 
 test('legacy report remains readable without introducing v7 quality requirements',async t=>{
   const f=await fixture(t,[{schema_version:'analysis.v1',report_json:'{"legacy":true}'}]);assert.equal(f.jobs()[0].status,'completed');
+  assert.equal(f.jobs()[0].transcript_review_enabled,1);
+});
+
+test('imported original transcript report keeps its disabled review choice on reanalysis and export',async t=>{
+  const rawReport={analysis_meta:{transcript_review_enabled:false},unified_report:{version:'unified-report.v2',outcome:{manuscript:'original'}}};
+  const f=await fixture(t,[{schema_version:'analysis.v12',report_json:JSON.stringify(rawReport),created_at:'2025-01-01T00:00:00Z'}]);
+  assert.equal(f.jobs()[0].transcript_review_enabled,0);
+  const exported=await f.load('app/api/video-library/transfer/route.ts').GET(new Request(`http://localhost/transfer?organizationId=${f.owner.organizationId}`));
+  assert.equal(exported.status,200);
+  const exportedReport=JSON.parse((await exported.json()).entries[0].analyses[0].report_json);
+  assert.deepEqual(exportedReport,rawReport);
+  const response=await f.reanalyze();assert.equal(response.status,201);
+  assert.equal((await response.json()).job.transcript_review_enabled,false);
+});
+
+test('import infers disabled review from the new original manuscript marker when metadata is absent',async t=>{
+  const f=await fixture(t,[{schema_version:'analysis.v12',report_json:JSON.stringify({unified_report:{version:'unified-report.v2',outcome:{manuscript:'original'}}})}]);
+  assert.equal(f.jobs()[0].transcript_review_enabled,0);
+});
+
+test('latest imported report determines review choice and older raw reports do not override it',async t=>{
+  const raw={schema_version:'analysis.v12',report_json:JSON.stringify({analysis_meta:{transcript_review_enabled:false}}),created_at:'2024-01-01T00:00:00Z'};
+  const reviewed={schema_version:'analysis.v12',report_json:JSON.stringify({analysis_meta:{transcript_review_enabled:true}}),created_at:'2025-01-01T00:00:00Z'};
+  const f=await fixture(t,[reviewed,raw]);assert.equal(f.jobs()[0].transcript_review_enabled,1);
+  const f2=await fixture(t,[{...reviewed,created_at:'2024-01-01T00:00:00Z'},{...raw,created_at:'2025-01-01T00:00:00Z'}]);
+  assert.equal(f2.jobs()[0].transcript_review_enabled,0);
 });
 
 test('public library listing exposes small quality fields and no full report JSON',async t=>{

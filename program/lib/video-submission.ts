@@ -4,6 +4,7 @@ import { assertProjectWriteAccess, projectWriteAccessBindings, projectWriteAcces
 type Submission = {
   organizationId: string; projectId: string; userId: string; now: string;
   sourceType: "url" | "upload"; sourceHash: string; sourceUrl?: string; filename?: string;
+  transcriptReviewEnabled?: boolean;
 };
 type Database = Pick<D1Database, "prepare" | "batch">;
 
@@ -16,30 +17,45 @@ export async function resolveVideoSubmission(db: Database, input: Submission, va
   if (duplicate) return apiError("VIDEO_ALREADY_EXISTS", sourceType === "url" ? "该链接已经进入当前项目。" : "相同媒体已经进入当前项目。", 409, { videoId: duplicate.id });
   const canonical = await db.prepare(`
     SELECT library.id AS library_entry_id, v.id, v.platform, v.source_type, v.source_url, v.title, v.author_name, v.status, v.created_at, a.filename, a.size_bytes,
-      job.id AS job_id, job.status AS job_status, job.progress, job.current_stage, job.error_code, job.error_message, job.retry_count, job.analysis_profile, job.created_at AS job_created_at, job.updated_at AS job_updated_at
+      job.id AS job_id, job.status AS job_status, job.progress, job.current_stage, job.error_code, job.error_message, job.retry_count, job.analysis_profile, job.transcript_review_enabled, job.created_at AS job_created_at, job.updated_at AS job_updated_at,
+      (SELECT report_job.transcript_review_enabled FROM video_analyses analysis INNER JOIN analysis_jobs report_job ON report_job.id=analysis.analysis_job_id
+        AND report_job.organization_id=analysis.organization_id AND report_job.video_id=analysis.video_id
+        WHERE analysis.organization_id=v.organization_id AND analysis.video_id=v.id ORDER BY analysis.created_at DESC,analysis.rowid DESC LIMIT 1) AS report_transcript_review_enabled
     FROM video_library_entries library
     INNER JOIN videos v ON v.id = library.source_video_id AND v.organization_id = library.organization_id
     LEFT JOIN media_assets a ON a.id = v.media_asset_id
-    LEFT JOIN analysis_jobs job ON job.id = (SELECT latest.id FROM analysis_jobs latest WHERE latest.organization_id = v.organization_id AND latest.video_id = v.id ORDER BY latest.created_at DESC LIMIT 1)
+    LEFT JOIN analysis_jobs job ON job.id = (SELECT latest.id FROM analysis_jobs latest WHERE latest.organization_id = v.organization_id AND latest.video_id = v.id AND latest.idempotency_key NOT LIKE 'transcript:%' ORDER BY latest.created_at DESC, latest.rowid DESC LIMIT 1)
     WHERE library.organization_id = ? AND v.deleted_at IS NULL AND (v.source_hash = ? OR (? IS NOT NULL AND v.source_url = ?))
     LIMIT 1
   `).bind(organizationId, sourceHash, sourceUrl ?? null, sourceUrl ?? null).first<Record<string, unknown>>();
   if (!canonical) return validateNew();
+  if ((canonical.transcript_review_enabled !== 0) !== (input.transcriptReviewEnabled !== false)
+    || canonical.report_transcript_review_enabled != null && (canonical.report_transcript_review_enabled !== 0) !== (input.transcriptReviewEnabled !== false)) {
+    return apiError("TRANSCRIPT_REVIEW_OPTION_MISMATCH", "该素材已有不同口播稿 AI 核对设置的分析。请在原素材所在项目按所需设置重新分析，或选择一致的核对设置后复用。", 409, { videoId: canonical.id, transcriptReviewEnabled: canonical.transcript_review_enabled !== 0 });
+  }
   const libraryEntryId = String(canonical.library_entry_id);
   const existing = await db.prepare("SELECT id,status FROM project_video_references WHERE organization_id=? AND project_id=? AND library_entry_id=? AND purpose='analysis'").bind(organizationId, projectId, libraryEntryId).first<{ id: string; status: string }>();
   const reference = { id: existing?.id ?? crypto.randomUUID(), action: !existing ? "created" : existing.status === "revoked" ? "reactivated" : "already_active" };
   const origin = sourceType === "url" ? { sourceUrl } : { filename: input.filename };
   await assertAccess?.();
-  const sourceCondition = "EXISTS (SELECT 1 FROM video_library_entries library INNER JOIN videos v ON v.id=library.source_video_id AND v.organization_id=library.organization_id WHERE library.id=? AND library.organization_id=? AND v.deleted_at IS NULL)";
+  const sourceCondition = `EXISTS (SELECT 1 FROM video_library_entries library INNER JOIN videos v ON v.id=library.source_video_id AND v.organization_id=library.organization_id
+    WHERE library.id=? AND library.organization_id=? AND v.deleted_at IS NULL AND COALESCE((SELECT j.transcript_review_enabled FROM analysis_jobs j
+      WHERE j.organization_id=v.organization_id AND j.video_id=v.id AND j.idempotency_key NOT LIKE 'transcript:%'
+      ORDER BY j.created_at DESC,j.rowid DESC LIMIT 1),1)=? AND COALESCE((SELECT report_job.transcript_review_enabled
+        FROM video_analyses analysis INNER JOIN analysis_jobs report_job ON report_job.id=analysis.analysis_job_id
+          AND report_job.organization_id=analysis.organization_id AND report_job.video_id=analysis.video_id
+        WHERE analysis.organization_id=v.organization_id AND analysis.video_id=v.id ORDER BY analysis.created_at DESC,analysis.rowid DESC LIMIT 1),?)=?)`;
+  const reviewValue = input.transcriptReviewEnabled === false ? 0 : 1;
+  const sourceConditionBindings = [libraryEntryId, organizationId, reviewValue, reviewValue, reviewValue];
   const results = await db.batch([
     db.prepare(`INSERT INTO project_video_references (id,organization_id,project_id,library_entry_id,purpose,status,created_by,created_at)
       SELECT ?,?,?,?,'analysis','active',?,? WHERE ${projectWriteAccessCondition} AND ${sourceCondition}
       ON CONFLICT(project_id,library_entry_id,purpose) DO UPDATE SET status='active',revoked_by=NULL,revoked_at=NULL,revoke_reason=NULL`)
-      .bind(reference.id, organizationId, projectId, libraryEntryId, userId, now, ...projectWriteAccessBindings(input), libraryEntryId, organizationId),
+      .bind(reference.id, organizationId, projectId, libraryEntryId, userId, now, ...projectWriteAccessBindings(input), ...sourceConditionBindings),
     db.prepare(`INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at)
       SELECT ?,?,?,?,'video.analysis_reused','video_library_entry',?,?,? WHERE ${projectWriteAccessCondition} AND ${sourceCondition}
       AND EXISTS(SELECT 1 FROM project_video_references WHERE organization_id=? AND project_id=? AND library_entry_id=? AND purpose='analysis' AND status='active')`)
-      .bind(crypto.randomUUID(), organizationId, projectId, userId, libraryEntryId, JSON.stringify({ ...origin, sourceVideoId: canonical.id, referenceAction: reference.action }), now, ...projectWriteAccessBindings(input), libraryEntryId, organizationId, organizationId, projectId, libraryEntryId),
+      .bind(crypto.randomUUID(), organizationId, projectId, userId, libraryEntryId, JSON.stringify({ ...origin, sourceVideoId: canonical.id, referenceAction: reference.action }), now, ...projectWriteAccessBindings(input), ...sourceConditionBindings, organizationId, projectId, libraryEntryId),
   ]);
   if (!results[0].meta.changes) {
     await assertProjectWriteAccess(db, input);
@@ -50,7 +66,7 @@ export async function resolveVideoSubmission(db: Database, input: Submission, va
     video: { id: canonical.id, platform: canonical.platform, source_type: canonical.source_type, title: canonical.title, author_name: canonical.author_name, status: canonical.status, created_at: canonical.created_at, is_reference: true, library_entry_id: canonical.library_entry_id,
       ...(sourceType === "url" ? { source_url: canonical.source_url } : { filename: canonical.filename, size_bytes: canonical.size_bytes }) },
     job: canonical.job_id
-      ? { id: canonical.job_id, video_id: canonical.id, status: canonical.job_status, progress: canonical.progress, current_stage: canonical.current_stage, error_code: canonical.error_code, error_message: canonical.error_message, retry_count: canonical.retry_count, analysis_profile: canonical.analysis_profile, created_at: canonical.job_created_at, updated_at: canonical.job_updated_at }
+      ? { id: canonical.job_id, video_id: canonical.id, status: canonical.job_status, progress: canonical.progress, current_stage: canonical.current_stage, error_code: canonical.error_code, error_message: canonical.error_message, retry_count: canonical.retry_count, analysis_profile: canonical.analysis_profile, transcript_review_enabled: canonical.transcript_review_enabled !== 0, created_at: canonical.job_created_at, updated_at: canonical.job_updated_at }
       : { id: `reused-${canonical.id}`, video_id: canonical.id, status: canonical.status === "ready" ? "completed" : "pending", progress: canonical.status === "ready" ? 100 : 0, current_stage: "复用公司素材库分析", retry_count: 0, analysis_profile: "shared", created_at: canonical.created_at, updated_at: canonical.created_at },
   });
 }
@@ -71,8 +87,8 @@ export function newVideoSubmissionStatements(db: Database, input: Submission & {
       .bind(videoId, organizationId, projectId, input.mediaAssetId ?? null, sourceType === "url" ? "douyin" : "upload", sourceType, input.sourceUrl ?? null, sourceHash, input.title, userId, userId, now, now, ...projectWriteAccessBindings(input)),
     db.prepare(`INSERT INTO video_library_entries (id, organization_id, source_video_id, category, tags_json, created_by, updated_by, created_at, updated_at) SELECT ?, ?, ?, 'other', '[]', ?, ?, ?, ? WHERE ${written}`)
       .bind(crypto.randomUUID(), organizationId, videoId, userId, userId, now, now, ...writtenBindings),
-    db.prepare(`INSERT INTO analysis_jobs (id, organization_id, project_id, video_id, source_type, source_ref, idempotency_key, status, analysis_profile, progress, current_stage, retry_count, created_by, updated_by, created_at, updated_at) SELECT ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 0, ?, 0, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE ${written}`)
-      .bind(jobId, organizationId, projectId, videoId, sourceType, sourceRef, sourceHash, analysisProfile, stage, userId, userId, ...writtenBindings),
+    db.prepare(`INSERT INTO analysis_jobs (id, organization_id, project_id, video_id, source_type, source_ref, idempotency_key, status, analysis_profile, transcript_review_enabled, progress, current_stage, retry_count, created_by, updated_by, created_at, updated_at) SELECT ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, 0, ?, 0, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE ${written}`)
+      .bind(jobId, organizationId, projectId, videoId, sourceType, sourceRef, sourceHash, analysisProfile, input.transcriptReviewEnabled === false ? 0 : 1, stage, userId, userId, ...writtenBindings),
     db.prepare(`INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) SELECT ?, ?, ?, ?, ?, 'video', ?, ?, ? WHERE ${written}`)
       .bind(crypto.randomUUID(), organizationId, projectId, userId, sourceType === "url" ? "video.url_submitted" : "video.uploaded", videoId, JSON.stringify(input.auditMetadata), now, ...writtenBindings),
   ];

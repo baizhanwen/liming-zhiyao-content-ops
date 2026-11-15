@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import hashlib
+import json
 import re
 import time
 from collections.abc import Callable, Mapping
@@ -38,6 +40,34 @@ from .visual import OcrEngine
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
+
+
+def _digest(value: Any) -> str:
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
+
+
+def _transcript_payload(transcript: TranscriptOutput) -> dict[str, Any]:
+    return {"language": transcript.language, "confidence": transcript.confidence,
+            "segments": [{"start_ms": row.start_ms, "end_ms": row.end_ms, "text": row.text,
+                          "confidence": row.confidence} for row in transcript.segments]}
+
+
+def _read_transcript(value: Any) -> TranscriptOutput:
+    if not isinstance(value, Mapping) or not isinstance(value.get("segments"), list):
+        raise ValueError("invalid saved transcript")
+    rows = []
+    for row in value["segments"]:
+        if (not isinstance(row, Mapping) or type(row.get("start_ms")) is not int
+                or type(row.get("end_ms")) is not int or not isinstance(row.get("text"), str)):
+            raise ValueError("invalid saved transcript segment")
+        rows.append(TranscriptSegment(row["start_ms"], row["end_ms"], row["text"], row.get("confidence")))
+    return TranscriptOutput(str(value.get("language") or "zh-CN"), tuple(rows), value.get("confidence"))
+
+
+def _manual_source_hash(job: ClaimedJob) -> str | None:
+    manual = _manual_transcript(job)
+    return _digest(_transcript_payload(manual)) if manual is not None else None
 
 
 def _manual_transcript(job: ClaimedJob) -> TranscriptOutput | None:
@@ -119,9 +149,10 @@ def _metadata_payload(metadata: SourceMetadata | None) -> dict[str, Any] | None:
     }
 
 
-def _evidence_checkpoint(media: NormalizedMedia, transcript: TranscriptOutput, visuals: VisualOutput, metadata: SourceMetadata | None) -> dict[str, Any]:
+def _evidence_checkpoint(media: NormalizedMedia, transcript: TranscriptOutput, visuals: VisualOutput, metadata: SourceMetadata | None, *, transcript_review_enabled: bool = True) -> dict[str, Any]:
     return {
         "checkpoint_version": 1,
+        "transcript_review_enabled": transcript_review_enabled,
         "media": {
             "duration_ms": media.info.duration_ms, "width": media.info.width, "height": media.info.height,
             "video_codec": media.info.video_codec, "audio_codec": media.info.audio_codec,
@@ -145,6 +176,11 @@ def _evidence_checkpoint(media: NormalizedMedia, transcript: TranscriptOutput, v
 def _restore_evidence_checkpoint(job: ClaimedJob, workspace: Path) -> tuple[NormalizedMedia, TranscriptOutput, VisualOutput, SourceMetadata | None] | None:
     value = job.checkpoint
     if job.checkpoint_stage not in {"evidence_ready", "segment_progress"} or not isinstance(value, Mapping) or value.get("checkpoint_version") != 1:
+        return None
+    if (value.get("transcript_review_enabled", True) is not
+            (job.source.get("transcript_review_enabled") is not False)):
+        # Reviewed checkpoints may already contain subtitle substitutions. A
+        # change of mode must reacquire the unedited source instead of relabeling it.
         return None
     try:
         media_value = value["media"]; transcript_value = value["transcript"]; visuals_value = value["visuals"]
@@ -207,6 +243,52 @@ class AnalysisPipeline:
         self.checkpoints = checkpoints
         self.heartbeat_seconds = heartbeat_seconds
 
+    def _phase(self, phase: str) -> None:
+        monitor = getattr(self, "runtime_monitor", None)
+        if callable(monitor):
+            monitor("phase", phase)
+
+    def _speech_fingerprint(self) -> str:
+        configured = getattr(self, "asr_fingerprint", None)
+        if isinstance(configured, str) and re.fullmatch(r"[a-f0-9]{64}", configured):
+            return configured
+        return _digest({"version": "injected-asr.v1", "class": type(self.speech).__module__ + "." + type(self.speech).__qualname__,
+                        **{name: value for name in ("backend", "model", "language", "device")
+                           if isinstance(value := getattr(self.speech, name, None), (str, int, bool))}})
+
+    def _restore_transcript(self, job: ClaimedJob) -> Mapping[str, Any] | None:
+        value = job.checkpoint
+        if job.checkpoint_stage != "transcript_ready" or not isinstance(value, Mapping) or value.get("checkpoint_version") != 2:
+            return None
+        try:
+            if (value.get("transcript_review_enabled") is not (job.source.get("transcript_review_enabled") is not False)
+                    or value.get("manual_source_hash") != _manual_source_hash(job)
+                    or value.get("asr_fingerprint") != self._speech_fingerprint()
+                    or _digest(value.get("transcript")) != value.get("transcript_sha256")):
+                return None
+            _read_transcript(value["transcript"])
+            source = value["source_asset"]
+            if (not isinstance(value.get("media"), Mapping) or not isinstance(source, Mapping)
+                    or not isinstance(source.get("id"), str) or not source["id"]
+                    or not isinstance(source.get("sha256"), str) or not re.fullmatch(r"[a-f0-9]{64}", source["sha256"])
+                    or type(source.get("size_bytes")) is not int or source["size_bytes"] <= 0
+                    or source.get("kind") not in {"source_video", "source_audio"}):
+                return None
+            return value
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def _save_transcript(self, job: ClaimedJob, media: NormalizedMedia, transcript: TranscriptOutput,
+                         source_asset: Mapping[str, Any], metadata: SourceMetadata | None) -> None:
+        payload = _transcript_payload(transcript)
+        value = {"checkpoint_version": 2, "transcript": payload, "transcript_sha256": _digest(payload),
+                 "media": _evidence_checkpoint(media, transcript, VisualOutput(), metadata)["media"],
+                 "source_asset": {name: source_asset[name] for name in ("id", "sha256", "size_bytes", "kind")},
+                 "source_metadata": _metadata_payload(metadata), "asr_fingerprint": self._speech_fingerprint(),
+                 "transcript_review_enabled": job.source.get("transcript_review_enabled") is not False,
+                 "manual_source_hash": _manual_source_hash(job)}
+        self.checkpoints.save(job, "transcript_ready", value)
+
     def _run_monitored(
         self,
         operation: Callable[[], T],
@@ -230,13 +312,27 @@ class AnalysisPipeline:
 
     def _extract_manuscript(
         self, current: ClaimedJob, media: NormalizedMedia, manual: TranscriptOutput | None,
-        workspace: Path, heartbeat,
+        workspace: Path, heartbeat, *, restored_raw: TranscriptOutput | None = None,
+        source_asset: Mapping[str, Any] | None = None, source_metadata: SourceMetadata | None = None,
     ) -> tuple[ClaimedJob, TranscriptOutput]:
         from .manuscript_punctuation import punctuate_manuscript
         from .subtitle_evidence import SubtitleRecovery, recover_burned_subtitles
 
-        current = heartbeat("transcribing", 35, "正在从原声提取完整口播稿")
-        if manual is not None:
+        self._phase("speech")
+        current = heartbeat("transcribing", max(35, current.progress), "已复用完整原始转写" if restored_raw is not None else "正在从原声提取完整口播稿")
+        counted_progress = [False]
+        observer = getattr(heartbeat, "observe", None)
+        def speech_progress(payload):
+            if isinstance(payload, Mapping) and "total_chunks" in payload:
+                counted_progress[0] = True
+            if callable(observer):
+                observer(payload)
+        set_progress = getattr(self.speech, "set_progress", None)
+        if callable(set_progress):
+            set_progress(speech_progress)
+        if restored_raw is not None:
+            transcript = restored_raw
+        elif manual is not None:
             transcript = manual
         elif media.audio_path is not None:
             observe(heartbeat, "model_transcription", transcribed_chunks=0, total_chunks=1)
@@ -244,14 +340,32 @@ class AnalysisPipeline:
                 lambda: self.speech.transcribe(media.audio_path), current, heartbeat,
                 "transcribing", 35, "正在转写完整音轨",
             )
-            transcript = clean_transcript(raw)
+            transcript = raw
         else:
             transcript = TranscriptOutput("zh-CN", ())
+        if source_asset is not None and restored_raw is None:
+            # Persist the unedited words before any subtitle/OCR or visual work.
+            # A later isolated-stage timeout must not pay for ASR a second time.
+            self._phase("artifacts")
+            current, _ = self._run_monitored(
+                lambda: self._save_transcript(current, media, transcript, source_asset, source_metadata),
+                current, heartbeat, "transcribing", max(36, current.progress), "正在保存转写恢复检查点",
+            )
+            persist_raw = getattr(self.artifacts, "persist_manuscript", None)
+            if callable(persist_raw) and transcript.segments:
+                current, _ = self._run_monitored(
+                    lambda: persist_raw(current, transcript, workspace, {}, manual=manual is not None, original=transcript),
+                    current, heartbeat, "transcribing", max(36, current.progress), "正在保存完整原始转写",
+                )
         if not transcript.segments:
             return current, transcript
 
+        if current.source.get("transcript_review_enabled") is not False and manual is None:
+            transcript = clean_transcript(transcript)
         recovered = SubtitleRecovery(transcript, {})
-        if manual is None and media.info.video_codec and self.manuscript_ocr is not None:
+        review_enabled = current.source.get("transcript_review_enabled") is not False
+        if review_enabled and manual is None and media.info.video_codec and self.manuscript_ocr is not None:
+            self._phase("subtitle")
             def read_captions():
                 try:
                     read_timing = getattr(self.speech, "timing_transcript_for", None)
@@ -264,14 +378,22 @@ class AnalysisPipeline:
                     logger.warning("同期字幕读取失败，保留原声转写 (%s)", type(error).__name__)
                     return SubtitleRecovery(transcript, {})
             current, recovered = self._run_monitored(
-                read_captions, current, heartbeat, "transcribing", 37, "正在对齐原片字幕与口播时间",
+                read_captions, current, heartbeat, "transcribing", max(37, current.progress), "正在对齐原片字幕与口播时间",
             )
-        manuscript = recovered.transcript if manual is not None else punctuate_manuscript(transcript, recovered.transcript)
+        manuscript = (transcript if not review_enabled or manual is not None
+                      else punctuate_manuscript(transcript, recovered.transcript))
         persist = getattr(self.artifacts, "persist_manuscript", None)
         if callable(persist):
+            self._phase("artifacts")
             # This scoped artifact survives downstream service errors and report retries.
-            persist(current, manuscript, workspace, recovered.evidence, manual=manual is not None, original=transcript)
-        observe(heartbeat, "model_transcription", transcribed_chunks=1, total_chunks=1)
+            if source_asset is not None:
+                current, _ = self._run_monitored(
+                    lambda: persist(current, manuscript, workspace, recovered.evidence, manual=manual is not None, original=transcript),
+                    current, heartbeat, "transcribing", max(37, current.progress), "正在保存口播稿与字幕依据",
+                )
+            else:
+                persist(current, manuscript, workspace, recovered.evidence, manual=manual is not None, original=transcript)
+        observe(heartbeat, "model_transcription", **({"transcribed_chunks": 1, "total_chunks": 1} if not counted_progress[0] else {}))
         return current, manuscript
 
     def _run_structure(
@@ -285,6 +407,7 @@ class AnalysisPipeline:
         progress: int,
         stage: str,
     ) -> tuple[ClaimedJob, Any]:
+        self._phase("model")
         set_checkpoint = getattr(self.structure, "set_segment_checkpoint", None)
         set_unified = getattr(self.structure, "set_unified_checkpoint", None)
         latest = [current]
@@ -314,7 +437,8 @@ class AnalysisPipeline:
                 return updated
 
         if callable(set_checkpoint) and self.checkpoints is not None:
-            base_checkpoint = {**_evidence_checkpoint(media, transcript, visuals, source_metadata), **retry_metadata}
+            base_checkpoint = {**_evidence_checkpoint(media, transcript, visuals, source_metadata,
+                transcript_review_enabled=current.source.get("transcript_review_enabled") is not False), **retry_metadata}
 
             def persist_segment_progress(progress_payload: Mapping[str, Any]) -> None:
                 rows = progress_payload.get("segments")
@@ -328,7 +452,8 @@ class AnalysisPipeline:
 
             set_checkpoint(persist_segment_progress)
         if callable(set_unified) and self.checkpoints is not None:
-            base_checkpoint = {**_evidence_checkpoint(media, transcript, visuals, source_metadata), **retry_metadata}
+            base_checkpoint = {**_evidence_checkpoint(media, transcript, visuals, source_metadata,
+                transcript_review_enabled=current.source.get("transcript_review_enabled") is not False), **retry_metadata}
 
             def persist_unified_progress(payload: Mapping[str, Any]) -> None:
                 modules = payload.get("modules", {})
@@ -338,6 +463,7 @@ class AnalysisPipeline:
                 unified_stage[0] = ("正在更新并核对分析报告" if completed and payload.get("protocol_version") == "unified-analysis.v2" else
                     f"正在生成报告，已完成 {completed}/4 个内容部分" if completed else
                     "口播疑义已单独标记，正在分析可靠文字与画面" if needs_review else
+                    "正在按原始转写分析（未自动校对）" if isinstance(canonical_state, Mapping) and canonical_state.get("status") == "original" else
                     "口播已核对，正在分析选题、文案与画面" if canonical_state else "正在逐句核对口播")
                 observe(heartbeat, "model_analysis", completed=completed, total=4)
                 checkpoint_payload = {**base_checkpoint, "unified_progress": dict(payload)}
@@ -372,6 +498,9 @@ class AnalysisPipeline:
                 current = heartbeat("analyzing", max(84, job.progress), "已从证据检查点恢复，正在继续结构分析")
                 current, structure = self._run_structure(current, media, transcript, visuals, source_metadata, heartbeat, max(84, current.progress), "正在从证据检查点继续生成结构化结论")
                 return build_analysis_result(transcript, structure, source_metadata)
+            durable_transcript = (self.checkpoints is not None
+                and callable(getattr(type(self.artifacts), "restore_source", None)))
+            transcript_checkpoint = self._restore_transcript(job) if durable_transcript else None
             configure_visual_profile = getattr(self.visual, "set_analysis_profile", None)
             if callable(configure_visual_profile):
                 configure_visual_profile(job.analysis_profile)
@@ -379,33 +508,51 @@ class AnalysisPipeline:
             if callable(configure_source_progress):
                 configure_source_progress(getattr(heartbeat, "observe", None))
             observe(heartbeat, "public_page")
-            current = heartbeat("downloading", 5, "正在安全获取源媒体")
+            current = heartbeat("downloading", max(5, job.progress), "正在读取转写检查点绑定的原片" if transcript_checkpoint else "正在安全获取源媒体")
             current, acquired = self._run_monitored(
-                lambda: self.source.acquire(current, workspace / "source-media"),
+                (lambda: self.artifacts.restore_source(current, transcript_checkpoint["source_asset"], workspace / "source-media"))
+                    if transcript_checkpoint else (lambda: self.source.acquire(current, workspace / "source-media")),
                 current,
                 heartbeat,
                 "downloading",
-                8,
+                max(8, current.progress),
                 "正在下载源媒体并保持分析服务在线",
             )
             acquired = acquired if isinstance(acquired, AcquiredSource) else AcquiredSource(acquired)
+            if transcript_checkpoint and isinstance(transcript_checkpoint.get("source_metadata"), Mapping):
+                saved_metadata = transcript_checkpoint["source_metadata"]
+                acquired = replace(acquired, metadata=SourceMetadata(**{
+                    key: saved_metadata.get(key) for key in SourceMetadata.__dataclass_fields__}))
 
             observe(heartbeat, "validating_media", completed=1, total=1, downloaded_bytes=acquired.path.stat().st_size)
             current = heartbeat("downloading", max(8, current.progress), "已取得源媒体")
             observe(heartbeat, "audio_chunks")
-            current = heartbeat("processing", 18, "正在规范化媒体并提取音轨")
+            self._phase("media")
+            current = heartbeat("processing", max(18, current.progress), "正在规范化媒体并提取音轨")
             current, media = self._run_monitored(
                 lambda: self.media.prepare(acquired.path, workspace / "normalized"),
                 current,
                 heartbeat,
                 "processing",
-                22,
+                max(22, current.progress),
                 "正在规范化媒体并保持分析服务在线",
             )
             monitor = getattr(self, "runtime_monitor", None)
             if callable(monitor):
                 monitor("duration", media.info.duration_ms / 1000)
             manual_transcript = _manual_transcript(current)
+            source_asset = transcript_checkpoint["source_asset"] if transcript_checkpoint else None
+            if durable_transcript and source_asset is None:
+                self._phase("artifacts")
+                current, source_asset = self._run_monitored(
+                    lambda: self.artifacts.persist_source(current, media), current, heartbeat,
+                    "processing", max(25, current.progress), "正在保存原片以支持转写恢复",
+                )
+                if (not isinstance(source_asset, Mapping) or not isinstance(source_asset.get("id"), str)
+                        or not re.fullmatch(r"[a-f0-9]{64}", str(source_asset.get("sha256", "")))
+                        or type(source_asset.get("size_bytes")) is not int or source_asset["size_bytes"] <= 0):
+                    raise RuntimeError("Durable transcript source asset is unavailable")
+            restored_raw = _read_transcript(transcript_checkpoint["transcript"]) if transcript_checkpoint else None
             call_context = getattr(self.visual, "set_call_context", None)
             if callable(call_context):
                 call_context(current, getattr(self.structure, "call_recorder", None))
@@ -415,14 +562,17 @@ class AnalysisPipeline:
             prepared_transcript = manual_transcript
             transcript_only = current.source.get("transcript_only") is True
             extraction_started = time.monotonic()
-            if self.manuscript_ocr is not None or transcript_only or callable(getattr(self.artifacts, "persist_manuscript", None)):
-                current, prepared_transcript = self._extract_manuscript(current, media, manual_transcript, workspace, heartbeat)
+            if (durable_transcript or current.source.get("transcript_review_enabled") is False or self.manuscript_ocr is not None
+                    or transcript_only or callable(getattr(self.artifacts, "persist_manuscript", None))):
+                current, prepared_transcript = self._extract_manuscript(current, media, manual_transcript, workspace, heartbeat,
+                    restored_raw=restored_raw, source_asset=source_asset, source_metadata=acquired.metadata)
                 if transcript_only:
                     if not prepared_transcript.segments:
                         raise RuntimeError("Speech recognition: 这段素材没有识别到可提取的口播。")
                     current = heartbeat("extracting", 95, "正在保存完整口播稿")
                     persist_source = getattr(self.artifacts, "persist_source", None)
-                    if callable(persist_source):
+                    if callable(persist_source) and source_asset is None:
+                        self._phase("artifacts")
                         current, _ = self._run_monitored(
                             lambda: persist_source(current, media), current, heartbeat,
                             "extracting", 95, "正在保存原片与口播稿",
@@ -442,6 +592,7 @@ class AnalysisPipeline:
                 finally:
                     branch_timing[name] = round((time.monotonic() - began) * 1000)
 
+            self._phase("visual")
             with ThreadPoolExecutor(max_workers=2, thread_name_prefix="liming-evidence") as executor:
                 transcript_future = executor.submit(timed_branch, "transcription_elapsed_ms", lambda: self.speech.transcribe(media.audio_path)) if media.audio_path and prepared_transcript is None else None
                 visuals_future = executor.submit(timed_branch, "visual_elapsed_ms", lambda: self.visual.analyze(media, workspace / "visuals"))
@@ -503,10 +654,11 @@ class AnalysisPipeline:
             observe(heartbeat, "vision_complete", **({"transcribed_chunks": 1, "total_chunks": 1} if transcript_future is not None else {}), sampled_frames=len(visuals.keyframes), total_frames=len(visuals.keyframes))
             current = heartbeat("transcribing", max(68, current.progress), "语音与画面证据已取得")
             observe(heartbeat, "saving")
+            self._phase("artifacts")
             current = heartbeat("extracting", 70, "正在整理字幕、OCR 与关键帧证据")
             if self.artifacts:
                 persist_source = getattr(self.artifacts, "persist_source", None)
-                if callable(persist_source):
+                if callable(persist_source) and source_asset is None:
                     current, _source_asset = self._run_monitored(
                         lambda: persist_source(current, media), current, heartbeat,
                         "extracting", 72, "正在保存原片以支持报告中的时间定位",
@@ -521,7 +673,8 @@ class AnalysisPipeline:
                 )
             if self.checkpoints:
                 try:
-                    self.checkpoints.save(current, "evidence_ready", _evidence_checkpoint(media, transcript, visuals, acquired.metadata))
+                    self.checkpoints.save(current, "evidence_ready", _evidence_checkpoint(media, transcript, visuals, acquired.metadata,
+                        transcript_review_enabled=current.source.get("transcript_review_enabled") is not False))
                 except Exception as error:  # noqa: BLE001 - checkpoint is resumability only
                     logger.warning("Could not persist the analysis checkpoint: %s", error)
             observe(heartbeat, "model_analysis")

@@ -49,7 +49,9 @@ test("analysis retries resume from a durable evidence checkpoint", async () => {
   assert.match(schema, /checkpointStage: text\("checkpoint_stage"\)/);
   assert.match(migration, /ADD `checkpoint_json`/);
   assert.match(checkpoint, /parseCheckpointPayload/);
-  assert.match(checkpoint, /lease_expires_at > \?/);
+  assert.match(checkpoint, /lease_expires_at > strftime/);
+  assert.match(checkpoint, /payload\.attempt === null \? "version" : "attempt_count"/);
+  assert.match(checkpoint, /readTranscriptCheckpoint/);
   assert.match(claim, /checkpoint_stage IN \('evidence_ready', 'segment_progress'\)/);
   assert.match(claim, /job\.checkpoint_stage === "evidence_ready" \|\| job\.checkpoint_stage === "segment_progress"/);
   assert.match(retry, /\["partial", "failed"\]\.includes\(job\.status\)/);
@@ -58,6 +60,7 @@ test("analysis retries resume from a durable evidence checkpoint", async () => {
   assert.match(complete, /previous_spoken_script_set/);
   assert.match(pipeline, /_restore_evidence_checkpoint/);
   assert.match(workspace, /从检查点继续/);
+  assert.match(workspace, /复用口播继续/);
 });
 
 test("long videos use a bounded evidence budget and report coverage", async () => {

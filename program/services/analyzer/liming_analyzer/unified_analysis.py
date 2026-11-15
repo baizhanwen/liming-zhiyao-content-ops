@@ -112,7 +112,7 @@ def _schema_validation_issues(error: Exception) -> list[str]:
         if not callable(errors):
             continue
         try:
-            rows = errors(include_url=False, include_context=False, include_input=False)
+            rows = errors(include_url=False, include_context=True, include_input=False)
         except (TypeError, ValueError):
             continue
         for row in rows if isinstance(rows, list) else ():
@@ -129,6 +129,12 @@ def _schema_validation_issues(error: Exception) -> list[str]:
             issue = ".".join(map(str, location)) + ":" + code
             if len(issue) <= 180 and all(character.isascii() and (character.isalnum() or character in "_.:-") for character in issue):
                 issues.append(issue)
+                context = row.get("ctx")
+                if code == "too_long" and isinstance(context, Mapping):
+                    actual, maximum = context.get("actual_length"), context.get("max_length")
+                    if (type(actual) is int and type(maximum) is int
+                            and 0 <= maximum < actual <= 1_000_000):
+                        issues.append(f"{issue}:actual_{actual}:limit_{maximum}")
     return list(dict.fromkeys(issues))[:24]
 
 
@@ -303,7 +309,7 @@ def _report_revalidation_only(job: Any, existing: Mapping[str, Any], signature: 
     if (job.checkpoint.get("retry_module_keys") or job.checkpoint.get("retry_review_segment_ids")
             or existing.get("source_signature") != signature or existing.get("protocol_version") != protocol
             or not isinstance(existing.get("canonical"), Mapping)
-            or existing["canonical"].get("status") not in {"completed", "needs_review", "not_applicable"}
+            or existing["canonical"].get("status") not in {"completed", "needs_review", "not_applicable", "original"}
             or not isinstance(modules, Mapping)
             or not all(isinstance(modules.get(module), Mapping)
                        and modules[module].get("status") == "completed"
@@ -505,6 +511,8 @@ def analyze_unified(analyzer: Any, job: Any, media: Any, transcript: Any, visual
                     for index, row in enumerate(findings_by_module.get(module, []), 1)]
         diag = diagnostics.get("content_classification:" + module, _empty_diagnostics(
             reused=module in bundle.get("module_results", {}) and module in existing.get("modules", {})))
+        if bundle.get("local_recovery", {}).get(module):
+            diag = {**diag, "local_recovery": bundle["local_recovery"][module]}
         status = state["status"]
         if status == "failed" and canonical["status"] == "failed":
             diag = {**diag, "failure_kind": "canonical_failed"}
@@ -515,6 +523,8 @@ def analyze_unified(analyzer: Any, job: Any, media: Any, transcript: Any, visual
             state.update(status=status, reason="evidence_invalid",
                          validation={"passed": False, "issues": ["module_findings_missing"]})
             diag = {**diag, "failure_kind": "evidence_invalid"}
+        elif status == "completed":
+            diag = {**diag, "failure_kind": None}
         sections.append({"key": module, "status": status, "findings": findings,
                          "reason": None if status == "completed" else state.get("reason") or "required_evidence_not_acquired",
                          "diagnostics": diag})

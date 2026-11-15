@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from importlib.resources import files
 from itertools import pairwise
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 PROTOCOL_VERSION = "content-module-wire.v1"
 MODULES = ("text_topic_structure_audience", "text_expression_value", "visual", "synthesis")
@@ -106,6 +106,55 @@ def _indices(value: Any, length: int, code: str, *, maximum: int = 8) -> list[in
     if len(set(result)) != len(result):
         _fail(code)
     return result
+
+
+def safe_local_recovery(value: Any) -> list[dict[str, Any]]:
+    """Small public diagnostics contain paths/counts only, never candidate text."""
+    if not isinstance(value, list):
+        return []
+    result = []
+    for row in value[:128]:
+        if (not isinstance(row, Mapping) or set(row) != {
+            "path", "action", "original_count", "retained_count", "limit",
+        } or not isinstance(row["path"], str)
+                or not re.fullmatch(r"[cguf]\.\d+(?:\.e)?", row["path"])
+                or not isinstance(row["action"], str)
+                or row["action"] not in {"deduplicated", "omitted", "unknown"}
+                or any(type(row[key]) is not int or not 0 <= row[key] <= 1_000_000
+                       for key in ("original_count", "retained_count", "limit"))
+                or row["retained_count"] > row["original_count"]):
+            continue
+        result.append(dict(row))
+    return result
+
+
+def _validated_reference_rows(response: Mapping[str, Any], context: CompactContext,
+                              recovery: list[dict[str, Any]]) -> dict[str, Any]:
+    """Validate *all* source indices before deduplicating or omitting any row.
+
+    The SDK knows only list lengths, so this belongs to the context-aware gate.
+    A bad reference in an over-limit row must never disappear with that row.
+    """
+    normalized = dict(response)
+    for field in ("c", "g", "u", "f"):
+        values = response.get(field)
+        if not isinstance(values, list):
+            continue
+        rows = []
+        for index, row in enumerate(values):
+            if isinstance(row, Mapping) and isinstance(row.get("e"), list):
+                references = row["e"]
+                indices = [_index(item, len(context.evidence), "compact_evidence_index")
+                           for item in references]
+                unique = list(dict.fromkeys(indices))
+                if len(unique) != len(indices):
+                    row = {**row, "e": unique}
+                    recovery.append({"path": f"{field}.{index}.e", "action": "deduplicated",
+                                     "original_count": len(indices), "retained_count": len(unique),
+                                     "limit": 24 if context.review_context is not None else 8})
+            rows.append(row)
+        normalized[field] = rows
+    return normalized
 
 
 def _short_text(value: Any, maximum: int, code: str) -> str:
@@ -319,6 +368,9 @@ def prepare_compact_request(module_key: str, payload: Mapping[str, Any]) -> tupl
             "不分析语气/配乐/音效/音量/静音。ASR与OCR冲突时保留疑义，不擅改专名和数字。",
         ],
     }
+    if payload.get("transcript_review_enabled") is False:
+        wire["transcript_review_enabled"] = False
+        wire["rules"].append("本次未启用自动口播校对。转写文字保持原样，只基于给定原文分析，不把原稿标为已自动核对。")
     if module_key == MODULES[0]:
         wire["rules"].append("有依据时给具体主题/实际问题/人群场景，并按语义合并少量结构段；不是逐句分段。")
     elif module_key == MODULES[1]:
@@ -599,7 +651,9 @@ def _complete_classification_evidence(
     return completed
 
 
-def decode_compact_response(response: Any, context: CompactContext) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def decode_compact_response(response: Any, context: CompactContext, *,
+                            local_recovery: list[dict[str, Any]] | None = None,
+                            ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     if hasattr(response, "model_dump"):
         response = response.model_dump(mode="json")
     if not isinstance(response, Mapping) or set(response) != {"c", "g", "u", "f"}:
@@ -609,12 +663,27 @@ def decode_compact_response(response: Any, context: CompactContext) -> tuple[dic
         information_type_count=len(context.information_type_ids), evidence_count=len(context.evidence),
         evidence_reference_limit=24 if context.review_context is not None else 8,
     )
+    recovery: list[dict[str, Any]] = []
+    response = _validated_reference_rows(response, context, recovery)
     for key, maximum in (("c", len(context.dimensions)), ("g", context.limits["segments"]),
                          ("u", context.limits["information_units"]), ("f", context.limits["findings"])):
         if not isinstance(response[key], list) or len(response[key]) > maximum:
             _fail(f"compact_{key}_count")
     evidence = context.evidence
     evidence_reference_limit = 24 if context.review_context is not None else 8
+    omitted_kinds: set[str] = set()
+    omitted_units: set[int] = set()
+    dependent_dimensions: set[str] = set()
+
+    def recovered(path: str, action: str, row: Mapping[str, Any]) -> None:
+        recovery.append({"path": path, "action": action, "original_count": len(row.get("e", [])),
+                         "retained_count": 0, "limit": evidence_reference_limit})
+
+    def over_limit(row: Mapping[str, Any], path: str) -> bool:
+        if isinstance(row.get("e"), list) and len(row["e"]) > evidence_reference_limit:
+            recovered(path, "omitted", row)
+            return True
+        return False
     def refs(row: Mapping[str, Any]) -> list[str]:
         return [evidence[index]["id"] for index in _indices(row.get("e", []), len(evidence), "compact_evidence_index",
                                                          maximum=evidence_reference_limit)]
@@ -624,7 +693,7 @@ def decode_compact_response(response: Any, context: CompactContext) -> tuple[dic
     classifications = []
     seen: set[int] = set()
     texts: list[str] = []
-    for row in response["c"]:
+    for row_index, row in enumerate(response["c"]):
         if not isinstance(row, Mapping) or set(row) - {"d", "s", "t", "p", "e", "r"}:
             _fail("compact_classification_shape")
         index = _index(row.get("d"), len(context.dimensions), "compact_dimension_index")
@@ -666,6 +735,8 @@ def decode_compact_response(response: Any, context: CompactContext) -> tuple[dic
                 # a known claim. This one uniquely identified row is unknown.
                 classifications.append({"dimension_id": dimension["id"], "state": "unknown",
                     "tags": None, "primary_tag": None, "reason": local_reason, "evidence_ids": []})
+                if len(source_indices) > evidence_reference_limit:
+                    recovered(f"c.{row_index}.e", "unknown", row)
                 continue
         tags = selected_tags(dimension, row.get("t", []))
         primary_index = row.get("p")
@@ -787,10 +858,19 @@ def decode_compact_response(response: Any, context: CompactContext) -> tuple[dic
                 kind in {"structure", "cta", "emotion", "repetition"} and (not tags or none in tags)
             ):
                 _fail(f"compact_segment_positive_tags_required:k{row['k']}")
+        text = _short_text(row.get("x"), context.limits["text_chars"], "compact_segment_text")
+        if over_limit(row, f"g.{index}.e"):
+            # Never keep a prefix of an event's references: doing so can shorten
+            # its real interval or detach its quote from the only proving source.
+            omitted_kinds.add(kind)
+            if dimension is not None:
+                dependent_dimensions.add(dimension["id"])
+            dependent_dimensions.update({"cta": {"cta.position"}, "structure": {"structure.type"},
+                                         "topic_subject": {"topic.granularity"}}.get(kind, set()))
+            continue
         ids = refs(row)
         if not ids:
             _fail("compact_segment_missing_evidence")
-        text = _short_text(row.get("x"), context.limits["text_chars"], "compact_segment_text")
         texts.append(text)
         source = [evidence[item] for item in _indices(row.get("e", []), len(evidence), "compact_evidence_index",
                                                      maximum=evidence_reference_limit)]
@@ -808,27 +888,65 @@ def decode_compact_response(response: Any, context: CompactContext) -> tuple[dic
         if not isinstance(row, Mapping) or set(row) - {"t", "e", "x", "q"}:
             _fail("compact_unit_shape")
         text = _short_text(row.get("x"), context.limits["text_chars"], "compact_unit_text")
-        texts.append(text)
         duplicate = row.get("q")
         if duplicate is not None:
             duplicate = _index(duplicate, index, "compact_duplicate_unit_index")
+        type_index = _index(row.get("t"), len(context.information_type_ids), "compact_information_type")
+        if over_limit(row, f"u.{index}.e"):
+            omitted_units.add(index)
+            dependent_dimensions.add("value.information_type")
+            continue
         ids = refs(row)
         if not ids:
             _fail("compact_unit_missing_evidence")
+        if duplicate in omitted_units:
+            recovered(f"u.{index}", "omitted", row)
+            omitted_units.add(index)
+            dependent_dimensions.add("value.information_type")
+            continue
+        texts.append(text)
         units.append({
-            "id": f"u{index}", "type_tag": context.information_type_ids[_index(
-                row.get("t"), len(context.information_type_ids), "compact_information_type",
-            )], "text": text, "evidence_ids": ids,
+            "id": f"u{index}", "type_tag": context.information_type_ids[type_index],
+            "text": text, "evidence_ids": ids,
             "duplicate_of": f"u{duplicate}" if duplicate is not None else None,
         })
+    # A removed event/unit proves neither presence nor absence. In particular,
+    # keep no positive or "none" label whose required annotation was omitted.
+    for row in classifications:
+        if row["dimension_id"] in dependent_dimensions and row["state"] == "known":
+            source_row_index = next(index for index, source in enumerate(response["c"])
+                                    if context.dimensions[source["d"]]["id"] == row["dimension_id"])
+            recovered(f"c.{source_row_index}", "unknown", response["c"][source_row_index])
+            row.update(state="unknown", tags=None, primary_tag=None,
+                       reason="annotation_reference_limit_exceeded", evidence_ids=[])
     findings = []
-    for row in response["f"]:
+    omitted_sections = set().union(*({"topic_subject": {"topic"}, "topic_problem": {"topic"},
+        "audience_use_case": {"audience"}, "structure": {"structure"}, "cta": {"cta"},
+        "emotion": {"emotion"}, "repetition": {"value"}}.get(kind, set()) for kind in omitted_kinds))
+    if omitted_units:
+        omitted_sections.add("value")
+    seen_finding_sections: set[str] = set()
+    for index, row in enumerate(response["f"]):
         if not isinstance(row, Mapping) or set(row) != {"k", "e", "x"}:
             _fail("compact_finding_shape")
         section, _label = FINDING_SECTIONS[context.module_key][_index(
             row.get("k"), len(FINDING_SECTIONS[context.module_key]), "compact_finding_section",
         )]
-        findings.append({"section": section, "text": row.get("x"), "evidence_ids": refs(row)})
+        if section in seen_finding_sections:
+            _fail("finding_section_invalid")
+        seen_finding_sections.add(section)
+        text = _short_text(row.get("x"), context.limits["text_chars"], "finding_text_invalid")
+        if over_limit(row, f"f.{index}.e"):
+            continue
+        ids = refs(row)
+        if not ids:
+            _fail("finding_evidence_invalid")
+        if section in omitted_sections:
+            # Do not retain a prose conclusion in the same area after dropping
+            # the event/unit that supplied its structured support.
+            recovered(f"f.{index}", "omitted", row)
+            continue
+        findings.append({"section": section, "text": text, "evidence_ids": ids})
     findings = validate_compact_findings(
         context.module_key, findings, {row["id"] for row in evidence}, context.profile,
         evidence_sources={row["id"]: row["source"] for row in evidence},
@@ -838,6 +956,8 @@ def decode_compact_response(response: Any, context: CompactContext) -> tuple[dic
     if sum(map(len, texts)) > context.limits["total_text_chars"]:
         _fail("compact_total_text_budget_exceeded")
     classifications = _complete_classification_evidence(classifications, segments, units, context)
+    if local_recovery is not None:
+        local_recovery.extend(safe_local_recovery(recovery))
     return {"classifications": classifications, "segments": segments, "information_units": units}, findings
 
 
@@ -873,24 +993,25 @@ def create_compact_response_model(module_key: str, *, dimension_count: int | Non
         or not 1 <= dimension_count <= maximum
     ):
         raise ValueError("dimension_count outside module bounds")
+    reference = Annotated[int, Field(strict=True)]
     classification = create_model("CompactClassification", __config__=config,
         d=(int, Field(ge=0, le=(dimension_count or maximum) - 1)), s=(Literal[0, 1, 2, 3], ...),
         t=(list[int], Field(default_factory=list, max_length=24)), p=(int | None, None),
-        e=(list[int], Field(default_factory=list, max_length=reference_limit)),
+        e=(list[reference], Field(default_factory=list, max_length=reference_limit)),
         r=(str | None, Field(default=None, max_length=80)))
     kind_type = Literal[SEGMENT_KINDS[module_key]] if SEGMENT_KINDS[module_key] else str
     segment = create_model("CompactSegment", __config__=config,
         k=(kind_type, ...), t=(list[int], Field(max_length=24)),
-        e=(list[int], Field(min_length=1, max_length=reference_limit)),
+        e=(list[reference], Field(min_length=1, max_length=reference_limit)),
         x=(str, Field(min_length=1, max_length=220)))
     unit = create_model("CompactUnit", __config__=config,
         t=(int, Field(ge=0, le=information_type_count - 1, strict=True,
                       description="Single information type index from the input u table, for example 3.")),
-        e=(list[int], Field(min_length=1, max_length=reference_limit)),
+        e=(list[reference], Field(min_length=1, max_length=reference_limit)),
         x=(str, Field(min_length=1, max_length=220)), q=(int | None, None))
     finding = create_model("CompactFinding", __config__=config,
         k=(int, Field(ge=0, le=len(FINDING_SECTIONS[module_key]) - 1)),
-        e=(list[int], Field(min_length=1, max_length=reference_limit)),
+        e=(list[reference], Field(min_length=1, max_length=reference_limit)),
         x=(str, Field(min_length=1, max_length=220)))
     @model_validator(mode="before")
     @classmethod

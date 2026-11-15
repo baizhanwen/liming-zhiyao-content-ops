@@ -215,7 +215,8 @@ export type ContentComparisonFilters = { topicCategory?: string; contentForm?: s
 export type ContentComparisonEntry = { entryId: string; videoId: string; title: string; status: "included" | "excluded"; analysisId: string | null; analysisCreatedAt: string | null; excludedReason: ContentComparisonExclusion | null; contentAnalysis: ReturnType<typeof projectContentComparisonEntry> | null };
 export type ContentDimensionDistribution = { dimensionId: string; label: string; cardinality: "single" | "multiple"; totalVideos: number; knownCount: number; stateCounts: Record<ContentState, number>; tags: Array<{ id: string; label: string; count: number; percent: number | null; primaryCount: number; primaryPercent: number | null }> };
 const canonicalJson = (value: unknown): string => Array.isArray(value) ? `[${value.map(canonicalJson).join(",")}]` : isRecord(value) ? `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}` : JSON.stringify(value) ?? "null";
-export const contentReviewCoverage = (content: ContentAnalysis) => !content.methodology.transcript_review ? "not_recorded" as const
+export const contentReviewCoverage = (content: ContentAnalysis) => content.methodology.transcript_basis === "original" ? "original" as const
+  : !content.methodology.transcript_review ? "not_recorded" as const
   : content.methodology.transcript_review.uncertain_segment_ids.length ? "accepted_subset" as const : "verified" as const;
 const percent = (count: number, denominator: number) => denominator ? Math.round(count * 10_000 / denominator) / 100 : null;
 

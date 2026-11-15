@@ -95,7 +95,7 @@ function serializeBenchmark(row: BenchmarkRow): ProjectAssistantBenchmark {
     structure: stringList(safe ? JSON.stringify(safe.structure ?? []) : row.structure_json, 16, 500),
     highlights: stringList(safe ? JSON.stringify(safe.highlights ?? []) : row.highlights_json, 12, 700),
     recommendations: stringList(safe ? JSON.stringify(safe.recommendations ?? []) : row.recommendations_json, 12, 700),
-    spokenScript: stringList(safe ? JSON.stringify((safe.review_coverage as { manuscript?: string } | undefined)?.manuscript === "verified" ? safe.spoken_script : []) : row.spoken_script_json, 8, 1_500),
+    spokenScript: stringList(safe ? JSON.stringify(["verified", "original"].includes((safe.review_coverage as { manuscript?: string } | undefined)?.manuscript ?? "") ? safe.spoken_script : []) : row.spoken_script_json, 8, 1_500),
     content: analysisReportSourceText(row.report_json).slice(0, 12_000),
     performance: {
       plays: row.plays === null ? null : Number(row.plays),

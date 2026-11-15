@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import gzip
+import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import replace
@@ -48,14 +49,31 @@ class ApiArtifactStore:
         self.client = client
 
     def persist_source(self, job: ClaimedJob, media: NormalizedMedia) -> Mapping[str, Any] | None:
-        if job.source_type != "url":
-            return None
+        with media.source_path.open("rb") as source:
+            digest = hashlib.file_digest(source, "sha256").hexdigest()
+        size = media.source_path.stat().st_size
+        if (job.source_type == "upload" and job.source.get("media_asset_id")
+                and job.source.get("sha256") and type(job.source.get("size_bytes")) is int):
+            if (job.source.get("sha256") and job.source["sha256"] != digest
+                    or job.source.get("size_bytes") is not None and job.source["size_bytes"] != size):
+                raise ValueError("Uploaded source no longer matches its durable asset")
+            return {"id": job.source["media_asset_id"], "sha256": digest, "size_bytes": size,
+                    "kind": "source_video" if media.info.video_codec else "source_audio"}
         suffix = media.source_path.suffix.lower()
         content_type = {".webm": "video/webm", ".mov": "video/quicktime", ".mp3": "audio/mpeg",
                         ".m4a": "audio/mp4", ".wav": "audio/wav", ".ogg": "audio/ogg"}.get(suffix, "video/mp4" if media.info.video_codec else "audio/mp4")
-        return self.client.upload_artifact(job,
+        result = self.client.upload_artifact(job,
             kind="source_video" if media.info.video_codec else "source_audio",
             path=media.source_path, content_type=content_type)
+        if result.get("sha256") and result["sha256"] != digest:
+            raise ValueError("Persisted source hash does not match the original media")
+        if result.get("size_bytes", result.get("sizeBytes", size)) != size:
+            raise ValueError("Persisted source size does not match the original media")
+        return {**result, "sha256": digest, "size_bytes": size,
+                "kind": "source_video" if media.info.video_codec else "source_audio"}
+
+    def restore_source(self, job: ClaimedJob, asset: Mapping[str, Any], destination: Path) -> Path:
+        return self.client.download_checkpoint_source(job, destination, asset)
 
     def persist_manuscript(self, job: ClaimedJob, transcript: TranscriptOutput, workspace: Path,
                            evidence: Mapping[str, Any], *, manual: bool, original: TranscriptOutput | None = None) -> None:

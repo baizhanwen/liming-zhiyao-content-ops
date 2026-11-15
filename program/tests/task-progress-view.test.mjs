@@ -83,7 +83,7 @@ test("server timestamps support measured legacy facts without comparing server a
 test("metric rendering uses only finite measured integer counters and never arbitrary payload fields", () => {
   assert.deepEqual(taskMetricItems({completed: 1, total: 3, transcribed_chunks: 2, total_chunks: 3, downloaded_bytes: 2097152,
     proxy_bytes: Infinity, sampled_frames: -1, retry_attempt: 1.5, key: "private-fixture", detail: "private-fixture"}, "model_analysis"),
-  ["等待文字服务响应：1 / 3", "已转写音频段：2 / 3", "实际取回数据：2.0 MB"]);
+  ["等待文字服务响应：1 / 3", "已处理音频分段：2 / 3", "实际取回数据：2.0 MB"]);
   assert.deepEqual(taskMetricItems({completed: NaN, total: 0, transcribed_chunks: "3", requests: Number.MAX_SAFE_INTEGER + 1}, "unknown"), []);
   assert.deepEqual(taskMetricItems({candidates_checked: 3, candidates_total: 4, vision_batches_completed: 1, vision_batches_total: 2, ocr_completed: 3, ocr_total: 4}, "model_vision"),
     ["已检查候选画面：3 / 4", "已完成视觉分析批次：1 / 2"]);
