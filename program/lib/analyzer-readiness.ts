@@ -1,3 +1,5 @@
+import { supportsConfiguredVision } from "./vision-capabilities";
+import type { VisualAnalysisMode } from "./visual-analysis-mode";
 import { env } from "cloudflare:workers";
 import { getD1 } from "../db/runtime";
 import { readEffectiveModelRuntime } from "./model-settings";
@@ -34,6 +36,7 @@ export async function readAnalyzerReadiness(organizationId: string, workerOnly =
   return {
     checkedAt: new Date(now).toISOString(),
     credentialConfigured: Boolean(token && !/change-me|replace-with/i.test(token)),
+    visualModelConfigured: !workerOnly && supportsConfiguredVision(runtime),
     modelConfigured: Boolean(runtime.ANALYZER_LLM_API_KEY?.trim() && runtime.ANALYZER_LLM_BASE_URL?.trim() && runtime.ANALYZER_LLM_MODEL?.trim() && runtime.ANALYZER_LLM_PROVIDER?.trim()),
     publicLinkCookieConfigured: false,
     publicLinkAuthenticationMode,
@@ -48,11 +51,12 @@ export async function readAnalyzerReadiness(organizationId: string, workerOnly =
   };
 }
 
-export function analyzerReadinessError(readiness: Awaited<ReturnType<typeof readAnalyzerReadiness>>, _requireCookie: boolean, workerOnly = false) {
+export function analyzerReadinessError(readiness: Awaited<ReturnType<typeof readAnalyzerReadiness>>, _requireCookie: boolean, workerOnly = false, visualAnalysisMode: VisualAnalysisMode = "hybrid") {
   // Retain the upload/link call contract; neither needs personal authentication.
   void _requireCookie;
   if (!readiness.credentialConfigured) return { code: "ANALYZER_CREDENTIAL_REQUIRED", message: "分析服务凭据尚未配置。" };
   if (!workerOnly && !readiness.modelConfigured) return { code: "ANALYZER_MODEL_REQUIRED", message: "结构分析模型尚未配置。" };
+  if (!workerOnly && visualAnalysisMode === "vision_only" && !readiness.visualModelConfigured) return { code: "ANALYZER_VISION_MODEL_REQUIRED", message: "纯视觉模式需要配置支持图片输入的视觉模型，请先在设置中完成配置。" };
   if (!readiness.analyzerOnline) return { code: "ANALYZER_OFFLINE", message: "后台分析服务尚未就绪，请稍候再试。" };
   return null;
 }

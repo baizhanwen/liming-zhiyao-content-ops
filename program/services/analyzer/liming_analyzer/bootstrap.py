@@ -27,6 +27,7 @@ from .quality_speech import build_quality_recognizer
 from .sources import PlatformSourceProvider, SkillCollectPublicVideoResolver
 from .vision_capabilities import resolve_vision_capability
 from .visual import KeyframeVisualAnalyzer, OpenAiCompatibleVisionEngine
+from .visual_mode import normalize_visual_analysis_mode
 
 T = TypeVar("T")
 
@@ -343,7 +344,8 @@ def _asr_fingerprint(settings, speech) -> str:
     return digest.hexdigest()
 
 
-def build_pipeline(settings: AnalyzerSettings, client: AnalyzerApiClient, *, transcript_only: bool = False) -> AnalysisPipeline:
+def build_pipeline(settings: AnalyzerSettings, client: AnalyzerApiClient, *, transcript_only: bool = False, visual_analysis_mode: str = "hybrid") -> AnalysisPipeline:
+    visual_analysis_mode = normalize_visual_analysis_mode(visual_analysis_mode)
     model_cache = Path(settings.model_cache).expanduser().resolve()
     model_cache.mkdir(parents=True, exist_ok=True)
     _configure_paddlex_model_source(settings.paddle_model_source)
@@ -376,21 +378,22 @@ def build_pipeline(settings: AnalyzerSettings, client: AnalyzerApiClient, *, tra
         raise RuntimeError("Unsupported ANALYZER_ASR_ENGINE; choose faster-whisper or funasr.")
     source = PlatformSourceProvider(client, SkillCollectPublicVideoResolver(ffmpeg=resolved_ffmpeg, ffprobe=resolved_ffprobe))
     artifact_store = ApiArtifactStore(client)
-    try:
-        ocr = _initialize_model_with_cache_repair(
-            "PaddleOCR visual recognition",
-            lambda: PaddleOcrEngine(
-                detection_model=settings.paddle_ocr_detection_model,
-                recognition_model=settings.paddle_ocr_recognition_model,
-            ),
-            model_cache / "paddlex", _paddlex_cache_paths(settings),
-        )
-    except RuntimeError:
-        if not transcript_only:
-            raise
-        import logging
-        logging.getLogger(__name__).warning("字幕识别模型未就绪，本次仅使用原声转写")
-        ocr = None
+    ocr = None
+    if visual_analysis_mode != "vision_only":
+        try:
+            ocr = _initialize_model_with_cache_repair(
+                "PaddleOCR visual recognition",
+                lambda: PaddleOcrEngine(
+                    detection_model=settings.paddle_ocr_detection_model,
+                    recognition_model=settings.paddle_ocr_recognition_model,
+                ),
+                model_cache / "paddlex", _paddlex_cache_paths(settings),
+            )
+        except RuntimeError:
+            if not transcript_only:
+                raise
+            import logging
+            logging.getLogger(__name__).warning("字幕识别模型未就绪，本次仅使用原声转写")
     if transcript_only:
         pipeline = AnalysisPipeline(source, media, speech, None, None, artifact_store, artifact_store, manuscript_ocr=ocr)
         pipeline.asr_fingerprint = _asr_fingerprint(settings, speech)
@@ -430,12 +433,15 @@ def build_pipeline(settings: AnalyzerSettings, client: AnalyzerApiClient, *, tra
         vision_unavailable_reason = (
             "独立视觉模型未配置；OCR 结果不会被当作真实画面分析。"
         )
+    if visual_analysis_mode == "vision_only" and vision_engine is None:
+        raise RuntimeError("Keyframe visual understanding: 纯视觉模式需要可用的视觉模型；" + vision_unavailable_reason)
     visual = KeyframeVisualAnalyzer(
         PySceneDetectFrameExtractor(media),
         ocr,
         vision_engine,
         vision_unavailable_reason=vision_unavailable_reason,
     )
+    visual.set_visual_analysis_mode(visual_analysis_mode)
     structure = InstructorStructureAnalyzer(
         api_key=settings.llm_api_key,
         base_url=settings.llm_base_url,

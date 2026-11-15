@@ -101,3 +101,31 @@ test("anonymous collection still enforces organization analysis quotas", async (
   assert.equal(result.status, 429);
   assert.equal((await result.json()).error.code, "ANALYSIS_QUOTA_EXCEEDED");
 });
+
+test("pure visual preflight requires a supported image adapter, while hybrid retains existing readiness", async () => {
+  for (const [runtime, supported] of [
+    [{}, false],
+    [{ ANALYZER_VISION_PROVIDER: "deepseek", ANALYZER_VISION_MODEL: "deepseek-chat", ANALYZER_VISION_API_KEY: "synthetic-key", ANALYZER_VISION_BASE_URL: "https://model.example.invalid/v1" }, false],
+    [{ ANALYZER_VISION_PROVIDER: "openai", ANALYZER_VISION_MODEL: "text-only", ANALYZER_VISION_API_KEY: "synthetic-key", ANALYZER_VISION_BASE_URL: "https://model.example.invalid/v1" }, false],
+    [{ ANALYZER_VISION_PROVIDER: "minimax-token-plan", ANALYZER_VISION_API_KEY: "sk-cp-synthetic-only" }, true],
+    [{ ANALYZER_VISION_PROVIDER: "openai", ANALYZER_VISION_API_KEY: "sk-cp-synthetic-only" }, false],
+    [{ ANALYZER_VISION_PROVIDER: "minimax", ANALYZER_VISION_MODEL: "MiniMax-M3.1-Flash", ANALYZER_VISION_API_KEY: "synthetic-key", ANALYZER_VISION_BASE_URL: "https://api.minimax.cn/v1" }, true],
+    [{ ANALYZER_VISION_PROVIDER: "minimax", ANALYZER_VISION_MODEL: "text-only", ANALYZER_VISION_API_KEY: "synthetic-key", ANALYZER_VISION_BASE_URL: "https://api.minimax.cn/v1" }, false],
+    [{ ANALYZER_VISION_PROVIDER: "qwen", ANALYZER_VISION_MODEL: "qwen3-vl-plus", ANALYZER_VISION_API_KEY: "synthetic-key", ANALYZER_VISION_BASE_URL: "https://model.example.invalid/v1" }, true],
+  ]) {
+    const f = fixture({ runtime });
+    const { readAnalyzerReadiness, analyzerReadinessError } = f.load("lib/analyzer-readiness.ts");
+    const readiness = await readAnalyzerReadiness("organization-1");
+    assert.equal(readiness.visualModelConfigured, supported);
+    assert.equal(analyzerReadinessError(readiness, true), null);
+    const result = await f.load("lib/analysis-submission-availability.ts").checkNewAnalysisAvailability({ organizationId: "organization-1", userId: "user-1", requiresBrowser: true, visualAnalysisMode: "vision_only" });
+    if (supported) assert.equal(result, null);
+    else {
+      assert.equal(result.status, 503);
+      assert.equal((await result.json()).error.code, "ANALYZER_VISION_MODEL_REQUIRED");
+      assert.deepEqual(f.quotaChecks, []);
+    }
+    // Transcript-only extraction does not need a visual model, even if the job retains its visual preference.
+    assert.equal(analyzerReadinessError(readiness, true, true, "vision_only"), null);
+  }
+});

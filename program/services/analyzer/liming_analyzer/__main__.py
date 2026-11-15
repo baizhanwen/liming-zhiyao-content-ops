@@ -8,9 +8,10 @@ from dataclasses import replace
 
 from .api_client import AnalyzerApiClient, AnalyzerApiError, ClaimedJob, Processor
 from .bootstrap import AnalyzerSettings, build_client, build_pipeline
-from .worker import process_once, run_forever
 from .platform_runtime import InstanceAlreadyRunning
 from .task_progress import observe
+from .visual_mode import job_visual_analysis_mode
+from .worker import process_once, run_forever
 
 
 def build_lazy_processor(settings: AnalyzerSettings, client: AnalyzerApiClient, monitor=None) -> Processor:
@@ -22,10 +23,11 @@ def build_lazy_processor(settings: AnalyzerSettings, client: AnalyzerApiClient, 
         current_job = job
         fetch_configuration = getattr(client, "model_configuration", None)
         transcript_only = job.source.get("transcript_only") is True
+        visual_mode = job_visual_analysis_mode(job)
         active_settings = settings
         if not transcript_only and callable(fetch_configuration):
             active_settings = replace(settings, **fetch_configuration(job))
-        pipeline_key = (active_settings, transcript_only)
+        pipeline_key = (active_settings, transcript_only, visual_mode)
         if pipeline is None or pipeline_settings != pipeline_key:
             warm_status = "analyzing" if job.checkpoint_stage in {"evidence_ready", "segment_progress"} else "downloading"
             warm_message = "正在初始化本地分析模型（首次使用可能需要下载）"
@@ -54,8 +56,9 @@ def build_lazy_processor(settings: AnalyzerSettings, client: AnalyzerApiClient, 
             )
             thread.start()
             try:
-                pipeline = (build_pipeline(active_settings, client, transcript_only=True)
-                            if transcript_only else build_pipeline(active_settings, client))
+                options = {"visual_analysis_mode": visual_mode} if visual_mode != "hybrid" else {}
+                pipeline = (build_pipeline(active_settings, client, transcript_only=True, **options)
+                            if transcript_only else build_pipeline(active_settings, client, **options))
                 pipeline_settings = pipeline_key
                 if monitor is not None:
                     pipeline.runtime_monitor = monitor
@@ -85,8 +88,8 @@ def main() -> int:
     args = parser.parse_args()
     try:
         settings = AnalyzerSettings.from_environment()
-        from .process_runtime import IsolatedProcessor
         from .platform_runtime import InstanceLock, installation_root, watch_supervisor
+        from .process_runtime import IsolatedProcessor
         watch_supervisor()
         with InstanceLock(installation_root()):
             client = build_client(settings)

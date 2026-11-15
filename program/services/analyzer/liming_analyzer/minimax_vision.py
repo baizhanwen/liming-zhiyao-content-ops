@@ -386,7 +386,13 @@ class MiniMaxTokenPlanMcpVisionEngine:
             concurrency=concurrency,
         )
         self.last_stats: dict[str, Any] = {}
+        self.visual_analysis_mode = "hybrid"
         self._progress_callback: Callable[[Mapping[str, Any]], None] | None = None
+
+    def set_visual_analysis_mode(self, mode: str) -> None:
+        if mode not in {"hybrid", "vision_only"}:
+            raise ValueError("unsupported visual analysis mode")
+        self.visual_analysis_mode = mode
 
     def set_progress_callback(
         self,
@@ -444,6 +450,7 @@ class MiniMaxTokenPlanMcpVisionEngine:
         return path
 
     def _prompt(self, refs: Sequence[tuple[int, Keyframe]], *, batch_index: int, batch_count: int) -> str:
+        original_frame = self.visual_analysis_mode == "vision_only"
         manifest = [
             {
                 "frame_index": local_index,
@@ -454,20 +461,35 @@ class MiniMaxTokenPlanMcpVisionEngine:
             }
             for local_index, (_, frame) in enumerate(refs, start=1)
         ]
+        instructions = VISUAL_EVIDENCE_INSTRUCTIONS
+        if original_frame:
+            instructions = instructions.replace(
+                "OCR负责具体文字，不要重复抄字。",
+                "本次不运行本地OCR；visible_text逐字记录本张图实际清晰可读的文字，最多2000字。"
+                "保留原有专名、数字和否定，不根据口播、上下文或常识补字。"
+                "没有清晰文字或无法辨认时visible_text返回空字符串，不把猜测写入文字证据。",
+            )
         return (
-            "这是一张视频关键帧联系表，每格顶部都有 F 编号和时间码。"
+            ("这是单张视频原始关键帧，未缩小拼成联系表；manifest只有一帧，frame_index必须为1。"
+             if original_frame else "这是一张视频关键帧联系表，每格顶部都有 F 编号和时间码。")
+            +
             "只分析实际可见画面，不识别人名身份，不推断业绩或未出现的事实。"
-            "必须覆盖每一个格子，并且只返回一个 JSON 对象，不要 Markdown、解释或代码围栏。"
+            + ("必须分析本张图片，" if original_frame else "必须覆盖每一个格子，")
+            + "并且只返回一个 JSON 对象，不要 Markdown、解释或代码围栏。"
             "JSON 格式为 {\"observations\":[{\"frame_index\":1,\"composition\":\"\","
             "\"people_actions\":\"\",\"scene\":\"\",\"camera_expression\":\"\","
-            "\"visual_role\":\"\",\"confidence\":90}]}。"
+            "\"visual_role\":\"\",\"confidence\":90"
+            + (",\"visible_text\":\"\"" if original_frame else "")
+            + "}]}。"
             "composition 写构图和主体位置；people_actions 写人物、动作或明确无人物；"
             "scene 写环境与场景；camera_expression 只写可见景别、机位；"
-            "visual_role 写该画面对视频表达的作用。每格必须恰好一条 observation。"
-            + VISUAL_EVIDENCE_INSTRUCTIONS
+            "visual_role 写该画面对视频表达的作用。"
+            + ("本张图片必须恰好一条 observation。" if original_frame else "每格必须恰好一条 observation。")
+            + instructions
             + " temporal_groups=" + json.dumps(temporal_groups_in_batch([frame for _, frame in refs]), ensure_ascii=False)
-            +
-            f"当前为第 {batch_index}/{batch_count} 张联系表，manifest="
+            + f"当前为第 {batch_index}/{batch_count} "
+            + ("张原始图片" if original_frame else "张联系表")
+            + "，manifest="
             + json.dumps(manifest, ensure_ascii=False, separators=(",", ":"))
         )
 
@@ -484,7 +506,8 @@ class MiniMaxTokenPlanMcpVisionEngine:
                 batch_index=batch_index,
                 attempt=attempt,
                 refs=refs,
-                image_path=self._contact_sheet(refs, batch_index=batch_index, attempt=attempt),
+                image_path=(refs[0][1].path if self.visual_analysis_mode == "vision_only"
+                            else self._contact_sheet(refs, batch_index=batch_index, attempt=attempt)),
                 prompt=self._prompt(refs, batch_index=batch_index, batch_count=len(groups)),
             ))
         return prepared
@@ -516,7 +539,7 @@ class MiniMaxTokenPlanMcpVisionEngine:
         self,
         batch: PreparedVisionBatch,
         result: McpVisionCallResult,
-    ) -> tuple[dict[int, VisualObservation], dict[str, Any], list[dict[str, Any]]]:
+    ) -> tuple[dict[int, tuple[VisualObservation, ...]], dict[str, Any], list[dict[str, Any]]]:
         record: dict[str, Any] = {
             "index": batch.batch_index,
             "batch": batch.batch_index,
@@ -542,7 +565,7 @@ class MiniMaxTokenPlanMcpVisionEngine:
             raw_observations = payload.get("observations")
             if not isinstance(raw_observations, Sequence) or isinstance(raw_observations, (str, bytes)):
                 raise TypeError("observations must be an array")
-            observations: dict[int, VisualObservation] = {}
+            observations: dict[int, tuple[VisualObservation, ...]] = {}
             temporal_groups = temporal_groups_in_batch([frame for _, frame in batch.refs])
             for raw in raw_observations:
                 if not isinstance(raw, Mapping):
@@ -551,6 +574,16 @@ class MiniMaxTokenPlanMcpVisionEngine:
                 if local_index is None or not 1 <= local_index <= len(batch.refs):
                     continue
                 global_index, frame = batch.refs[local_index - 1]
+                visible_text = ""
+                if self.visual_analysis_mode == "vision_only":
+                    # Missing/invalid text output must not be counted as a
+                    # successfully inspected original frame. Empty is valid:
+                    # the model may explicitly decline illegible characters.
+                    if not isinstance(raw.get("visible_text"), str) or len(raw["visible_text"]) > 2_000:
+                        continue
+                    visible_text = raw["visible_text"].strip()
+                    if visible_text.casefold() in {"unknown", "无法辨认"}:
+                        visible_text = ""
                 fields = [
                     ("构图", raw.get("composition")),
                     ("人物动作", raw.get("people_actions")),
@@ -576,13 +609,19 @@ class MiniMaxTokenPlanMcpVisionEngine:
                 if not description:
                     continue
                 scope = ("时序组=" + ",".join(frame_groups)) if frame_groups else "单帧证据；运动/稳定性/转场无法判断"
-                observations[global_index] = VisualObservation(
+                frame_observations = [VisualObservation(
                     "vision",
                     frame.timestamp_ms,
                     frame.timestamp_ms,
                     ("证据范围：" + scope + "；" + description)[:1_000],
                     _normalized_confidence(raw.get("confidence")),
-                )
+                )]
+                if visible_text:
+                    frame_observations.append(VisualObservation(
+                        "vision_text", frame.timestamp_ms, frame.timestamp_ms,
+                        visible_text, _normalized_confidence(raw.get("text_confidence")),
+                    ))
+                observations[global_index] = tuple(frame_observations)
             missing_count = len(batch.refs) - len(observations)
             record.update({
                 "status": "completed" if missing_count == 0 else "failed",
@@ -604,7 +643,7 @@ class MiniMaxTokenPlanMcpVisionEngine:
         self,
         prepared: Sequence[PreparedVisionBatch],
     ) -> tuple[
-        dict[int, VisualObservation],
+        dict[int, tuple[VisualObservation, ...]],
         list[dict[str, Any]],
         list[dict[str, Any]],
         dict[str, Any],
@@ -636,7 +675,7 @@ class MiniMaxTokenPlanMcpVisionEngine:
             on_progress=on_progress,
             concurrency=1 if attempt > 1 else min(2, self.concurrency),
         )
-        observations: dict[int, VisualObservation] = {}
+        observations: dict[int, tuple[VisualObservation, ...]] = {}
         records: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
         successful_responses = 0
@@ -661,8 +700,15 @@ class MiniMaxTokenPlanMcpVisionEngine:
 
     def analyze(self, frames: Sequence[Keyframe]) -> Sequence[VisualObservation]:
         started = time.monotonic()
+        original_frames = self.visual_analysis_mode == "vision_only"
+        input_metadata = {
+            "visual_analysis_mode": self.visual_analysis_mode,
+            "image_input_mode": "original_frame" if original_frames else "contact_sheet",
+            "temporal_model_input_supported": not original_frames,
+        }
         if not frames:
             self.last_stats = {
+                **input_metadata,
                 "status": "failed",
                 "reason": "没有可供 MiniMax 图片理解处理的关键帧。",
                 "provider": "MiniMax Token Plan",
@@ -676,9 +722,10 @@ class MiniMaxTokenPlanMcpVisionEngine:
             return ()
 
         refs = list(enumerate(frames))
-        initial_groups = [[refs[index] for index in indices] for indices in vision_batch_indices(frames, self.batch_size)]
+        initial_groups = ([[ref] for ref in refs] if original_frames else
+                          [[refs[index] for index in indices] for indices in vision_batch_indices(frames, self.batch_size)])
         initial = self._prepare(initial_groups, attempt=1)
-        observations: dict[int, VisualObservation] = {}
+        observations: dict[int, tuple[VisualObservation, ...]] = {}
         records: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
         metadata: dict[str, Any] = {"tool_connected": False}
@@ -719,7 +766,8 @@ class MiniMaxTokenPlanMcpVisionEngine:
         )
         if missing_refs and (successful_responses > 0 or throttled):
             retry_frame_count = len(missing_refs)
-            retry_groups = [[missing_refs[index] for index in indices] for indices in vision_batch_indices([ref[1] for ref in missing_refs], self.batch_size)]
+            retry_groups = ([[ref] for ref in missing_refs] if original_frames else
+                            [[missing_refs[index] for index in indices] for indices in vision_batch_indices([ref[1] for ref in missing_refs], self.batch_size)])
             retry = self._prepare(retry_groups, attempt=2)
             try:
                 before = len(observations)
@@ -775,34 +823,36 @@ class MiniMaxTokenPlanMcpVisionEngine:
                 if errors
                 else f"真实图片理解覆盖率 {coverage}% 低于 {threshold}% 门槛。"
             )
-        ordered = [observations[index] for index in sorted(observations)]
+        ordered = [row for index in sorted(observations) for row in observations[index]]
         self.last_stats = {
+            **input_metadata,
             "status": status,
             "reason": reason,
             "provider": "MiniMax Token Plan",
             "model": "understand_image",
             "adapter": "minimax_token_plan_mcp",
             "transport": "stdio",
-            "prompt_version": self.prompt_version,
+            "prompt_version": "minimax-original-frame.v1" if original_frames else self.prompt_version,
             "mcp_package": "minimax-coding-plan-mcp==0.0.5",
             "api_host": self.api_host,
             "tool_connected": bool(metadata.get("tool_connected")),
             "available_tools": metadata.get("available_tools", []),
             "mcp_server_name": metadata.get("server_name"),
             "mcp_server_version": metadata.get("server_version"),
-            "batch_size": self.batch_size,
+            "batch_size": 1 if original_frames else self.batch_size,
             "concurrency": self.concurrency,
             "batch_count": len(initial_groups),
             "completed_batches": completed_batches,
             "failed_batches": len(initial_groups) - completed_batches,
-            "contact_sheet_count": request_count,
+            "contact_sheet_count": 0 if original_frames else request_count,
             "request_count": request_count,
             "elapsed_ms": round((time.monotonic() - started) * 1000),
             "retry_frame_count": retry_frame_count,
             "serial_retry": bool(retry_frame_count),
             "recovered_frame_count": recovered_frame_count,
             "frames_requested": len(refs),
-            "frames_understood": len(ordered),
+            "frames_understood": len(observations),
+            "text_observation_count": sum(row.kind == "vision_text" for row in ordered),
             "missing_frame_count": len(unresolved),
             "frame_coverage_percent": coverage,
             "coverage_threshold_percent": threshold,

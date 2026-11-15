@@ -1,3 +1,4 @@
+import { isVisualAnalysisMode, normalizeVisualAnalysisMode } from "../../../../../../lib/visual-analysis-mode";
 import { getD1 } from "../../../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../../../lib/api-response";
 import { parseCheckpointPayload, readTranscriptCheckpoint, type WorkerJobRow } from "../../../../../../lib/analysis-worker";
@@ -54,12 +55,17 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     for (let retry = 0; retry < 3; retry += 1) {
       const now = new Date().toISOString();
       const job = await db.prepare(`
-        SELECT j.id, j.organization_id, j.project_id, j.video_id, j.status, j.progress, j.current_stage,
+        SELECT j.id, j.organization_id, j.project_id, j.video_id, j.visual_analysis_mode, j.status, j.progress, j.current_stage,
           j.lease_owner, j.lease_expires_at, j.attempt_count, j.version, j.result_key, j.checkpoint_stage, j.checkpoint_json
         FROM analysis_jobs j INNER JOIN videos v ON v.id = j.video_id AND v.organization_id = j.organization_id AND v.project_id = j.project_id
         WHERE j.id = ? AND v.deleted_at IS NULL
       `).bind(jobId).first<WorkerJobRow>();
       if (!job) return apiError("JOB_NOT_FOUND", "分析任务不存在。", 404);
+      const checkpointMode = payload.checkpoint.visual_analysis_mode;
+      if ((checkpointMode !== undefined && !isVisualAnalysisMode(checkpointMode))
+        || normalizeVisualAnalysisMode(checkpointMode) !== normalizeVisualAnalysisMode(job.visual_analysis_mode)) {
+        return apiError("VISUAL_ANALYSIS_MODE_MISMATCH", "检查点与任务的画面分析模式不一致，未保存本次结果。", 409);
+      }
       if (job.lease_owner !== payload.workerId || !job.lease_expires_at || job.lease_expires_at <= now) return apiError("LEASE_NOT_OWNED", "当前 Worker 不再持有有效租约。", 409);
       if (job[executionColumn] !== executionValue) return apiError("JOB_VERSION_CONFLICT", "任务执行轮次已发生变化。", 409);
       if (!(payload.stage === "transcript_ready" ? ["transcribing", "extracting", "analyzing"] : ["extracting", "analyzing"]).includes(job.status)) return apiError("CHECKPOINT_STAGE_INVALID", "当前任务阶段不能保存分析检查点。", 409);

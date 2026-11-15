@@ -1,3 +1,4 @@
+import { isVisualAnalysisMode, normalizeVisualAnalysisMode } from "../../../../../lib/visual-analysis-mode";
 import { readAnalysisModuleRetryState, parseAnalysisModuleRetryKeys, parseReviewSegmentIds, type AnalysisModuleRetryKey } from "../../../../../lib/analysis-module-retry";
 import { executeAnalysisJobAction, AnalysisJobActionStatusUnknownError } from "../../../../../lib/analysis-job-action";
 import { createProjectWriteAssertion, ProjectWriteAccessChangedError } from "../../../../../lib/project-write-access";
@@ -8,7 +9,7 @@ import { resetSegmentForRetry, type SegmentRetryTarget } from "../../../../../li
 import { readRequestIdentity } from "../../../../../lib/request-auth";
 import { isPlainRecord } from "../../../../../lib/service-auth";
 
-type JobRow = { id: string; video_id: string; idempotency_key?: string; organization_id: string; project_id: string; status: string; version: number; retry_count: number; lease_expires_at: string | null; checkpoint_stage: string | null; checkpoint_json: string | null; resume_count: number };
+type JobRow = { id: string; video_id: string; idempotency_key?: string; organization_id: string; project_id: string; status: string; version: number; retry_count: number; lease_expires_at: string | null; checkpoint_stage: string | null; checkpoint_json: string | null; resume_count: number; visual_analysis_mode: string };
 type ScriptVersion = "light_rewrite" | "restructured";
 
 const scriptVersionLabels: Record<ScriptVersion, string> = {
@@ -23,7 +24,8 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     const { jobId } = await context.params;
     const rawPayload = await request.json().catch(() => ({}));
     if (!isPlainRecord(rawPayload)) return apiError("INVALID_RETRY_TARGET", "重试参数格式无效。", 400);
-    const payload = rawPayload as { segmentKey?: unknown; scriptVersion?: unknown; moduleKeys?: unknown; reviewSegmentIds?: unknown; revalidateOnly?: unknown };
+    const payload = rawPayload as { segmentKey?: unknown; scriptVersion?: unknown; moduleKeys?: unknown; reviewSegmentIds?: unknown; revalidateOnly?: unknown; visualAnalysisMode?: unknown };
+    if (payload.visualAnalysisMode !== undefined && !isVisualAnalysisMode(payload.visualAnalysisMode)) return apiError("INVALID_VISUAL_ANALYSIS_MODE", "请选择有效的画面分析模式。", 400);
     if (payload.revalidateOnly !== undefined && typeof payload.revalidateOnly !== "boolean") return apiError("REPORT_REVALIDATION_INVALID", "报告复验参数必须为布尔值。", 400);
     const requestedRevalidation = payload.revalidateOnly === true;
     const requestedSegmentKey = typeof payload.segmentKey === "string" ? payload.segmentKey.trim() : "";
@@ -39,11 +41,23 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     if (requestedScriptVersion && !(requestedScriptVersion in scriptVersionLabels)) return apiError("SCRIPT_VERSION_INVALID", "口播版本参数无效。", 400);
 
     const db = getD1();
-    const job = await db.prepare("SELECT id, video_id, organization_id, project_id, status, version, retry_count, lease_expires_at, checkpoint_stage, checkpoint_json, resume_count, idempotency_key FROM analysis_jobs WHERE id = ?").bind(jobId).first<JobRow>();
+    const job = await db.prepare("SELECT id, video_id, organization_id, project_id, status, version, retry_count, lease_expires_at, checkpoint_stage, checkpoint_json, resume_count, idempotency_key, visual_analysis_mode FROM analysis_jobs WHERE id = ?").bind(jobId).first<JobRow>();
     if (!job) return apiError("JOB_NOT_FOUND", "分析任务不存在。", 404);
     const access = await getProjectAccess(identity.authSubject, job.organization_id, job.project_id);
     if (!access || !canWriteProjectAccess(access)) return apiError("WRITE_ACCESS_REQUIRED", "当前角色不能重试分析任务。", 403);
 
+    if (payload.visualAnalysisMode !== undefined && payload.visualAnalysisMode !== normalizeVisualAnalysisMode(job.visual_analysis_mode)) {
+      return apiError("VISUAL_ANALYSIS_MODE_MISMATCH", "重试沿用原任务的画面分析模式；如需切换，请使用重新分析。", 409);
+    }
+    if (job.checkpoint_json) {
+      try {
+        const saved: unknown = JSON.parse(job.checkpoint_json);
+        if (isPlainRecord(saved) && ((saved.visual_analysis_mode !== undefined && !isVisualAnalysisMode(saved.visual_analysis_mode))
+          || normalizeVisualAnalysisMode(saved.visual_analysis_mode) !== normalizeVisualAnalysisMode(job.visual_analysis_mode))) {
+          return apiError("VISUAL_ANALYSIS_MODE_MISMATCH", "保存的检查点与任务模式不一致，请使用重新分析。", 409);
+        }
+      } catch { /* Existing retry checks handle malformed checkpoints. */ }
+    }
     if (job.idempotency_key?.startsWith("material-import:")) return apiError("IMPORTED_REPORT_REANALYSIS_REQUIRED", "导入报告没有可续跑的处理检查点，请打开素材详情主动重新分析；新任务会核对分析额度。", 409);
     const latest = await db.prepare("SELECT schema_version,report_json FROM video_analyses WHERE analysis_job_id=? AND organization_id=? AND project_id=? AND video_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1")
       .bind(jobId, job.organization_id, job.project_id, job.video_id).first<{ schema_version: string; report_json: string }>();

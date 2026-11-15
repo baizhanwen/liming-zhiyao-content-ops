@@ -1,3 +1,4 @@
+import { normalizeVisualAnalysisMode } from "../../../../lib/visual-analysis-mode";
 import { MATERIAL_MAX_ENTRIES as MAX_ENTRIES, MATERIAL_MAX_ASSETS_PER_ENTRY as MAX_ASSETS_PER_ENTRY, MATERIAL_MAX_MEDIA_BYTES as MAX_IMPORT_BYTES, MATERIAL_MAX_MANIFEST_BYTES } from "../../../../lib/material-transfer-limits";
 import { assertJsonByteBudget, JsonByteBudgetExceededError } from "../../../../lib/json-byte-budget";
 import { canManageOrganizationVideoLibrary, canWriteProjectAccess, ensureUser, getD1, getMediaBucket, getOrganizationAccess, getProjectAccess, sha256Hex } from "../../../../db/runtime";
@@ -80,6 +81,17 @@ function importedTranscriptReviewEnabled(analyses: Row[], now: string) {
   const unified = body.unified_report && typeof body.unified_report === "object" && !Array.isArray(body.unified_report) ? body.unified_report as Row : null;
   const outcome = unified?.outcome && typeof unified.outcome === "object" && !Array.isArray(unified.outcome) ? unified.outcome as Row : null;
   return !(unified?.version === "unified-report.v2" && outcome?.manuscript === "original");
+}
+
+function importedVisualAnalysisMode(analyses: Row[], now: string) {
+  const latest = analyses.map((analysis, index) => ({ analysis, index })).sort((a, b) => {
+    const left = String(a.analysis.created_at || now), right = String(b.analysis.created_at || now);
+    return right > left ? 1 : right < left ? -1 : b.index - a.index;
+  })[0]?.analysis;
+  if (!latest) return normalizeVisualAnalysisMode(undefined);
+  const report: unknown = typeof latest.report_json === "string" ? JSON.parse(latest.report_json) : latest.report_json;
+  const meta = report && typeof report === "object" && !Array.isArray(report) ? (report as Row).analysis_meta : null;
+  return normalizeVisualAnalysisMode(meta && typeof meta === "object" && !Array.isArray(meta) ? (meta as Row).visual_analysis_mode : undefined);
 }
 
 export async function GET(request: Request) {
@@ -245,6 +257,7 @@ export async function POST(request: Request) {
         }
         const analysisState = importedAnalysisState(rawEntry.analyses ?? [], now);
         const transcriptReviewEnabled = importedTranscriptReviewEnabled(rawEntry.analyses ?? [], now);
+        const visualAnalysisMode = importedVisualAnalysisMode(rawEntry.analyses ?? [], now);
         const sourceMediaId = cleanText(rawEntry.video.sourceMediaBlobName, 200) ? assetIds.get(String(rawEntry.video.sourceMediaBlobName)) ?? null : null;
         const statements: D1PreparedStatement[] = [db.prepare(`INSERT INTO audit_logs(id,organization_id,project_id,actor_user_id,action,target_type,target_id,metadata_json,created_at)
           SELECT ?,?,?,?,'video_library.imported','video_library_entry',?,?,? WHERE ${projectWriteAccessCondition}`)
@@ -255,7 +268,7 @@ export async function POST(request: Request) {
         for (const transcript of (Array.isArray(rawEntry.transcripts) ? rawEntry.transcripts : [])) statements.push(prepareMaterialInsert(db, marker, "INSERT INTO video_transcripts (id, organization_id, project_id, video_id, version, language, source, full_text, segments_json, confidence, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, videoId, asInteger(transcript.version) || 1, cleanText(transcript.language, 40) || "zh-CN", transcript.source === "manual" ? "manual" : "asr", cleanText(transcript.full_text, 2_000_000) || "", cleanJson(transcript.segments_json, "[]"), asInteger(transcript.confidence), user.id, cleanText(transcript.created_at,40) || now, cleanText(transcript.updated_at,40) || now));
         for (const analysis of (Array.isArray(rawEntry.analyses) ? rawEntry.analyses : [])) statements.push(prepareMaterialInsert(db, marker, "INSERT INTO video_analyses (id, organization_id, project_id, video_id, schema_version, report_json, confidence, model_provider, model_name, prompt_version, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, videoId, cleanText(analysis.schema_version, 100) || "imported.v1", cleanJson(analysis.report_json, "{}"), asInteger(analysis.confidence), cleanText(analysis.model_provider, 100) || null, cleanText(analysis.model_name, 150) || null, cleanText(analysis.prompt_version, 150) || null, user.id, cleanText(analysis.created_at,40) || now, cleanText(analysis.updated_at,40) || now));
         for (const metric of (Array.isArray(rawEntry.metrics) ? rawEntry.metrics : [])) statements.push(prepareMaterialInsert(db, marker, "INSERT INTO video_metric_snapshots (id, organization_id, project_id, video_id, source, plays, likes, comments, favorites, shares, followers_gained, collected_at, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, videoId, ["public", "client_backend", "manual"].includes(String(metric.source)) ? metric.source : "manual", asInteger(metric.plays), asInteger(metric.likes), asInteger(metric.comments), asInteger(metric.favorites), asInteger(metric.shares), asInteger(metric.followers_gained), cleanText(metric.collected_at, 40) || now, user.id, cleanText(metric.created_at,40) || now));
-        if (analysisState.jobStatus) statements.push(prepareMaterialInsert(db, marker, "INSERT INTO analysis_jobs (id, organization_id, project_id, video_id, input_transcript_id, source_type, source_ref, idempotency_key, status, analysis_profile, transcript_review_enabled, progress, current_stage, retry_count, attempt_count, version, resume_count, error_code, error_message, created_by, updated_by, completed_at, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, 'standard', ?, 100, ?, 0, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, videoId, rawEntry.video.sourceType === "upload" ? "upload" : "url", sourceUrl || `import:${videoId}`, `material-import:${crypto.randomUUID()}`, analysisState.jobStatus, transcriptReviewEnabled ? 1 : 0, analysisState.stage, analysisState.errorCode, analysisState.message, user.id, user.id, now, now, now));
+        if (analysisState.jobStatus) statements.push(prepareMaterialInsert(db, marker, "INSERT INTO analysis_jobs (id, organization_id, project_id, video_id, input_transcript_id, source_type, source_ref, idempotency_key, status, analysis_profile, transcript_review_enabled, visual_analysis_mode, progress, current_stage, retry_count, attempt_count, version, resume_count, error_code, error_message, created_by, updated_by, completed_at, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, 'standard', ?, ?, 100, ?, 0, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, videoId, rawEntry.video.sourceType === "upload" ? "upload" : "url", sourceUrl || `import:${videoId}`, `material-import:${crypto.randomUUID()}`, analysisState.jobStatus, transcriptReviewEnabled ? 1 : 0, visualAnalysisMode, analysisState.stage, analysisState.errorCode, analysisState.message, user.id, user.id, now, now, now));
         statements.push(prepareMaterialInsert(db, marker, "INSERT INTO video_library_entries (id, organization_id, source_video_id, category, tags_json, notes, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(libraryEntryId, organizationId, videoId, ["published", "benchmark", "industry", "case", "trend", "creative", "other"].includes(String(rawEntry.library.category)) ? rawEntry.library.category : "other", JSON.stringify(cleanStringList(rawEntry.library.tags, 12)), cleanText(rawEntry.library.notes, 1_000) || null, user.id, user.id, now, now));
         await assertAccess();
         const results = await db.batch(statements);

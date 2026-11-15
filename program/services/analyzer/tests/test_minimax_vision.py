@@ -117,7 +117,126 @@ class RateLimitedRunner:
         return results, {"tool_connected": True, "available_tools": ["understand_image"]}
 
 
+class OriginalFrameRunner:
+    """Return per-image text without invoking a model or reading credentials."""
+
+    def __init__(self, *, omit_first_text=False):
+        self.calls = []
+        self.concurrencies = []
+        self.omit_first_text = omit_first_text
+
+    def call_many(self, requests, on_progress=None, concurrency=None):
+        self.calls.append(list(requests))
+        self.concurrencies.append(concurrency)
+        results = []
+        for request_index, request in enumerate(requests):
+            manifest = json.loads(request["prompt"].split("manifest=", 1)[1])
+            observations = []
+            for frame in manifest:
+                row = {
+                    "frame_index": frame["frame_index"],
+                    "composition": "人物位于左侧，右侧展示教程界面",
+                    "visible_text": f"步骤 {frame['timestamp_ms']}：输入 12.5，不要删除原文件",
+                    "temporal": "此字段没有连续图片支持，不可成为时序事实",
+                    "confidence": 90,
+                }
+                if self.omit_first_text and len(self.calls) == 1 and request_index == 0:
+                    row.pop("visible_text")
+                observations.append(row)
+            results.append(McpVisionCallResult(json.dumps({"observations": observations}, ensure_ascii=False)))
+        return results, {"tool_connected": True, "available_tools": ["understand_image"]}
+
+
 class MiniMaxVisionTests(unittest.TestCase):
+    def test_vision_only_uses_original_images_and_keeps_text_provenance_separate(self):
+        runner = OriginalFrameRunner()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            frames = []
+            for index in range(2):
+                path = root / f"original-{index}.png"
+                Image.new("RGB", (1920, 1080), "white").save(path)
+                frames.append(Keyframe(index * 500, path, roles=("temporal:opening",)))
+            engine = MiniMaxTokenPlanMcpVisionEngine(api_key="", api_host="", runner=runner)
+            engine.set_visual_analysis_mode("vision_only")
+            observations = engine.analyze(frames)
+
+            self.assertEqual([request["image_source"] for request in runner.calls[0]],
+                             [str(frame.path.resolve()) for frame in frames])
+            self.assertFalse((root / "vision-contact-sheets").exists())
+            for request in runner.calls[0]:
+                self.assertIn("单张视频原始关键帧", request["prompt"])
+                self.assertIn("不运行本地OCR", request["prompt"])
+                self.assertNotIn("OCR负责具体文字", request["prompt"])
+                self.assertIn("temporal_groups={}", request["prompt"])
+            self.assertEqual([(row.kind, row.start_ms) for row in observations],
+                             [("vision", 0), ("vision_text", 0), ("vision", 500), ("vision_text", 500)])
+            self.assertEqual([row.text for row in observations if row.kind == "vision_text"],
+                             ["步骤 0：输入 12.5，不要删除原文件", "步骤 500：输入 12.5，不要删除原文件"])
+            self.assertTrue(all(row.confidence is None for row in observations if row.kind == "vision_text"))
+            self.assertTrue(all("此字段没有连续图片支持" not in row.text for row in observations))
+            self.assertEqual(engine.last_stats["frames_understood"], 2)
+            self.assertEqual(engine.last_stats["observation_count"], 4)
+            self.assertEqual(engine.last_stats["text_observation_count"], 2)
+            self.assertEqual(engine.last_stats["batch_size"], 1)
+            self.assertEqual(engine.last_stats["contact_sheet_count"], 0)
+            self.assertEqual(engine.last_stats["image_input_mode"], "original_frame")
+            self.assertFalse(engine.last_stats["temporal_model_input_supported"])
+            self.assertEqual(engine.last_stats["prompt_version"], "minimax-original-frame.v1")
+
+            # The shared engine must return to the original contact-sheet path
+            # for a later hybrid task, with no stale model-text observations.
+            engine.set_visual_analysis_mode("hybrid")
+            hybrid = engine.analyze(frames)
+            self.assertTrue((root / "vision-contact-sheets").exists())
+            self.assertTrue(all(row.kind == "vision" for row in hybrid))
+            self.assertEqual(engine.last_stats["image_input_mode"], "contact_sheet")
+            self.assertEqual(engine.last_stats["batch_size"], 6)
+
+    def test_vision_only_retries_only_missing_text_contract_once(self):
+        runner = OriginalFrameRunner(omit_first_text=True)
+        with tempfile.TemporaryDirectory() as directory:
+            frames = []
+            for index in range(2):
+                path = Path(directory) / f"original-{index}.png"
+                Image.new("RGB", (64, 32), "white").save(path)
+                frames.append(Keyframe(index * 1_000, path))
+            engine = MiniMaxTokenPlanMcpVisionEngine(api_key="", api_host="", runner=runner)
+            engine.set_visual_analysis_mode("vision_only")
+            observations = engine.analyze(frames)
+        self.assertEqual([len(call) for call in runner.calls], [2, 1])
+        self.assertEqual(runner.calls[1][0]["image_source"], str(frames[0].path.resolve()))
+        self.assertEqual(runner.concurrencies, [2, 1])
+        self.assertEqual(engine.last_stats["request_count"], 3)
+        self.assertEqual(engine.last_stats["frames_understood"], 2)
+        self.assertEqual(engine.last_stats["frame_coverage_percent"], 100)
+        self.assertEqual(len(observations), 4)
+
+    def test_visual_analysis_mode_rejects_unknown_configuration(self):
+        engine = MiniMaxTokenPlanMcpVisionEngine(api_key="", api_host="", runner=OriginalFrameRunner())
+        with self.assertRaises(ValueError):
+            engine.set_visual_analysis_mode("silent_ocr_fallback")
+
+    def test_vision_only_allows_unreadable_text_without_inventing_text_evidence(self):
+        class UnreadableRunner(OriginalFrameRunner):
+            def call_many(self, requests, on_progress=None, concurrency=None):
+                self.calls.append(list(requests))
+                return [McpVisionCallResult(json.dumps({"observations": [{
+                    "frame_index": 1, "composition": "右侧展示小字教程界面", "visible_text": "",
+                }]})) for _ in requests], {"tool_connected": True}
+
+        runner = UnreadableRunner()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "small-text.png"
+            Image.new("RGB", (64, 32), "white").save(path)
+            engine = MiniMaxTokenPlanMcpVisionEngine(api_key="", api_host="", runner=runner)
+            engine.set_visual_analysis_mode("vision_only")
+            observations = engine.analyze([Keyframe(500, path)])
+        self.assertEqual([row.kind for row in observations], ["vision"])
+        self.assertEqual(engine.last_stats["text_observation_count"], 0)
+        self.assertEqual(engine.last_stats["frames_understood"], 1)
+        self.assertEqual(engine.last_stats["request_count"], 1)
+
     def test_bounded_calls_limit_concurrency_and_preserve_request_order(self):
         active = 0
         maximum_active = 0

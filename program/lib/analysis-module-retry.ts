@@ -1,3 +1,4 @@
+import { isVisualAnalysisMode, normalizeVisualAnalysisMode } from "./visual-analysis-mode.ts";
 import { readContentAnalysis, type ContentAnalysis } from "./video-content-analysis.ts";
 import { readVideoUnifiedReport, unifiedModuleKeys, type UnifiedModuleKey } from "./unified-report.ts";
 
@@ -69,6 +70,8 @@ export function readEvidenceCheckpoint(raw: string | null | undefined) {
 /** The saved report determines failure; a missing cache entry only means pending. */
 export function readAnalysisModuleRetryState(checkpointJson: string | null | undefined, schema: unknown, report: unknown, jobStatus?: string) {
   const checkpoint = readEvidenceCheckpoint(checkpointJson);
+  if (checkpoint && ((!isVisualAnalysisMode(checkpoint.visual_analysis_mode) && checkpoint.visual_analysis_mode !== undefined)
+    || normalizeVisualAnalysisMode(checkpoint.visual_analysis_mode) !== normalizeVisualAnalysisMode(record(report) && record(report.analysis_meta) ? report.analysis_meta.visual_analysis_mode : undefined))) return null;
   if (!["analysis.v11", "analysis.v12"].includes(String(schema)) || !record(report)) return null;
   const content = readContentAnalysis(report);
   const unified = readVideoUnifiedReport(report.unified_report, content);
@@ -96,17 +99,17 @@ export function readAnalysisModuleRetryState(checkpointJson: string | null | und
         && record(cached.validation) && cached.validation.passed === true && record(cached.response) && Array.isArray(cached.findings);
     }));
   const recoverableTextModuleKeys = independentOcrRecovery ? textModuleKeys.filter(key => {
-    const section = unified.value.sections.find(section => section.key === key), module = content!.module_status[key];
+    const section = unified.value.sections.find(section => section.key === key), moduleState = content!.module_status[key];
     return section?.status === "not_acquired" && section.reason === "required_evidence_not_acquired"
-      && module.status === "not_acquired" && ["required_evidence_not_acquired", "trusted_transcript_not_acquired"].includes(module.reason ?? "");
+      && moduleState.status === "not_acquired" && ["required_evidence_not_acquired", "trusted_transcript_not_acquired"].includes(moduleState.reason ?? "");
   }) : [];
   const failedModuleKeys: AnalysisModuleRetryKey[] = [...new Set([...reportedFailedModuleKeys, ...recoverableTextModuleKeys])];
   const defaultModuleKeys = recoverableTextModuleKeys.length ? failedModuleKeys.filter(key => key !== "canonical")
     : failedModuleKeys.includes("canonical") ? ["canonical" as const] : failedModuleKeys;
   const completeCache = cachedModules && unifiedModuleKeys.every(key => {
-    const module = cachedModules[key];
-    return record(module) && module.status === "completed" && typeof module.signature === "string" && /^[a-f\d]{64}$/u.test(module.signature)
-      && record(module.validation) && module.validation.passed === true && record(module.response) && Array.isArray(module.findings);
+    const cachedModule = cachedModules[key];
+    return record(cachedModule) && cachedModule.status === "completed" && typeof cachedModule.signature === "string" && /^[a-f\d]{64}$/u.test(cachedModule.signature)
+      && record(cachedModule.validation) && cachedModule.validation.passed === true && record(cachedModule.response) && Array.isArray(cachedModule.findings);
   });
   const reportRevalidationAvailable = Boolean(["partial", "failed"].includes(jobStatus ?? "") && matchingCheckpoint && completeCache && record(progress?.canonical)
     && ["completed", "original", "needs_review", "not_applicable"].includes(String(progress.canonical.status))

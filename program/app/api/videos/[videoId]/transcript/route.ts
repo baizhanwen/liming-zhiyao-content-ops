@@ -1,9 +1,11 @@
+import { analyzerReadinessError, readAnalyzerReadiness } from "../../../../../lib/analyzer-readiness";
 import { activeAnalysisStatuses as activeStatuses } from "../../../../../lib/analysis-jobs";
 import { z } from "zod";
 import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess } from "../../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../../lib/api-response";
 import { checkOrganizationQuota } from "../../../../../lib/operations";
 import { readRequestIdentity } from "../../../../../lib/request-auth";
+import { normalizeVisualAnalysisMode } from "../../../../../lib/visual-analysis-mode";
 import { normalizeAnalysisProfile } from "../../../../../lib/analysis-profile";
 
 const segmentSchema = z.object({
@@ -14,7 +16,7 @@ const segmentSchema = z.object({
 
 const correctionSchema = z.object({
   organizationId: z.string().uuid(), projectId: z.string().uuid(), language: z.string().trim().min(2).max(32).default("zh-CN"),
-  segments: z.array(segmentSchema).min(1).max(5_000), reanalyze: z.boolean().default(false), analysisProfile: z.unknown().optional(), transcriptReviewEnabled: z.boolean().optional(),
+  segments: z.array(segmentSchema).min(1).max(5_000), reanalyze: z.boolean().default(false), analysisProfile: z.unknown().optional(), transcriptReviewEnabled: z.boolean().optional(), visualAnalysisMode: z.enum(["hybrid", "vision_only"]).optional(),
 });
 
 
@@ -24,7 +26,7 @@ export async function POST(request: Request, context: { params: Promise<{ videoI
   try {
     const parsed = correctionSchema.safeParse(await request.json());
     if (!parsed.success) return apiError("INVALID_TRANSCRIPT", "转写片段格式无效，单段不能超过 2000 字。", 400);
-    const { organizationId, projectId, language, segments, reanalyze, analysisProfile: requestedAnalysisProfile, transcriptReviewEnabled: requestedTranscriptReview } = parsed.data;
+    const { organizationId, projectId, language, segments, reanalyze, analysisProfile: requestedAnalysisProfile, transcriptReviewEnabled: requestedTranscriptReview, visualAnalysisMode: requestedVisualMode } = parsed.data;
     for (let index = 0; index < segments.length; index += 1) {
       const current = segments[index]; const previous = segments[index - 1];
       if (current.endMs < current.startMs || (previous && current.startMs < previous.startMs)) return apiError("INVALID_TIMELINE", "转写时间轴必须按开始时间排列，结束时间不能早于开始时间。", 400);
@@ -50,15 +52,20 @@ export async function POST(request: Request, context: { params: Promise<{ videoI
     if (reanalyze) {
       const sourceRef = video.source_type === "upload" ? video.media_asset_id : video.source_url;
       if (!sourceRef) return apiError("SOURCE_UNAVAILABLE", "原始媒体来源不存在，无法重新分析。", 409);
-      const previousJob = await db.prepare("SELECT analysis_profile, transcript_review_enabled FROM analysis_jobs WHERE organization_id = ? AND project_id = ? AND video_id = ? AND idempotency_key NOT LIKE 'transcript:%' ORDER BY created_at DESC, rowid DESC LIMIT 1").bind(organizationId, projectId, videoId).first<{ analysis_profile: string; transcript_review_enabled: number }>();
+      const previousJob = await db.prepare("SELECT analysis_profile, transcript_review_enabled, visual_analysis_mode FROM analysis_jobs WHERE organization_id = ? AND project_id = ? AND video_id = ? AND idempotency_key NOT LIKE 'transcript:%' ORDER BY created_at DESC, rowid DESC LIMIT 1").bind(organizationId, projectId, videoId).first<{ analysis_profile: string; transcript_review_enabled: number; visual_analysis_mode: string }>();
       const analysisProfile = normalizeAnalysisProfile(requestedAnalysisProfile ?? previousJob?.analysis_profile);
       const transcriptReviewEnabled = requestedTranscriptReview ?? (previousJob?.transcript_review_enabled !== 0);
+      const visualAnalysisMode = normalizeVisualAnalysisMode(requestedVisualMode ?? previousJob?.visual_analysis_mode);
+      if (visualAnalysisMode === "vision_only") {
+        const readiness = analyzerReadinessError(await readAnalyzerReadiness(organizationId), video.source_type === "url", false, visualAnalysisMode);
+        if (readiness) return apiError(readiness.code, readiness.message, 503);
+      }
       const jobId = crypto.randomUUID();
       statements.push(
-        db.prepare("INSERT INTO analysis_jobs (id, organization_id, project_id, video_id, input_transcript_id, source_type, source_ref, idempotency_key, status, analysis_profile, transcript_review_enabled, progress, current_stage, retry_count, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, 0, '等待使用人工校正版重新分析', 0, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))").bind(jobId, organizationId, projectId, videoId, transcriptId, video.source_type, sourceRef, `manual:${transcriptId}`, analysisProfile, transcriptReviewEnabled ? 1 : 0, user.id, user.id),
-        db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'analysis_job.manual_reanalysis_created', 'analysis_job', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, jobId, JSON.stringify({ videoId, transcriptId, transcriptVersion: version, analysisProfile }), now),
+        db.prepare("INSERT INTO analysis_jobs (id, organization_id, project_id, video_id, input_transcript_id, source_type, source_ref, idempotency_key, status, analysis_profile, transcript_review_enabled, visual_analysis_mode, progress, current_stage, retry_count, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, 0, '等待使用人工校正版重新分析', 0, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))").bind(jobId, organizationId, projectId, videoId, transcriptId, video.source_type, sourceRef, `manual:${transcriptId}`, analysisProfile, transcriptReviewEnabled ? 1 : 0, visualAnalysisMode, user.id, user.id),
+        db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'analysis_job.manual_reanalysis_created', 'analysis_job', ?, ?, ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, jobId, JSON.stringify({ videoId, transcriptId, transcriptVersion: version, analysisProfile, visualAnalysisMode }), now),
       );
-      job = { id: jobId, video_id: videoId, status: "pending", analysis_profile: analysisProfile, transcript_review_enabled: transcriptReviewEnabled, progress: 0, current_stage: "等待使用人工校正版重新分析", retry_count: 0, created_at: now, updated_at: now };
+      job = { id: jobId, video_id: videoId, status: "pending", analysis_profile: analysisProfile, visual_analysis_mode: visualAnalysisMode, transcript_review_enabled: transcriptReviewEnabled, progress: 0, current_stage: "等待使用人工校正版重新分析", retry_count: 0, created_at: now, updated_at: now };
     }
     await db.batch(statements);
     return Response.json({ transcript: { id: transcriptId, version, language, source: "manual", full_text: fullText, segments, confidence: null, created_at: now, updated_at: now }, job }, { status: 201 });

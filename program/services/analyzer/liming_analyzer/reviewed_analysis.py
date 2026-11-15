@@ -34,6 +34,7 @@ from .unified_analysis import (
     _sum_known,
     failure_details,
 )
+from .visual_mode import job_visual_analysis_mode
 
 PIPELINE_VERSION = "unified-analysis.v2"
 PROMPT_VERSION = "video-analysis.v12-reviewed-v2"
@@ -90,9 +91,11 @@ def analyze_reviewed(analyzer: Any, job: Any, media: Any, transcript: Any, visua
     started = time.monotonic()
     profile = "max" if job.analysis_profile == "max" else "standard"
     review_enabled = job.source.get("transcript_review_enabled") is not False
+    visual_mode = job_visual_analysis_mode(job)
     manual = bool(job.source.get("manual_transcript"))
     original_mode = not review_enabled and not manual
     signature = _hash({"pipeline": PIPELINE_VERSION, "provider": analyzer.provider,
+                       **({"visual_analysis_mode": visual_mode} if visual_mode != "hybrid" else {}),
                        **({"transcript_review_enabled": False} if not review_enabled else {}),
                        "model": analyzer.model, "taxonomy": load_taxonomy(),
                        "media": vars(media.info), "transcript": [vars(row) for row in transcript.segments],
@@ -335,6 +338,7 @@ def analyze_reviewed(analyzer: Any, job: Any, media: Any, transcript: Any, visua
     report = {**compatibility, "spoken_script_set": script_set, "content_analysis": content,
               "unified_report": document, "analysis_meta": {
                   "contract_version": "analysis.v12", "analysis_profile": profile,
+                  "visual_analysis_mode": visual_mode,
                   "transcript_review_enabled": review_enabled, "transcript_source_kind": "manual" if manual else "asr",
                   "generation_strategy": "unified_modules", "quality_audit": audit,
                   "analysis_passes": len(records), "model_requests": records,

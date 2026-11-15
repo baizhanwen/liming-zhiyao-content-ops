@@ -1,3 +1,4 @@
+import { isVisualAnalysisMode, normalizeVisualAnalysisMode } from "../../../../../../lib/visual-analysis-mode";
 import { readEvidenceCheckpoint, parseAnalysisModuleRetryKeys } from "../../../../../../lib/analysis-module-retry";
 import { getD1 } from "../../../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../../../lib/api-response";
@@ -20,10 +21,10 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     const db = getD1();
     const nowIso = new Date().toISOString();
     const job = await db.prepare(`
-      SELECT j.id, j.organization_id, j.project_id, j.video_id, j.input_transcript_id, j.idempotency_key, j.transcript_review_enabled, j.status, j.progress, j.current_stage, j.lease_owner, j.lease_expires_at, j.attempt_count, j.version, j.result_key, j.checkpoint_stage, j.checkpoint_json
+      SELECT j.id, j.organization_id, j.project_id, j.video_id, j.input_transcript_id, j.idempotency_key, j.transcript_review_enabled, j.visual_analysis_mode, j.status, j.progress, j.current_stage, j.lease_owner, j.lease_expires_at, j.attempt_count, j.version, j.result_key, j.checkpoint_stage, j.checkpoint_json
       FROM analysis_jobs j INNER JOIN videos v ON v.id = j.video_id AND v.organization_id = j.organization_id AND v.project_id = j.project_id
       WHERE j.id = ?
-    `).bind(jobId).first<WorkerJobRow & { input_transcript_id: string | null; idempotency_key: string; transcript_review_enabled: number }>();
+    `).bind(jobId).first<WorkerJobRow & { input_transcript_id: string | null; idempotency_key: string; transcript_review_enabled: number; visual_analysis_mode: string }>();
     if (!job) return apiError("JOB_NOT_FOUND", "分析任务不存在。", 404);
     const transcriptOnly = job.idempotency_key.startsWith("transcript:");
     if (transcriptOnly !== (payload.analysis.schemaVersion === "transcript.v1")) {
@@ -72,6 +73,11 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
 
     const report = JSON.parse(payload.analysis.reportJson) as unknown;
     const analysisMeta = isPlainRecord(report) && isPlainRecord(report.analysis_meta) ? report.analysis_meta : null;
+    const recordedVisualMode = analysisMeta?.visual_analysis_mode;
+    if ((recordedVisualMode !== undefined && !isVisualAnalysisMode(recordedVisualMode))
+      || normalizeVisualAnalysisMode(recordedVisualMode) !== normalizeVisualAnalysisMode(job.visual_analysis_mode)) {
+      return apiError("VISUAL_ANALYSIS_MODE_MISMATCH", "分析结果与提交时选择的画面分析模式不一致，请更新分析服务后重试。", 409);
+    }
     if (job.transcript_review_enabled === 0
       ? payload.analysis.schemaVersion !== "analysis.v12" || analysisMeta?.transcript_review_enabled !== false
       : analysisMeta?.transcript_review_enabled === false) {

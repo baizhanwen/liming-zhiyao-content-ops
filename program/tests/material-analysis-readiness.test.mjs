@@ -120,3 +120,19 @@ test('explicit analysis refuses a primary media asset deactivated at commit',asy
   f.db.batch=async statements=>{f.sqlite.prepare("UPDATE media_assets SET status='deleted' WHERE video_id=?").run(f.video.id);return batch(statements);};
   const response=await f.reanalyze();assert.equal(response.status,409);assert.equal((await response.json()).error.code,'SOURCE_UNAVAILABLE');assert.equal(f.jobs().length,0);
 });
+
+test('material import and reanalysis preserve the latest report visual mode without altering export',async t=>{
+  const pure={analysis_meta:{visual_analysis_mode:'vision_only'}};
+  const hybrid={analysis_meta:{visual_analysis_mode:'hybrid'}};
+  const entry=(body,date)=>({schema_version:'analysis.v12',report_json:JSON.stringify(body),created_at:date});
+  const f=await fixture(t,[entry(pure,'2025-01-01T00:00:00Z'),entry(hybrid,'2024-01-01T00:00:00Z')]);
+  assert.equal(f.jobs()[0].visual_analysis_mode,'vision_only');
+  const exported=await f.load('app/api/video-library/transfer/route.ts').GET(new Request(`http://localhost/transfer?organizationId=${f.owner.organizationId}`));
+  assert.equal(exported.status,200);
+  const analyses=(await exported.json()).entries[0].analyses.map(row=>JSON.parse(row.report_json));
+  assert.ok(analyses.some(body=>body.analysis_meta.visual_analysis_mode==='vision_only'));
+  const response=await f.reanalyze();assert.equal(response.status,201);
+  assert.equal((await response.json()).job.visual_analysis_mode,'vision_only');
+  const historical=await fixture(t,[entry({},'2025-01-01T00:00:00Z')]);
+  assert.equal(historical.jobs()[0].visual_analysis_mode,'hybrid');
+});

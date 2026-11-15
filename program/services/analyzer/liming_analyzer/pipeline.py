@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import logging
 import hashlib
 import json
+import logging
 import re
 import time
 from collections.abc import Callable, Mapping
@@ -37,6 +37,7 @@ from .api_client import AnalysisResult, ClaimedJob
 from .evidence import clean_transcript
 from .task_progress import observe
 from .visual import OcrEngine
+from .visual_mode import job_visual_analysis_mode, normalize_visual_analysis_mode
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -149,10 +150,11 @@ def _metadata_payload(metadata: SourceMetadata | None) -> dict[str, Any] | None:
     }
 
 
-def _evidence_checkpoint(media: NormalizedMedia, transcript: TranscriptOutput, visuals: VisualOutput, metadata: SourceMetadata | None, *, transcript_review_enabled: bool = True) -> dict[str, Any]:
+def _evidence_checkpoint(media: NormalizedMedia, transcript: TranscriptOutput, visuals: VisualOutput, metadata: SourceMetadata | None, *, transcript_review_enabled: bool = True, visual_analysis_mode: str = "hybrid") -> dict[str, Any]:
     return {
         "checkpoint_version": 1,
         "transcript_review_enabled": transcript_review_enabled,
+        "visual_analysis_mode": normalize_visual_analysis_mode(visual_analysis_mode),
         "media": {
             "duration_ms": media.info.duration_ms, "width": media.info.width, "height": media.info.height,
             "video_codec": media.info.video_codec, "audio_codec": media.info.audio_codec,
@@ -176,6 +178,8 @@ def _evidence_checkpoint(media: NormalizedMedia, transcript: TranscriptOutput, v
 def _restore_evidence_checkpoint(job: ClaimedJob, workspace: Path) -> tuple[NormalizedMedia, TranscriptOutput, VisualOutput, SourceMetadata | None] | None:
     value = job.checkpoint
     if job.checkpoint_stage not in {"evidence_ready", "segment_progress"} or not isinstance(value, Mapping) or value.get("checkpoint_version") != 1:
+        return None
+    if value.get("visual_analysis_mode", "hybrid") != job_visual_analysis_mode(job):
         return None
     if (value.get("transcript_review_enabled", True) is not
             (job.source.get("transcript_review_enabled") is not False)):
@@ -262,6 +266,7 @@ class AnalysisPipeline:
             return None
         try:
             if (value.get("transcript_review_enabled") is not (job.source.get("transcript_review_enabled") is not False)
+                    or value.get("visual_analysis_mode", "hybrid") != job_visual_analysis_mode(job)
                     or value.get("manual_source_hash") != _manual_source_hash(job)
                     or value.get("asr_fingerprint") != self._speech_fingerprint()
                     or _digest(value.get("transcript")) != value.get("transcript_sha256")):
@@ -286,6 +291,7 @@ class AnalysisPipeline:
                  "source_asset": {name: source_asset[name] for name in ("id", "sha256", "size_bytes", "kind")},
                  "source_metadata": _metadata_payload(metadata), "asr_fingerprint": self._speech_fingerprint(),
                  "transcript_review_enabled": job.source.get("transcript_review_enabled") is not False,
+                 "visual_analysis_mode": job_visual_analysis_mode(job),
                  "manual_source_hash": _manual_source_hash(job)}
         self.checkpoints.save(job, "transcript_ready", value)
 
@@ -364,7 +370,7 @@ class AnalysisPipeline:
             transcript = clean_transcript(transcript)
         recovered = SubtitleRecovery(transcript, {})
         review_enabled = current.source.get("transcript_review_enabled") is not False
-        if review_enabled and manual is None and media.info.video_codec and self.manuscript_ocr is not None:
+        if review_enabled and manual is None and media.info.video_codec and self.manuscript_ocr is not None and job_visual_analysis_mode(current) != "vision_only":
             self._phase("subtitle")
             def read_captions():
                 try:
@@ -438,7 +444,8 @@ class AnalysisPipeline:
 
         if callable(set_checkpoint) and self.checkpoints is not None:
             base_checkpoint = {**_evidence_checkpoint(media, transcript, visuals, source_metadata,
-                transcript_review_enabled=current.source.get("transcript_review_enabled") is not False), **retry_metadata}
+                transcript_review_enabled=current.source.get("transcript_review_enabled") is not False,
+                visual_analysis_mode=job_visual_analysis_mode(current)), **retry_metadata}
 
             def persist_segment_progress(progress_payload: Mapping[str, Any]) -> None:
                 rows = progress_payload.get("segments")
@@ -453,7 +460,8 @@ class AnalysisPipeline:
             set_checkpoint(persist_segment_progress)
         if callable(set_unified) and self.checkpoints is not None:
             base_checkpoint = {**_evidence_checkpoint(media, transcript, visuals, source_metadata,
-                transcript_review_enabled=current.source.get("transcript_review_enabled") is not False), **retry_metadata}
+                transcript_review_enabled=current.source.get("transcript_review_enabled") is not False,
+                visual_analysis_mode=job_visual_analysis_mode(current)), **retry_metadata}
 
             def persist_unified_progress(payload: Mapping[str, Any]) -> None:
                 modules = payload.get("modules", {})
@@ -483,6 +491,7 @@ class AnalysisPipeline:
                 set_unified(None)
 
     def process(self, job: ClaimedJob, heartbeat) -> AnalysisResult:
+        mode = job_visual_analysis_mode(job)
         with TemporaryDirectory(prefix="liming-analysis-") as temporary:
             workspace = Path(temporary)
             restored = _restore_evidence_checkpoint(job, workspace)
@@ -501,6 +510,9 @@ class AnalysisPipeline:
             durable_transcript = (self.checkpoints is not None
                 and callable(getattr(type(self.artifacts), "restore_source", None)))
             transcript_checkpoint = self._restore_transcript(job) if durable_transcript else None
+            configure_visual_mode = getattr(self.visual, "set_visual_analysis_mode", None)
+            if callable(configure_visual_mode):
+                configure_visual_mode(mode)
             configure_visual_profile = getattr(self.visual, "set_analysis_profile", None)
             if callable(configure_visual_profile):
                 configure_visual_profile(job.analysis_profile)
@@ -674,7 +686,8 @@ class AnalysisPipeline:
             if self.checkpoints:
                 try:
                     self.checkpoints.save(current, "evidence_ready", _evidence_checkpoint(media, transcript, visuals, acquired.metadata,
-                        transcript_review_enabled=current.source.get("transcript_review_enabled") is not False))
+                        transcript_review_enabled=current.source.get("transcript_review_enabled") is not False,
+                        visual_analysis_mode=job_visual_analysis_mode(current)))
                 except Exception as error:  # noqa: BLE001 - checkpoint is resumability only
                     logger.warning("Could not persist the analysis checkpoint: %s", error)
             observe(heartbeat, "model_analysis")

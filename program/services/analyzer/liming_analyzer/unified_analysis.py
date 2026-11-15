@@ -13,6 +13,7 @@ from .content_analysis import MODULES, load_taxonomy
 from .content_metrics import build_content_metrics
 from .model_calls import ModelCalls, exception_usage, usage_counts
 from .model_compat import completion_options, single_attempt_retry
+from .visual_mode import job_visual_analysis_mode
 
 PIPELINE_VERSION = "unified-analysis.v1"
 PROMPT_VERSION = "video-analysis.v11-unified-v1"
@@ -330,7 +331,9 @@ def analyze_unified(analyzer: Any, job: Any, media: Any, transcript: Any, visual
 
     started = time.monotonic()
     profile = "max" if job.analysis_profile == "max" else "standard"
+    visual_mode = job_visual_analysis_mode(job)
     signature = _hash({"pipeline": PIPELINE_VERSION, "provider": analyzer.provider,
+                       **({"visual_analysis_mode": visual_mode} if visual_mode != "hybrid" else {}),
                        "model": analyzer.model, "taxonomy": load_taxonomy(),
                        "media": vars(media.info), "transcript": [vars(row) for row in transcript.segments],
                        "frames": [{"time": row.timestamp_ms, "text": row.ocr_text,
@@ -567,6 +570,7 @@ def analyze_unified(analyzer: Any, job: Any, media: Any, transcript: Any, visual
                   "known_total_tokens": sum(row["total_tokens"] or 0 for row in records),
                   "unknown_usage_requests": sum(row["total_tokens"] is None for row in records),
                   "usage_scope": "recorded_current_attempt_calls", "evidence_reused": bool(visuals.stats.get("evidence_reused")),
+                  "visual_analysis_mode": visual_mode,
                   "visual_extraction": dict(visuals.stats), "canonical_diagnostics": diagnostics.get("canonical_transcript", _empty_diagnostics()),
                   "processing_mode": "unified", "coverage_percent": None}}
     return StructureOutput("analysis.v11", report, None, analyzer.provider, analyzer.model, PROMPT_VERSION)

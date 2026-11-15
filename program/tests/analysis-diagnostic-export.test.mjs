@@ -121,6 +121,77 @@ test("raw visual timing survives export while normalized timings preserve measur
   assert.ok(body.diagnostics.notes.some(note => /不包含.*GPU/.test(note)));
 });
 
+test("pure-vision export retains skipped OCR, measured zero work and visual-model text provenance", async t => {
+  const report = measuredReport();
+  report.analysis_meta.visual_analysis_mode = "vision_only";
+  Object.assign(report.analysis_meta.visual_extraction, {
+    visual_analysis_mode: "vision_only", screen_text_source: "vision_model",
+    ocr: { status: "skipped", reason: "vision_only" },
+    ocr_engine_call_count: 0, ocr_exact_reuse_count: 0,
+    ocr_observation_count: 0,
+  });
+  Object.assign(report.analysis_meta.visual_extraction.stage_timing, {
+    ocr_elapsed_ms: 0, ocr_vision_wall_ms: 5000, ocr_vision_overlap_ms: 0,
+  });
+  const f = await fixture(t, { report });
+  f.sqlite.prepare("UPDATE analysis_jobs SET visual_analysis_mode='vision_only' WHERE id=?").run(f.jobId);
+  const { response, body } = await f.exportJson();
+  assert.equal(response.status, 200);
+  assert.equal(body.diagnostics.visualAnalysisMode, "vision_only");
+  assert.equal(body.diagnostics.jobSnapshot.visual_analysis_mode, "vision_only");
+  assert.equal(body.diagnostics.visual.visual_analysis_mode, "vision_only");
+  assert.equal(body.diagnostics.visual.screen_text_source, "vision_model");
+  assert.equal(body.diagnostics.visual.ocr.status, "skipped");
+  assert.equal(body.diagnostics.visual.ocr_engine_call_count, 0);
+  assert.equal(body.diagnostics.visual.ocr_exact_reuse_count, 0);
+  assert.equal(body.diagnostics.timings.find(row => row.key === "ocr").elapsedMs, 0);
+  assert.equal(body.diagnostics.timings.find(row => row.key === "vision").elapsedMs, 5000);
+  assert.equal(body.diagnostics.timings.find(row => row.key === "ocr_vision_overlap").elapsedMs, 0);
+  assert.deepEqual(body.report, report, "Export must preserve the selected report's recorded mode and provenance");
+});
+
+test("selected report mode wins over extraction metadata and the newer job's different mode", async t => {
+  const report = measuredReport();
+  report.analysis_meta.visual_analysis_mode = "hybrid";
+  report.analysis_meta.visual_extraction.visual_analysis_mode = "vision_only";
+  const f = await fixture(t, { report });
+  f.sqlite.prepare("UPDATE analysis_jobs SET visual_analysis_mode='vision_only' WHERE id=?").run(f.latestJobId);
+  const { response, body } = await f.exportJson();
+  assert.equal(response.status, 200);
+  assert.equal(body.selection.analysisId, f.analysisId);
+  assert.equal(body.diagnostics.visualAnalysisMode, "hybrid");
+  assert.equal(body.diagnostics.jobSnapshot.visual_analysis_mode, "hybrid");
+  assert.equal(body.diagnostics.latestJobSnapshot.visual_analysis_mode, "vision_only");
+  assert.equal(body.diagnostics.visual.stage_timing.ocr_elapsed_ms, 3000);
+});
+
+test("imported report mode can come from saved visual statistics without borrowing any job", async t => {
+  const report = measuredReport();
+  report.analysis_meta.visual_extraction.visual_analysis_mode = "vision_only";
+  report.analysis_meta.visual_extraction.screen_text_source = "vision_model";
+  const f = await fixture(t, { report, bound: false });
+  f.sqlite.prepare("UPDATE analysis_jobs SET visual_analysis_mode='hybrid' WHERE id=?").run(f.latestJobId);
+  const { response, body } = await f.exportJson();
+  assert.equal(response.status, 200);
+  assert.equal(body.selection.jobId, null);
+  assert.equal(body.diagnostics.jobSnapshot, null);
+  assert.equal(body.diagnostics.visualAnalysisMode, "vision_only");
+  assert.equal(body.diagnostics.visual.screen_text_source, "vision_model");
+});
+
+test("before a report exists diagnostic mode comes from the current job snapshot", async t => {
+  for (const visualAnalysisMode of ["hybrid", "vision_only"]) {
+    const f = await fixture(t, { withReport: false, status: "failed" });
+    f.sqlite.prepare("UPDATE analysis_jobs SET visual_analysis_mode=? WHERE id=?").run(visualAnalysisMode, f.jobId);
+    const { response, body } = await f.exportJson();
+    assert.equal(response.status, 200);
+    assert.equal(body.report, null);
+    assert.equal(body.analysis, null);
+    assert.equal(body.diagnostics.visualAnalysisMode, visualAnalysisMode);
+    assert.equal(body.diagnostics.jobSnapshot.visual_analysis_mode, visualAnalysisMode);
+  }
+});
+
 test("JSON downloads retain a complete emoji at a long Chinese filename boundary", async t => {
   const f = await fixture(t);
   f.sqlite.prepare("UPDATE videos SET title=? WHERE id=?").run("字".repeat(79) + "😀/后续标题", f.videoId);

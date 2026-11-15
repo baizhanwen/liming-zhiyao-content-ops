@@ -182,7 +182,8 @@ def test_vision_adapters_ignore_motion_claims_without_ordered_frame_evidence(tmp
     else:
         engine = MiniMaxTokenPlanMcpVisionEngine(api_key="", api_host="https://api.minimax.io", runner=object())
         batch = PreparedVisionBatch(1, 1, tuple(enumerate(frames)), tmp_path / "sheet.jpg", "fixture")
-        observations = list(engine._parse_batch(batch, McpVisionCallResult(payload))[0].values())
+        observations = [observation for frame_rows in engine._parse_batch(batch, McpVisionCallResult(payload))[0].values()
+                        for observation in frame_rows]
     assert len(observations) == len(frames)
     assert ("镜头推近" in observations[0].text) is temporal
     assert ("时序组=g" in observations[0].text) is temporal
