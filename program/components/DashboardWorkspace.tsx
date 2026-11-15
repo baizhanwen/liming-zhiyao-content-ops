@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import {
   ArrowRight,
   BarChart3,
@@ -103,6 +103,10 @@ const taskStatusLabels: Record<string, string> = {
   publish_ready: "待发布",
 };
 
+const subscribeToClient = () => () => {};
+const clientSnapshot = () => true;
+const serverSnapshot = () => false;
+
 function dateText(value: string | null) {
   if (!value) return "未设置";
   return new Date(value).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
@@ -130,6 +134,7 @@ async function errorMessage(response: Response) {
 }
 
 export function DashboardWorkspace() {
+  const hydrated = useSyncExternalStore(subscribeToClient, clientSnapshot, serverSnapshot);
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [organizationId, setOrganizationId] = useState("");
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
@@ -325,7 +330,7 @@ export function DashboardWorkspace() {
       <section className="page-heading dashboard-role-heading">
         <div>
           <div className="dashboard-heading-meta">
-            <span>{new Date().toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric", weekday: "long" })}</span>
+            <span>{hydrated ? new Date().toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric", weekday: "long", timeZone: "Asia/Shanghai" }) : "—"}</span>
             {dashboard && <em>{dashboard.mode === "admin" ? "公司管理员" : "公司员工"}</em>}
           </div>
           <h1>{dashboard?.mode === "admin" ? "运营总览" : "我的工作台"}</h1>
