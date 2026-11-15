@@ -166,6 +166,36 @@ export function AnalysisDetail({ videoId, organizationId, projectId, libraryEntr
     const href = URL.createObjectURL(new Blob([unifiedReportMarkdown(title, view, manuscript ? paragraphs : undefined)], { type: "text/markdown;charset=utf-8" }));
     const anchor = document.createElement("a"); anchor.href = href; anchor.download = `${title.slice(0, 60).replace(/[\\/:*?"<>|]/g, "-")}-分析报告.md`; anchor.click(); URL.revokeObjectURL(href);
   }
+  async function exportJson() {
+    if (!detail || action || activeUrl.current !== requestUrl) return;
+    const sourceUrl = requestUrl;
+    const params = new URLSearchParams(sourceUrl.slice(sourceUrl.indexOf("?") + 1));
+    params.set("export", "json");
+    const exportUrl = `${sourceUrl.slice(0, sourceUrl.indexOf("?"))}?${params}`;
+    setAction("export-json"); setNotice("");
+    let href: string | null = null;
+    let anchor: HTMLAnchorElement | null = null;
+    try {
+      const response = await scopedFetch(exportUrl, { method: "GET" });
+      if (!response.ok) throw new Error(await readApiError(response));
+      const blob = await response.blob();
+      if (activeUrl.current !== sourceUrl) return;
+      const safeTitle = title.slice(0, 40).replace(/[\\/:*?"<>|\p{Cc}]/gu, "-").replace(/[. ]+$/u, "") || "视频分析";
+      const version = selectedId.replace(/[^a-zA-Z0-9_-]/gu, "-").slice(0, 48) || "latest";
+      const timestamp = new Date().toISOString().replace(/[-:]/gu, "").replace(/\.\d{3}Z$/u, "Z");
+      href = URL.createObjectURL(blob);
+      anchor = document.createElement("a"); anchor.href = href;
+      anchor.download = `${safeTitle}-分析诊断-${version}-${timestamp}.json`;
+      document.body.appendChild(anchor); anchor.click();
+      setNotice("诊断 JSON 已导出。");
+    } catch (reason) {
+      if (activeUrl.current === sourceUrl) setNotice(reason instanceof Error ? reason.message : "诊断 JSON 暂时无法导出。");
+    } finally {
+      anchor?.remove();
+      if (href) { const downloadUrl = href; window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 60_000); }
+      setAction(current => current === "export-json" ? "" : current);
+    }
+  }
 
   const paragraphs = manuscript ? manuscriptParagraphs(manuscript.segments) : [];
   const currentManuscript = hasManuscript ? <ManuscriptCard canCopy={paragraphs.length > 0} onCopy={async () => {
@@ -179,7 +209,7 @@ export function AnalysisDetail({ videoId, organizationId, projectId, libraryEntr
   if (!detail && (loading || snapshot?.url !== requestUrl && !error)) return <div className="management-state" role="status">正在载入报告…</div>;
   if (!detail) return <div className="management-state error-state"><strong>报告暂时无法读取</strong><p>{error}</p><button type="button" onClick={() => void load()}>重新读取</button></div>;
   return <div className="unified-analysis-page">
-    <header className="report-page-header"><div><Link href={`/analysis?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`}>← 视频分析</Link><h1 title={title}>{heading}</h1><div className="report-version-line"><span className={`report-status ${view?.complete && !view.reviews.length ? "complete" : "partial"}`}>{!analysis ? "等待报告" : view?.legacy ? "历史报告" : view?.complete ? view.reviews.length ? `分析完成，${view.reviews.length}处口播待核对` : "分析已完成" : "部分结果可用"}</span>{analysis && <time>{formatClientDate(analysis.created_at)}</time>}{versions.length > 1 && <label>报告版本<select aria-label="报告版本" value={selectedId || analysis?.id || ""} disabled={Boolean(action)} onChange={event => { setEditing(false); setNotice(""); setSelectedId(event.target.value); }}>{versions.map(row => <option key={row.id} value={row.id}>{formatClientDate(row.created_at)} · {["analysis.v11", "analysis.v12"].includes(row.schema_version) ? "新版分析" : "历史报告"}</option>)}</select></label>}{selectedId && <button type="button" disabled={Boolean(action)} onClick={() => { setEditing(false); setNotice(""); setSelectedId(""); }}>查看最新</button>}</div></div><div className="report-primary-actions"><a className="secondary-button" href="#report-script">查看口播稿</a>{canEdit && <button type="button" disabled={Boolean(action)} onClick={() => void extractManuscript()}>仅提取口播稿</button>}<button type="button" disabled={!view || Boolean(action) || (hasManuscript && !manuscript)} onClick={exportMarkdown}>导出报告</button></div></header>
+    <header className="report-page-header"><div><Link href={`/analysis?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`}>← 视频分析</Link><h1 title={title}>{heading}</h1><div className="report-version-line"><span className={`report-status ${view?.complete && !view.reviews.length ? "complete" : "partial"}`}>{!analysis ? "等待报告" : view?.legacy ? "历史报告" : view?.complete ? view.reviews.length ? `分析完成，${view.reviews.length}处口播待核对` : "分析已完成" : "部分结果可用"}</span>{analysis && <time>{formatClientDate(analysis.created_at)}</time>}{versions.length > 1 && <label>报告版本<select aria-label="报告版本" value={selectedId || analysis?.id || ""} disabled={Boolean(action)} onChange={event => { setEditing(false); setNotice(""); setSelectedId(event.target.value); }}>{versions.map(row => <option key={row.id} value={row.id}>{formatClientDate(row.created_at)} · {["analysis.v11", "analysis.v12"].includes(row.schema_version) ? "新版分析" : "历史报告"}</option>)}</select></label>}{selectedId && <button type="button" disabled={Boolean(action)} onClick={() => { setEditing(false); setNotice(""); setSelectedId(""); }}>查看最新</button>}</div></div><div className="report-primary-actions"><a className="secondary-button" href="#report-script">查看口播稿</a>{canEdit && <button type="button" disabled={Boolean(action)} onClick={() => void extractManuscript()}>仅提取口播稿</button>}<button type="button" disabled={!view || Boolean(action) || (hasManuscript && !manuscript)} onClick={exportMarkdown}>导出报告</button><button type="button" disabled={!detail || Boolean(action)} onClick={() => void exportJson()}>{action === "export-json" ? "正在导出…" : "导出 JSON"}</button></div></header>
     {notice && <div className="report-notice" role="status">{notice}</div>}{error && <div className="inline-alert" role="alert">{error}</div>}
     {latestJob?.status === "failed" && <div className="inline-alert" role="alert">{latestJob.error_message || "最近一次任务执行失败。"}</div>}
     {running && <div className="report-running" role="status"><span className="report-running-dot" /><strong>{latestJob?.current_stage || "正在分析"}</strong><span>{latestJob?.progress ?? 0}%</span><button type="button" onClick={() => void load()}>刷新</button></div>}

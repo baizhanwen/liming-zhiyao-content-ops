@@ -10,7 +10,10 @@ import stat
 import sys
 import time
 import urllib.error
+import urllib.request
+import urllib.response
 import zipfile
+from email.message import Message
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,6 +23,7 @@ SCRIPT = Path(__file__).resolve().parents[3] / "scripts/prepare_analyzer_cuda.py
 SPEC = importlib.util.spec_from_file_location("prepare_cuda_test", SCRIPT)
 installer = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(installer)
+BUILD_OPENER = urllib.request.build_opener
 
 
 class Response(io.BytesIO):
@@ -177,7 +181,112 @@ def test_non_official_or_insecure_source_and_redirect_are_rejected(url):
     with pytest.raises(installer.CudaRuntimePreparationError, match="NVIDIA HTTPS"):
         installer._official_url(url)
     with pytest.raises(installer.CudaRuntimePreparationError):
-        installer._OfficialRedirects().redirect_request(None, None, 302, "redirect", {}, url)
+        request = urllib.request.Request(next(iter(installer.CUDA_RUNTIME_SPEC["archives"].values()))["url"])
+        installer._OfficialRedirects().redirect_request(request, None, 302, "redirect", {}, url)
+
+
+def local_redirect_builder(locations, data, visited, *, final_url=None):
+    """Exercise urllib's real redirect/error processors without a network socket."""
+    class LocalHTTPS(urllib.request.BaseHandler):
+        handler_order = 400
+
+        def https_open(self, request):
+            index = len(visited)
+            visited.append(request.full_url)
+            headers = Message()
+            if index < len(locations):
+                headers["Location"] = locations[index]
+                response = urllib.response.addinfourl(io.BytesIO(b""), headers, request.full_url, 301)
+                response.msg = "Moved Permanently"
+            else:
+                headers["Content-Length"] = str(len(data))
+                response = urllib.response.addinfourl(io.BytesIO(data), headers, final_url or request.full_url, 200)
+                response.msg = "OK"
+            return response
+
+    return lambda *handlers: BUILD_OPENER(urllib.request.ProxyHandler({}), LocalHTTPS(), *handlers)
+
+
+@pytest.mark.parametrize("host", ["developer.download.nvidia.com", "developer.download.nvidia.cn", "developer.download.nvidia.cn:443"])
+def test_only_pinned_paths_on_the_two_exact_nvidia_hosts_are_allowed(host):
+    path = urllib.parse.urlsplit(installer.CUDA_RUNTIME_SPEC["archives"]["cublas"]["url"]).path
+    url = "https://" + host + path
+    assert installer._official_url(url, expected_path=path) == url
+
+
+@pytest.mark.parametrize("relative_first", [False, True])
+def test_real_urllib_redirect_chain_accepts_nvidia_region_and_relative_location(bundle, monkeypatch, tmp_path, relative_first):
+    spec = bundle.spec["archives"]["cublas"]
+    path = urllib.parse.urlsplit(spec["url"]).path
+    regional = "https://developer.download.nvidia.cn" + path
+    # A filename-only Location is joined with the original directory by urllib.
+    locations = ([path.rsplit("/", 1)[1]] if relative_first else []) + [regional]
+    visited = []
+    monkeypatch.setattr(installer.urllib.request, "build_opener", local_redirect_builder(locations, bundle.data[spec["url"]], visited))
+    archive = installer._download_archive("cublas", spec, tmp_path, time.monotonic() + 30, bundle.progress.append)
+    assert archive.read_bytes() == bundle.data[spec["url"]]
+    assert visited[0] == spec["url"] and visited[-1] == regional
+    assert len(visited) == len(locations) + 1
+    assert bundle.progress[-1]["phase"] == "cuda_runtime_download_verified"
+    assert not list(tmp_path.glob("*.part"))
+
+
+@pytest.mark.parametrize("target", [
+    "http://developer.download.nvidia.cn{path}",
+    "https://evil.invalid{path}",
+    "https://developer.download.nvidia.cn.evil.invalid{path}",
+    "https://developer.download.nvidia.com.evil.invalid{path}",
+    "https://name:password@developer.download.nvidia.cn{path}",
+    "https://@developer.download.nvidia.cn{path}",
+    "https://developer.download.nvidia.cn:8443{path}",
+    "https://developer.download.nvidia.cn{other_path}",
+    "https://developer.download.nvidia.cn{path}?token=SECRET_SENTINEL",
+    "https://developer.download.nvidia.cn{path}?",
+    "https://developer.download.nvidia.cn{path}#download",
+    "https://developer.download.nvidia.cn{path}#",
+    "https://developer.download.nvidia.cn/not-a-pinned-archive.zip",
+])
+def test_real_urllib_redirect_chain_rejects_other_hosts_artifacts_and_url_parameters(bundle, monkeypatch, tmp_path, target):
+    spec = bundle.spec["archives"]["cublas"]
+    path = urllib.parse.urlsplit(spec["url"]).path
+    other_path = urllib.parse.urlsplit(bundle.spec["archives"]["cudart"]["url"]).path
+    visited = []
+    monkeypatch.setattr(installer.urllib.request, "build_opener", local_redirect_builder(
+        [target.format(path=path, other_path=other_path)], bundle.data[spec["url"]], visited))
+    with pytest.raises(installer.CudaRuntimePreparationError) as caught:
+        installer._download_archive("cublas", spec, tmp_path, time.monotonic() + 30, bundle.progress.append)
+    assert caught.value.code == "CUDA_ARCHIVE_SOURCE_REJECTED"
+    assert "SECRET_SENTINEL" not in str(caught.value)
+    assert visited == [spec["url"]]
+    assert not list(tmp_path.glob("*.part")) and not list(tmp_path.glob("*.zip"))
+
+
+def test_actual_response_url_is_checked_against_the_original_artifact(bundle, monkeypatch, tmp_path):
+    spec = bundle.spec["archives"]["cublas"]
+    wrong_final = bundle.spec["archives"]["cudart"]["url"]
+    visited = []
+    monkeypatch.setattr(installer.urllib.request, "build_opener", local_redirect_builder(
+        [], bundle.data[spec["url"]], visited, final_url=wrong_final))
+    with pytest.raises(installer.CudaRuntimePreparationError) as caught:
+        installer._download_archive("cublas", spec, tmp_path, time.monotonic() + 30, bundle.progress.append)
+    assert caught.value.code == "CUDA_ARCHIVE_SOURCE_REJECTED"
+    assert not list(tmp_path.glob("*.part")) and not list(tmp_path.glob("*.zip"))
+
+
+@pytest.mark.parametrize("damage,code", [("hash", "CUDA_ARCHIVE_HASH_MISMATCH"), ("size", "CUDA_ARCHIVE_SIZE_MISMATCH")])
+def test_regional_redirect_does_not_weaken_archive_size_or_sha_checks(bundle, monkeypatch, tmp_path, damage, code):
+    spec = bundle.spec["archives"]["cublas"]
+    path = urllib.parse.urlsplit(spec["url"]).path
+    data = bundle.data[spec["url"]]
+    damaged = bytes([data[0] ^ 1]) + data[1:] if damage == "hash" else data[:-1]
+    visited = []
+    monkeypatch.setattr(installer.urllib.request, "build_opener", local_redirect_builder(
+        ["https://developer.download.nvidia.cn" + path], damaged, visited))
+    with pytest.raises(installer.CudaRuntimePreparationError) as caught:
+        installer._download_archive("cublas", spec, tmp_path, time.monotonic() + 30, bundle.progress.append)
+    assert caught.value.code == code
+    assert len(visited) == 2
+    assert not list(tmp_path.glob("*.part")) and not list(tmp_path.glob("*.zip"))
 
 
 def test_download_deadline_and_error_message_do_not_export_credentials(bundle, monkeypatch):

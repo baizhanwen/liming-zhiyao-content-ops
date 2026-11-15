@@ -100,6 +100,7 @@ def gpu_reason_message(code) -> str:
         "CUDA_ARCHIVE_DOWNLOAD_FAILED": "NVIDIA 运行库下载未完成，可重新配置环境重试。",
         "CUDA_ARCHIVE_SIZE_MISMATCH": "GPU 运行库下载不完整，未使用该文件。",
         "CUDA_ARCHIVE_HASH_MISMATCH": "GPU 运行库校验未通过，未使用该文件。",
+        "CUDA_ARCHIVE_SOURCE_REJECTED": "GPU 运行库下载地址未通过来源校验。",
         "GPU_PROBE_TIMEOUT": "本轮检测超时，尚不能判断 GPU 是否可用。",
         "GPU_PROBE_PROCESS_FAILED": "本轮 GPU 检测进程未返回有效结果。",
         "NVIDIA_GPU_NOT_FOUND": "未发现可用的 NVIDIA GPU。",
@@ -122,10 +123,10 @@ def timing_gpu_check(prepared: dict, cache: Path, configuration: dict, models_re
                     and timing.get("gpuVerified") is True and timing.get("device") == "cuda"
                     and timing.get("probe") == "asr-check-zh.v1")
     failed = status == "failed" or timing.get("status") == "failed"
-    code = runtime.get("code") or runtime.get("reason")
+    preparation_code = runtime.get("code") or runtime.get("reason")
     failure = timing.get("failure")
-    if isinstance(failure, dict):
-        code = failure.get("code") or code
+    failure_code = failure.get("code") if isinstance(failure, dict) else None
+    code = preparation_code if status == "failed" and preparation_code else failure_code or preparation_code
     if verified:
         message = "上次已通过中文样本的 Whisper CUDA 实际转写验证；当前未重新运行 GPU 探测。"
     elif configuration["device"] == "cpu":
@@ -152,6 +153,8 @@ def timing_gpu_check(prepared: dict, cache: Path, configuration: dict, models_re
         message = "当前明确指定 CUDA，需完成 GPU 实际转写验证后才能启动；或先改为 auto/CPU 后使用。"
         if isinstance(code, str) and re.fullmatch(r"[A-Z0-9_]{1,100}", code):
             message += " " + gpu_reason_message(code) + " 原因：" + code + "。"
+    if status == "failed" and failure_code and failure_code != code and re.fullmatch(r"[A-Z0-9_]{1,100}", str(failure_code)):
+        message += " 实际转写失败：" + gpu_reason_message(failure_code) + " " + failure_code + "。"
     if isinstance(timing.get("checkedAt"), str):
         message += " 上次检查：" + timing["checkedAt"][:30] + "。"
     check = {"name": "Whisper timing GPU", "id": "whisper_timing_gpu", "label": "Whisper GPU 时间定位",

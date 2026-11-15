@@ -320,6 +320,14 @@ def test_failed_and_skipped_gpu_receipts_remain_visible_without_running_installe
     assert snapshot["ready"] and snapshot["missing"] == []
     gpu = next(item for item in snapshot["checks"] if item["id"] == "whisper_timing_gpu")
     assert gpu["status"] == "warning" and "CUDA_RUNTIME_DOWNLOAD_FAILED" in gpu["message"]
+    data["cudaRuntime"]["code"] = "CUDA_ARCHIVE_SOURCE_REJECTED"
+    data["timingAsr"]["failure"] = {"code": "CUDA_LIBRARY_UNAVAILABLE", "error_type": "RuntimeError"}
+    save()
+    gpu = next(item for item in module.readiness_snapshot()["checks"] if item["id"] == "whisper_timing_gpu")
+    assert "CUDA_ARCHIVE_SOURCE_REJECTED" in gpu["message"] and "来源校验" in gpu["message"]
+    assert "CUDA_LIBRARY_UNAVAILABLE" in gpu["message"]
+    assert gpu["message"].index("CUDA_ARCHIVE_SOURCE_REJECTED") < gpu["message"].index("CUDA_LIBRARY_UNAVAILABLE")
+    data["timingAsr"].pop("failure")
     data["cudaRuntime"] = {"status": "skipped", "reason": "NVIDIA_GPU_NOT_FOUND"}
     data["timingAsr"]["status"] = "not_verified"
     save()

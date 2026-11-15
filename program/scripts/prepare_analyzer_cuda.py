@@ -45,7 +45,7 @@ CUDA_RUNTIME_SPEC = _runtime.CUDA_RUNTIME_SPEC
 REQUIRED_DLLS = _runtime.REQUIRED_DLLS
 runtime_directory = _runtime.runtime_directory
 validate_runtime = _runtime.validate_runtime
-OFFICIAL_HOST = "developer.download.nvidia.com"
+OFFICIAL_HOSTS = frozenset({"developer.download.nvidia.com", "developer.download.nvidia.cn"})
 MAX_DLL_BYTES = 2 * 1024**3
 MAX_SELECTED_BYTES = 3 * 1024**3
 MAX_LICENSE_BYTES = 2 * 1024**2
@@ -76,11 +76,14 @@ def _remaining(deadline):
     return remaining
 
 
-def _official_url(url):
-    parsed = urllib.parse.urlsplit(url)
+def _official_url(url, *, expected_path=None):
     try:
-        valid = (parsed.scheme == "https" and parsed.hostname == OFFICIAL_HOST
-                 and parsed.port in {None, 443} and not parsed.username and not parsed.password)
+        parsed = urllib.parse.urlsplit(url)
+        fixed_paths = {urllib.parse.urlsplit(spec["url"]).path for spec in CUDA_RUNTIME_SPEC["archives"].values()}
+        valid = (parsed.scheme == "https" and parsed.hostname in OFFICIAL_HOSTS
+                 and parsed.port in {None, 443} and parsed.username is None and parsed.password is None
+                 and parsed.path in fixed_paths and (expected_path is None or parsed.path == expected_path)
+                 and "?" not in url and "#" not in url)
     except ValueError:
         valid = False
     if not valid:
@@ -90,7 +93,13 @@ def _official_url(url):
 
 class _OfficialRedirects(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request, response, code, message, headers, new_url):
-        _official_url(new_url)
+        # urllib resolves a relative Location before this callback. Regional
+        # NVIDIA redirects may change the host, but never the pinned artifact.
+        location = headers.get("Location") or headers.get("location") or ""
+        if "?" in location or "#" in location:
+            # urllib normalizes empty query/fragment delimiters out of new_url.
+            raise CudaRuntimePreparationError("CUDA_ARCHIVE_SOURCE_REJECTED", "CUDA runtime downloads must use the pinned NVIDIA HTTPS source.")
+        _official_url(new_url, expected_path=urllib.parse.urlsplit(request.full_url).path)
         return super().redirect_request(request, response, code, message, headers, new_url)
 
 
@@ -107,7 +116,7 @@ def _download_archive(component, spec, directory, deadline, progress):
     request = urllib.request.Request(url, headers={"User-Agent": "LimingZhiyao-CUDA-Setup/1", "Accept-Encoding": "identity"})
     try:
         with opener.open(request, timeout=min(30, _remaining(deadline))) as response:
-            _official_url(response.geturl())
+            _official_url(response.geturl(), expected_path=urllib.parse.urlsplit(url).path)
             if response.status != 200:
                 raise CudaRuntimePreparationError("CUDA_ARCHIVE_DOWNLOAD_FAILED", "The NVIDIA server did not return the complete CUDA archive.")
             length = response.headers.get("Content-Length")

@@ -5,6 +5,7 @@ import { canAccessOrganizationVideoLibrary, canWriteProjectAccess, getD1, getOrg
 import { apiError, errorResponse } from "../../../../lib/api-response";
 import { summarizeSegmentProgress } from "../../../../lib/analysis-segment-progress";
 import { readRequestIdentity } from "../../../../lib/request-auth";
+import { analysisDiagnosticFilename, buildAnalysisDiagnosticExport } from "../../../../lib/analysis-diagnostic-export";
 
 function parseStoredJson(value: string | null) {
   if (!value) return null;
@@ -121,6 +122,34 @@ export async function GET(request: Request, context: { params: Promise<{ videoId
     const safeJob = job ? { ...job, checkpoint_json: undefined, segment_progress: summarizeSegmentProgress(job.checkpoint_json),
       module_retry: { available: !sharedReference && canWriteProjectAccess(access) && ["evidence_ready", "segment_progress"].includes(String(job.checkpoint_stage)) && (["partial", "failed"].includes(String(job.status)) || job.status === "completed" && moduleRetry?.canonicalNeedsReview === true) && Boolean(moduleRetry?.available) && retryableModuleKeys.length > 0, failedModuleKeys: retryableModuleKeys, reviewSegmentIds: moduleRetry?.reviewSegmentIds ?? [] } } : null;
     const safeLatestJob = latestJob ? { ...latestJob, checkpoint_json: undefined, segment_progress: summarizeSegmentProgress(latestJob.checkpoint_json) } : null;
+    if (url.searchParams.get("export") === "json") {
+      const exportedAt = new Date().toISOString();
+      const through = typeof selected?.created_at === "string" ? selected.created_at : exportedAt;
+      const snapshotColumns = "id,status,analysis_profile,progress,current_stage,error_code,error_message,retry_count,attempt_count,resume_count,started_at,stage_started_at,last_progress_at,last_heartbeat_at,created_at,updated_at,completed_at,checkpoint_stage,checkpoint_updated_at,progress_json";
+      const readJobSnapshot = (id: unknown) => typeof id === "string"
+        ? db.prepare(`SELECT ${snapshotColumns} FROM analysis_jobs WHERE id=? AND organization_id=? AND project_id=? AND video_id=?`)
+          .bind(id, organizationId, sourceProjectId, videoId).first<Record<string, unknown>>() : Promise.resolve(null);
+      // Events belong to the selected report's job and stop at its creation.
+      // A later retry of that same job must not rewrite a historical diagnostic.
+      const [jobSnapshot, latestJobSnapshot, diagnosticEvents, eventCount] = await Promise.all([
+        readJobSnapshot(job?.id), readJobSnapshot(latestJob?.id),
+        job ? db.prepare("SELECT id,job_id,event_type,from_status,to_status,progress,details_json,created_at FROM analysis_job_events WHERE organization_id=? AND project_id=? AND video_id=? AND job_id=? AND created_at<=? ORDER BY created_at ASC,rowid ASC LIMIT 5000")
+          .bind(organizationId, sourceProjectId, videoId, job.id, through).all<Record<string, unknown>>() : Promise.resolve({ results: [] }),
+        job ? db.prepare("SELECT COUNT(*) AS total FROM analysis_job_events WHERE organization_id=? AND project_id=? AND video_id=? AND job_id=? AND created_at<=?")
+          .bind(organizationId, sourceProjectId, videoId, job.id, through).first<{ total: number }>() : Promise.resolve(null),
+      ]);
+      const payload = buildAnalysisDiagnosticExport({ exportedAt, organizationId, projectId, sourceProjectId,
+        video: { ...video, filename: media?.filename ?? video.filename, content_type: media?.content_type ?? video.content_type, size_bytes: media?.size_bytes ?? video.size_bytes },
+        analysis: selected ?? null, job: jobSnapshot, latestJob: latestJobSnapshot,
+        events: diagnosticEvents.results.map(event => ({ ...event, details: parseStoredJson(typeof event.details_json === "string" ? event.details_json : null), details_json: undefined })),
+        eventCount: eventCount?.total ?? 0, eventsThrough: through });
+      const filename = analysisDiagnosticFilename(video.title ?? video.filename, selected?.id ?? job?.id ?? videoId);
+      const encodedFilename = encodeURIComponent(filename).replace(/[!'()*]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+      return new Response(JSON.stringify(payload, null, 2) + "\n", { headers: {
+        "content-type": "application/json; charset=utf-8", "cache-control": "no-store",
+        "content-disposition": `attachment; filename="analysis-diagnostics.json"; filename*=UTF-8''${encodedFilename}`,
+      } });
+    }
     return Response.json({
       video: { ...video, filename: media?.filename ?? video.filename, content_type: media?.content_type ?? video.content_type,
         size_bytes: media?.size_bytes ?? video.size_bytes, media_binding: extractionMedia ? "manuscript" : selectedMedia.binding,
