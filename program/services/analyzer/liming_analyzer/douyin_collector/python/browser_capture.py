@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import math
 import os
 import queue
@@ -31,6 +32,7 @@ from urllib.parse import parse_qs, urljoin, urlsplit, urlunsplit
 
 import httpx
 
+from ...processing_health import request_processor_retirement
 from .security import AppError, PublicTransport, public_url
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -716,6 +718,118 @@ def _kill(process):
         process.wait(timeout=10)
 
 
+def _capture_cleanup_issue(action, error=None, stream=None):
+    diagnostic = {'action': action, 'type': type(error).__name__ if error else 'CleanupIncomplete'}
+    if stream:
+        diagnostic['stream'] = stream
+    number = getattr(error, 'errno', None)
+    if type(number) is int:
+        diagnostic['errno'] = number
+    # Neither diagnostics nor the health signal may hide the original outcome.
+    try:
+        request_processor_retirement('collector_cleanup_' + action)
+    except Exception:  # noqa: BLE001, S110 - cleanup must preserve a pending return/AppError.
+        pass
+    try:
+        logging.getLogger(__name__).warning('Browser capture cleanup: %s', json.dumps(diagnostic, ensure_ascii=True))
+    except Exception:  # noqa: BLE001, S110 - logging itself can fail on a Windows pipe.
+        pass
+
+
+def _cleanup_capture(*, process, reader, stop_reader, stop_writes, write_lock,
+                     send, messages, guard, guard_thread, native_proxy, executor,
+                     broker, work, keep, timeout=12):
+    """Bound every independent cleanup action without replacing a business result.
+
+    A close can block on buffered I/O's lock even after a timed-out reader join.
+    Cleanup therefore never closes a live reader's stream on the caller thread.
+    Unconfirmed resources retire the existing isolated processor before reuse.
+    """
+    deadline = time.monotonic() + timeout
+
+    report = _capture_cleanup_issue
+
+    def step(action, operation, *, stream=None, seconds=1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            report(action, TimeoutError(), stream)
+            return False
+        completed = threading.Event()
+        errors = []
+
+        def run():
+            try:
+                operation()
+            except Exception as error:  # noqa: BLE001 - retain each cleanup failure independently.
+                errors.append(error)
+            finally:
+                completed.set()
+
+        try:
+            worker = threading.Thread(target=run, daemon=True, name='capture-cleanup-' + action)
+            worker.start()
+        except Exception as error:  # noqa: BLE001 - thread startup must not replace a business result.
+            report(action, error, stream)
+            return False
+        if not completed.wait(min(seconds, remaining)):
+            report(action, TimeoutError(), stream)
+            return False
+        if errors:
+            report(action, errors[0], stream)
+            return False
+        return True
+
+    stop_reader.set()
+    stop_writes.set()
+    if process:
+        step('cancel_driver', lambda: send({'type': 'cancel'}, _cleanup=True), seconds=.25)
+        exited = step('wait_driver', lambda: process.wait(timeout=2), seconds=2.25)
+        if not exited or os.name != 'nt':
+            step('kill_driver_tree', lambda: _kill(process), seconds=6)
+    reader_stopped = True
+    if reader:
+        step('join_reader', lambda: reader.join(timeout=1), seconds=1.1)
+        reader_stopped = not reader.is_alive()
+        if not reader_stopped:
+            report('reader_still_running', stream='stdout')
+    if process:
+        def close_stdin():
+            with write_lock:
+                process.stdin.close()
+        if process.stdin:
+            step('close_stream', close_stdin, stream='stdin', seconds=.5)
+        if process.stdout and reader_stopped:
+            step('close_stream', process.stdout.close, stream='stdout', seconds=.5)
+
+    def drain_messages():
+        while True:
+            try:
+                messages.get_nowait()
+            except queue.Empty:
+                return
+    step('drain_messages', drain_messages, seconds=.25)
+    if native_proxy:
+        step('stop_tunnels', guard.stop_tunnels)
+    step('shutdown_executor', lambda: executor.shutdown(wait=True, cancel_futures=True))
+    step('close_broker', broker.close, seconds=.5)
+    step('shutdown_guard', guard.shutdown)
+    step('close_guard', guard.server_close, seconds=.5)
+    step('join_guard', lambda: guard_thread.join(timeout=.5), seconds=.6)
+    if guard_thread.is_alive():
+        report('guard_still_running')
+
+    def clean_files():
+        for path in work.glob('*'):
+            if path.is_file() and path not in keep:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError as error:
+                    report('unlink_work_file', error)
+        if not keep:
+            work.rmdir()
+    step('clean_work_directory', clean_files)
+
+
 def _renderer_env():
     # A public webpage renderer has no reason to inherit model/service keys,
     # Codex settings, shell hooks, TLS key logging or another app's credentials.
@@ -787,17 +901,21 @@ def capture_douyin(url, folder, *, video_id, timeout=180, max_bytes=MAX_MEDIA,
     messages = queue.Queue(maxsize=64)
     inflight = threading.BoundedSemaphore(32)
     stop_reader = threading.Event()
+    stop_writes = threading.Event()
     reader = None
     result, progress, keep = None, {}, set()
     executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix='capture-http')
 
-    def send(message):
+    def send(message, *, _cleanup=False):
         with write_lock:
+            if stop_writes.is_set() and not _cleanup:
+                return
             if process and process.poll() is None:
                 try:
                     process.stdin.write(json.dumps(message) + '\n'); process.stdin.flush()
-                except (BrokenPipeError, OSError):
-                    pass
+                except (BrokenPipeError, OSError, ValueError):
+                    if _cleanup:
+                        raise  # The bounded cleanup step records this without replacing the result.
 
     def read_messages():
         def enqueue(message):
@@ -856,6 +974,10 @@ def capture_douyin(url, folder, *, video_id, timeout=180, max_bytes=MAX_MEDIA,
                 future.add_done_callback(reply)
             elif message.get('type') == 'result':
                 result = message
+                if isinstance(result.get('cleanup'), dict) and result['cleanup'].get('browser_closed') is False:
+                    # A driver exiting does not prove its browser descendants
+                    # have exited; the owner's existing Job Object is the fallback.
+                    _capture_cleanup_issue('browser_close_unconfirmed')
             elif message.get('type') == 'progress':
                 progress = {key: message.get(key) for key in ('observed_video_id', 'page_errors', 'failed_requests',
                             'durations', 'response_status_counts', 'response_types', 'failed_reasons',
@@ -933,32 +1055,7 @@ def capture_douyin(url, folder, *, video_id, timeout=180, max_bytes=MAX_MEDIA,
             'observed_media_responses': len(broker.observed_media), 'binding_diagnostic': broker.binding_diagnostic()}
         raise
     finally:
-        stop_reader.set()
-        if process:
-            send({'type': 'cancel'})
-            try:
-                process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                _kill(process)
-            if os.name != 'nt':
-                _kill(process)  # Also close owned browser descendants after driver exit.
-            for stream in (process.stdin, process.stdout):
-                if stream:
-                    stream.close()
-        while not messages.empty():
-            try:
-                messages.get_nowait()
-            except queue.Empty:
-                break
-        if reader:
-            reader.join(timeout=1)
-        if native_proxy:
-            guard.stop_tunnels()
-        executor.shutdown(wait=True, cancel_futures=True)
-        broker.close()
-        guard.shutdown(); guard.server_close(); guard_thread.join(timeout=2)
-        for path in work.glob('*'):
-            if path.is_file() and path not in keep:
-                path.unlink(missing_ok=True)
-        if not keep:
-            work.rmdir()
+        _cleanup_capture(process=process, reader=reader, stop_reader=stop_reader,
+            stop_writes=stop_writes, write_lock=write_lock, send=send, messages=messages,
+            guard=guard, guard_thread=guard_thread, native_proxy=native_proxy,
+            executor=executor, broker=broker, work=work, keep=keep)

@@ -105,11 +105,23 @@ def _process_claimed(client: AnalyzerApiClient, processor: Processor, job: Claim
         logger.warning("Analysis task failed: job=%s code=%s progress=%s", job.id, error_code, current.progress)
         if error_code in {"MEDIA_PROCESSING_FAILED", "VISUAL_EXTRACTION_FAILED"}:
             logger.warning("Media processing diagnostic: job=%s detail=%s", job.id, error_message[:4000])
-        try:
-            client.fail(current, result_key, error_code, error_message[:1000], "分析失败", current.progress)
-        except AnalyzerApiError as failure_error:
-            if failure_error.status != 409:
-                raise
+        # Failure delivery releases the task's lease too. Retry the same receipt
+        # after transport/server interruptions instead of leaving the next job
+        # blocked until the previous lease expires. Never rerun the processor.
+        for attempt in range(3):
+            try:
+                client.fail(current, result_key, error_code, error_message[:1000], "分析失败", current.progress)
+                break
+            except AnalyzerApiError as failure_error:
+                if failure_error.status == 409:
+                    return True
+                if not _is_transient_api_error(failure_error) or attempt == 2:
+                    raise
+            except (urllib.error.URLError, OSError):
+                if attempt == 2:
+                    raise
+            logger.warning("Retrying failure delivery for job %s with the same result key.", job.id)
+            time.sleep(attempt + 1)
         return True
     # Reuse the result key after a lost response: the server may already have
     # committed the report. Do not pay for another model run to recover the ACK.

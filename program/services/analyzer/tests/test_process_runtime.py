@@ -7,7 +7,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 from liming_analyzer.api_client import AnalysisResult, AnalyzerApiError, ClaimedJob
-from liming_analyzer.process_runtime import IsolatedProcessor, ProcessingFailure, ProcessingLimits, _processing_source_stamp
+from liming_analyzer.process_runtime import (
+    IsolatedProcessor,
+    ProcessingFailure,
+    ProcessingLimits,
+    _processing_source_stamp,
+)
+from liming_analyzer.processing_health import request_processor_retirement
 
 
 def fake_factory(_settings, _client, monitor):
@@ -23,6 +29,8 @@ def fake_factory(_settings, _client, monitor):
         if job.id == "long":
             monitor("duration", 610)
             time.sleep(0.3)
+        if job.id == "cleanup-warning":
+            request_processor_retirement("capture_cleanup_unconfirmed")
         completed += 1
         return AnalysisResult("analysis.v7", {"pid": os.getpid(), "completed": completed})
     return processor
@@ -83,6 +91,20 @@ class ProcessRuntimeTests(unittest.TestCase):
         second = self.run_job("ok-2")
         self.assertEqual(first.report["pid"], second.report["pid"])
         self.assertEqual(second.report["completed"], 2)
+
+    def test_cleanup_warning_keeps_current_result_and_retires_child_before_next_job(self):
+        first = self.run_job("ok")
+        warning = self.run_job("cleanup-warning")
+        self.assertEqual(warning.report["pid"], first.report["pid"])
+        self.assertEqual(warning.report["completed"], 2)
+        self.assertIsNone(self.processor.process)
+        self.assertTrue(self.processor.resources_released)
+        recovered = self.run_job("next")
+        self.assertNotEqual(recovered.report["pid"], warning.report["pid"])
+        self.assertEqual(recovered.report["completed"], 1)
+        healthy_again = self.run_job("ok")
+        self.assertEqual(healthy_again.report["pid"], recovered.report["pid"])
+        self.assertEqual(healthy_again.report["completed"], 2)
 
     def test_changed_source_restarts_only_at_next_task_boundary_and_cleans_old_workspace(self):
         with patch("liming_analyzer.process_runtime._processing_source_stamp", return_value="old") as stamp:

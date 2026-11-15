@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .platform_runtime import InstanceLock, ProcessTree, installation_root, prepare_processing_child
+from .processing_health import processor_retirement_reasons, reset_processor_health
 from .task_progress import ProgressObservations, observe, safe_observation
 from .worker import ProcessingFailure, classify_worker_error
 
@@ -100,6 +101,7 @@ def _child_main(connection, settings, root, workspace, factory, owner_pid=None):
                 command, job = connection.recv()
                 if command == "stop":
                     return
+                reset_processor_health()
                 observations = ProgressObservations()
 
                 def heartbeat(status, progress, stage, observations=observations):
@@ -113,6 +115,10 @@ def _child_main(connection, settings, root, workspace, factory, owner_pid=None):
                 heartbeat.observe = observations.update
                 try:
                     result = processor(job, heartbeat)
+                    reasons = processor_retirement_reasons()
+                    if reasons:
+                        connection.send(("result_retire", (result, reasons)))
+                        return
                     connection.send(("result", result))
                 except Exception as error:  # noqa: BLE001 - safe classified process boundary
                     connection.send(("failure", classify_worker_error(error)))
@@ -301,6 +307,11 @@ class IsolatedProcessor:
                     elif kind == "result":
                         self.resources_released = True
                         return value
+                    elif kind == "result_retire":
+                        result, reasons = value
+                        logger.warning("Retiring processing child after resource cleanup warning: %s", ",".join(reasons))
+                        self.close()
+                        return result
                     elif kind == "failure":
                         raise ProcessingFailure(*value)
                 elif not self.process.is_alive():

@@ -337,7 +337,10 @@ try {
 } catch {
   result = { type: 'result', ok: false, code: 'douyin_browser_runtime' };
 } finally {
-  if (browser) await Promise.race([browser.close().catch(() => {}), sleep(5000)]);
+  const browserClosed = !browser || await Promise.race([
+    Promise.resolve().then(() => browser.close()).then(() => true, () => false), sleep(5000).then(() => false),
+  ]);
+  result.cleanup = { browser_closed: browserClosed };
   for (const resolve of pending.values()) resolve({ abort: true });
   pending.clear();
   input.close();
