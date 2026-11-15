@@ -38,6 +38,7 @@ from .evidence import clean_transcript
 from .task_progress import observe
 from .visual import OcrEngine
 from .visual_mode import job_visual_analysis_mode, normalize_visual_analysis_mode
+from .visual_sampling import job_visual_sampling_level, normalize_visual_sampling_level
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -150,11 +151,12 @@ def _metadata_payload(metadata: SourceMetadata | None) -> dict[str, Any] | None:
     }
 
 
-def _evidence_checkpoint(media: NormalizedMedia, transcript: TranscriptOutput, visuals: VisualOutput, metadata: SourceMetadata | None, *, transcript_review_enabled: bool = True, visual_analysis_mode: str = "hybrid") -> dict[str, Any]:
+def _evidence_checkpoint(media: NormalizedMedia, transcript: TranscriptOutput, visuals: VisualOutput, metadata: SourceMetadata | None, *, transcript_review_enabled: bool = True, visual_analysis_mode: str = "hybrid", visual_sampling_level: str | None = None) -> dict[str, Any]:
     return {
         "checkpoint_version": 1,
         "transcript_review_enabled": transcript_review_enabled,
         "visual_analysis_mode": normalize_visual_analysis_mode(visual_analysis_mode),
+        "visual_sampling_level": normalize_visual_sampling_level(visual_sampling_level),
         "media": {
             "duration_ms": media.info.duration_ms, "width": media.info.width, "height": media.info.height,
             "video_codec": media.info.video_codec, "audio_codec": media.info.audio_codec,
@@ -180,6 +182,8 @@ def _restore_evidence_checkpoint(job: ClaimedJob, workspace: Path) -> tuple[Norm
     if job.checkpoint_stage not in {"evidence_ready", "segment_progress"} or not isinstance(value, Mapping) or value.get("checkpoint_version") != 1:
         return None
     if value.get("visual_analysis_mode", "hybrid") != job_visual_analysis_mode(job):
+        return None
+    if value.get("visual_sampling_level") != job_visual_sampling_level(job):
         return None
     if (value.get("transcript_review_enabled", True) is not
             (job.source.get("transcript_review_enabled") is not False)):
@@ -267,6 +271,7 @@ class AnalysisPipeline:
         try:
             if (value.get("transcript_review_enabled") is not (job.source.get("transcript_review_enabled") is not False)
                     or value.get("visual_analysis_mode", "hybrid") != job_visual_analysis_mode(job)
+                    or value.get("visual_sampling_level") != job_visual_sampling_level(job)
                     or value.get("manual_source_hash") != _manual_source_hash(job)
                     or value.get("asr_fingerprint") != self._speech_fingerprint()
                     or _digest(value.get("transcript")) != value.get("transcript_sha256")):
@@ -292,6 +297,7 @@ class AnalysisPipeline:
                  "source_metadata": _metadata_payload(metadata), "asr_fingerprint": self._speech_fingerprint(),
                  "transcript_review_enabled": job.source.get("transcript_review_enabled") is not False,
                  "visual_analysis_mode": job_visual_analysis_mode(job),
+                 "visual_sampling_level": job_visual_sampling_level(job),
                  "manual_source_hash": _manual_source_hash(job)}
         self.checkpoints.save(job, "transcript_ready", value)
 
@@ -445,7 +451,8 @@ class AnalysisPipeline:
         if callable(set_checkpoint) and self.checkpoints is not None:
             base_checkpoint = {**_evidence_checkpoint(media, transcript, visuals, source_metadata,
                 transcript_review_enabled=current.source.get("transcript_review_enabled") is not False,
-                visual_analysis_mode=job_visual_analysis_mode(current)), **retry_metadata}
+                visual_analysis_mode=job_visual_analysis_mode(current),
+                visual_sampling_level=job_visual_sampling_level(current)), **retry_metadata}
 
             def persist_segment_progress(progress_payload: Mapping[str, Any]) -> None:
                 rows = progress_payload.get("segments")
@@ -461,7 +468,8 @@ class AnalysisPipeline:
         if callable(set_unified) and self.checkpoints is not None:
             base_checkpoint = {**_evidence_checkpoint(media, transcript, visuals, source_metadata,
                 transcript_review_enabled=current.source.get("transcript_review_enabled") is not False,
-                visual_analysis_mode=job_visual_analysis_mode(current)), **retry_metadata}
+                visual_analysis_mode=job_visual_analysis_mode(current),
+                visual_sampling_level=job_visual_sampling_level(current)), **retry_metadata}
 
             def persist_unified_progress(payload: Mapping[str, Any]) -> None:
                 modules = payload.get("modules", {})
@@ -513,6 +521,9 @@ class AnalysisPipeline:
             configure_visual_mode = getattr(self.visual, "set_visual_analysis_mode", None)
             if callable(configure_visual_mode):
                 configure_visual_mode(mode)
+            configure_visual_level = getattr(self.visual, "set_visual_sampling_level", None)
+            if callable(configure_visual_level):
+                configure_visual_level(job_visual_sampling_level(job))
             configure_visual_profile = getattr(self.visual, "set_analysis_profile", None)
             if callable(configure_visual_profile):
                 configure_visual_profile(job.analysis_profile)
@@ -687,7 +698,8 @@ class AnalysisPipeline:
                 try:
                     self.checkpoints.save(current, "evidence_ready", _evidence_checkpoint(media, transcript, visuals, acquired.metadata,
                         transcript_review_enabled=current.source.get("transcript_review_enabled") is not False,
-                        visual_analysis_mode=job_visual_analysis_mode(current)))
+                        visual_analysis_mode=job_visual_analysis_mode(current),
+                        visual_sampling_level=job_visual_sampling_level(current)))
                 except Exception as error:  # noqa: BLE001 - checkpoint is resumability only
                     logger.warning("Could not persist the analysis checkpoint: %s", error)
             observe(heartbeat, "model_analysis")

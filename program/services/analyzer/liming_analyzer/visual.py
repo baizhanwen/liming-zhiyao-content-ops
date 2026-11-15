@@ -20,6 +20,7 @@ from .ffmpeg import FfmpegFrameExtractor
 from .model_calls import ModelCalls, exception_usage, usage_counts
 from .model_compat import completion_options, is_minimax_flash
 from .visual_mode import normalize_visual_analysis_mode
+from .visual_sampling import normalize_visual_sampling_level
 
 
 class OcrEngine(Protocol):
@@ -516,6 +517,7 @@ class KeyframeVisualAnalyzer:
         self.vision_unavailable_reason = vision_unavailable_reason
         self.analysis_profile = "standard"
         self.visual_analysis_mode = "hybrid"
+        self.visual_sampling_level = None
         self._progress_lock = Lock()
         self._progress: dict[str, Any] = {"phase": "idle"}
 
@@ -543,6 +545,12 @@ class KeyframeVisualAnalyzer:
         setter = getattr(self.vision, "set_visual_analysis_mode", None)
         if callable(setter):
             setter(self.visual_analysis_mode)
+
+    def set_visual_sampling_level(self, level: str | None) -> None:
+        self.visual_sampling_level = normalize_visual_sampling_level(level)
+        setter = getattr(self.extractor, "set_visual_sampling_level", None)
+        if callable(setter):
+            setter(self.visual_sampling_level)
 
     def analyze(self, media: NormalizedMedia, output_dir: Path) -> VisualOutput:
         vision_only = self.visual_analysis_mode == "vision_only"
@@ -776,6 +784,7 @@ class KeyframeVisualAnalyzer:
             "analysis_profile": self.analysis_profile,
             "visual_analysis_mode": self.visual_analysis_mode,
             "screen_text_source": "vision_model" if vision_only else "local_ocr",
+            "visual_sampling_level": self.visual_sampling_level,
             "ocr": {"status": "skipped" if vision_only else "partial" if ocr_errors and len(ocr_errors) < len(keyframes) else "failed" if ocr_errors else "completed",
                     "reason": "vision_only" if vision_only else None},
             "candidate_count": len(candidates),

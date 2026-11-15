@@ -1,3 +1,4 @@
+import { matchesVisualSamplingLevel } from "./visual-sampling-level.ts";
 import { isVisualAnalysisMode, normalizeVisualAnalysisMode } from "./visual-analysis-mode.ts";
 import { readContentAnalysis, type ContentAnalysis } from "./video-content-analysis.ts";
 import { readVideoUnifiedReport, unifiedModuleKeys, type UnifiedModuleKey } from "./unified-report.ts";
@@ -70,6 +71,8 @@ export function readEvidenceCheckpoint(raw: string | null | undefined) {
 /** The saved report determines failure; a missing cache entry only means pending. */
 export function readAnalysisModuleRetryState(checkpointJson: string | null | undefined, schema: unknown, report: unknown, jobStatus?: string) {
   const checkpoint = readEvidenceCheckpoint(checkpointJson);
+  if (checkpoint && !matchesVisualSamplingLevel(checkpoint.visual_sampling_level,
+    record(report) && record(report.analysis_meta) ? report.analysis_meta.visual_sampling_level : undefined)) return null;
   if (checkpoint && ((!isVisualAnalysisMode(checkpoint.visual_analysis_mode) && checkpoint.visual_analysis_mode !== undefined)
     || normalizeVisualAnalysisMode(checkpoint.visual_analysis_mode) !== normalizeVisualAnalysisMode(record(report) && record(report.analysis_meta) ? report.analysis_meta.visual_analysis_mode : undefined))) return null;
   if (!["analysis.v11", "analysis.v12"].includes(String(schema)) || !record(report)) return null;

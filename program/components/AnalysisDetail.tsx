@@ -13,9 +13,11 @@ import { useAnalysisProfile } from "./useAnalysisProfile";
 import type { AnalysisProfile } from "../lib/analysis-profile";
 import { normalizeVisualAnalysisMode, type VisualAnalysisMode } from "../lib/visual-analysis-mode";
 import { VisualAnalysisModeSelect, visualAnalysisModeLabels } from "./VisualAnalysisModeSelect";
+import { readVisualSamplingLevel, visualSamplingLevelLabels, type VisualSamplingLevel } from "../lib/visual-sampling-level";
+import { VisualSamplingLevelSelect } from "./VisualSamplingLevelSelect";
 
 type Analysis = { id: string; schema_version: string; analysis_job_id: string | null; report: unknown; created_at: string; model_name: string | null };
-type Job = { id: string; status: string; progress: number; current_stage: string | null; error_message?: string | null; analysis_profile: string; visual_analysis_mode?: VisualAnalysisMode; module_retry?: { available: boolean; failedModuleKeys: string[] } };
+type Job = { id: string; status: string; progress: number; current_stage: string | null; error_message?: string | null; analysis_profile: string; visual_analysis_mode?: VisualAnalysisMode; visual_sampling_level?: VisualSamplingLevel | null; module_retry?: { available: boolean; failedModuleKeys: string[] } };
 type RawSegment = { startMs: number; endMs: number; text: string };
 type Detail = {
   video: { id: string; title: string | null; filename: string | null; source_url: string | null; media_url: string | null; content_type: string | null; is_shared_reference?: boolean; media_binding?: string };
@@ -44,6 +46,12 @@ function recordedVisualAnalysisMode(analysis: Analysis | null, job: Job | null):
   if (meta && typeof meta === "object" && "visual_analysis_mode" in meta) return normalizeVisualAnalysisMode(meta.visual_analysis_mode);
   return normalizeVisualAnalysisMode(!analysis || analysis.analysis_job_id === job?.id ? job?.visual_analysis_mode : undefined);
 }
+function recordedVisualSamplingLevel(analysis: Analysis | null, job: Job | null): VisualSamplingLevel | null {
+  const report = analysis?.report;
+  const meta = report && typeof report === "object" && "analysis_meta" in report ? report.analysis_meta : null;
+  if (meta && typeof meta === "object" && "visual_sampling_level" in meta) return readVisualSamplingLevel(meta.visual_sampling_level);
+  return readVisualSamplingLevel(!analysis || analysis.analysis_job_id === job?.id ? job?.visual_sampling_level : undefined);
+}
 
 export function AnalysisDetail({ videoId, organizationId, projectId, libraryEntryId, initialAnalysisId }: Props) {
   const [snapshot, setSnapshot] = useState<{ url: string; data: Detail } | null>(null), [loading, setLoading] = useState(true), [error, setError] = useState("");
@@ -52,6 +60,7 @@ export function AnalysisDetail({ videoId, organizationId, projectId, libraryEntr
   const [editing, setEditing] = useState(false), [draft, setDraft] = useState<RawSegment[]>([]);
   const [profile, setProfile] = useAnalysisProfile("standard");
   const [visualModeSelection, setVisualModeSelection] = useState<{ scope: string; value: VisualAnalysisMode } | null>(null);
+  const [samplingLevelSelection, setSamplingLevelSelection] = useState<{ scope: string; value: VisualSamplingLevel } | null>(null);
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null), seekRef = useRef<number | null>(null);
   const generation = useRef(0);
   const requestUrl = useMemo(() => {
@@ -86,6 +95,8 @@ export function AnalysisDetail({ videoId, organizationId, projectId, libraryEntr
   const analysis = detail?.analysis ?? null;
   const reportVisualMode = recordedVisualAnalysisMode(analysis, detail?.job ?? null);
   const visualAnalysisMode = visualModeSelection?.scope === requestUrl ? visualModeSelection.value : reportVisualMode;
+  const reportSamplingLevel = recordedVisualSamplingLevel(analysis, detail?.job ?? null);
+  const visualSamplingLevel = samplingLevelSelection?.scope === requestUrl ? samplingLevelSelection.value : reportSamplingLevel ?? "balanced";
   const manuscriptAsset = manuscriptAssetForVersion(detail?.assets ?? [], analysis, Boolean(selectedId));
   const asset = useManuscriptAsset(manuscriptAsset?.url);
   const stored = detail?.transcript ?? null;
@@ -143,7 +154,7 @@ export function AnalysisDetail({ videoId, organizationId, projectId, libraryEntr
     await runAction("extract", async () => {
       const response = await scopedFetch(`/api/videos/${encodeURIComponent(videoId)}/reanalyze`, {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ organizationId, projectId, task: "transcript", visualAnalysisMode: reportVisualMode }),
+        body: JSON.stringify({ organizationId, projectId, task: "transcript", visualAnalysisMode: reportVisualMode, visualSamplingLevel: reportSamplingLevel ?? "balanced" }),
       });
       if (!response.ok) throw new Error(await readApiError(response));
       setSelectedId(""); setNotice("已开始从原片重新提取口播稿。");
@@ -152,7 +163,7 @@ export function AnalysisDetail({ videoId, organizationId, projectId, libraryEntr
   async function reanalyze() {
     await runAction("reanalyze", async () => {
       const response = await scopedFetch(`/api/videos/${encodeURIComponent(videoId)}/reanalyze`, {
-        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, analysisProfile: profile, visualAnalysisMode }),
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, analysisProfile: profile, visualAnalysisMode, visualSamplingLevel }),
       });
       if (!response.ok) throw new Error(await readApiError(response));
       setSelectedId(""); setNotice("新分析已进入队列，原报告仍保留。");
@@ -162,7 +173,7 @@ export function AnalysisDetail({ videoId, organizationId, projectId, libraryEntr
     await runAction("transcript", async () => {
       const response = await scopedFetch(`/api/videos/${encodeURIComponent(videoId)}/transcript`, {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId,
-          language: detail?.transcript?.language || "zh-CN", segments: draft, reanalyze: reanalyzeAfter, analysisProfile: profile, visualAnalysisMode }),
+          language: detail?.transcript?.language || "zh-CN", segments: draft, reanalyze: reanalyzeAfter, analysisProfile: profile, visualAnalysisMode, visualSamplingLevel }),
       });
       if (!response.ok) throw new Error(await readApiError(response));
       setEditing(false); setSelectedId(""); setNotice(reanalyzeAfter ? "人工校正版已保存，分析已进入队列。" : "人工校正版已保存。");
@@ -220,7 +231,7 @@ export function AnalysisDetail({ videoId, organizationId, projectId, libraryEntr
   if (!detail && (loading || snapshot?.url !== requestUrl && !error)) return <div className="management-state" role="status">正在载入报告…</div>;
   if (!detail) return <div className="management-state error-state"><strong>报告暂时无法读取</strong><p>{error}</p><button type="button" onClick={() => void load()}>重新读取</button></div>;
   return <div className="unified-analysis-page">
-    <header className="report-page-header"><div><Link href={`/analysis?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`}>← 视频分析</Link><h1 title={title}>{heading}</h1><div className="report-version-line"><span className={`report-status ${view?.complete && !view.reviews.length ? "complete" : "partial"}`}>{!analysis ? "等待报告" : view?.legacy ? "历史报告" : view?.complete ? view.reviews.length ? `分析完成，${view.reviews.length}处口播待核对` : "分析已完成" : "部分结果可用"}</span>{analysis && <time>{formatClientDate(analysis.created_at)}</time>}{(analysis || detail.job) && <span className="report-visual-mode">{visualAnalysisModeLabels[reportVisualMode]}</span>}{versions.length > 1 && <label>报告版本<select aria-label="报告版本" value={selectedId || analysis?.id || ""} disabled={Boolean(action)} onChange={event => { setEditing(false); setNotice(""); setSelectedId(event.target.value); }}>{versions.map(row => <option key={row.id} value={row.id}>{formatClientDate(row.created_at)} · {["analysis.v11", "analysis.v12"].includes(row.schema_version) ? "新版分析" : "历史报告"}</option>)}</select></label>}{selectedId && <button type="button" disabled={Boolean(action)} onClick={() => { setEditing(false); setNotice(""); setSelectedId(""); }}>查看最新</button>}</div></div><div className="report-primary-actions"><a className="secondary-button" href="#report-script">查看口播稿</a>{canEdit && <button type="button" disabled={Boolean(action)} onClick={() => void extractManuscript()}>仅提取口播稿</button>}<button type="button" disabled={!view || Boolean(action) || (hasManuscript && !manuscript)} onClick={exportMarkdown}>导出报告</button><button type="button" disabled={!detail || Boolean(action)} onClick={() => void exportJson()}>{action === "export-json" ? "正在导出…" : "导出 JSON"}</button></div></header>
+    <header className="report-page-header"><div><Link href={`/analysis?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`}>← 视频分析</Link><h1 title={title}>{heading}</h1><div className="report-version-line"><span className={`report-status ${view?.complete && !view.reviews.length ? "complete" : "partial"}`}>{!analysis ? "等待报告" : view?.legacy ? "历史报告" : view?.complete ? view.reviews.length ? `分析完成，${view.reviews.length}处口播待核对` : "分析已完成" : "部分结果可用"}</span>{analysis && <time>{formatClientDate(analysis.created_at)}</time>}{(analysis || detail.job) && <span className="report-visual-mode">{visualAnalysisModeLabels[reportVisualMode]}</span>}{(analysis || detail.job) && <span className="report-sampling-level">{reportSamplingLevel ? `画面档位：${visualSamplingLevelLabels[reportSamplingLevel]}` : "历史采样"}</span>}{versions.length > 1 && <label>报告版本<select aria-label="报告版本" value={selectedId || analysis?.id || ""} disabled={Boolean(action)} onChange={event => { setEditing(false); setNotice(""); setSelectedId(event.target.value); }}>{versions.map(row => <option key={row.id} value={row.id}>{formatClientDate(row.created_at)} · {["analysis.v11", "analysis.v12"].includes(row.schema_version) ? "新版分析" : "历史报告"}</option>)}</select></label>}{selectedId && <button type="button" disabled={Boolean(action)} onClick={() => { setEditing(false); setNotice(""); setSelectedId(""); }}>查看最新</button>}</div></div><div className="report-primary-actions"><a className="secondary-button" href="#report-script">查看口播稿</a>{canEdit && <button type="button" disabled={Boolean(action)} onClick={() => void extractManuscript()}>仅提取口播稿</button>}<button type="button" disabled={!view || Boolean(action) || (hasManuscript && !manuscript)} onClick={exportMarkdown}>导出报告</button><button type="button" disabled={!detail || Boolean(action)} onClick={() => void exportJson()}>{action === "export-json" ? "正在导出…" : "导出 JSON"}</button></div></header>
     {notice && <div className="report-notice" role="status">{notice}</div>}{error && <div className="inline-alert" role="alert">{error}</div>}
     {latestJob?.status === "failed" && <div className="inline-alert" role="alert">{latestJob.error_message || "最近一次任务执行失败。"}</div>}
     {running && <div className="report-running" role="status"><span className="report-running-dot" /><strong>{latestJob?.current_stage || "正在分析"}</strong><span>{latestJob?.progress ?? 0}%</span><button type="button" onClick={() => void load()}>刷新</button></div>}
@@ -228,7 +239,7 @@ export function AnalysisDetail({ videoId, organizationId, projectId, libraryEntr
     <div className="report-workspace"><aside className="report-source-column" id="report-media"><div className="report-player">{detail.video.media_url ? detail.video.content_type?.startsWith("audio/") ? <audio ref={node => { mediaRef.current = node; }} controls preload="metadata" src={detail.video.media_url} onLoadedMetadata={loadedMetadata}><track kind="captions" srcLang="zh" label="中文" src={captionTrack} /></audio> : <video ref={node => { mediaRef.current = node; }} controls preload="metadata" src={detail.video.media_url} onLoadedMetadata={loadedMetadata}><track kind="captions" srcLang="zh" label="中文" src={captionTrack} /></video> : <div className="report-source-link"><strong>原视频</strong>{detail.video.source_url ? <a href={detail.video.source_url} target="_blank" rel="noreferrer">打开原平台查看 ↗</a> : <span>暂时没有可播放的原片</span>}</div>}</div>{detail.video.media_binding === "video" && selectedId && <small className="report-source-note">播放此素材保存的原片，当前历史版本没有独立原片副本。</small>}{view?.content && <dl className="report-media-facts">{contentMetricRows(view.content).filter(([label]) => ["原始时长", "显示画幅", "转写有效字符", "检测切换次数"].includes(label)).filter(([, value]) => value !== "未取得" && value !== "无法判断").map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>}
       {analysis && reportVisualMode === "vision_only" && <p className="report-source-note">画面及文字由视觉模型识别；本地 OCR 未运行。</p>}
       <nav className="report-section-nav" aria-label="报告内容">{(view?.unified?.version === "unified-report.v1" && view.unified.canonical.status === "failed" ? [] : Object.entries(reportModuleNames)).map(([key, name]) => <a key={key} href={`#report-${key}`}>{name}</a>)}<a href="#report-script">完整口播稿</a></nav>
-      {canEdit && <details className="report-rerun"><summary>重新分析</summary><label>分析档位<select value={profile} onChange={event => setProfile(event.target.value as AnalysisProfile)}><option value="standard">标准模式</option><option value="max">最高能力</option></select></label><VisualAnalysisModeSelect value={visualAnalysisMode} onChange={value => setVisualModeSelection({ scope: requestUrl, value })} disabled={Boolean(action)} /><p>会保留原报告，并按当前材料创建新的分析。更换画面分析方式会重新取得画面依据；仅重试失败模块时保留原方式。</p><button type="button" disabled={Boolean(action)} onClick={() => void reanalyze()}>{action === "reanalyze" ? "正在创建…" : "创建新分析"}</button></details>}</aside>
+      {canEdit && <details className="report-rerun"><summary>重新分析</summary><label>分析档位<select value={profile} onChange={event => setProfile(event.target.value as AnalysisProfile)}><option value="standard">标准模式</option><option value="max">最高能力</option></select></label><VisualAnalysisModeSelect value={visualAnalysisMode} onChange={value => setVisualModeSelection({ scope: requestUrl, value })} disabled={Boolean(action)} /><VisualSamplingLevelSelect value={visualSamplingLevel} onChange={value => setSamplingLevelSelection({ scope: requestUrl, value })} disabled={Boolean(action)} /><p>会保留原报告，并按当前材料创建新的分析。更换画面方式或档位会重新取得画面依据；仅重试失败模块时保留原方式与档位。</p><button type="button" disabled={Boolean(action)} onClick={() => void reanalyze()}>{action === "reanalyze" ? "正在创建…" : "创建新分析"}</button></details>}</aside>
       <main className="report-content-column">{view && !view.invalid ? <UnifiedReportContent manuscript={currentManuscript} view={view} assets={detail.assets} canLocate={Boolean(detail.video.media_url)} onLocate={locate} onCopyScript={() => void copyScript()} canCopyScript={Boolean(view.script.length && ["completed", "original", "needs_review", "historical"].includes(view.scriptStatus))} failedModuleKeys={failedKeys} onRetry={canRetry ? (key, ids) => void retryModule(key, ids) : undefined} busy={Boolean(action)} /> : currentManuscript ?? (!running && <div className="report-empty"><h2>尚无可展示的分析</h2><p>原稿与素材仍保留，可以创建新的分析。</p></div>)}
         {analysis && !detail.video.is_shared_reference && <nav className="report-next-actions" aria-label="分析结果下一步"><Link href={`/analysis?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}&view=assets`}>素材中心</Link><Link href={`/analysis?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}&view=benchmark`}>对标内容库</Link>{detail.canWrite && <Link href={`/topics?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}&sourceVideoId=${encodeURIComponent(videoId)}`}>从此分析创建选题 →</Link>}</nav>}
         <details className="report-original"><summary>核对原始转写</summary><div className="report-original-tools"><label>查找原文<input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索词句" /></label>{canEdit && !editing && <button type="button" disabled={!editableSegments.length || Boolean(action)} onClick={() => { setDraft(editableSegments.map(row => ({ ...row }))); setEditing(true); }}>人工校正</button>}</div>{editing ? <div className="transcript-editor">{draft.map((row, index) => <label key={index}><span>{contentTimeLabel(row.startMs)}</span><textarea value={row.text} maxLength={2000} onChange={event => setDraft(current => current.map((item, offset) => offset === index ? { ...item, text: event.target.value } : item))} /></label>)}<div className="report-edit-actions"><button type="button" disabled={Boolean(action)} onClick={() => setEditing(false)}>取消</button><button type="button" disabled={Boolean(action)} onClick={() => void saveTranscript(false)}>保存校正版</button><button type="button" disabled={Boolean(action)} onClick={() => void saveTranscript(true)}>保存并重新分析</button></div></div> : <ol>{visibleOriginal.map((row, index) => <li key={index}>{detail.video.media_url ? <button type="button" onClick={() => locate(row.startMs)}>{contentTimeLabel(row.startMs)}</button> : <time>{contentTimeLabel(row.startMs)}</time>}<p>{row.text}</p></li>)}</ol>}</details>

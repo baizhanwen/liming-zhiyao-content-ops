@@ -3,6 +3,7 @@ import { checkNewAnalysisAvailability } from "../../../../lib/analysis-submissio
 import { canWriteProjectAccess, ensureUser, getD1, getMediaBucket, getProjectAccess, sha256Hex } from "../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../lib/api-response";
 import { readRequestIdentity } from "../../../../lib/request-auth";
+import { isVisualSamplingLevel, normalizeVisualSamplingLevel } from "../../../../lib/visual-sampling-level";
 import { isVisualAnalysisMode, normalizeVisualAnalysisMode } from "../../../../lib/visual-analysis-mode";
 import { normalizeAnalysisProfile } from "../../../../lib/analysis-profile";
 import { isAnalysisSubmissionConflict } from "../../../../lib/analysis-submission-errors";
@@ -28,12 +29,15 @@ export async function POST(request: Request) {
     const form = await readBoundedFormData(request, MAX_UPLOAD_BYTES + 64 * 1024, "上传请求过大，单文件最多 50 MB，请重新选择文件后分批提交。"); const file = form.get("file"); const analysisProfile = normalizeAnalysisProfile(form.get("analysisProfile"));
     const requestedVisualMode = form.get("visualAnalysisMode");
     if (requestedVisualMode !== null && !isVisualAnalysisMode(requestedVisualMode)) return apiError("INVALID_VISUAL_ANALYSIS_MODE", "请选择有效的画面分析模式。", 400);
+    const requestedSamplingLevel = form.get("visualSamplingLevel");
+    if (requestedSamplingLevel !== null && !isVisualSamplingLevel(requestedSamplingLevel)) return apiError("INVALID_VISUAL_SAMPLING_LEVEL", "请选择有效的画面采样档位。", 400);
+    const visualSamplingLevel = normalizeVisualSamplingLevel(requestedSamplingLevel);
     const visualAnalysisMode = normalizeVisualAnalysisMode(requestedVisualMode);
     if (!(file instanceof File)) return apiError("FILE_REQUIRED", "请选择视频或音频文件。", 400);
     if (!allowedTypes.has(file.type)) return apiError("UNSUPPORTED_MEDIA_TYPE", "仅支持 MP4、MOV、WebM、MP3、M4A 和 WAV。", 415);
     if (file.size <= 0 || file.size > MAX_UPLOAD_BYTES) return apiError("INVALID_FILE_SIZE", "文件大小需要在 1 字节至 50 MB 之间。", 413);
     const user = await ensureUser(identity); const db = getD1(); const bytes = await file.arrayBuffer(); const sha256 = await sha256Hex(bytes); const now = new Date().toISOString();
-    const submission = { organizationId, projectId, userId: user.id, now, sourceType: "upload" as const, sourceHash: sha256, filename: file.name, visualAnalysisMode };
+    const submission = { organizationId, projectId, userId: user.id, now, sourceType: "upload" as const, sourceHash: sha256, filename: file.name, visualAnalysisMode, visualSamplingLevel };
     const assertAccess = createProjectWriteAssertion(db, submission, async () => (await readRequestIdentity(request))?.authSubject === identity.authSubject);
     await assertAccess();
     const existingOrError = await resolveVideoSubmission(db, submission, () => checkNewAnalysisAvailability({ organizationId, userId: user.id, requiresBrowser: false, uploadBytes: file.size, visualAnalysisMode }), assertAccess);
@@ -45,11 +49,11 @@ export async function POST(request: Request) {
     if (!stored) throw new Error("MEDIA_OBJECT_NOT_WRITTEN");
     await assertAccess();
     const kind = file.type.startsWith("audio/") ? "source_audio" : "source_video";
-    submittedResponse = Response.json({ video: { id: videoId, platform: "upload", source_type: "upload", title: file.name, filename: file.name, size_bytes: file.size, status: "pending", created_at: now }, job: { id: jobId, video_id: videoId, status: "pending", analysis_profile: analysisProfile, visual_analysis_mode: visualAnalysisMode, progress: 0, current_stage: "媒体已入库，等待分析", retry_count: 0, created_at: now, updated_at: now } }, { status: 202 });
+    submittedResponse = Response.json({ video: { id: videoId, platform: "upload", source_type: "upload", title: file.name, filename: file.name, size_bytes: file.size, status: "pending", created_at: now }, job: { id: jobId, video_id: videoId, status: "pending", analysis_profile: analysisProfile, visual_analysis_mode: visualAnalysisMode, visual_sampling_level: visualSamplingLevel, progress: 0, current_stage: "媒体已入库，等待分析", retry_count: 0, created_at: now, updated_at: now } }, { status: 202 });
     batchAttempted = true;
     const results = await db.batch([
       db.prepare(`INSERT INTO media_assets (id, organization_id, project_id, kind, r2_key, filename, content_type, size_bytes, sha256, status, created_by, updated_by, created_at, updated_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ? WHERE ${projectWriteAccessCondition}`).bind(assetId, organizationId, projectId, kind, storedKey, file.name, file.type, file.size, sha256, user.id, user.id, now, now, ...projectWriteAccessBindings(submission)),
-      ...newVideoSubmissionStatements(db, { ...submission, videoId, jobId, mediaAssetId: assetId, title: file.name, analysisProfile, auditMetadata: { assetId, filename: file.name, size: file.size, analysisProfile, visualAnalysisMode } }),
+      ...newVideoSubmissionStatements(db, { ...submission, videoId, jobId, mediaAssetId: assetId, title: file.name, analysisProfile, auditMetadata: { assetId, filename: file.name, size: file.size, analysisProfile, visualAnalysisMode, visualSamplingLevel } }),
       db.prepare("UPDATE media_assets SET video_id = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND video_id IS NULL AND EXISTS(SELECT 1 FROM videos WHERE id=?)").bind(videoId, now, assetId, organizationId, projectId, videoId),
     ]);
     if (!results[1].meta.changes) throw new ProjectWriteAccessChangedError();

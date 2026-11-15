@@ -136,3 +136,26 @@ test('material import and reanalysis preserve the latest report visual mode with
   const historical=await fixture(t,[entry({},'2025-01-01T00:00:00Z')]);
   assert.equal(historical.jobs()[0].visual_analysis_mode,'hybrid');
 });
+
+
+test('material import keeps the latest explicit sampling level, export stays unchanged, and legacy reports stay unlabelled',async t=>{
+  const quick={analysis_meta:{visual_sampling_level:'quick'}};
+  const detailed={analysis_meta:{visual_sampling_level:'detailed'}};
+  const entry=(body,date)=>({schema_version:'analysis.v12',report_json:JSON.stringify(body),created_at:date});
+  const f=await fixture(t,[entry(detailed,'2024-01-01T00:00:00Z'),entry(quick,'2025-01-01T00:00:00Z')]);
+  assert.equal(f.jobs()[0].visual_sampling_level,'quick');
+  const exported=await f.load('app/api/video-library/transfer/route.ts').GET(new Request(`http://localhost/transfer?organizationId=${f.owner.organizationId}`));
+  assert.equal(exported.status,200);
+  const reports=(await exported.json()).entries[0].analyses.map(row=>JSON.parse(row.report_json));
+  assert.ok(reports.some(body=>body.analysis_meta.visual_sampling_level==='quick'));
+  const reanalyzed=await f.reanalyze();assert.equal(reanalyzed.status,201);
+  assert.equal((await reanalyzed.json()).job.visual_sampling_level,'quick');
+  const legacy={summary:'Historical report with no sampling metadata'};
+  const historical=await fixture(t,[entry(quick,'2024-01-01T00:00:00Z'),entry(legacy,'2025-01-01T00:00:00Z')]);
+  assert.equal(historical.jobs()[0].visual_sampling_level,null);
+  const legacyExport=await historical.load('app/api/video-library/transfer/route.ts').GET(new Request(`http://localhost/transfer?organizationId=${historical.owner.organizationId}`));
+  const latest=(await legacyExport.json()).entries[0].analyses.find(row=>row.created_at==='2025-01-01T00:00:00Z');
+  assert.deepEqual(JSON.parse(latest.report_json),legacy);
+  const fresh=await historical.reanalyze();assert.equal(fresh.status,201);
+  assert.equal((await fresh.json()).job.visual_sampling_level,'balanced');
+});

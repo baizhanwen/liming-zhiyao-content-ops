@@ -1,3 +1,4 @@
+import { isVisualSamplingLevel, type VisualSamplingLevel } from "./visual-sampling-level";
 import { isVisualAnalysisMode } from "./visual-analysis-mode";
 import { safeProgressObservation } from "./analysis-task-progress";
 import { isLeasedAnalysisStatus } from "./analysis-jobs";
@@ -12,6 +13,7 @@ export type WorkerJobRow = {
   id: string; organization_id: string; project_id: string; video_id: string; status: AnalysisJobStatus; progress: number; current_stage: string | null;
   lease_owner: string | null; lease_expires_at: string | null; attempt_count: number; version: number; result_key: string | null;
   visual_analysis_mode?: "hybrid" | "vision_only";
+  visual_sampling_level?: VisualSamplingLevel | null;
   progress_json?: string | null; stage_started_at?: string | null; last_progress_at?: string | null;
   checkpoint_stage?: string | null; checkpoint_json?: string | null; checkpoint_updated_at?: string | null; resume_count?: number;
 };
@@ -73,6 +75,7 @@ export function readTranscriptCheckpoint(value: unknown) {
     || !hash(value.asr_fingerprint) || !hash(value.transcript_sha256) || (value.manual_source_hash !== null && !hash(value.manual_source_hash))
     || typeof value.transcript_review_enabled !== "boolean"
     || (value.visual_analysis_mode !== undefined && !isVisualAnalysisMode(value.visual_analysis_mode))
+    || (value.visual_sampling_level != null && !isVisualSamplingLevel(value.visual_sampling_level))
     || !Number.isSafeInteger(value.media.duration_ms) || Number(value.media.duration_ms) < 0
     || typeof transcript.language !== "string" || !transcript.language || transcript.language.length > 32
     || !Array.isArray(transcript.segments) || transcript.segments.length > 5_000) return null;

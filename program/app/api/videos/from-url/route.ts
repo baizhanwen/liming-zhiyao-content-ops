@@ -4,6 +4,7 @@ import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess, hashInvitat
 import { apiError, errorResponse } from "../../../../lib/api-response";
 import { readRequestIdentity } from "../../../../lib/request-auth";
 import { extractDouyinUrl } from "../../../../lib/douyin-url";
+import { isVisualSamplingLevel, normalizeVisualSamplingLevel } from "../../../../lib/visual-sampling-level";
 import { isVisualAnalysisMode, normalizeVisualAnalysisMode } from "../../../../lib/visual-analysis-mode";
 import { normalizeAnalysisProfile } from "../../../../lib/analysis-profile";
 import { isAnalysisSubmissionConflict } from "../../../../lib/analysis-submission-errors";
@@ -18,9 +19,11 @@ export async function POST(request: Request) {
     if (!input || typeof input !== "object" || Array.isArray(input) || ["organizationId", "projectId", "url", "title"].some(key => {
       const value = (input as Record<string, unknown>)[key]; return value !== undefined && value !== null && typeof value !== "string";
     })) return apiError("INVALID_VIDEO_INPUT", "链接提交格式无效，请检查公司、项目、链接和内部备注。", 400);
-    const payload = input as { organizationId?: string; projectId?: string; url?: string; title?: string; analysisProfile?: unknown; transcriptReviewEnabled?: unknown; visualAnalysisMode?: unknown };
+    const payload = input as { organizationId?: string; projectId?: string; url?: string; title?: string; analysisProfile?: unknown; transcriptReviewEnabled?: unknown; visualAnalysisMode?: unknown; visualSamplingLevel?: unknown };
     if (payload.transcriptReviewEnabled !== undefined && typeof payload.transcriptReviewEnabled !== "boolean") return apiError("INVALID_TRANSCRIPT_REVIEW_OPTION", "口播稿 AI 核对选项必须为布尔值。", 400);
     if (payload.visualAnalysisMode !== undefined && !isVisualAnalysisMode(payload.visualAnalysisMode)) return apiError("INVALID_VISUAL_ANALYSIS_MODE", "请选择有效的画面分析模式。", 400);
+    if (payload.visualSamplingLevel !== undefined && !isVisualSamplingLevel(payload.visualSamplingLevel)) return apiError("INVALID_VISUAL_SAMPLING_LEVEL", "请选择有效的画面采样档位。", 400);
+    const visualSamplingLevel = normalizeVisualSamplingLevel(payload.visualSamplingLevel);
     const visualAnalysisMode = normalizeVisualAnalysisMode(payload.visualAnalysisMode);
     const transcriptReviewEnabled = payload.transcriptReviewEnabled !== false;
     const organizationId = payload.organizationId?.trim() ?? ""; const projectId = payload.projectId?.trim() ?? "";
@@ -32,16 +35,16 @@ export async function POST(request: Request) {
     if (!access || !canWriteProjectAccess(access)) return apiError("WRITE_ACCESS_REQUIRED", "当前角色不能创建分析任务。", 403);
     const user = await ensureUser(identity); const db = getD1(); const now = new Date().toISOString();
     const sourceHash = await hashInvitationToken(`${organizationId}:${sourceUrl}`);
-    const submission = { organizationId, projectId, userId: user.id, now, sourceType: "url" as const, sourceHash, sourceUrl, transcriptReviewEnabled, visualAnalysisMode };
+    const submission = { organizationId, projectId, userId: user.id, now, sourceType: "url" as const, sourceHash, sourceUrl, transcriptReviewEnabled, visualAnalysisMode, visualSamplingLevel };
     const assertAccess = createProjectWriteAssertion(db, submission, async () => (await readRequestIdentity(request))?.authSubject === identity.authSubject);
     await assertAccess();
     const existingOrError = await resolveVideoSubmission(db, submission, () => checkNewAnalysisAvailability({ organizationId, userId: user.id, requiresBrowser: true, visualAnalysisMode }), assertAccess);
     if (existingOrError) return existingOrError;
     const videoId = crypto.randomUUID(); const jobId = crypto.randomUUID();
     await assertAccess();
-    const results = await db.batch(newVideoSubmissionStatements(db, { ...submission, videoId, jobId, title: payload.title?.trim() || null, analysisProfile, auditMetadata: { sourceUrl, analysisProfile, transcriptReviewEnabled } }));
+    const results = await db.batch(newVideoSubmissionStatements(db, { ...submission, videoId, jobId, title: payload.title?.trim() || null, analysisProfile, auditMetadata: { sourceUrl, analysisProfile, transcriptReviewEnabled, visualAnalysisMode, visualSamplingLevel } }));
     if (!results[0].meta.changes) throw new ProjectWriteAccessChangedError();
-    return Response.json({ video: { id: videoId, platform: "douyin", source_type: "url", source_url: sourceUrl, title: payload.title?.trim() || null, status: "pending", created_at: now }, job: { id: jobId, video_id: videoId, status: "pending", analysis_profile: analysisProfile, visual_analysis_mode: visualAnalysisMode, transcript_review_enabled: transcriptReviewEnabled, progress: 0, current_stage: "等待进入分析队列", retry_count: 0, created_at: now, updated_at: now } }, { status: 202 });
+    return Response.json({ video: { id: videoId, platform: "douyin", source_type: "url", source_url: sourceUrl, title: payload.title?.trim() || null, status: "pending", created_at: now }, job: { id: jobId, video_id: videoId, status: "pending", analysis_profile: analysisProfile, visual_analysis_mode: visualAnalysisMode, visual_sampling_level: visualSamplingLevel, transcript_review_enabled: transcriptReviewEnabled, progress: 0, current_stage: "等待进入分析队列", retry_count: 0, created_at: now, updated_at: now } }, { status: 202 });
   } catch (error) {
     if (error instanceof RequestBodyError) return apiError(error.code, error.message, error.status);
     if (error instanceof ProjectWriteAccessChangedError) return apiError(error.code, "登录状态或项目权限已改变，本次资料未保存。请刷新确认权限后重新提交。", 403);

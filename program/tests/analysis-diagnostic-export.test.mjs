@@ -192,6 +192,64 @@ test("before a report exists diagnostic mode comes from the current job snapshot
   }
 });
 
+test("sampling level export preserves a report's saved tier independently of visual processing mode", async t => {
+  for (const visualSamplingLevel of ["quick", "balanced", "detailed"]) {
+    const report = measuredReport();
+    report.analysis_meta.visual_analysis_mode = "vision_only";
+    report.analysis_meta.visual_sampling_level = visualSamplingLevel;
+    report.analysis_meta.visual_extraction.visual_sampling_level = visualSamplingLevel;
+    const f = await fixture(t, { report });
+    f.sqlite.prepare("UPDATE analysis_jobs SET visual_sampling_level=? WHERE id=?").run(visualSamplingLevel, f.jobId);
+    f.sqlite.prepare("UPDATE analysis_jobs SET visual_sampling_level='detailed' WHERE id=?").run(f.latestJobId);
+    const { response, body } = await f.exportJson();
+    assert.equal(response.status, 200);
+    assert.equal(body.diagnostics.visualSamplingLevel, visualSamplingLevel);
+    assert.equal(body.diagnostics.visualAnalysisMode, "vision_only");
+    assert.equal(body.diagnostics.jobSnapshot.visual_sampling_level, visualSamplingLevel);
+    assert.equal(body.diagnostics.visual.visual_sampling_level, visualSamplingLevel);
+    assert.equal(body.diagnostics.latestJobSnapshot.visual_sampling_level, "detailed");
+    assert.deepEqual(body.report, report);
+  }
+});
+
+test("historical report sampling remains null instead of inheriting a newer job's tier", async t => {
+  const f = await fixture(t);
+  f.sqlite.prepare("UPDATE analysis_jobs SET visual_sampling_level='detailed' WHERE id=?").run(f.latestJobId);
+  const { response, body } = await f.exportJson();
+  assert.equal(response.status, 200);
+  assert.equal(body.diagnostics.visualSamplingLevel, null);
+  assert.equal(body.diagnostics.jobSnapshot.visual_sampling_level, null);
+  assert.equal(body.diagnostics.latestJobSnapshot.visual_sampling_level, "detailed");
+  const report = measuredReport();
+  report.analysis_meta.visual_sampling_level = null;
+  report.analysis_meta.visual_extraction.visual_sampling_level = "detailed";
+  const explicitlyHistorical = await fixture(t, { report });
+  assert.equal((await explicitlyHistorical.exportJson()).body.diagnostics.visualSamplingLevel, null,
+    "An explicit historical marker must not be replaced by extraction metadata");
+});
+
+test("imported report sampling can come from saved statistics and never acquires the balanced default", async t => {
+  const report = measuredReport();
+  report.analysis_meta.visual_extraction.visual_sampling_level = "quick";
+  const f = await fixture(t, { report, bound: false });
+  const { response, body } = await f.exportJson();
+  assert.equal(response.status, 200);
+  assert.equal(body.diagnostics.jobSnapshot, null);
+  assert.equal(body.diagnostics.visualSamplingLevel, "quick");
+});
+
+test("without a report the sampling tier comes from the job, including historical null", async t => {
+  for (const visualSamplingLevel of [null, "quick", "balanced", "detailed"]) {
+    const f = await fixture(t, { withReport: false, status: "failed" });
+    f.sqlite.prepare("UPDATE analysis_jobs SET visual_sampling_level=? WHERE id=?").run(visualSamplingLevel, f.jobId);
+    const { response, body } = await f.exportJson();
+    assert.equal(response.status, 200);
+    assert.equal(body.report, null);
+    assert.equal(body.diagnostics.visualSamplingLevel, visualSamplingLevel);
+    assert.equal(body.diagnostics.jobSnapshot.visual_sampling_level, visualSamplingLevel);
+  }
+});
+
 test("JSON downloads retain a complete emoji at a long Chinese filename boundary", async t => {
   const f = await fixture(t);
   f.sqlite.prepare("UPDATE videos SET title=? WHERE id=?").run("字".repeat(79) + "😀/后续标题", f.videoId);

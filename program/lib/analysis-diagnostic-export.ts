@@ -34,7 +34,7 @@ export function diagnosticJobSnapshot(value: Row | null) {
   if (!value) return null;
   let observation = null;
   try { observation = safeProgressObservation(JSON.parse(typeof value.progress_json === "string" ? value.progress_json : "null")); } catch { /* Missing historical observation. */ }
-  return sanitizeAnalysisDiagnostics({ ...pick(value, ["id", "status", "analysis_profile", "visual_analysis_mode", "progress", "current_stage", "error_code", "error_message", "retry_count", "attempt_count", "resume_count", "started_at", "stage_started_at", "last_progress_at", "last_heartbeat_at", "created_at", "updated_at", "completed_at", "checkpoint_stage", "checkpoint_updated_at"]), observation });
+  return sanitizeAnalysisDiagnostics({ ...pick(value, ["id", "status", "analysis_profile", "visual_analysis_mode", "visual_sampling_level", "progress", "current_stage", "error_code", "error_message", "retry_count", "attempt_count", "resume_count", "started_at", "stage_started_at", "last_progress_at", "last_heartbeat_at", "created_at", "updated_at", "completed_at", "checkpoint_stage", "checkpoint_updated_at"]), observation });
 }
 
 export function analysisDiagnosticFilename(title: unknown, id: unknown) {
@@ -89,6 +89,7 @@ export function buildAnalysisDiagnosticExport(input: {
     report: sanitizeAnalysisDiagnostics(report),
     diagnostics: {
       visualAnalysisMode: analysis ? meta.visual_analysis_mode ?? visual.visual_analysis_mode ?? "hybrid" : job?.visual_analysis_mode ?? (job ? "hybrid" : null),
+      visualSamplingLevel: analysis ? "visual_sampling_level" in meta ? meta.visual_sampling_level : visual.visual_sampling_level ?? null : job?.visual_sampling_level ?? null,
       timingUnit: "milliseconds", evidenceReused: reused, timings,
       notes: ["null 表示未记录或不适用；不会按视频时长估算耗时。", "OCR 与画面理解可能并行，不能把二者耗时直接相加。", "report_evidence 是该报告携带的证据计时，不保证全部由当前执行轮次产生；reused_evidence 明确表示复用。", "任务快照记录导出时状态；同一任务后续重试可能改变它，不代表历史报告生成时状态。", "只包含此视频可访问的报告和任务诊断；不包含主机环境配置或 GPU 环境检测文件。"],
       visual: sanitizeAnalysisDiagnostics(visual, true),

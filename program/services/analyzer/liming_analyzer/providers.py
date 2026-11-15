@@ -27,6 +27,7 @@ from .ffmpeg import FfmpegFrameExtractor, FfmpegMediaProcessor
 from .methodology import analysis_methodology_prompt, select_video_analysis_methodology
 from .model_calls import ModelCalls, exception_usage
 from .model_compat import completion_options, is_minimax_flash
+from .visual_sampling import normalize_visual_sampling_level, visual_sampling_budget
 
 
 def _confidence(value: Any) -> int | None:
@@ -2378,6 +2379,7 @@ class PySceneDetectFrameExtractor:
         self.minimum_scene_seconds = minimum_scene_seconds
         self.maximum_frames = maximum_frames
         self.analysis_profile = "max" if analysis_profile == "max" else "standard"
+        self.visual_sampling_level = None
         self.detector = detector or self._detect
         self._external_detector = detector is not None
         self._raw_detection_boundaries_ms: list[int] = []
@@ -2387,13 +2389,24 @@ class PySceneDetectFrameExtractor:
     def set_analysis_profile(self, profile: str) -> None:
         self.analysis_profile = "max" if profile == "max" else "standard"
 
+    def set_visual_sampling_level(self, level: str | None) -> None:
+        self.visual_sampling_level = normalize_visual_sampling_level(level)
+
+    def _temporal_window_limit(self) -> int:
+        if self.visual_sampling_level is not None:
+            return 1 if self.visual_sampling_level == "quick" else 2
+        return 2 if self.analysis_profile == "max" else 1
+
     def _sampling_config(self, profile_limit: int) -> dict[str, Any]:
         return {
             "first_frame": "first_decodable_frame",
             "opening_interval_ms": 500, "opening_end_exclusive_ms": 3_000,
             "temporal_interval_ms": 125, "temporal_window_offsets_ms": [-375, -250, -125, 0, 125, 250],
-            "temporal_window_limit": 2 if self.analysis_profile == "max" else 1,
+            "temporal_window_limit": self._temporal_window_limit(),
             "representative_frame_limit": profile_limit,
+            **({"visual_sampling_level": self.visual_sampling_level,
+                "total_frame_limit": profile_limit + 7 + self._temporal_window_limit() * 6}
+               if self.visual_sampling_level is not None else {}),
             "temporal_frames_exempt_from_deduplication": True,
             "scene_representative_offset_ms": 250,
             "minimum_raw_scene_duration_ms": 125,
@@ -2402,6 +2415,10 @@ class PySceneDetectFrameExtractor:
         }
 
     def _target_frame_count(self, duration_seconds: float) -> tuple[int, int]:
+        if self.visual_sampling_level is not None:
+            policy = visual_sampling_budget(duration_seconds, self.visual_sampling_level)
+            limit = min(self.maximum_frames, policy["representative_frame_limit"])
+            return min(limit, policy["target_count"]), limit
         profile_limit = min(self.maximum_frames, 180 if self.analysis_profile == "max" else 90)
         if duration_seconds <= 600:
             minimum, maximum, ratio = ((24, 48, duration_seconds / 600) if self.analysis_profile == "max" else (12, 24, duration_seconds / 600))
@@ -2543,7 +2560,7 @@ class PySceneDetectFrameExtractor:
         body_cuts = [value for value in selected_cuts if value >= 3_000]
         if body_cuts:
             selected_cuts = body_cuts
-        window_limit = 2 if self.analysis_profile == "max" else 1
+        window_limit = self._temporal_window_limit()
         if len(selected_cuts) > window_limit:
             selected_cuts = ([selected_cuts[len(selected_cuts) // 2]] if window_limit == 1 else
                              [selected_cuts[round(index * (len(selected_cuts) - 1) / (window_limit - 1))] for index in range(window_limit)])
@@ -2635,6 +2652,7 @@ class PySceneDetectFrameExtractor:
             "configured_maximum_frames": self.maximum_frames,
             "maximum_total_frames": profile_limit + 7 + window_limit * 6,
             "analysis_profile": self.analysis_profile,
+            **({"visual_sampling_level": self.visual_sampling_level} if self.visual_sampling_level is not None else {}),
             "anchor_interval_seconds": round(duration_seconds / max(1, target_count - 1), 1) if target_count > 1 else None,
             "evidence_version": "visual-evidence.v2",
             "sampling_strategy_id": "content-frames.v3",
