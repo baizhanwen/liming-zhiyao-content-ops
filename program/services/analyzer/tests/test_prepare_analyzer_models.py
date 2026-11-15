@@ -164,7 +164,7 @@ def test_windows_gpu_preparation_precedes_loading_and_reuses_the_existing_timing
     monkeypatch.setattr(module, "cuda_readiness_files", lambda _cache: metadata)
     assert module.child() == 0
     assert [call[0] for call in calls] == ["prepare", "load", "primary", "timing"]
-    report = json.loads((runtime.LOCAL / "model-cache/models-ready.json").read_text())
+    report = json.loads((runtime.LOCAL / "model-cache/models-ready.json").read_text(encoding="utf-8"))
     assert report["asrBackend"] == "sherpa-onnx" and report["asrVerified"]
     assert report["cudaRuntime"]["status"] == "prepared"
     assert report["cudaRuntime"]["requiredFiles"] == metadata
@@ -188,7 +188,7 @@ def test_failed_optional_cuda_setup_persists_failure_but_keeps_verified_cpu_qwen
         raise PreparationError("sanitized fixture failure")
     monkeypatch.setitem(sys.modules, "prepare_analyzer_cuda", SimpleNamespace(ensure_cuda_runtime=prepare))
     assert module.child() == 0
-    report = json.loads((runtime.LOCAL / "model-cache/models-ready.json").read_text())
+    report = json.loads((runtime.LOCAL / "model-cache/models-ready.json").read_text(encoding="utf-8"))
     assert report["ready"] and report["modelsReady"] and report["asrVerified"]
     assert report["cudaRuntime"]["status"] == "failed"
     assert report["cudaRuntime"]["code"] == "CUDA_RUNTIME_DOWNLOAD_FAILED"
@@ -217,7 +217,7 @@ def test_no_gpu_skip_is_saved_without_claiming_gpu_verification(tmp_path, monkey
         ensure_cuda_runtime=lambda *_args, **_options: {"status": "skipped", "reason": "NVIDIA_GPU_NOT_FOUND"},
     ))
     assert module.child() == 0
-    report = json.loads((runtime.LOCAL / "model-cache/models-ready.json").read_text())
+    report = json.loads((runtime.LOCAL / "model-cache/models-ready.json").read_text(encoding="utf-8"))
     assert report["modelsReady"] and report["asrVerified"]
     assert report["cudaRuntime"] == {"status": "skipped", "reason": "NVIDIA_GPU_NOT_FOUND"}
     assert report["timingAsr"]["gpuVerified"] is False

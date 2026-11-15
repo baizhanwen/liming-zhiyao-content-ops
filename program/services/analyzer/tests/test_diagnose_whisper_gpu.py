@@ -255,13 +255,15 @@ def test_loader_tail_timeout_preserves_completed_original_gpu_failure(monkeypatc
 
 
 @pytest.mark.parametrize("mode", ["bare", "absolute"])
-def test_loader_uses_legacy_bare_or_safe_absolute_and_reports_actual_location(monkeypatch, tmp_path, mode):
+@pytest.mark.parametrize("path_style", ["native", "windows"])
+def test_loader_uses_legacy_bare_or_safe_absolute_and_reports_actual_location(monkeypatch, tmp_path, mode, path_style):
     import ctypes
     monkeypatch.setattr(probe.sys, "platform", "win32")
     monkeypatch.delenv("CUDA_PATH", raising=False)
     calls, closed = [], []
+    loaded_path = str(tmp_path / "actual/cublas.dll") if path_style == "native" else r"C:\CUDA\actual\cublas.dll"
     def actual_path(_handle, buffer, _size):
-        buffer.value = str(tmp_path / "actual/cublas.dll")
+        buffer.value = loaded_path
         return len(buffer.value)
     kernel = SimpleNamespace(GetModuleFileNameW=actual_path)
     def load(name, **options):
@@ -273,7 +275,7 @@ def test_loader_uses_legacy_bare_or_safe_absolute_and_reports_actual_location(mo
     monkeypatch.setattr(probe.os, "add_dll_directory", lambda path: SimpleNamespace(close=lambda: closed.append(path)), raising=False)
     result = probe.dll_load_probe(SimpleNamespace(dll_directory=str(tmp_path), dll_load_mode=mode))
     assert result["status"] == "loaded" and len(result["loads"]) == 2
-    assert all(row["actual_path"].endswith("actual/cublas.dll") for row in result["loads"])
+    assert all(row["actual_path"].replace("\\", "/").endswith("actual/cublas.dll") for row in result["loads"])
     assert [value for _, value in calls] == ([0, 0] if mode == "bare" else [0x1100, 0x1100])
     assert [Path(name).is_absolute() for name, _ in calls] == [mode == "absolute"] * 2
     assert len(closed) == (mode == "absolute")

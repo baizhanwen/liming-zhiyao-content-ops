@@ -30,8 +30,8 @@ def job(root, **changes):
 
 def count(root, name):
     path = root / name
-    value = int(path.read_text()) + 1 if path.exists() else 1
-    path.write_text(str(value))
+    value = int(path.read_text(encoding="utf-8")) + 1 if path.exists() else 1
+    path.write_text(str(value), encoding="utf-8")
 
 
 class DurableClient:
@@ -55,7 +55,8 @@ class DurableClient:
 
     def save_checkpoint(self, _job, stage, checkpoint):
         # This store is outside the isolated child's temporary workspace.
-        (self.root / "saved.json").write_text(json.dumps({"stage": stage, "checkpoint": checkpoint}, ensure_ascii=False))
+        (self.root / "saved.json").write_text(
+            json.dumps({"stage": stage, "checkpoint": checkpoint}, ensure_ascii=False), encoding="utf-8")
 
 
 class HangingManuscriptClient(DurableClient):
@@ -131,7 +132,7 @@ def test_asr_checkpoint_survives_later_failure_and_skips_collection_and_asr(tmp_
     first = job(tmp_path)
     with pytest.raises(RuntimeError, match="visual failure"):
         pipeline(tmp_path).process(first, heartbeat(first))
-    saved = json.loads((tmp_path / "saved.json").read_text())
+    saved = json.loads((tmp_path / "saved.json").read_text(encoding="utf-8"))
     assert saved["stage"] == "transcript_ready"
     value = saved["checkpoint"]
     assert value["checkpoint_version"] == 2 and value["transcript"]["segments"][0]["text"] == WORDS.full_text
@@ -142,9 +143,9 @@ def test_asr_checkpoint_survives_later_failure_and_skips_collection_and_asr(tmp_
     resumed = job(tmp_path, checkpoint_stage=saved["stage"], checkpoint=value, attempt_count=2)
     result = pipeline(tmp_path).process(resumed, heartbeat(resumed))
     assert result.report["words"] == WORDS.full_text
-    assert (tmp_path / "acquires").read_text() == (tmp_path / "asr_calls").read_text() == "1"
-    assert (tmp_path / "restores").read_text() == "1"
-    assert json.loads((tmp_path / "saved.json").read_text())["stage"] == "evidence_ready"
+    assert (tmp_path / "acquires").read_text(encoding="utf-8") == (tmp_path / "asr_calls").read_text(encoding="utf-8") == "1"
+    assert (tmp_path / "restores").read_text(encoding="utf-8") == "1"
+    assert json.loads((tmp_path / "saved.json").read_text(encoding="utf-8"))["stage"] == "evidence_ready"
 
 
 @pytest.mark.parametrize("changed", ["asr", "mode", "manual", "words", "source_hash"])
@@ -152,7 +153,7 @@ def test_checkpoint_reuse_is_bound_to_asr_mode_manual_source_and_verbatim_words(
     first = job(tmp_path)
     with pytest.raises(RuntimeError):
         pipeline(tmp_path).process(first, heartbeat(first))
-    saved = json.loads((tmp_path / "saved.json").read_text())["checkpoint"]
+    saved = json.loads((tmp_path / "saved.json").read_text(encoding="utf-8"))["checkpoint"]
     resumed = job(tmp_path, checkpoint_stage="transcript_ready", checkpoint=saved)
     worker = pipeline(tmp_path)
     assert worker._restore_transcript(resumed) is not None
@@ -176,7 +177,7 @@ def test_raw_checkpoint_is_saved_before_optional_subtitle_recovery_starts(tmp_pa
     worker = pipeline(tmp_path)
     worker.manuscript_ocr = object()
     def captions(_path, transcript, **_kwargs):
-        saved = json.loads((tmp_path / "saved.json").read_text())
+        saved = json.loads((tmp_path / "saved.json").read_text(encoding="utf-8"))
         assert saved["stage"] == "transcript_ready"
         assert saved["checkpoint"]["transcript"]["segments"][0]["text"] == WORDS.full_text
         assert transcript.full_text == WORDS.full_text
@@ -192,7 +193,7 @@ def test_manual_checkpoint_preserves_the_manual_source_and_never_runs_asr(tmp_pa
         ]}})
     with pytest.raises(RuntimeError, match="visual failure"):
         pipeline(tmp_path).process(first, heartbeat(first))
-    saved = json.loads((tmp_path / "saved.json").read_text())["checkpoint"]
+    saved = json.loads((tmp_path / "saved.json").read_text(encoding="utf-8"))["checkpoint"]
     assert len(saved["manual_source_hash"]) == 64
     assert not (tmp_path / "asr_calls").exists()
     (tmp_path / "allow-visual").touch()
@@ -227,12 +228,12 @@ def test_manuscript_upload_failure_keeps_completed_asr_checkpoint_for_retry(tmp_
     worker.artifacts = worker.checkpoints = ApiArtifactStore(BrokenManuscriptClient(tmp_path))
     with pytest.raises(AnalyzerApiError, match="MANUSCRIPT_UPLOAD_FAILED"):
         worker.process(first, heartbeat(first))
-    saved = json.loads((tmp_path / "saved.json").read_text())
+    saved = json.loads((tmp_path / "saved.json").read_text(encoding="utf-8"))
     assert saved["stage"] == "transcript_ready"
     (tmp_path / "allow-visual").touch()
     resumed = replace(first, checkpoint_stage="transcript_ready", checkpoint=saved["checkpoint"], attempt_count=2)
     result = pipeline(tmp_path).process(resumed, heartbeat(resumed))
-    assert result.report["words"] == WORDS.full_text and (tmp_path / "asr_calls").read_text() == "1"
+    assert result.report["words"] == WORDS.full_text and (tmp_path / "asr_calls").read_text(encoding="utf-8") == "1"
 
 
 def test_completed_real_chunk_counters_are_not_replaced_by_a_one_chunk_placeholder(tmp_path):
@@ -340,12 +341,12 @@ def test_real_isolated_timeout_reuses_finished_asr_in_a_new_child(tmp_path, bloc
         with pytest.raises(ProcessingFailure) as caught:
             processor(first, heartbeat(first))
         assert caught.value.code == "ANALYZER_STAGE_TIMEOUT"
-        saved = json.loads((tmp_path / "saved.json").read_text())
+        saved = json.loads((tmp_path / "saved.json").read_text(encoding="utf-8"))
         assert saved["stage"] == "transcript_ready" and processor.resources_released
         (tmp_path / "allow-visual").touch()
         (tmp_path / "allow-manuscript").touch()
         resumed = replace(first, checkpoint_stage="transcript_ready", checkpoint=saved["checkpoint"], attempt_count=2)
         result = processor(resumed, heartbeat(resumed))
     assert result.report["words"] == WORDS.full_text
-    assert (tmp_path / "asr_calls").read_text() == (tmp_path / "acquires").read_text() == "1"
-    assert (tmp_path / "restores").read_text() == "1"
+    assert (tmp_path / "asr_calls").read_text(encoding="utf-8") == (tmp_path / "acquires").read_text(encoding="utf-8") == "1"
+    assert (tmp_path / "restores").read_text(encoding="utf-8") == "1"

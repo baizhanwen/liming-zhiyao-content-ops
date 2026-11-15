@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import React from "react";
 import * as jsx from "react/jsx-runtime";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -53,7 +54,8 @@ test("ordinary creation and single benchmark rewrite receive the complete origin
 });
 
 function loadReportComponent(f) {
-  const root = new URL("../", import.meta.url).pathname;
+  const root = fileURLToPath(new URL("../", import.meta.url));
+  const componentsRoot = path.join(root, "components") + path.sep;
   const components = new Map();
   function load(filename) {
     if (components.has(filename)) return components.get(filename);
@@ -65,7 +67,7 @@ function loadReportComponent(f) {
       if (name === "react") return React;
       if (name === "react/jsx-runtime") return jsx;
       const target = path.resolve(path.dirname(filename), name);
-      if (name.startsWith(".") && target.includes("/components/")) return load(target + ".tsx");
+      if (name.startsWith(".") && target.startsWith(componentsRoot)) return load(target + ".tsx");
       if (name.startsWith(".")) return f.load(target + ".ts");
       throw new Error("Unexpected component dependency: " + name);
     };

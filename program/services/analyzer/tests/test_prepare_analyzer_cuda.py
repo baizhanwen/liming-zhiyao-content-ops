@@ -215,8 +215,15 @@ def test_stream_crossing_total_deadline_removes_partial(bundle, monkeypatch, tmp
 def test_zip_slip_and_ambiguous_paths_are_rejected_without_writing_outside_staging(bundle, tmp_path, unsafe):
     spec = bundle.spec["archives"]["cublas"]
     root = Path(spec["url"]).name.removesuffix(".zip")
+    raw_name = unsafe.format(root=root)
+    entry = zipfile.ZipInfo(raw_name)
+    # ZipInfo normalizes Windows separators when constructed. Keep the exact
+    # malicious name in both ZIP headers, as a third-party archive can contain it.
+    entry.filename = raw_name
     archive = tmp_path / "unsafe.zip"
-    archive.write_bytes(archive_bytes(spec, extra=[(unsafe.format(root=root), b"unsafe")]))
+    archive.write_bytes(archive_bytes(spec, extra=[(entry, b"unsafe")]))
+    with zipfile.ZipFile(archive) as source:
+        assert source.infolist()[-1].orig_filename == raw_name
     payload = tmp_path / "payload"
     payload.mkdir()
     with pytest.raises(installer.CudaRuntimePreparationError) as caught:
