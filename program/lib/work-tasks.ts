@@ -37,12 +37,9 @@ export function deriveWorkTaskStatus(storedStatus: string, completedCount: numbe
   return "pending";
 }
 
-export async function listWorkTasks(organizationId: string, userId: string, isAdmin: boolean, limit = 50): Promise<WorkTask[]> {
+function workTaskProgressSql(isAdmin: boolean) {
   const scope = isAdmin ? "" : " AND task.assignee_user_id = ?";
-  const bindings: unknown[] = [organizationId];
-  if (!isAdmin) bindings.push(userId);
-  bindings.push(Math.max(1, Math.min(100, limit)));
-  const rows = await getD1().prepare(`
+  return `
     SELECT task.id, task.organization_id, task.project_id, project.name AS project_name,
       task.assignee_user_id, COALESCE(NULLIF(user.display_name, ''), user.email) AS assignee_name,
       task.task_type, task.title, task.description, task.target_count, task.priority,
@@ -86,10 +83,31 @@ export async function listWorkTasks(organizationId: string, userId: string, isAd
     INNER JOIN users user ON user.id = task.assignee_user_id
     LEFT JOIN projects project ON project.id = task.project_id AND project.organization_id = task.organization_id
     WHERE task.organization_id = ?${scope}
-    ORDER BY CASE task.status WHEN 'cancelled' THEN 2 ELSE 0 END,
-      CASE WHEN julianday(task.due_at) < julianday('now') THEN 0 ELSE 1 END, task.due_at ASC, task.created_at DESC
-    LIMIT ?
-  `).bind(...bindings).all<WorkTaskQueryRow>();
+      AND (task.project_id IS NULL OR (project.id IS NOT NULL AND project.deleted_at IS NULL AND project.status != 'archived'))
+  `;
+}
+
+const incompleteWorkTask = "stored_status != 'cancelled' AND COALESCE(computed_count,0) < MAX(target_count,1)";
+
+/** Counts use the same automatic progress as the list, before its page limit. */
+export async function readWorkTaskSummary(organizationId: string, userId: string, isAdmin: boolean, now = new Date().toISOString()) {
+  const row = await getD1().prepare(`WITH task_progress AS (${workTaskProgressSql(isAdmin)})
+    SELECT COUNT(CASE WHEN ${incompleteWorkTask} THEN 1 END) AS openWorkTasks,
+      COUNT(CASE WHEN ${incompleteWorkTask} AND julianday(due_at) < julianday(?) THEN 1 END) AS overdueWorkTasks
+    FROM task_progress`).bind(organizationId, ...(isAdmin ? [] : [userId]), now).first<{ openWorkTasks: number; overdueWorkTasks: number }>();
+  return { openWorkTasks: Number(row?.openWorkTasks ?? 0), overdueWorkTasks: Number(row?.overdueWorkTasks ?? 0) };
+}
+
+export async function listWorkTasks(organizationId: string, userId: string, isAdmin: boolean, limit = 50): Promise<WorkTask[]> {
+  // Derive completion before limiting: old automatic completions may still have
+  // stored_status=pending and must not crowd unfinished work out of the page.
+  const rows = await getD1().prepare(`WITH task_progress AS (${workTaskProgressSql(isAdmin)})
+    SELECT * FROM task_progress
+    ORDER BY CASE WHEN stored_status='cancelled' THEN 3
+      WHEN COALESCE(computed_count,0) >= MAX(target_count,1) THEN 2
+      WHEN julianday(due_at) < julianday('now') THEN 0 ELSE 1 END,
+      due_at ASC, created_at DESC, id ASC
+    LIMIT ?`).bind(organizationId, ...(isAdmin ? [] : [userId]), Math.max(1, Math.min(100, limit))).all<WorkTaskQueryRow>();
 
   return rows.results.map((row) => {
     const completedCount = Number(row.computed_count || 0);
