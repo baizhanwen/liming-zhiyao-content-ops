@@ -157,8 +157,13 @@ test("quick sampling remains an analysis tier and its compact selector keeps the
   const html = renderToStaticMarkup(React.createElement(loaded.exports.VisualSamplingLevelSelect, { value: "quick", onChange() {}, disabled: true, compact: true }));
   assert.match(html, /value="quick" selected=""/);
   assert.match(html, /disabled=""/);
+  assert.match(html, /视觉模型每批最多 4 图/);
+  assert.match(html, /总抽帧预算不变/);
   assert.match(html, /仍执行完整画面分析模块并保留关键取证/);
   assert.match(html, /aria-label="画面档位"/);
   const describedBy = html.match(/aria-describedby="([^"]+)"/)?.[1];
   assert.ok(describedBy && html.includes(`id="${describedBy}"`));
+  const balanced = renderToStaticMarkup(React.createElement(loaded.exports.VisualSamplingLevelSelect, { value: "balanced", onChange() {} }));
+  assert.match(balanced, /视觉模型每批最多 2 图/);
+  assert.match(balanced, /总抽帧预算不变/);
 });

@@ -2899,7 +2899,10 @@ a.top-content-row:hover { background: var(--brand-soft); }
 .report-edit-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 15px; }
 .report-edit-actions button { font-size: 12px; }
 .report-rerun { font-size: 12px; color: var(--muted); padding: 12px; border-top: 1px solid var(--line); }
-.report-rerun summary { cursor: pointer; }
+.report-rerun > summary { color: var(--brand); font-weight: 650; cursor: pointer; }
+.report-rerun > summary:hover { color: var(--brand-deep); }
+.report-rerun > summary:focus-visible { outline: 3px solid rgb(63 77 143 / 25%); outline-offset: 4px; border-radius: 4px; }
+.report-rerun > .primary-button:disabled { color: white; background: var(--brand); }
 .report-rerun label { display: grid; gap: 7px; margin-top: 15px; }
 .report-rerun p { line-height: 1.8; }
 .report-rerun button, .report-rerun select { font-size: 12px; }

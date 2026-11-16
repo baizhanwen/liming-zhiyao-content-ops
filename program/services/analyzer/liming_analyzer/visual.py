@@ -235,9 +235,13 @@ class OpenAiCompatibleVisionEngine:
         self._progress_callback = None
         self._model_calls = None
         self.visual_analysis_mode = "hybrid"
+        self.visual_sampling_level: str | None = None
 
     def set_visual_analysis_mode(self, mode: str) -> None:
         self.visual_analysis_mode = normalize_visual_analysis_mode(mode)
+
+    def set_visual_sampling_level(self, level: str | None) -> None:
+        self.visual_sampling_level = normalize_visual_sampling_level(level)
 
     def set_progress_callback(self, callback) -> None:
         self._progress_callback = callback
@@ -277,6 +281,8 @@ class OpenAiCompatibleVisionEngine:
                 "composition 分析构图；people_actions 分析人物和动作；scene 分析环境变化；"
                 "camera_expression 分析景别、机位或镜头表达；visual_role 说明该画面对内容的作用。"
                 + (VISION_ONLY_EVIDENCE_INSTRUCTIONS if self.visual_analysis_mode == "vision_only" else VISUAL_EVIDENCE_INSTRUCTIONS)
+                + ("每张图片必须各自核对；不要把其他图片的文字或场景归入本帧。"
+                   if self.visual_sampling_level in {"quick", "balanced"} else "")
                 + " temporal_groups=" + json.dumps(temporal_groups, ensure_ascii=False)
                 +
                 f"这是第 {batch_index}/{batch_count} 批。frame_manifest="
@@ -390,7 +396,8 @@ class OpenAiCompatibleVisionEngine:
         return result
 
     def analyze(self, frames: Sequence[Keyframe]) -> Sequence[VisualObservation]:
-        batches = [[frames[index] for index in indices] for indices in vision_batch_indices(frames, self.batch_size)]
+        batch_size = min({"quick": 4, "balanced": 2}.get(self.visual_sampling_level, self.batch_size), self.batch_size)
+        batches = [[frames[index] for index in indices] for indices in vision_batch_indices(frames, batch_size)]
         observations: list[VisualObservation] = []
         errors: list[dict[str, Any]] = []
         records: list[dict[str, Any]] = []
@@ -477,12 +484,15 @@ class OpenAiCompatibleVisionEngine:
         self.last_stats = {
             "status": status,
             "visual_analysis_mode": self.visual_analysis_mode,
+            "visual_sampling_level": self.visual_sampling_level,
             "image_input_mode": "original_frames_high_detail" if self.visual_analysis_mode == "vision_only" else "original_frames_low_detail",
             "provider": self.provider,
             "model": self.model,
             "prompt_version": "video-vision-text.v1" if self.visual_analysis_mode == "vision_only" else self.prompt_version,
-            "temporal_model_input_supported": True,
-            "batch_size": self.batch_size,
+            "temporal_model_input_supported": batch_size >= 3,
+            "batch_size": batch_size,
+            "configured_batch_size": self.batch_size,
+            "batching_policy": {"quick": "quick-quads.v1", "balanced": "balanced-pairs.v1"}.get(self.visual_sampling_level, "configured"),
             "batch_count": len(batches),
             "completed_batches": completed_batches,
             "failed_batches": len(batches) - completed_batches,
@@ -548,9 +558,10 @@ class KeyframeVisualAnalyzer:
 
     def set_visual_sampling_level(self, level: str | None) -> None:
         self.visual_sampling_level = normalize_visual_sampling_level(level)
-        setter = getattr(self.extractor, "set_visual_sampling_level", None)
-        if callable(setter):
-            setter(self.visual_sampling_level)
+        for component in (self.extractor, self.vision):
+            setter = getattr(component, "set_visual_sampling_level", None)
+            if callable(setter):
+                setter(self.visual_sampling_level)
 
     def analyze(self, media: NormalizedMedia, output_dir: Path) -> VisualOutput:
         vision_only = self.visual_analysis_mode == "vision_only"

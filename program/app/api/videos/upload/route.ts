@@ -4,7 +4,7 @@ import { canWriteProjectAccess, ensureUser, getD1, getMediaBucket, getProjectAcc
 import { apiError, errorResponse } from "../../../../lib/api-response";
 import { readRequestIdentity } from "../../../../lib/request-auth";
 import { isVisualSamplingLevel, normalizeVisualSamplingLevel } from "../../../../lib/visual-sampling-level";
-import { isVisualAnalysisMode, normalizeVisualAnalysisMode } from "../../../../lib/visual-analysis-mode";
+import { isVisualAnalysisMode, normalizeNewVisualAnalysisMode } from "../../../../lib/visual-analysis-mode";
 import { normalizeAnalysisProfile } from "../../../../lib/analysis-profile";
 import { isAnalysisSubmissionConflict } from "../../../../lib/analysis-submission-errors";
 import { createProjectWriteAssertion, projectWriteAccessBindings, projectWriteAccessCondition, ProjectWriteAccessChangedError } from "../../../../lib/project-write-access";
@@ -32,7 +32,7 @@ export async function POST(request: Request) {
     const requestedSamplingLevel = form.get("visualSamplingLevel");
     if (requestedSamplingLevel !== null && !isVisualSamplingLevel(requestedSamplingLevel)) return apiError("INVALID_VISUAL_SAMPLING_LEVEL", "请选择有效的画面采样档位。", 400);
     const visualSamplingLevel = normalizeVisualSamplingLevel(requestedSamplingLevel);
-    const visualAnalysisMode = normalizeVisualAnalysisMode(requestedVisualMode);
+    const visualAnalysisMode = normalizeNewVisualAnalysisMode(requestedVisualMode);
     if (!(file instanceof File)) return apiError("FILE_REQUIRED", "请选择视频或音频文件。", 400);
     if (!allowedTypes.has(file.type)) return apiError("UNSUPPORTED_MEDIA_TYPE", "仅支持 MP4、MOV、WebM、MP3、M4A 和 WAV。", 415);
     if (file.size <= 0 || file.size > MAX_UPLOAD_BYTES) return apiError("INVALID_FILE_SIZE", "文件大小需要在 1 字节至 50 MB 之间。", 413);

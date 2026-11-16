@@ -5,7 +5,7 @@ import { apiError, errorResponse } from "../../../../lib/api-response";
 import { readRequestIdentity } from "../../../../lib/request-auth";
 import { extractDouyinUrl } from "../../../../lib/douyin-url";
 import { isVisualSamplingLevel, normalizeVisualSamplingLevel } from "../../../../lib/visual-sampling-level";
-import { isVisualAnalysisMode, normalizeVisualAnalysisMode } from "../../../../lib/visual-analysis-mode";
+import { isVisualAnalysisMode, normalizeNewVisualAnalysisMode } from "../../../../lib/visual-analysis-mode";
 import { normalizeAnalysisProfile } from "../../../../lib/analysis-profile";
 import { isAnalysisSubmissionConflict } from "../../../../lib/analysis-submission-errors";
 import { createProjectWriteAssertion, ProjectWriteAccessChangedError } from "../../../../lib/project-write-access";
@@ -24,7 +24,7 @@ export async function POST(request: Request) {
     if (payload.visualAnalysisMode !== undefined && !isVisualAnalysisMode(payload.visualAnalysisMode)) return apiError("INVALID_VISUAL_ANALYSIS_MODE", "请选择有效的画面分析模式。", 400);
     if (payload.visualSamplingLevel !== undefined && !isVisualSamplingLevel(payload.visualSamplingLevel)) return apiError("INVALID_VISUAL_SAMPLING_LEVEL", "请选择有效的画面采样档位。", 400);
     const visualSamplingLevel = normalizeVisualSamplingLevel(payload.visualSamplingLevel);
-    const visualAnalysisMode = normalizeVisualAnalysisMode(payload.visualAnalysisMode);
+    const visualAnalysisMode = normalizeNewVisualAnalysisMode(payload.visualAnalysisMode);
     const transcriptReviewEnabled = payload.transcriptReviewEnabled !== false;
     const organizationId = payload.organizationId?.trim() ?? ""; const projectId = payload.projectId?.trim() ?? "";
     const analysisProfile = normalizeAnalysisProfile(payload.analysisProfile);

@@ -1,5 +1,5 @@
 import { normalizeVisualSamplingLevel, readVisualSamplingLevel, type VisualSamplingLevel } from "./visual-sampling-level.ts";
-import { normalizeVisualAnalysisMode, type VisualAnalysisMode } from "./visual-analysis-mode.ts";
+import { normalizeNewVisualAnalysisMode, normalizeVisualAnalysisMode, type VisualAnalysisMode } from "./visual-analysis-mode.ts";
 import { apiError } from "./api-response.ts";
 import { assertProjectWriteAccess, projectWriteAccessBindings, projectWriteAccessCondition } from "./project-write-access.ts";
 
@@ -42,7 +42,7 @@ export async function resolveVideoSubmission(db: Database, input: Submission, va
     || canonical.report_transcript_review_enabled != null && (canonical.report_transcript_review_enabled !== 0) !== (input.transcriptReviewEnabled !== false)) {
     return apiError("TRANSCRIPT_REVIEW_OPTION_MISMATCH", "该素材已有不同口播稿 AI 核对设置的分析。请在原素材所在项目按所需设置重新分析，或选择一致的核对设置后复用。", 409, { videoId: canonical.id, transcriptReviewEnabled: canonical.transcript_review_enabled !== 0 });
   }
-  const visualAnalysisMode = normalizeVisualAnalysisMode(input.visualAnalysisMode);
+  const visualAnalysisMode = normalizeNewVisualAnalysisMode(input.visualAnalysisMode);
   if (normalizeVisualAnalysisMode(canonical.visual_analysis_mode) !== visualAnalysisMode
     || canonical.report_visual_analysis_mode != null && normalizeVisualAnalysisMode(canonical.report_visual_analysis_mode) !== visualAnalysisMode) {
     return apiError("VISUAL_ANALYSIS_MODE_MISMATCH", "该素材已有不同画面分析模式的结果。请在原素材所在项目按所需模式重新分析，或选择一致的模式后复用。", 409, { videoId: canonical.id, visualAnalysisMode: normalizeVisualAnalysisMode(canonical.visual_analysis_mode) });
@@ -118,7 +118,7 @@ export function newVideoSubmissionStatements(db: Database, input: Submission & {
     db.prepare(`INSERT INTO video_library_entries (id, organization_id, source_video_id, category, tags_json, created_by, updated_by, created_at, updated_at) SELECT ?, ?, ?, 'other', '[]', ?, ?, ?, ? WHERE ${written}`)
       .bind(crypto.randomUUID(), organizationId, videoId, userId, userId, now, now, ...writtenBindings),
     db.prepare(`INSERT INTO analysis_jobs (id, organization_id, project_id, video_id, source_type, source_ref, idempotency_key, status, analysis_profile, transcript_review_enabled, visual_analysis_mode, visual_sampling_level, progress, current_stage, retry_count, created_by, updated_by, created_at, updated_at) SELECT ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, 0, ?, 0, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE ${written}`)
-      .bind(jobId, organizationId, projectId, videoId, sourceType, sourceRef, sourceHash, analysisProfile, input.transcriptReviewEnabled === false ? 0 : 1, normalizeVisualAnalysisMode(input.visualAnalysisMode), normalizeVisualSamplingLevel(input.visualSamplingLevel), stage, userId, userId, ...writtenBindings),
+      .bind(jobId, organizationId, projectId, videoId, sourceType, sourceRef, sourceHash, analysisProfile, input.transcriptReviewEnabled === false ? 0 : 1, normalizeNewVisualAnalysisMode(input.visualAnalysisMode), normalizeVisualSamplingLevel(input.visualSamplingLevel), stage, userId, userId, ...writtenBindings),
     db.prepare(`INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) SELECT ?, ?, ?, ?, ?, 'video', ?, ?, ? WHERE ${written}`)
       .bind(crypto.randomUUID(), organizationId, projectId, userId, sourceType === "url" ? "video.url_submitted" : "video.uploaded", videoId, JSON.stringify(input.auditMetadata), now, ...writtenBindings),
   ];

@@ -159,11 +159,11 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
   const [queue, setQueue] = useState<QueueStatus | null>(null);
   const [cookieUpdating, setCookieUpdating] = useState(false); const [cookieDeleting, setCookieDeleting] = useState(false); const [cookieMessage, setCookieMessage] = useState(""); const cookieFileRef = useRef<HTMLInputElement>(null);
   const [jobActionId, setJobActionId] = useState("");
-  const [jobFeedback, setJobFeedback] = useState<Record<string, { tone: "pending" | "success" | "error"; message: string }>>({});
+  const [jobFeedback, setJobFeedback] = useState<Record<string, { tone: "pending" | "error"; message: string }>>({});
   const pendingJobActions = useRef(new Set<string>());
   const [analysisProfile, updateAnalysisProfile] = useAnalysisProfile();
-  const [visualAnalysisMode, setVisualAnalysisMode] = useState<VisualAnalysisMode>("hybrid");
-  const [visualSamplingLevel, setVisualSamplingLevel] = useState<VisualSamplingLevel>("balanced");
+  const [visualAnalysisMode, setVisualAnalysisMode] = useState<VisualAnalysisMode>("vision_only");
+  const [visualSamplingLevel, setVisualSamplingLevel] = useState<VisualSamplingLevel>("quick");
   const [transcriptReviewEnabled, setTranscriptReviewEnabled] = useState(false);
   const [uploadEstimates, setUploadEstimates] = useState<UploadEstimate[]>([]);
   const [inspectingFiles, setInspectingFiles] = useState(false);
@@ -331,7 +331,7 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
       requestedScope?.reader.invalidate();
       setJobs((current) => current.map((job) => job.id === jobId ? { ...job, ...body.job, taskProgress: body.job.taskProgress } : job));
       setTaskSnapshotTimes((current) => ({ ...current, [jobId]: Date.now() }));
-      setJobFeedback(current => ({ ...current, [jobId]: { tone: "success", message: "恢复请求已受理，等待主机接手；已有取证和未受影响结果将复用，相关综合结论会同步更新。" } }));
+      setJobFeedback(current => { const next = { ...current }; delete next[jobId]; return next; });
       try { await loadVideos(organizationId, projectId); }
       catch {
         if (taskReader.current === requestedScope) setJobFeedback(current => ({ ...current, [jobId]: { tone: "error", message: "恢复请求已受理，但状态刷新失败。请刷新列表核对，不必再次提交。" } }));

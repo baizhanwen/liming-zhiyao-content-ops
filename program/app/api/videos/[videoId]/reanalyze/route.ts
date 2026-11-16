@@ -2,7 +2,7 @@ import { activeAnalysisStatuses as activeStatuses } from "../../../../../lib/ana
 import { canWriteProjectAccess, ensureUser, getD1, getLegacyMediaBucket, getMediaBucket, getProjectAccess } from "../../../../../db/runtime";
 import { analyzerReadinessError, readAnalyzerReadiness } from "../../../../../lib/analyzer-readiness";
 import { isVisualSamplingLevel, normalizeVisualSamplingLevel } from "../../../../../lib/visual-sampling-level";
-import { isVisualAnalysisMode, normalizeVisualAnalysisMode } from "../../../../../lib/visual-analysis-mode";
+import { isVisualAnalysisMode, normalizeNewVisualAnalysisMode } from "../../../../../lib/visual-analysis-mode";
 import { normalizeAnalysisProfile } from "../../../../../lib/analysis-profile";
 import { apiError, errorResponse } from "../../../../../lib/api-response";
 import { checkOrganizationQuota } from "../../../../../lib/operations";
@@ -46,7 +46,7 @@ export async function POST(request: Request, context: { params: Promise<{ videoI
     if (active) return apiError("ANALYSIS_ALREADY_RUNNING", "当前视频已有分析任务正在运行。", 409);
     const previousJob = await db.prepare("SELECT transcript_review_enabled, visual_analysis_mode, visual_sampling_level FROM analysis_jobs WHERE organization_id = ? AND project_id = ? AND video_id = ? AND idempotency_key NOT LIKE 'transcript:%' ORDER BY created_at DESC, rowid DESC LIMIT 1").bind(organizationId, projectId, videoId).first<{ transcript_review_enabled: number; visual_analysis_mode: string; visual_sampling_level: string | null }>();
     const visualSamplingLevel = normalizeVisualSamplingLevel(payload.visualSamplingLevel ?? previousJob?.visual_sampling_level);
-    const visualAnalysisMode = normalizeVisualAnalysisMode(payload.visualAnalysisMode ?? previousJob?.visual_analysis_mode);
+    const visualAnalysisMode = normalizeNewVisualAnalysisMode(payload.visualAnalysisMode ?? previousJob?.visual_analysis_mode);
     const readinessIssue = analyzerReadinessError(await readAnalyzerReadiness(organizationId, transcriptOnly), video.source_type === "url", transcriptOnly, visualAnalysisMode);
     if (readinessIssue) return apiError(readinessIssue.code, readinessIssue.message, 503);
     const user = await ensureUser(identity); const quota = await checkOrganizationQuota(organizationId, user.id, "analyses");

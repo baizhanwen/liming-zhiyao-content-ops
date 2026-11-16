@@ -29,7 +29,7 @@ async function fixture(t) {
     method: "POST", headers: { "content-type": "application/json", ...(internal ? { authorization: "Bearer synthetic-service-token" } : {}) }, body: JSON.stringify(body),
   });
   const submit = (options = {}) => f.load("app/api/videos/from-url/route.ts").POST(request("/api/videos/from-url", {
-    ...scope, url: "https://www.douyin.com/video/1234567890123456789", ...options,
+    ...scope, url: "https://www.douyin.com/video/1234567890123456789", visualAnalysisMode: "hybrid", ...options,
   }));
   const claim = () => f.load("app/api/internal/analysis-jobs/claim/route.ts").POST(request("/claim", { workerId: "test-worker", leaseSeconds: 300 }, true));
   const finish = id => f.sqlite.prepare("UPDATE analysis_jobs SET status='completed',lease_owner=NULL,lease_expires_at=NULL WHERE id=?").run(id);
@@ -76,19 +76,19 @@ for (const level of levels) test(`${level} survives submission, evidence checkpo
   assert.equal(f.sqlite.prepare("SELECT status FROM analysis_jobs WHERE id=?").get(job.id).status, "completed");
 });
 
-test("new default is balanced, reanalysis inherits an explicit level, and override starts without an old checkpoint", async t => {
+test("new default is quick, reanalysis inherits an explicit level, and override starts without an old checkpoint", async t => {
   const f = await fixture(t);
-  const original = await (await f.submit()).json(); assert.equal(original.job.visual_sampling_level, "balanced"); f.finish(original.job.id);
-  const switched = await f.reanalyze(original.video.id, { visualSamplingLevel: "quick" }); assert.equal(switched.status, 201);
-  const quick = await switched.json(); assert.equal(quick.job.visual_sampling_level, "quick"); f.finish(quick.job.id);
+  const original = await (await f.submit()).json(); assert.equal(original.job.visual_sampling_level, "quick"); f.finish(original.job.id);
+  const switched = await f.reanalyze(original.video.id, { visualSamplingLevel: "balanced" }); assert.equal(switched.status, 201);
+  const quick = await switched.json(); assert.equal(quick.job.visual_sampling_level, "balanced"); f.finish(quick.job.id);
   const inherited = await f.reanalyze(original.video.id); assert.equal(inherited.status, 201);
-  const inheritedBody = await inherited.json(); assert.equal(inheritedBody.job.visual_sampling_level, "quick"); f.finish(inheritedBody.job.id);
+  const inheritedBody = await inherited.json(); assert.equal(inheritedBody.job.visual_sampling_level, "balanced"); f.finish(inheritedBody.job.id);
   const detailed = await f.reanalyze(original.video.id, { visualSamplingLevel: "detailed" }); assert.equal(detailed.status, 201);
   const body = await detailed.json(); assert.equal(body.job.visual_sampling_level, "detailed");
   assert.equal(f.sqlite.prepare("SELECT checkpoint_json FROM analysis_jobs WHERE id=?").get(body.job.id).checkpoint_json, null);
 });
 
-test("historical NULL survives retry and claim with an omitted source field, while a new reanalysis selects balanced", async t => {
+test("historical NULL survives retry and claim with an omitted source field, while a new reanalysis selects quick", async t => {
   const f = await fixture(t);
   const original = await (await f.submit()).json();
   const checkpoint = { checkpoint_version: 1, media: {}, transcript: {}, visuals: {} };
@@ -99,7 +99,7 @@ test("historical NULL survives retry and claim with an omitted source field, whi
   assert.equal(job.visual_sampling_level, null); assert.equal(Object.hasOwn(job.source, "visual_sampling_level"), false);
   assert.equal(Object.hasOwn(job.checkpoint, "visual_sampling_level"), false); f.finish(job.id);
   const fresh = await f.reanalyze(original.video.id); assert.equal(fresh.status, 201);
-  assert.equal((await fresh.json()).job.visual_sampling_level, "balanced");
+  assert.equal((await fresh.json()).job.visual_sampling_level, "quick");
 });
 
 test("explicit invalid URL, upload, retry and reanalysis sampling options are rejected", async t => {

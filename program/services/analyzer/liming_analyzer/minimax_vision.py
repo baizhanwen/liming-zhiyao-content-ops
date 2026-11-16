@@ -26,6 +26,7 @@ from .visual import (
     vision_usage,
     vision_usage_totals,
 )
+from .visual_sampling import normalize_visual_sampling_level
 
 _SECRET_PATTERN = re.compile(r"sk-cp[-_A-Za-z0-9]{8,}", re.IGNORECASE)
 _TRACE_PATTERN = re.compile(r"(?:trace[-_ ]?id|request[-_ ]?id)\s*[:=]\s*([A-Za-z0-9._:-]+)", re.IGNORECASE)
@@ -129,6 +130,7 @@ class PreparedVisionBatch:
     refs: tuple[tuple[int, Keyframe], ...]
     image_path: Path
     prompt: str
+    input_metadata: Mapping[str, Any] | None = None
 
 
 async def _run_bounded_calls(
@@ -387,12 +389,16 @@ class MiniMaxTokenPlanMcpVisionEngine:
         )
         self.last_stats: dict[str, Any] = {}
         self.visual_analysis_mode = "hybrid"
+        self.visual_sampling_level: str | None = None
         self._progress_callback: Callable[[Mapping[str, Any]], None] | None = None
 
     def set_visual_analysis_mode(self, mode: str) -> None:
         if mode not in {"hybrid", "vision_only"}:
             raise ValueError("unsupported visual analysis mode")
         self.visual_analysis_mode = mode
+
+    def set_visual_sampling_level(self, level: str | None) -> None:
+        self.visual_sampling_level = normalize_visual_sampling_level(level)
 
     def set_progress_callback(
         self,
@@ -449,8 +455,112 @@ class MiniMaxTokenPlanMcpVisionEngine:
         sheet.save(path, format="JPEG", quality=82, optimize=True, progressive=True)
         return path
 
+    @staticmethod
+    def _batched_source_dimensions(path: Path) -> tuple[int, int]:
+        from PIL import Image
+
+        with Image.open(path) as source:
+            width, height = source.size
+        if max(width, height) > 16_384 or width * height > 64_000_000:
+            raise ValueError("batched frame dimensions exceed safe image bounds")
+        return width, height
+
+    def _high_resolution_contact_sheet(
+        self, refs: Sequence[tuple[int, Keyframe]], *, batch_index: int, attempt: int,
+    ) -> tuple[Path, dict[str, Any]]:
+        """Keep normal source dimensions, with bounded, clearly numbered input.
+
+        Two frames adapt to landscape/portrait input; three/four use a 2x2 grid.
+        Very large sources are scaled uniformly to a 4096-edge/12MP canvas. The
+        recorded resize describes client input only, never remote model internals.
+        """
+        from PIL import Image, ImageDraw, ImageFont
+
+        if not 2 <= len(refs) <= 4:
+            raise ValueError("high-resolution contact sheets require two to four frames")
+        sizes = [self._batched_source_dimensions(frame.path) for _index, frame in refs]
+        banner, minimum_width = 80, 512
+        max_edge, max_pixels = 4096, 12_000_000
+
+        def layouts(scale: float):
+            pictures = [(max(1, int(width * scale)), max(1, int(height * scale))) for width, height in sizes]
+            candidates = []
+            for columns in ((1, 2) if len(refs) == 2 else (2,)):
+                rows = math.ceil(len(refs) / columns)
+                widths = [max(minimum_width, *(width for index, (width, _height) in enumerate(pictures)
+                                              if index % columns == column)) for column in range(columns)]
+                heights = [max(height for index, (_width, height) in enumerate(pictures)
+                               if index // columns == row) + banner for row in range(rows)]
+                dimensions = sum(widths), sum(heights)
+                layout = ("horizontal" if columns == 2 else "vertical") if len(refs) == 2 else "grid"
+                if max(dimensions) <= max_edge and dimensions[0] * dimensions[1] <= max_pixels:
+                    candidates.append((layout, dimensions, columns, widths, heights))
+            return pictures, candidates
+
+        scale = 1.0
+        if not layouts(scale)[1]:
+            lower, upper = 0.0, 1.0
+            for _step in range(32):
+                middle = (lower + upper) / 2
+                if layouts(middle)[1]:
+                    lower = middle
+                else:
+                    upper = middle
+            scale = lower
+        pictures, fitting = layouts(scale)
+        layout, dimensions, columns, widths, heights = min(fitting, key=lambda row: (max(row[1]), row[1][0] * row[1][1]))
+        sheet = Image.new("RGB", dimensions, (20, 24, 31))
+        draw = ImageDraw.Draw(sheet)
+        try:
+            font = ImageFont.load_default(size=40)
+            scalable_font = True
+        except TypeError:
+            # Pillow 10.0 has only the bundled bitmap default. Enlarge its
+            # ASCII labels without relying on an OS font or silently using 10px.
+            font = ImageFont.load_default()
+            scalable_font = False
+        details = []
+        for local_index, ((global_index, frame), picture_size) in enumerate(zip(refs, pictures), 1):
+            column, row = (local_index - 1) % columns, (local_index - 1) // columns
+            left, top = sum(widths[:column]), sum(heights[:row])
+            slot_width = widths[column]
+            draw.rectangle((left, top, left + slot_width - 1, top + banner - 1), fill=(35, 43, 56))
+            label = f"F{local_index:02d}  {_time_label(frame.timestamp_ms)}.{frame.timestamp_ms % 1000:03d}"
+            if scalable_font:
+                draw.text((left + 16, top + 16), label, fill=(255, 255, 255), font=font)
+            else:
+                bounds = draw.textbbox((0, 0), label, font=font)
+                mask = Image.new("L", (max(1, bounds[2] - bounds[0]), max(1, bounds[3] - bounds[1])))
+                ImageDraw.Draw(mask).text((-bounds[0], -bounds[1]), label, fill=255, font=font)
+                ratio = min(40 / mask.height, (slot_width - 32) / mask.width)
+                mask = mask.resize((max(1, round(mask.width * ratio)), max(1, round(mask.height * ratio))), Image.Resampling.NEAREST)
+                sheet.paste((255, 255, 255), (left + 16, top + 16), mask)
+            with Image.open(frame.path) as source:
+                if source.size != picture_size:
+                    source.thumbnail(picture_size, Image.Resampling.LANCZOS)
+                picture = source.convert("RGB")
+                sheet.paste(picture, (left + (slot_width - picture.width) // 2, top + banner))
+                details.append({
+                    "frame_index": local_index, "source_frame_index": global_index + 1,
+                    "source_dimensions": list(sizes[local_index - 1]), "input_dimensions": list(picture.size),
+                    "resized": picture.size != sizes[local_index - 1],
+                })
+        directory = refs[0][1].path.parent / "vision-contact-sheets"
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"minimax-{self.visual_sampling_level}-a{attempt}-b{batch_index:03d}.jpg"
+        sheet.save(path, format="JPEG", quality=92, optimize=True)
+        return path, {
+            "image_input_mode": "high_resolution_contact_sheet", "layout": layout,
+            "columns": columns, "rows": len(heights), "frame_count": len(refs),
+            "input_dimensions": list(dimensions), "jpeg_quality": 92,
+            "label_height_px": 40,
+            "max_canvas_edge": max_edge, "max_canvas_pixels": max_pixels, "frames": details,
+        }
+
     def _prompt(self, refs: Sequence[tuple[int, Keyframe]], *, batch_index: int, batch_count: int) -> str:
-        original_frame = self.visual_analysis_mode == "vision_only"
+        reads_text = self.visual_analysis_mode == "vision_only"
+        level_batch_size = {"quick": 4, "balanced": 2}.get(self.visual_sampling_level)
+        original_frame = len(refs) == 1 and (reads_text or level_batch_size is not None)
         manifest = [
             {
                 "frame_index": local_index,
@@ -462,13 +572,16 @@ class MiniMaxTokenPlanMcpVisionEngine:
             for local_index, (_, frame) in enumerate(refs, start=1)
         ]
         instructions = VISUAL_EVIDENCE_INSTRUCTIONS
-        if original_frame:
+        if reads_text:
             instructions = instructions.replace(
                 "OCR负责具体文字，不要重复抄字。",
                 "本次不运行本地OCR；visible_text逐字记录本张图实际清晰可读的文字，最多2000字。"
                 "保留原有专名、数字和否定，不根据口播、上下文或常识补字。"
                 "没有清晰文字或无法辨认时visible_text返回空字符串，不把猜测写入文字证据。",
             )
+        if level_batch_size is not None:
+            instructions += "按manifest逐帧独立核对，不把相邻图片的文字或场景串到本帧，不抄添加的F编号和时间码。"
+            instructions += f"本张输入只有{len(refs)}帧有效图片，空白格不属于manifest，不输出不存在帧的观察。"
         return (
             ("这是单张视频原始关键帧，未缩小拼成联系表；manifest只有一帧，frame_index必须为1。"
              if original_frame else "这是一张视频关键帧联系表，每格顶部都有 F 编号和时间码。")
@@ -479,7 +592,7 @@ class MiniMaxTokenPlanMcpVisionEngine:
             "JSON 格式为 {\"observations\":[{\"frame_index\":1,\"composition\":\"\","
             "\"people_actions\":\"\",\"scene\":\"\",\"camera_expression\":\"\","
             "\"visual_role\":\"\",\"confidence\":90"
-            + (",\"visible_text\":\"\"" if original_frame else "")
+            + (",\"visible_text\":\"\"" if reads_text else "")
             + "}]}。"
             "composition 写构图和主体位置；people_actions 写人物、动作或明确无人物；"
             "scene 写环境与场景；camera_expression 只写可见景别、机位；"
@@ -502,13 +615,24 @@ class MiniMaxTokenPlanMcpVisionEngine:
         prepared: list[PreparedVisionBatch] = []
         for batch_index, group in enumerate(groups, start=1):
             refs = tuple(group)
+            input_metadata = None
+            batched_level = self.visual_sampling_level in {"quick", "balanced"}
+            if batched_level and len(refs) >= 2:
+                image_path, input_metadata = self._high_resolution_contact_sheet(refs, batch_index=batch_index, attempt=attempt)
+            elif batched_level or self.visual_analysis_mode == "vision_only":
+                image_path = refs[0][1].path
+                input_metadata = {"image_input_mode": "original_frame"}
+                if batched_level:
+                    input_metadata["input_dimensions"] = list(self._batched_source_dimensions(image_path))
+            else:
+                image_path = self._contact_sheet(refs, batch_index=batch_index, attempt=attempt)
             prepared.append(PreparedVisionBatch(
                 batch_index=batch_index,
                 attempt=attempt,
                 refs=refs,
-                image_path=(refs[0][1].path if self.visual_analysis_mode == "vision_only"
-                            else self._contact_sheet(refs, batch_index=batch_index, attempt=attempt)),
+                image_path=image_path,
                 prompt=self._prompt(refs, batch_index=batch_index, batch_count=len(groups)),
+                input_metadata=input_metadata,
             ))
         return prepared
 
@@ -545,12 +669,14 @@ class MiniMaxTokenPlanMcpVisionEngine:
             "batch": batch.batch_index,
             "attempt": batch.attempt,
             "frame_count": len(batch.refs),
+            "temporal_group_count": len(temporal_groups_in_batch([frame for _index, frame in batch.refs])),
             "response_type": result.response_type,
             "request_id": result.request_id,
             "elapsed_ms": result.elapsed_ms, "started_at": result.started_at, "completed_at": result.completed_at,
             "failure_kind": "overloaded" if _overloaded(result) else "provider_error" if result.is_error else None,
             "output_budget": None,
             **vision_usage(result),
+            **({"input_details": dict(batch.input_metadata)} if batch.input_metadata else {}),
         }
         if result.is_error:
             record.update({"status": "failed", "understood_count": 0, "missing_count": len(batch.refs)})
@@ -701,10 +827,15 @@ class MiniMaxTokenPlanMcpVisionEngine:
     def analyze(self, frames: Sequence[Keyframe]) -> Sequence[VisualObservation]:
         started = time.monotonic()
         original_frames = self.visual_analysis_mode == "vision_only"
+        level_batch_size = {"quick": 4, "balanced": 2}.get(self.visual_sampling_level)
+        effective_batch_size = level_batch_size or (1 if original_frames else self.batch_size)
         input_metadata = {
             "visual_analysis_mode": self.visual_analysis_mode,
-            "image_input_mode": "original_frame" if original_frames else "contact_sheet",
-            "temporal_model_input_supported": not original_frames,
+            "visual_sampling_level": self.visual_sampling_level,
+            "batching_policy": {"quick": "quick-quads.v1", "balanced": "balanced-pairs.v1"}.get(self.visual_sampling_level, "configured"),
+            "configured_batch_size": self.batch_size,
+            "image_input_mode": "high_resolution_contact_sheets" if level_batch_size else "original_frame" if original_frames else "contact_sheet",
+            "temporal_model_input_supported": effective_batch_size >= 3,
         }
         if not frames:
             self.last_stats = {
@@ -722,7 +853,8 @@ class MiniMaxTokenPlanMcpVisionEngine:
             return ()
 
         refs = list(enumerate(frames))
-        initial_groups = ([[ref] for ref in refs] if original_frames else
+        initial_groups = ([[refs[index] for index in indices] for indices in vision_batch_indices(frames, level_batch_size)] if level_batch_size else
+                          [[ref] for ref in refs] if original_frames else
                           [[refs[index] for index in indices] for indices in vision_batch_indices(frames, self.batch_size)])
         initial = self._prepare(initial_groups, attempt=1)
         observations: dict[int, tuple[VisualObservation, ...]] = {}
@@ -766,7 +898,9 @@ class MiniMaxTokenPlanMcpVisionEngine:
         )
         if missing_refs and (successful_responses > 0 or throttled):
             retry_frame_count = len(missing_refs)
-            retry_groups = ([[ref] for ref in missing_refs] if original_frames else
+            retry_groups = ([[missing_refs[index] for index in indices]
+                             for indices in vision_batch_indices([ref[1] for ref in missing_refs], level_batch_size)] if level_batch_size else
+                            [[ref] for ref in missing_refs] if original_frames else
                             [[missing_refs[index] for index in indices] for indices in vision_batch_indices([ref[1] for ref in missing_refs], self.batch_size)])
             retry = self._prepare(retry_groups, attempt=2)
             try:
@@ -832,19 +966,24 @@ class MiniMaxTokenPlanMcpVisionEngine:
             "model": "understand_image",
             "adapter": "minimax_token_plan_mcp",
             "transport": "stdio",
-            "prompt_version": "minimax-original-frame.v1" if original_frames else self.prompt_version,
+            "prompt_version": (f"minimax-{self.visual_sampling_level}-{'quads' if level_batch_size == 4 else 'pairs'}{'-text' if original_frames else ''}.v1"
+                               if level_batch_size else "minimax-original-frame.v1" if original_frames else self.prompt_version),
             "mcp_package": "minimax-coding-plan-mcp==0.0.5",
             "api_host": self.api_host,
             "tool_connected": bool(metadata.get("tool_connected")),
             "available_tools": metadata.get("available_tools", []),
             "mcp_server_name": metadata.get("server_name"),
             "mcp_server_version": metadata.get("server_version"),
-            "batch_size": 1 if original_frames else self.batch_size,
+            "batch_size": effective_batch_size,
             "concurrency": self.concurrency,
             "batch_count": len(initial_groups),
             "completed_batches": completed_batches,
             "failed_batches": len(initial_groups) - completed_batches,
-            "contact_sheet_count": 0 if original_frames else request_count,
+            "contact_sheet_count": sum(row.get("frame_count", 0) >= 2 for row in records) if level_batch_size else 0 if original_frames else request_count,
+            "original_frame_request_count": sum(row.get("frame_count", 0) == 1 for row in records) if level_batch_size else request_count if original_frames else 0,
+            "temporal_group_batch_count": sum(row["temporal_group_count"] > 0 for row in records),
+            "resized_source_frame_count": len({frame["source_frame_index"]
+                for row in records for frame in row.get("input_details", {}).get("frames", []) if frame["resized"]}),
             "request_count": request_count,
             "elapsed_ms": round((time.monotonic() - started) * 1000),
             "retry_frame_count": retry_frame_count,

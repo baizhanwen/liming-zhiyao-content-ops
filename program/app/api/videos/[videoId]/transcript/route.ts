@@ -6,7 +6,7 @@ import { apiError, errorResponse } from "../../../../../lib/api-response";
 import { checkOrganizationQuota } from "../../../../../lib/operations";
 import { readRequestIdentity } from "../../../../../lib/request-auth";
 import { normalizeVisualSamplingLevel } from "../../../../../lib/visual-sampling-level";
-import { normalizeVisualAnalysisMode } from "../../../../../lib/visual-analysis-mode";
+import { normalizeNewVisualAnalysisMode } from "../../../../../lib/visual-analysis-mode";
 import { normalizeAnalysisProfile } from "../../../../../lib/analysis-profile";
 
 const segmentSchema = z.object({
@@ -57,7 +57,7 @@ export async function POST(request: Request, context: { params: Promise<{ videoI
       const analysisProfile = normalizeAnalysisProfile(requestedAnalysisProfile ?? previousJob?.analysis_profile);
       const transcriptReviewEnabled = requestedTranscriptReview ?? (previousJob?.transcript_review_enabled !== 0);
       const visualSamplingLevel = normalizeVisualSamplingLevel(requestedSamplingLevel ?? previousJob?.visual_sampling_level);
-      const visualAnalysisMode = normalizeVisualAnalysisMode(requestedVisualMode ?? previousJob?.visual_analysis_mode);
+      const visualAnalysisMode = normalizeNewVisualAnalysisMode(requestedVisualMode ?? previousJob?.visual_analysis_mode);
       if (visualAnalysisMode === "vision_only") {
         const readiness = analyzerReadinessError(await readAnalyzerReadiness(organizationId), video.source_type === "url", false, visualAnalysisMode);
         if (readiness) return apiError(readiness.code, readiness.message, 503);

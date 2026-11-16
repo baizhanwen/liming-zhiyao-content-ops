@@ -313,7 +313,7 @@ test("three interrupted attempts stop automatic recovery, preserve checkpoints a
   await f.submit();
   const job = (await (await f.claim()).json()).job;
   for (let attempt = 1; attempt <= 3; attempt++) {
-    f.sqlite.prepare("UPDATE analysis_jobs SET lease_expires_at = ?, checkpoint_stage = 'evidence_ready', checkpoint_json = ? WHERE id = ?").run(now, JSON.stringify({ visual_sampling_level: job.visual_sampling_level }), job.id);
+    f.sqlite.prepare("UPDATE analysis_jobs SET lease_expires_at = ?, checkpoint_stage = 'evidence_ready', checkpoint_json = ? WHERE id = ?").run(now, JSON.stringify({ visual_analysis_mode: job.visual_analysis_mode, visual_sampling_level: job.visual_sampling_level }), job.id);
     const response = await f.claim();
     assert.equal(response.status, attempt < 3 ? 200 : 204);
   }

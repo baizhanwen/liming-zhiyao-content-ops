@@ -1,16 +1,19 @@
 """Sampling caps include protected evidence; quick still produces all report sections."""
+import base64
+import json
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
 from test_reviewed_analysis import review_inputs, run_reviewed
 from test_transcript_checkpoints import job
 
-from liming_analyzer.adapters import VisualObservation
+from liming_analyzer.adapters import Keyframe, VisualObservation
 from liming_analyzer.ffmpeg import VideoFrameTiming
 from liming_analyzer.pipeline import _evidence_checkpoint, _restore_evidence_checkpoint
 from liming_analyzer.providers import PySceneDetectFrameExtractor
-from liming_analyzer.visual import KeyframeVisualAnalyzer
+from liming_analyzer.visual import KeyframeVisualAnalyzer, OpenAiCompatibleVisionEngine
 from liming_analyzer.visual_sampling import normalize_visual_sampling_level, visual_sampling_budget
 
 
@@ -113,3 +116,67 @@ def test_budget_increases_with_detail_without_changing_legacy_policy():
     assert extractor._target_frame_count(300) == (36, 180)
     with pytest.raises(ValueError):
         normalize_visual_sampling_level("economy")
+
+
+@pytest.mark.parametrize("mode", ["hybrid", "vision_only"])
+def test_sampling_batches_preserve_every_original_and_reset_for_other_jobs(tmp_path, mode):
+    frames = []
+    for index in range(7):
+        path = tmp_path / f"pair-{index}.png"
+        Image.new("RGB", (320, 180), (index * 25, 80, 120)).save(path)
+        frames.append(Keyframe(index * 125, path, roles=("temporal:cut",) if index < 6 else ()))
+    originals = {frame.timestamp_ms: frame.path.read_bytes() for frame in frames}
+    calls = []
+
+    def create(**kwargs):
+        calls.append(kwargs)
+        prompt = kwargs["messages"][1]["content"][0]["text"]
+        manifest = json.loads(prompt.split("frame_manifest=", 1)[1])
+        images = kwargs["messages"][1]["content"][1:]
+        assert len(images) == len(manifest)
+        for frame, image in zip(manifest, images):
+            assert base64.b64decode(image["image_url"]["url"].split(",", 1)[1]) == originals[frame["timestamp_ms"]]
+            assert image["image_url"]["detail"] == ("high" if mode == "vision_only" else "low")
+        payload = {"observations": [{"frame_index": frame["frame_index"],
+                   "composition": f"原图时间 {frame['timestamp_ms']}", "confidence": 90,
+                   "visible_text": f"可见文字 {frame['timestamp_ms']}", "temporal": "时序组内的示例动作"}
+                   for frame in manifest]}
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))])
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    engine = OpenAiCompatibleVisionEngine(api_key="", base_url="https://fixture.invalid", model="fixture",
+                                          provider="fixture", client=client)
+    engine.set_visual_analysis_mode(mode)
+    for level, sizes, limit, policy in (
+        ("quick", [1, 2, 4], 4, "quick-quads.v1"),
+        ("balanced", [1, 2, 2, 2], 2, "balanced-pairs.v1"),
+        ("detailed", [1, 6], 6, "configured"),
+        (None, [1, 6], 6, "configured"),
+        ("quick", [1, 2, 4], 4, "quick-quads.v1"),
+    ):
+        calls.clear()
+        engine.set_visual_sampling_level(level)
+        rows = engine.analyze(frames)
+        assert sorted(len(call["messages"][1]["content"]) - 1 for call in calls) == sizes
+        assert [row.start_ms for row in rows if row.kind == "vision"] == [frame.timestamp_ms for frame in frames]
+        if mode == "vision_only":
+            assert [row.text for row in rows if row.kind == "vision_text"] == [f"可见文字 {frame.timestamp_ms}" for frame in frames]
+        assert engine.last_stats["frames_understood"] == engine.last_stats["frames_requested"] == 7
+        assert engine.last_stats["configured_batch_size"] == 6
+        assert engine.last_stats["batch_size"] == limit
+        assert engine.last_stats["visual_sampling_level"] == level
+        assert engine.last_stats["batching_policy"] == policy
+        assert engine.last_stats["temporal_model_input_supported"] is (limit >= 3)
+        temporal_rows = [row.start_ms for row in rows if "时序组内的示例动作" in row.text]
+        expected = [] if level == "balanced" else [frame.timestamp_ms for frame in frames[:4 if level == "quick" else 6]]
+        assert temporal_rows == expected
+
+
+def test_sampling_level_propagates_to_extractor_and_provider_without_sticky_quick():
+    extractor_levels, vision_levels = [], []
+    extractor = SimpleNamespace(set_visual_sampling_level=extractor_levels.append)
+    vision = SimpleNamespace(set_visual_sampling_level=vision_levels.append)
+    analyzer = KeyframeVisualAnalyzer(extractor, None, vision)
+    for level in ("quick", "balanced", "detailed", None):
+        analyzer.set_visual_sampling_level(level)
+    assert extractor_levels == vision_levels == ["quick", "balanced", "detailed", None]

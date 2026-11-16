@@ -49,7 +49,7 @@ function workspaceRetry({ response, refreshError = false } = {}) {
   const retry = handler("components/AnalysisWorkspace.tsx", "retry", {
     pendingJobActions, taskReader, organizationId: "org", projectId: "project",
     setError: value => errors.push(value), setJobActionId: value => { selectedJob = typeof value === "function" ? value(selectedJob) : value; },
-    setJobFeedback: change => Object.assign(feedback, change(feedback)),
+    setJobFeedback: change => { const next = { ...change(feedback) }; for (const key of Object.keys(feedback)) delete feedback[key]; Object.assign(feedback, next); },
     setJobs() {}, setTaskSnapshotTimes() {},
     scopedFetch: async (url, init) => { requests.push({ url, init }); return await response(); },
     readError: async response => (await response.json()).error.message,
@@ -67,8 +67,7 @@ test("checkpoint recovery has immediate feedback and prevents duplicate pending 
   assert.match(f.feedback["saved-job"].message, /正在提交/);
   await f.retry("saved-job"); assert.equal(f.requests.length, 1);
   release(Response.json({ job: { id: "saved-job", status: "pending" } })); await first;
-  assert.equal(f.feedback["saved-job"].tone, "success");
-  assert.match(f.feedback["saved-job"].message, /已受理.*等待主机/);
+  assert.equal(f.feedback["saved-job"], undefined, "Confirmed recovery removes the pending indicator without adding a persistent success box");
   assert.equal(f.requests[0].url, "/api/analysis-jobs/saved-job/retry");
   assert.equal(f.requests[0].init.body, undefined, "The API chooses incomplete modules from the saved checkpoint");
   assert.equal(f.selectedJob(), ""); assert.equal(f.pendingJobActions.current.size, 0);
@@ -98,16 +97,17 @@ test("an uncertain recovery request reports the network error and asks for a sta
 
 test("module recovery reports pending, acceptance and explicit rejection without changing mode or sampling", async () => {
   for (const ok of [true, false]) {
-    const feedback = [], requests = [];
+    const feedback = [], requests = [], notices = [];
     const retry = handler("components/AnalysisDetail.tsx", "retryModule", {
       detail: { job: { id: "saved-job" } }, canRetry: true, requestUrl: "selected-report", organizationId: "org", projectId: "project",
-      setModuleFeedback: value => feedback.push(value), setNotice() {}, setSnapshot() {}, runAction: async (_name, work) => { try { await work(); } catch {} },
+      setModuleFeedback: value => feedback.push(value), setNotice: value => notices.push(value), setSnapshot() {}, runAction: async (_name, work) => { try { await work(); } catch {} },
       readApiError: async response => (await response.json()).error.message,
       scopedFetch: async (url, init) => { requests.push({ url, body: JSON.parse(init.body) }); return ok ? Response.json({ job: { id: "saved-job" } }) : Response.json({ error: { message: "合成检查点冲突" } }, { status: 409 }); },
     });
     await retry("text_expression_value");
     assert.equal(feedback[0].tone, "pending"); assert.equal(feedback.at(-1).tone, ok ? "success" : "error");
     assert.match(feedback.at(-1).message, ok ? /已受理.*等待主机/ : /合成检查点冲突/);
+    assert.deepEqual(notices, [], "Module recovery does not add a long global success notice");
     assert.deepEqual(requests[0].body.moduleKeys, ["text_expression_value"]);
     assert.equal("visualAnalysisMode" in requests[0].body, false); assert.equal("visualSamplingLevel" in requests[0].body, false);
   }
@@ -134,7 +134,7 @@ test("normalized historical partial reports retain completed content and display
     cache.set(filename, loaded.exports); return loaded.exports;
   }
   const { UnifiedReportContent } = load(path.join(root, "components/UnifiedReportContent.tsx"));
-  for (const tone of ["pending", "success", "error"]) {
+  for (const tone of ["pending", "error"]) {
     const html = renderToStaticMarkup(React.createElement(UnifiedReportContent, { view, assets: [], canLocate: false, onLocate() {}, onCopyScript() {}, canCopyScript: true,
       failedModuleKeys: ["text_expression_value"], onRetry() {}, busy: tone === "pending", retryFeedback: { module: "text_expression_value", tone, message: `合成恢复反馈-${tone}` } }));
     assert.match(html, /report-text_topic_structure_audience/); assert.match(html, /report-visual/); assert.match(html, /report-synthesis/);

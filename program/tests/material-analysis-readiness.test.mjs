@@ -157,5 +157,5 @@ test('material import keeps the latest explicit sampling level, export stays unc
   const latest=(await legacyExport.json()).entries[0].analyses.find(row=>row.created_at==='2025-01-01T00:00:00Z');
   assert.deepEqual(JSON.parse(latest.report_json),legacy);
   const fresh=await historical.reanalyze();assert.equal(fresh.status,201);
-  assert.equal((await fresh.json()).job.visual_sampling_level,'balanced');
+  assert.equal((await fresh.json()).job.visual_sampling_level,'quick');
 });

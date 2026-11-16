@@ -5,19 +5,29 @@ import os
 import time
 from dataclasses import fields, replace
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from typing import ClassVar
+from unittest.mock import Mock, patch
 
 import pytest
+from PIL import Image
 
 from liming_analyzer.adapters import (
-    MediaInfo, NormalizedMedia, StructureOutput, TranscriptOutput, TranscriptSegment, VisualOutput,
+    Keyframe,
+    MediaInfo,
+    NormalizedMedia,
+    StructureOutput,
+    TranscriptOutput,
+    TranscriptSegment,
+    VisualObservation,
+    VisualOutput,
 )
 from liming_analyzer.api_client import AnalyzerApiClient, AnalyzerApiError, ClaimedJob
 from liming_analyzer.artifacts import ApiArtifactStore
-from liming_analyzer.pipeline import AnalysisPipeline
+from liming_analyzer.pipeline import AnalysisPipeline, _evidence_checkpoint
 from liming_analyzer.process_runtime import IsolatedProcessor, ProcessingLimits
+from liming_analyzer.visual import KeyframeVisualAnalyzer, OpenAiCompatibleVisionEngine
 from liming_analyzer.worker import ProcessingFailure
-
 
 WORDS = TranscriptOutput("zh", (TranscriptSegment(0, 900, "完整原声，保留未改字的口播。", 91),), 91)
 
@@ -148,6 +158,114 @@ def test_asr_checkpoint_survives_later_failure_and_skips_collection_and_asr(tmp_
     assert json.loads((tmp_path / "saved.json").read_text(encoding="utf-8"))["stage"] == "evidence_ready"
 
 
+@pytest.mark.parametrize("level,expected_batches", [
+    ("quick", [[0, 200, 400, 600], [800]]),
+    ("balanced", [[0, 200], [400, 600], [800]]),
+])
+def test_pure_visual_transcript_resume_skips_asr_and_applies_current_tier_batches(tmp_path, level, expected_batches):
+    first = job(tmp_path, source={"test_root": str(tmp_path), "transcript_review_enabled": False,
+                                "visual_analysis_mode": "vision_only", "visual_sampling_level": level})
+    with pytest.raises(RuntimeError, match="visual failure"):
+        pipeline(tmp_path).process(first, heartbeat(first))
+    saved = json.loads((tmp_path / "saved.json").read_text(encoding="utf-8"))
+    assert saved["stage"] == "transcript_ready"
+    assert saved["checkpoint"]["asr_fingerprint"] == "a" * 64
+    assert saved["checkpoint"]["visual_analysis_mode"] == "vision_only"
+    assert saved["checkpoint"]["visual_sampling_level"] == level
+
+    selected = []
+    for index in range(5):
+        path = tmp_path / f"native-resume-{index}.jpg"
+        Image.new("RGB", (32, 32), (index * 40, 100, 200)).save(path)
+        selected.append(Keyframe(index * 200, path, roles=("opening",)))
+
+    def complete(**kwargs):
+        content = kwargs["messages"][-1]["content"]
+        manifest = json.loads(content[0]["text"].split("frame_manifest=", 1)[1])
+        assert len([part for part in content if part["type"] == "image_url"]) == len(manifest)
+        rows = [{"frame_index": row["frame_index"], "composition": "合成图形居中。", "people_actions": "没有人物。",
+                 "scene": "合成背景。", "camera_expression": "固定画面。", "visual_role": "隔离恢复测试。",
+                 "confidence": 90, "visible_text": "合成文字"} for row in manifest]
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+            content=json.dumps({"observations": rows}, ensure_ascii=False)))])
+
+    request = Mock(side_effect=complete)
+    sdk = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=request)))
+    vision = OpenAiCompatibleVisionEngine(api_key="", base_url="https://fixture.invalid/v1", model="synthetic-vision",
+                                         provider="openai", batch_size=6, client=sdk)
+    extractor = SimpleNamespace(extract=Mock(return_value=selected))
+    ocr = SimpleNamespace(recognize=Mock(side_effect=AssertionError("pure visual resume must not run OCR")))
+    visual = KeyframeVisualAnalyzer(extractor, ocr, vision)
+    worker = pipeline(tmp_path)
+    worker.visual = visual
+    worker.speech.transcribe = Mock(side_effect=AssertionError("restored transcript must not run ASR"))
+    resumed = replace(first, checkpoint_stage="transcript_ready", checkpoint=saved["checkpoint"], attempt_count=2)
+    result = worker.process(resumed, heartbeat(resumed))
+
+    assert result.report["words"] == WORDS.full_text
+    assert resumed.source == first.source
+    assert worker.asr_fingerprint == saved["checkpoint"]["asr_fingerprint"] == "a" * 64
+    worker.speech.transcribe.assert_not_called()
+    ocr.recognize.assert_not_called()
+    assert (tmp_path / "acquires").read_text(encoding="utf-8") == (tmp_path / "asr_calls").read_text(encoding="utf-8") == "1"
+    assert (tmp_path / "restores").read_text(encoding="utf-8") == "1"
+    assert visual.visual_sampling_level == vision.visual_sampling_level == level
+    assert visual.visual_analysis_mode == vision.visual_analysis_mode == "vision_only"
+    batches = [json.loads(call.kwargs["messages"][-1]["content"][0]["text"].split("frame_manifest=", 1)[1])
+               for call in request.call_args_list]
+    # Provider calls may finish concurrently; compare their source timestamps,
+    # not invocation order or a simulated batch counter.
+    batch_times = sorted([row["timestamp_ms"] for row in batch] for batch in batches)
+    assert batch_times == expected_batches
+    assert request.call_count == len(expected_batches)
+    assert vision.last_stats["batch_size"] == (4 if level == "quick" else 2)
+    assert vision.last_stats["frames_understood"] == 5
+
+
+def test_old_quick_evidence_resume_keeps_single_frame_input_metadata_and_does_not_call_vision(tmp_path):
+    first = job(tmp_path, source={"test_root": str(tmp_path), "transcript_review_enabled": False,
+                                "visual_analysis_mode": "vision_only", "visual_sampling_level": "quick"})
+    media = Media().prepare(tmp_path / "previous-source.mp4", tmp_path)
+    old_stats = {"visual_analysis_mode": "vision_only", "visual_sampling_level": "quick",
+                 "visual_understanding": {"visual_analysis_mode": "vision_only", "image_input_mode": "original_frame",
+                                          "batch_size": 1, "frames_requested": 1, "frames_understood": 1}}
+    old_visuals = VisualOutput((Keyframe(0, tmp_path / "previous-frame.jpg", asset_id="old-frame", roles=("opening",)),),
+                              (VisualObservation("vision", 0, 0, "已取得的合成画面观察。"),), old_stats)
+    checkpoint = _evidence_checkpoint(media, WORDS, old_visuals, None, transcript_review_enabled=False,
+                                      visual_analysis_mode="vision_only", visual_sampling_level="quick")
+    before = json.dumps(checkpoint, ensure_ascii=False)
+    request = Mock(side_effect=AssertionError("complete visual evidence must not be acquired again"))
+    sdk = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=request)))
+    vision = OpenAiCompatibleVisionEngine(api_key="", base_url="https://fixture.invalid/v1", model="synthetic-vision",
+                                         provider="openai", client=sdk)
+    extractor = SimpleNamespace(extract=Mock(side_effect=AssertionError("restored evidence must not extract frames")))
+    ocr = SimpleNamespace(recognize=Mock(side_effect=AssertionError("restored evidence must not run OCR")))
+    worker = pipeline(tmp_path)
+    worker.visual = KeyframeVisualAnalyzer(extractor, ocr, vision)
+    worker.source.acquire = Mock(side_effect=AssertionError("restored evidence must not collect source"))
+    worker.speech.transcribe = Mock(side_effect=AssertionError("restored evidence must not run ASR"))
+    captured = []
+
+    def structure(_job, _media, transcript, visuals):
+        captured.append(visuals)
+        return StructureOutput("analysis.v1", {"words": transcript.full_text})
+
+    worker.structure = SimpleNamespace(analyze=structure)
+    resumed = replace(first, checkpoint_stage="evidence_ready", checkpoint=checkpoint, attempt_count=2)
+    result = worker.process(resumed, heartbeat(resumed))
+    assert result.report["words"] == WORDS.full_text
+    worker.source.acquire.assert_not_called()
+    worker.speech.transcribe.assert_not_called()
+    extractor.extract.assert_not_called()
+    ocr.recognize.assert_not_called()
+    request.assert_not_called()
+    assert len(captured) == 1 and captured[0].stats["evidence_reused"] is True
+    assert captured[0].stats["visual_understanding"]["batch_size"] == 1
+    assert captured[0].stats["visual_understanding"]["image_input_mode"] == "original_frame"
+    assert json.dumps(checkpoint, ensure_ascii=False) == before
+    assert resumed.source == first.source and worker.asr_fingerprint == "a" * 64
+
+
 @pytest.mark.parametrize("changed", ["asr", "mode", "manual", "words", "source_hash"])
 def test_checkpoint_reuse_is_bound_to_asr_mode_manual_source_and_verbatim_words(tmp_path, changed):
     first = job(tmp_path)
@@ -257,7 +375,7 @@ def test_completed_real_chunk_counters_are_not_replaced_by_a_one_chunk_placehold
 def test_checkpoint_source_stream_is_verified_before_atomic_publish(tmp_path, variant):
     data = b"original media bytes"
     class Stream:
-        headers = {"Content-Length": str(len(data) + (2 if variant == "truncated" else 0))}
+        headers: ClassVar[dict[str, str]] = {"Content-Length": str(len(data) + (2 if variant == "truncated" else 0))}
         def __enter__(self):
             self.chunk = data
             return self

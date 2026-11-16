@@ -5,9 +5,9 @@ export function isVisualSamplingLevel(value: unknown): value is VisualSamplingLe
   return value === "quick" || value === "balanced" || value === "detailed";
 }
 
-/** Only new tasks receive the new balanced default. */
+/** Only new tasks receive the quick default. Historical reads use readVisualSamplingLevel. */
 export function normalizeVisualSamplingLevel(value: unknown): VisualSamplingLevel {
-  return isVisualSamplingLevel(value) ? value : "balanced";
+  return isVisualSamplingLevel(value) ? value : "quick";
 }
 
 /** Missing historical metadata stays historical rather than acquiring a new label. */
