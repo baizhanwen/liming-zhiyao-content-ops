@@ -357,6 +357,7 @@ class MiniMaxTokenPlanMcpVisionEngine:
     """Analyze numbered contact sheets through MiniMax Token Plan understand_image."""
 
     supports_ocr_overlap = True  # Contact sheets/manifests do not consume OCR.
+    supports_speech_overlap = True  # Remote image requests after local preprocessing.
 
     def __init__(
         self,

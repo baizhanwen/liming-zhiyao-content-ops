@@ -1,13 +1,17 @@
 # Adapted from Skill Collect, MIT Copyright (c) 2026 baizhanwen.
+import hashlib
 import ipaddress
 import json
 import re
 import socket
 import threading
 import time
+from pathlib import Path
 from urllib.parse import urlsplit, urljoin
 
 import httpx
+
+from .limits import DOWNLOAD_TIMEOUT_SECONDS, MAX_MEDIA_BYTES
 
 
 class AppError(Exception):
@@ -146,8 +150,37 @@ class PublicTransport(httpx.BaseTransport):
         self.transport.close()
 
 
+def sha256_file(path, *, cancelled=None):
+    """Hash media without holding another full-size copy in process memory."""
+    digest = hashlib.sha256()
+    with Path(path).open('rb') as source:
+        while True:
+            if cancelled and cancelled():
+                raise AppError('cancelled', '任务已取消')
+            chunk = source.read(1024 * 1024)
+            if not chunk:
+                return digest.hexdigest()
+            digest.update(chunk)
+
+
 def fetch_public(url, max_bytes=2_000_000, *, headers=None, cancelled=None,
-                 progress_callback=None, official_only=False):
+                 progress_callback=None, official_only=False, deadline=None):
+    """Read bounded small documents. Original media uses the file streaming entry."""
+    return _fetch_public(url, max_bytes, headers=headers, cancelled=cancelled,
+                         progress_callback=progress_callback, official_only=official_only,
+                         deadline=deadline)
+
+
+def download_public_to_file(url, destination, max_bytes=MAX_MEDIA_BYTES, *, headers=None,
+                            cancelled=None, progress_callback=None, deadline=None):
+    """Stream a candidate into an owned temporary file; remove it on failure."""
+    return _fetch_public(url, max_bytes, headers=headers, cancelled=cancelled,
+                         progress_callback=progress_callback, destination=Path(destination),
+                         deadline=deadline)
+
+
+def _fetch_public(url, max_bytes, *, headers=None, cancelled=None,
+                  progress_callback=None, official_only=False, destination=None, deadline=None):
     def no_cookies(request):
         request.headers.pop('cookie', None)
     identities = set()
@@ -172,9 +205,14 @@ def fetch_public(url, max_bytes=2_000_000, *, headers=None, cancelled=None,
     def check_cancel():
         if cancelled and cancelled():
             raise AppError('cancelled', '任务已取消')
+        if time.monotonic() > operation_deadline:
+            raise AppError('source_timeout', '来源下载超过等待时限，请稍后重试', True)
+    seconds = DOWNLOAD_TIMEOUT_SECONDS if destination is not None else (120 if max_bytes > 2_000_000 else 30)
+    operation_deadline = time.monotonic() + seconds
+    if deadline is not None:
+        operation_deadline = min(operation_deadline, deadline)
     with httpx.Client(transport=PublicTransport(), timeout=25, follow_redirects=False, trust_env=False) as client:
         client.event_hooks['request'] = [no_cookies]
-        deadline = time.monotonic() + (120 if max_bytes > 2_000_000 else 30)
         for hop in range(6):
             check_cancel(); check_url(url)
             with client.stream('GET', url, headers={'User-Agent':'Zhixu/1.0 (public media acquisition)',
@@ -186,18 +224,45 @@ def fetch_public(url, max_bytes=2_000_000, *, headers=None, cancelled=None,
                     check_url(url)
                     continue
                 r.raise_for_status()
-                chunks, size = [], 0
-                for chunk in r.iter_bytes():
+                length = r.headers.get('content-length')
+                if length is not None and (not length.isdigit() or int(length) > max_bytes):
+                    raise AppError('too_large', '来源下载超过大小限制或长度声明无效')
+                chunks, size, digest, output = [], 0, hashlib.sha256(), None
+                created = False
+                try:
+                    if destination is not None:
+                        # The caller chooses a private task-local path. Never
+                        # truncate an existing file or follow a pre-existing link.
+                        output = destination.open('xb')
+                        created = True
+                    for chunk in r.iter_bytes(chunk_size=1024 * 1024):
+                        check_cancel()
+                        size += len(chunk)
+                        if size > max_bytes:
+                            raise AppError('too_large', '来源下载超过大小限制')
+                        if output is not None:
+                            output.write(chunk)
+                            digest.update(chunk)
+                        else:
+                            chunks.append(chunk)
+                        if progress_callback:
+                            progress_callback({'phase': 'public_page', 'downloaded_bytes': size})
                     check_cancel()
-                    if time.monotonic() > deadline:
-                        raise AppError('source_timeout','来源下载超过等待时限，请稍后重试',True)
-                    size += len(chunk)
-                    if size > max_bytes:
-                        raise AppError('too_large','来源下载超过大小限制')
-                    chunks.append(chunk)
-                    if progress_callback:
-                        progress_callback({'phase':'public_page', 'downloaded_bytes':size})
-                result_headers = dict(r.headers)
-                result_headers['x-collector-http-status'] = str(r.status_code)
-                return b''.join(chunks), str(r.url), result_headers
+                    if destination is not None and length is not None and int(length) != size:
+                        raise AppError('douyin_incomplete', '下载长度与响应声明不一致')
+                    if output is not None:
+                        output.close()
+                        output = None
+                    result_headers = dict(r.headers)
+                    result_headers['x-collector-http-status'] = str(r.status_code)
+                    if destination is not None:
+                        return {'size_bytes': size, 'sha256': digest.hexdigest(),
+                                'resolved_url': str(r.url), 'headers': result_headers}
+                    return b''.join(chunks), str(r.url), result_headers
+                except BaseException:
+                    if output is not None:
+                        output.close()
+                    if created:
+                        destination.unlink(missing_ok=True)
+                    raise
         raise AppError('source_redirect', '来源跳转过多')

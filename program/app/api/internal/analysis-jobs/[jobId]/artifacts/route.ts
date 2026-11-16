@@ -1,3 +1,4 @@
+import { hashSourceArtifactBody, sourceArtifactLength, SourceArtifactBodyError, SOURCE_ARTIFACT_MAX_BYTES, storeSourceArtifactBody } from "../../../../../../lib/source-artifact-body";
 import { isLeasedAnalysisStatus, LEASED_ANALYSIS_STATUSES_SQL } from "../../../../../../lib/analysis-jobs";
 import { getD1, getMediaBucket, sha256Hex } from "../../../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../../../lib/api-response";
@@ -18,8 +19,8 @@ const sizeLimits: Record<string, number> = {
   keyframe: 10 * 1024 * 1024,
   subtitle: 2 * 1024 * 1024,
   report: 5 * 1024 * 1024,
-  source_video: 100 * 1024 * 1024,
-  source_audio: 100 * 1024 * 1024,
+  source_video: SOURCE_ARTIFACT_MAX_BYTES,
+  source_audio: SOURCE_ARTIFACT_MAX_BYTES,
 };
 
 function safeFilename(value: string) {
@@ -81,13 +82,43 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
       WHERE j.id = ? AND j.lease_owner = ? AND j.${ownershipColumn} = ? AND j.lease_expires_at > ? AND v.deleted_at IS NULL
     `).bind(jobId, workerId, ownershipValue, now).first<ArtifactJob>();
     if (!job || !isLeasedAnalysisStatus(job.status)) return apiError("ARTIFACT_LEASE_INVALID", "任务租约已失效，分析产物未接收。", 409);
-    const bytes = await request.arrayBuffer();
-    if (bytes.byteLength <= 0 || bytes.byteLength > maxBytes) return apiError("INVALID_ARTIFACT_SIZE", "分析产物大小无效。", 413);
-    const sha256 = await sha256Hex(bytes);
     const sourceMedia = kind === "source_video" || kind === "source_audio";
     const storageQuota = sourceMedia ? (await getOrganizationCapacity(job.organization_id, `service:${workerId}`)).storage_quota_bytes : null;
     const timestampMs = integerHeader(request, "x-artifact-timestamp-ms", 0, 86_400_000);
     const confidence = integerHeader(request, "x-artifact-confidence", 0, 100);
+    const assetId = crypto.randomUUID();
+    let bytes: ArrayBuffer | null = null;
+    let sizeBytes: number, sha256: string;
+    if (sourceMedia) {
+      const length = sourceArtifactLength(request, maxBytes);
+      const usage = await db.prepare("SELECT COALESCE(SUM(MAX(size_bytes,0)),0) AS bytes FROM media_assets WHERE organization_id=? AND status='active'").bind(job.organization_id).first<{ bytes: number }>();
+      const quotaFull = (usage?.bytes ?? 0) + length > (storageQuota ?? 0);
+      if (quotaFull) {
+        // A replay of an existing source still succeeds when storage is full.
+        // Hash only that possible replay; a genuinely new file is rejected
+        // before publishing any temporary R2 object.
+        const possibleReplay = await db.prepare(`SELECT id FROM media_assets WHERE organization_id=? AND project_id=? AND video_id=?
+          AND analysis_job_id=? AND kind=? AND filename=? AND size_bytes=? AND status='active' LIMIT 1`)
+          .bind(job.organization_id, job.project_id, job.video_id, jobId, kind, filename, length).first();
+        if (!possibleReplay) return apiError("SOURCE_STORAGE_QUOTA_EXCEEDED", "媒体空间不足，原片尚未保存。", 413);
+        ({ sizeBytes, sha256 } = await hashSourceArtifactBody(request, length, maxBytes));
+      } else {
+        storedKey = `organizations/${job.organization_id}/projects/${job.project_id}/videos/${job.video_id}/${kind}/${assetId}-${filename}`;
+        ({ sizeBytes, sha256 } = await storeSourceArtifactBody(request, length, getMediaBucket(), storedKey, {
+          httpMetadata: { contentType: rawContentType },
+          // The final stream hash is stored in D1 below. R2 metadata is fixed
+          // before EOF, so it deliberately does not claim an unverified hash.
+          customMetadata: { organizationId: job.organization_id, projectId: job.project_id, videoId: job.video_id, jobId,
+            ...(timestampMs === null ? {} : { timestampMs: String(timestampMs) }),
+            ...(confidence === null ? {} : { confidence: String(confidence) }) },
+        }, maxBytes));
+      }
+    } else {
+      bytes = await request.arrayBuffer();
+      if (bytes.byteLength <= 0 || bytes.byteLength > maxBytes) return apiError("INVALID_ARTIFACT_SIZE", "分析产物大小无效。", 413);
+      sizeBytes = bytes.byteLength;
+      sha256 = await sha256Hex(bytes);
+    }
     const existing = await db.prepare(`
       SELECT id, kind, filename, content_type, size_bytes, sha256
       FROM media_assets
@@ -98,32 +129,39 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     if (existing) {
       const owned = await db.prepare(`SELECT j.id FROM analysis_jobs j INNER JOIN videos v ON v.id=j.video_id AND v.organization_id=j.organization_id AND v.project_id=j.project_id
         WHERE j.id=? AND j.lease_owner=? AND j.${ownershipColumn}=? AND j.lease_expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now') AND j.status IN (${LEASED_ANALYSIS_STATUSES_SQL}) AND v.deleted_at IS NULL`).bind(jobId, workerId, ownershipValue).first();
-      if (!owned) return apiError("ARTIFACT_LEASE_INVALID", "任务执行轮次已结束，附件回执未接收。", 409);
+      if (!owned) throw new Error("ARTIFACT_LEASE_CHANGED");
+      if (storedKey) { await getMediaBucket().delete(storedKey); storedKey = null; }
       return Response.json({
         asset: { id: existing.id, kind: existing.kind, filename: existing.filename, contentType: existing.content_type, sizeBytes: existing.size_bytes, sha256: existing.sha256, timestampMs, confidence },
         reused: true,
       });
     }
     if (sourceMedia) {
+      // A full-quota verification pass consumed the body without publishing.
+      // If its hash did not match an existing asset, it cannot become a new
+      // source even if quota happens to free up while the body was read.
+      if (!storedKey) throw new Error("SOURCE_STORAGE_QUOTA_EXCEEDED");
       const usage = await db.prepare("SELECT COALESCE(SUM(MAX(size_bytes,0)),0) AS bytes FROM media_assets WHERE organization_id=? AND status='active'").bind(job.organization_id).first<{ bytes: number }>();
-      if ((usage?.bytes ?? 0) + bytes.byteLength > (storageQuota ?? 0)) return apiError("SOURCE_STORAGE_QUOTA_EXCEEDED", "媒体空间不足，原片尚未保存。", 413);
+      if ((usage?.bytes ?? 0) + sizeBytes > (storageQuota ?? 0)) throw new Error("SOURCE_STORAGE_QUOTA_EXCEEDED");
     }
-    const assetId = crypto.randomUUID();
-    storedKey = `organizations/${job.organization_id}/projects/${job.project_id}/videos/${job.video_id}/${kind}/${assetId}-${filename}`;
-    const stored = await getMediaBucket().put(storedKey, bytes, {
-      httpMetadata: { contentType: rawContentType },
-      customMetadata: {
-        organizationId: job.organization_id,
-        projectId: job.project_id,
-        videoId: job.video_id,
-        jobId,
-        sha256,
-        ...(timestampMs === null ? {} : { timestampMs: String(timestampMs) }),
-        ...(confidence === null ? {} : { confidence: String(confidence) }),
-      },
-    });
-    if (!stored) throw new Error("MEDIA_OBJECT_NOT_WRITTEN");
-    submittedResponse = Response.json({ asset: { id: assetId, kind, filename, contentType: rawContentType, sizeBytes: bytes.byteLength, sha256, timestampMs, confidence } }, { status: 201 });
+    if (!sourceMedia) {
+      storedKey = `organizations/${job.organization_id}/projects/${job.project_id}/videos/${job.video_id}/${kind}/${assetId}-${filename}`;
+      const stored = await getMediaBucket().put(storedKey, bytes!, {
+        httpMetadata: { contentType: rawContentType },
+        customMetadata: {
+          organizationId: job.organization_id,
+          projectId: job.project_id,
+          videoId: job.video_id,
+          jobId,
+          sha256,
+          ...(timestampMs === null ? {} : { timestampMs: String(timestampMs) }),
+          ...(confidence === null ? {} : { confidence: String(confidence) }),
+        },
+      });
+      if (!stored) throw new Error("MEDIA_OBJECT_NOT_WRITTEN");
+    }
+    if (!storedKey) throw new Error("MEDIA_OBJECT_NOT_WRITTEN");
+    submittedResponse = Response.json({ asset: { id: assetId, kind, filename, contentType: rawContentType, sizeBytes, sha256, timestampMs, confidence } }, { status: 201 });
     writeAttempted = true;
     const statement = db.prepare(`
       INSERT INTO media_assets
@@ -135,7 +173,7 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
           AND j.status IN (${LEASED_ANALYSIS_STATUSES_SQL}) AND v.deleted_at IS NULL)
         AND NOT EXISTS(SELECT 1 FROM media_assets WHERE organization_id=? AND project_id=? AND video_id=? AND analysis_job_id=? AND kind=? AND filename=? AND sha256=? AND status='active')
         AND (? IS NULL OR (SELECT COALESCE(SUM(MAX(size_bytes,0)),0) FROM media_assets WHERE organization_id=? AND status='active') + ? <= ?)
-    `).bind(assetId, job.organization_id, job.project_id, job.video_id, jobId, kind, storedKey, filename, rawContentType, bytes.byteLength, sha256, `service:${workerId}`, `service:${workerId}`, now, now, jobId, workerId, ownershipValue, job.organization_id, job.project_id, job.video_id, jobId, kind, filename, sha256, storageQuota, job.organization_id, bytes.byteLength, storageQuota);
+    `).bind(assetId, job.organization_id, job.project_id, job.video_id, jobId, kind, storedKey, filename, rawContentType, sizeBytes, sha256, `service:${workerId}`, `service:${workerId}`, now, now, jobId, workerId, ownershipValue, job.organization_id, job.project_id, job.video_id, jobId, kind, filename, sha256, storageQuota, job.organization_id, sizeBytes, storageQuota);
     const results = sourceMedia ? await db.batch([statement, db.prepare(`
       UPDATE videos SET media_asset_id=?, updated_by=?, updated_at=? WHERE id=? AND organization_id=? AND project_id=? AND media_asset_id IS NULL
         AND EXISTS(SELECT 1 FROM media_assets WHERE id=? AND organization_id=? AND project_id=? AND video_id=? AND analysis_job_id=? AND status='active')
@@ -166,6 +204,7 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
       try { await getMediaBucket().delete(storedKey); }
       catch { return apiError("MEDIA_UPLOAD_CLEANUP_PENDING", "分析附件未入库，暂存对象清理失败。请联系管理员核对存储后再操作。", 503); }
     }
+    if (error instanceof SourceArtifactBodyError) return apiError(error.code, error.message, error.status);
     if (error instanceof Error && error.message.includes("ARTIFACT_LEASE_CHANGED")) return apiError("ARTIFACT_LEASE_INVALID", "任务租约已失效，分析附件未保存。", 409);
     if (error instanceof Error && error.message.includes("SOURCE_STORAGE_QUOTA_EXCEEDED")) return apiError("SOURCE_STORAGE_QUOTA_EXCEEDED", "媒体空间在提交期间已被占用，原片未保存。", 413);
     return errorResponse(error);

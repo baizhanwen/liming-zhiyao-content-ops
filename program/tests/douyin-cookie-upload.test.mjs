@@ -21,7 +21,7 @@ test("legacy Douyin cookie endpoints remain compatible without configuring anony
     readFile(new URL("../services/analyzer/liming_analyzer/api_client.py", import.meta.url), "utf8"),
   ]);
   assert.doesNotMatch(uploadRoute, /organizationRole !== "admin"/);
-  assert.match(uploadRoute, /if \(!access\).*ACCESS_DENIED/);
+  assert.match(uploadRoute, /if \(!access \|\| !canWriteProjectAccess\(access\)\).*ACCESS_DENIED/);
   assert.match(uploadRoute, /getMediaBucket\(\)\.put/);
   assert.match(uploadRoute, /export async function DELETE/);
   assert.match(uploadRoute, /getMediaBucket\(\)\.delete/);
@@ -36,7 +36,8 @@ test("legacy Douyin cookie endpoints remain compatible without configuring anony
   const readiness = await readFile(new URL("../lib/analyzer-readiness.ts", import.meta.url), "utf8");
   assert.match(videosRoute, /canManageCookies: canWriteProjectAccess\(access\)/);
   assert.match(readiness, /publicLinkAuthenticationMode = "anonymous"/);
-  assert.doesNotMatch(readiness, /getMediaBucket|ANALYZER_YTDLP_COOKIE_FILE/);
-  assert.match(workspace, /service\.canManageCookies && !anonymousCollection/);
+  assert.doesNotMatch(readiness, /ANALYZER_YTDLP_COOKIE_FILE/);
+  assert.match(readiness, /uploadedCookieConfigured/);
+  assert.match(workspace, /service\??\.canManageCookies/);
   assert.match(workerClient, /download_cookie_snapshot/);
 });

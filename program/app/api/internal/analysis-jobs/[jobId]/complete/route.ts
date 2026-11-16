@@ -1,3 +1,5 @@
+import { isAnalysisCollectionMode } from "../../../../../../lib/analysis-collection-mode";
+import { isAnalysisExecutionMode } from "../../../../../../lib/analysis-execution-mode";
 import { matchesVisualSamplingLevel } from "../../../../../../lib/visual-sampling-level";
 import { isVisualAnalysisMode, normalizeVisualAnalysisMode } from "../../../../../../lib/visual-analysis-mode";
 import { readEvidenceCheckpoint, parseAnalysisModuleRetryKeys } from "../../../../../../lib/analysis-module-retry";
@@ -79,6 +81,8 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
       || normalizeVisualAnalysisMode(recordedVisualMode) !== normalizeVisualAnalysisMode(job.visual_analysis_mode)) {
       return apiError("VISUAL_ANALYSIS_MODE_MISMATCH", "分析结果与提交时选择的画面分析模式不一致，请更新分析服务后重试。", 409);
     }
+    if (analysisMeta?.collection_mode !== undefined && !isAnalysisCollectionMode(analysisMeta.collection_mode)) return apiError("INVALID_ANALYSIS_COLLECTION_MODE", "报告采集方式无效。", 400);
+    if (analysisMeta?.execution_mode !== undefined && !isAnalysisExecutionMode(analysisMeta.execution_mode)) return apiError("INVALID_ANALYSIS_EXECUTION_MODE", "报告执行方式无效。", 400);
     if (!matchesVisualSamplingLevel(analysisMeta?.visual_sampling_level, job.visual_sampling_level)) {
       return apiError("VISUAL_SAMPLING_LEVEL_MISMATCH", "分析结果与提交时选择的画面采样档位不一致，请更新分析服务后重试。", 409);
     }

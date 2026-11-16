@@ -159,3 +159,19 @@ test('material import keeps the latest explicit sampling level, export stays unc
   const fresh=await historical.reanalyze();assert.equal(fresh.status,201);
   assert.equal((await fresh.json()).job.visual_sampling_level,'quick');
 });
+
+test('material import keeps recorded execution mode, preserves report bytes, and old reports remain serial',async t=>{
+  const entry=(body,date)=>({schema_version:'analysis.v12',report_json:JSON.stringify(body),created_at:date});
+  const serial={analysis_meta:{execution_mode:'serial',requested_execution_mode:'controlled_parallel'}};
+  const parallel={analysis_meta:{execution_mode:'controlled_parallel',requested_execution_mode:'controlled_parallel'}};
+  const f=await fixture(t,[entry(serial,'2024-01-01T00:00:00Z'),entry(parallel,'2025-01-01T00:00:00Z')]);
+  assert.equal(f.jobs()[0].execution_mode,'controlled_parallel');
+  const exported=await f.load('app/api/video-library/transfer/route.ts').GET(new Request(`http://localhost/transfer?organizationId=${f.owner.organizationId}`));
+  assert.equal(exported.status,200);
+  const reports=(await exported.json()).entries[0].analyses.map(row=>JSON.parse(row.report_json));
+  assert.ok(reports.some(body=>JSON.stringify(body)===JSON.stringify(parallel)));
+  const inherited=await f.reanalyze();assert.equal(inherited.status,201);assert.equal((await inherited.json()).job.execution_mode,'controlled_parallel');
+  const historical=await fixture(t,[entry(parallel,'2024-01-01T00:00:00Z'),entry({summary:'Historical'},'2025-01-01T00:00:00Z')]);
+  assert.equal(historical.jobs()[0].execution_mode,'serial');
+  const restored=await historical.reanalyze();assert.equal(restored.status,201);assert.equal((await restored.json()).job.execution_mode,'serial');
+});

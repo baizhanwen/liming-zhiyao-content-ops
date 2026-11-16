@@ -44,6 +44,7 @@ export function runtimeFixture(t) {
   };
   const mocks = new Map([
     ["zod", zod],
+    ["node:crypto", { createHash }],
     ["cloudflare:workers", { env: { DELIVERY_MODE: "1", FIRST_RUN_SETUP_CODE: "synthetic-test-code" } }],
     [path.join(root, "db/runtime.ts"), runtime],
     [path.join(root, "lib/request-auth.ts"), { readRequestIdentity: async () => ({ authSubject: identity.userId }) }],

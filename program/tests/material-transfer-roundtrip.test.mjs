@@ -55,6 +55,19 @@ test('roundtrip preserves analysis chronology so the newest report remains newes
   assert.equal(rows[0].created_at,'2024-01-01T00:00:00.000Z');assert.equal(JSON.parse(rows[0].report_json).sentinel,2);
 });
 
+test('transfer preserves URL report collection mode and keeps uploads anonymous',async t=>{
+  const f=await fixture(t);
+  f.sqlite.prepare('UPDATE video_analyses SET report_json=? WHERE video_id=?').run(JSON.stringify({analysis_meta:{collection_mode:'cookie'}}),f.video);
+  const manifest=await(await f.exportEntries([f.entry])).json();
+  manifest.entries[0].video.sourceType='url'; manifest.entries[0].video.sourceUrl='https://www.douyin.com/video/1234567890123456789';
+  assert.equal((await f.submit(manifest)).status,200);
+  assert.equal(f.sqlite.prepare('SELECT collection_mode FROM analysis_jobs WHERE video_id=?').get(f.imported().id).collection_mode,'cookie');
+  manifest.entries[0].video.sourceType='upload'; manifest.entries[0].video.sourceUrl=null; manifest.entries[0].video.sourceHash='synthetic-second-upload';
+  assert.equal((await f.submit(manifest)).status,200);
+  const imported=f.sqlite.prepare("SELECT id FROM videos WHERE project_id=? AND source_type='upload'").get(f.target);
+  assert.equal(f.sqlite.prepare('SELECT collection_mode FROM analysis_jobs WHERE video_id=?').get(imported.id).collection_mode,'anonymous');
+});
+
 test('roundtrip preserves selected cover and its quality',async t=>{
   const f=await fixture(t), manifest=await (await f.exportEntries([f.entry])).json();assert.equal((await f.submit(manifest)).status,200);
   const cover=f.sqlite.prepare("SELECT * FROM media_assets WHERE video_id=? AND kind='keyframe'").get(f.imported().id);assert.equal(cover.is_cover,1);assert.equal(cover.quality_score,0.9);

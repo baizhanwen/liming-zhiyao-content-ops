@@ -57,6 +57,13 @@ let budgetExceeded = false;
 let activeRequests = 0;
 let requestCount = 0;
 const waitingRequests = [];
+const MAX_MEDIA_BYTES = 1024 ** 3;
+const MAX_TOTAL_BYTES = 4 * MAX_MEDIA_BYTES;
+const MAX_REQUESTS = 1536;
+const MAX_TIMEOUT_MS = 15 * 60 * 1000;
+let mediaByteLimit = MAX_MEDIA_BYTES;
+let totalByteLimit = MAX_TOTAL_BYTES;
+let requestLimit = MAX_REQUESTS;
 const start = new Promise(resolve => { startResolve = resolve; });
 input.on('line', line => {
   try {
@@ -79,7 +86,7 @@ function rpc(message) {
   });
 }
 async function acquireRequest(countRequest = true) {
-  if ((countRequest && ++requestCount > 700) || waitingRequests.length >= 256) return false;
+  if ((countRequest && ++requestCount > requestLimit) || waitingRequests.length >= 256) return false;
   if (activeRequests >= 16) await new Promise(resolve => waitingRequests.push(resolve));
   activeRequests += 1;
   return true;
@@ -162,6 +169,10 @@ let browser;
 let result = { type: 'result', ok: false, code: 'douyin_browser_material' };
 try {
   const options = await start;
+  options.timeout_ms = Math.max(3000, Math.min(Number(options.timeout_ms) || MAX_TIMEOUT_MS, MAX_TIMEOUT_MS));
+  mediaByteLimit = Math.max(1, Math.min(Number(options.max_bytes) || MAX_MEDIA_BYTES, MAX_MEDIA_BYTES));
+  totalByteLimit = Math.max(mediaByteLimit, Math.min(Number(options.max_total_bytes) || MAX_TOTAL_BYTES, MAX_TOTAL_BYTES));
+  requestLimit = Math.max(1, Math.min(Number(options.max_requests) || MAX_REQUESTS, MAX_REQUESTS));
   const target = String(options.video_id);
   const deadline = Date.now() + options.timeout_ms;
   let ready = false;
@@ -188,13 +199,13 @@ try {
   let decodedBytes = 0;
   network.on('Network.responseReceived', event => {
     const media = event.type === 'Media' || /^(?:video|audio)\//.test(event.response.mimeType || '');
-    resourceBytes.set(event.requestId, { size: 0, limit: media ? 100 * 1024 * 1024 : 16 * 1024 * 1024 });
+    resourceBytes.set(event.requestId, { size: 0, limit: media ? mediaByteLimit : 16 * 1024 * 1024 });
   });
   network.on('Network.dataReceived', event => {
     decodedBytes += event.dataLength;
     const entry = resourceBytes.get(event.requestId);
     if (entry) entry.size += event.dataLength;
-    if (decodedBytes > 500 * 1024 * 1024 || (entry && entry.size > entry.limit)) {
+    if (decodedBytes > totalByteLimit || (entry && entry.size > entry.limit)) {
       budgetExceeded = true;
       page.close().catch(() => {});
     }

@@ -1,10 +1,12 @@
 import type { VisualAnalysisMode } from "./visual-analysis-mode";
+import type { AnalysisCollectionMode } from "./analysis-collection-mode";
 import { analyzerReadinessError, readAnalyzerReadiness } from "./analyzer-readiness";
 import { checkOrganizationQuota } from "./operations";
 import { apiError } from "./api-response";
 
-export async function checkNewAnalysisAvailability(input: { organizationId: string; userId: string; requiresBrowser: boolean; uploadBytes?: number; visualAnalysisMode?: VisualAnalysisMode }) {
-  const readiness = analyzerReadinessError(await readAnalyzerReadiness(input.organizationId), input.requiresBrowser, false, input.visualAnalysisMode);
+export async function checkNewAnalysisAvailability(input: { organizationId: string; userId: string; requiresBrowser: boolean; collectionMode?: AnalysisCollectionMode; uploadBytes?: number; visualAnalysisMode?: VisualAnalysisMode }) {
+  const requireCookie = input.requiresBrowser && input.collectionMode === "cookie";
+  const readiness = analyzerReadinessError(await readAnalyzerReadiness(input.organizationId, false, requireCookie), requireCookie, false, input.visualAnalysisMode);
   if (readiness) return apiError(readiness.code, readiness.message, 503);
   const [analysis, storage] = await Promise.all([
     checkOrganizationQuota(input.organizationId, input.userId, "analyses"),

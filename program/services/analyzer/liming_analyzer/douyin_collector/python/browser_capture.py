@@ -34,13 +34,18 @@ import httpx
 
 from ...processing_health import request_processor_retirement
 from .security import AppError, PublicTransport, public_url
+from .limits import BROWSER_TIMEOUT_SECONDS, MAX_DURATION_SECONDS, MAX_MEDIA_BYTES
 
 PROJECT = Path(__file__).resolve().parents[1]
 SCRIPT = PROJECT / 'node/capture-douyin.mjs'
-MAX_MEDIA = 100 * 1024 * 1024
+MAX_MEDIA = MAX_MEDIA_BYTES
 MAX_RESOURCE = 16 * 1024 * 1024
-MAX_TOTAL = 500 * 1024 * 1024
-MAX_REQUESTS = 700
+MAX_TOTAL = 4 * MAX_MEDIA_BYTES
+MAX_REQUESTS = 1536
+MEDIA_CHUNK_BYTES = 8 * 1024 * 1024
+COPY_CHUNK_BYTES = 1024 * 1024
+# A bounded 1 MiB-origin Range response can still complete the maximum file.
+MAX_RANGE_REQUESTS = math.ceil(MAX_MEDIA_BYTES / COPY_CHUNK_BYTES) + 8
 HOP_HEADERS = {'connection', 'keep-alive', 'transfer-encoding', 'content-encoding',
                'content-length', 'proxy-authenticate', 'proxy-authorization', 'upgrade'}
 
@@ -102,7 +107,7 @@ def _inspect_media(path):
             '-of', 'json', str(path)], capture_output=True, check=True, timeout=10)
         data = json.loads(result.stdout)
         duration = float(data['format']['duration'])
-        if not math.isfinite(duration) or not 0 < duration <= 1200:
+        if not math.isfinite(duration) or not 0 < duration <= MAX_DURATION_SECONDS:
             raise ValueError('duration')
         return {'video': any(stream.get('codec_type') == 'video' for stream in data['streams']),
                 'audio': any(stream.get('codec_type') == 'audio' for stream in data['streams']),
@@ -303,11 +308,24 @@ class _Broker:
                 if identity == self.video_id and isinstance(video, dict):
                     matched = True
                     self.expected_audio = self.expected_audio or bool(video.get('audio') or video.get('bit_rate_audio'))
-                    duration = video.get('duration')
-                    if isinstance(duration, (int, float)) and math.isfinite(duration) and duration > 0:
-                        seconds = duration / 1000 if ('/aweme/v1/' in urlsplit(source_url).path or duration > 1200) else duration
-                        if 0 < seconds <= 1200:
-                            self.metadata_durations.add(seconds)
+                    # Published item video.duration is milliseconds. Browser
+                    # HTMLVideoElement.duration arrives separately in seconds.
+                    durations = []
+                    duration_valid = True
+                    for field in ('duration_seconds', 'duration_ms', 'duration'):
+                        if field not in video:
+                            continue
+                        value = video[field]
+                        if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+                            duration_valid = False
+                            break
+                        seconds = value if field == 'duration_seconds' else value / 1000
+                        if not 0 < seconds <= MAX_DURATION_SECONDS:
+                            duration_valid = False
+                            break
+                        durations.append(seconds)
+                    if duration_valid and durations and max(durations) - min(durations) < 1:
+                        self.metadata_durations.add(min(durations))
                     children, visited, parsed_strings = [video], 0, 0
                     while children and visited < 20000:
                         visited += 1
@@ -398,57 +416,98 @@ class _Broker:
             self.requests += 1
             if self.requests > MAX_REQUESTS:
                 raise AppError('douyin_browser_budget', '页面请求超过采集预算')
-        with self.client.stream(method, url, headers=self._headers(headers), content=body) as response:
-            content_type = response.headers.get('content-type', '').split(';')[0].lower()
-            media_type = content_type.startswith(('video/', 'audio/')) or resource_type == 'media'
-            limit = self.max_bytes if media_type or supplement else MAX_RESOURCE
-            chunks, size = [], 0
-            for chunk in response.iter_bytes():
-                self._check()
-                size += len(chunk)
+        response_path, retained = None, False
+        try:
+            with self.client.stream(method, url, headers=self._headers(headers), content=body) as response:
+                content_type = response.headers.get('content-type', '').split(';')[0].lower()
+                media_type = content_type.startswith(('video/', 'audio/')) or resource_type == 'media'
+                chunks, size, prefix = [], 0, b''
+                output = None
+                try:
+                    for chunk in response.iter_bytes(chunk_size=COPY_CHUNK_BYTES):
+                        self._check()
+                        size += len(chunk)
+                        prefix += chunk[:max(0, 8 - len(prefix))]
+                        media_type = media_type or (content_type == 'application/octet-stream' and prefix[4:8] == b'ftyp')
+                        limit = self.max_bytes if media_type or supplement else MAX_RESOURCE
+                        with self.lock:
+                            self.total += len(chunk)
+                            if self.total > MAX_TOTAL:
+                                raise AppError('douyin_browser_budget', '页面总下载量超过采集预算')
+                        if size > limit:
+                            raise AppError('douyin_browser_budget', '页面资源超过采集大小限制')
+                        if media_type or supplement:
+                            if output is None:
+                                response_path = self.folder / ('response-' + uuid.uuid4().hex + '.bin')
+                                output = response_path.open('xb')
+                                for previous in chunks:
+                                    output.write(previous)
+                                chunks.clear()
+                            output.write(chunk)
+                        else:
+                            chunks.append(chunk)
+                finally:
+                    if output is not None:
+                        output.close()
+                payload = b'' if response_path is not None else b''.join(chunks)
+                status = response.status_code
+                length = response.headers.get('content-length')
+                if media_type and method != 'HEAD' and length is not None and not response.headers.get('content-encoding'):
+                    if not length.isdigit() or int(length) != size:
+                        raise AppError('douyin_browser_range', '媒体响应长度与声明不一致')
                 with self.lock:
-                    self.total += len(chunk)
-                    if self.total > MAX_TOTAL:
-                        raise AppError('douyin_browser_budget', '页面总下载量超过采集预算')
-                if size > limit:
-                    raise AppError('douyin_browser_budget', '页面资源超过采集大小限制')
-                chunks.append(chunk)
-            payload = b''.join(chunks)
-            status = response.status_code
+                    self.statuses[status] = self.statuses.get(status, 0) + 1
+                raw_headers = list(response.headers.multi_items())
+            mapped = {}
+            for key, value in raw_headers:
+                if key.lower() == 'set-cookie':
+                    with self.lock:
+                        self._remember_cookies(value)
+                if key.lower() not in HOP_HEADERS:
+                    separator = '\n' if key.lower() == 'set-cookie' else ', '
+                    mapped[key] = mapped[key] + separator + value if key in mapped else value
             with self.lock:
-                self.statuses[status] = self.statuses.get(status, 0) + 1
-            raw_headers = list(response.headers.multi_items())
-        mapped = {}
-        for key, value in raw_headers:
-            if key.lower() == 'set-cookie':
-                with self.lock:
-                    self._remember_cookies(value)
-            if key.lower() not in HOP_HEADERS:
-                separator = '\n' if key.lower() == 'set-cookie' else ', '
-                mapped[key] = mapped[key] + separator + value if key in mapped else value
-        with self.lock:
-            if 300 <= status < 400 and self._bound(url) and response.headers.get('location'):
-                self.urls.add(urljoin(url, response.headers['location']))
-            if content_type.endswith('json') or (len(payload) < MAX_RESOURCE and payload[:1] in (b'{', b'[')):
-                self._bind_json(payload, url)
-            elif content_type == 'text/html':
-                self._bind_html(payload, url)
-        media_type = media_type or (content_type == 'application/octet-stream' and payload[4:8] == b'ftyp')
-        path = self._record(url, headers, status, response.headers, payload, content_type) if media_type else None
-        if path and not supplement:
-            self._complete(url)
-        return status, mapped, payload, path
+                if 300 <= status < 400 and self._bound(url) and response.headers.get('location'):
+                    self.urls.add(urljoin(url, response.headers['location']))
+                if response_path is None and (content_type.endswith('json') or (len(payload) < MAX_RESOURCE and payload[:1] in (b'{', b'['))):
+                    self._bind_json(payload, url)
+                elif response_path is None and content_type == 'text/html':
+                    self._bind_html(payload, url)
+            path = self._record_file(url, headers, status, response.headers, response_path, size, content_type,
+                                     retain_response=not supplement) if media_type and response_path is not None else None
+            retained = path is not None and path == response_path
+            if path and not supplement:
+                self._complete(url)
+            return status, mapped, payload, path
+        finally:
+            if response_path is not None and not retained:
+                response_path.unlink(missing_ok=True)
 
     def _record(self, url, request_headers, status, headers, payload, mime):
+        """Small in-memory compatibility entry point; downloads use _record_file."""
         if status not in (200, 206) or not payload:
             return None
-        total, start, end = len(payload), 0, len(payload) - 1
+        response_path = self.folder / ('response-' + uuid.uuid4().hex + '.bin')
+        response_path.write_bytes(payload)
+        try:
+            path = self._record_file(url, request_headers, status, headers, response_path, len(payload), mime)
+        except BaseException:
+            response_path.unlink(missing_ok=True)
+            raise
+        if path != response_path:
+            response_path.unlink(missing_ok=True)
+        return path
+
+    def _record_file(self, url, request_headers, status, headers, response_path, size, mime, *, retain_response=True):
+        if status not in (200, 206) or size <= 0:
+            return None
+        total, start, end = size, 0, size - 1
         if status == 206:
             match = re.fullmatch(r'bytes (\d+)-(\d+)/(\d+)', headers.get('content-range', ''))
             if not match:
                 return None
             start, end, total = map(int, match.groups())
-            if end < start or end >= total or len(payload) != end - start + 1:
+            if end < start or end >= total or size != end - start + 1:
                 raise AppError('douyin_browser_range', '媒体分段响应不完整')
         if total > self.max_bytes:
             raise AppError('douyin_browser_budget', '原视频超过大小限制')
@@ -461,15 +520,30 @@ class _Broker:
             if total != entry['total']:
                 entry['invalid'] = True
                 raise AppError('douyin_browser_range', '媒体总长度在采集中发生变化')
-            with entry['path'].open('r+b' if entry['path'].exists() else 'w+b') as file:
+            # A fresh complete response can become the final candidate directly.
+            if not entry['ranges'] and start == 0 and size == total:
+                response_path.replace(entry['path'])
+                entry['ranges'] = [(0, total)]
+                return entry['path']
+            with response_path.open('rb') as incoming, entry['path'].open('r+b' if entry['path'].exists() else 'w+b') as file:
                 for left, right in entry['ranges']:
                     overlap_start, overlap_end = max(start, left), min(end + 1, right)
                     if overlap_end > overlap_start:
+                        incoming.seek(overlap_start - start)
                         file.seek(overlap_start)
-                        if file.read(overlap_end - overlap_start) != payload[overlap_start - start:overlap_end - start]:
-                            entry['invalid'] = True
-                            raise AppError('douyin_browser_range', '媒体分段内容发生变化')
-                file.seek(start); file.write(payload)
+                        remaining = overlap_end - overlap_start
+                        while remaining:
+                            self._check()
+                            amount = min(COPY_CHUNK_BYTES, remaining)
+                            if file.read(amount) != incoming.read(amount):
+                                entry['invalid'] = True
+                                raise AppError('douyin_browser_range', '媒体分段内容发生变化')
+                            remaining -= amount
+                file.seek(start)
+                incoming.seek(0)
+                while chunk := incoming.read(COPY_CHUNK_BYTES):
+                    self._check()
+                    file.write(chunk)
             ranges = sorted([*entry['ranges'], (start, end + 1)])
             merged = []
             for left, right in ranges:
@@ -478,12 +552,8 @@ class _Broker:
                 else:
                     merged.append((left, right))
             entry['ranges'] = merged
-            # The browser needs only this exact HTTP response, not the assembled file.
-            if start == 0 and len(payload) == total:
-                return entry['path']
-            response_path = self.folder / ('response-' + uuid.uuid4().hex + '.bin')
-            response_path.write_bytes(payload)
-            return response_path
+            # A supplement is internal only; no duplicate response file is retained.
+            return response_path if retain_response else entry['path']
 
     def _complete(self, url):
         with self.lock:
@@ -494,7 +564,7 @@ class _Broker:
             original = {k: v for k, v in entry['headers'].items() if k.lower() != 'range'}
         try:
             # Same observed URL and current anonymous session; no query rewriting.
-            for attempt in range(16):
+            for attempt in range(MAX_RANGE_REQUESTS):
                 self._check()
                 with self.lock:
                     ranges = entry['ranges']
@@ -505,13 +575,17 @@ class _Broker:
                         if left > start:
                             break
                         start = max(start, right)
-                    end = min(start + 8 * 1024 * 1024 - 1, entry['total'] - 1)
+                    end = min(start + MEDIA_CHUNK_BYTES - 1, entry['total'] - 1)
+                    previous_ranges = list(ranges)
                 headers = dict(original)
                 if attempt:
                     headers['range'] = f'bytes={start}-{end}'
                 status, _, _, _ = self._request(url, 'GET', headers, resource_type='media', supplement=True)
                 if status not in (200, 206):
                     return
+                with self.lock:
+                    if attempt and entry['ranges'] == previous_ranges:
+                        return  # A stalled server must not consume the entire range budget.
         except AppError:
             return  # Partial coverage is never returned as successful acquisition.
         finally:
@@ -680,6 +754,14 @@ class _Broker:
                                   for source, destination in list(self.observed_redirects.items())[:10]],
                     'query_differences': differences}
 
+    def _file_digest(self, path):
+        digest = hashlib.sha256()
+        with path.open('rb') as stream:
+            while chunk := stream.read(COPY_CHUNK_BYTES):
+                self._check()
+                digest.update(chunk)
+        return digest.hexdigest()
+
     def finish(self, observations, observed_id):
         if observed_id != self.video_id:
             raise AppError('douyin_browser_identity', '浏览器页面已离开指定视频，未接受其他视频')
@@ -697,7 +779,7 @@ class _Broker:
             if path.stat().st_size != entry['total']:
                 continue
             output.append({'path': str(path), 'size': entry['total'],
-                           'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+                           'sha256': self._file_digest(path),
                            'coverage': [list(pair) for pair in entry['ranges']],
                            'complete': True, 'mime': entry['mime'], 'video_id': self.video_id,
                            'probe': entry['probe']})
@@ -872,7 +954,7 @@ def resolve_douyin_url(url, folder, timeout=30, cancelled=None,
         progress_callback=progress_callback, _resolve_only=True)
 
 
-def capture_douyin(url, folder, *, video_id, timeout=180, max_bytes=MAX_MEDIA,
+def capture_douyin(url, folder, *, video_id, timeout=BROWSER_TIMEOUT_SECONDS, max_bytes=MAX_MEDIA,
                    cancelled=None, transport_factory=None, progress_callback=None, _resolve_only=False):
     """Return complete media candidates for one explicit video; otherwise raise.
 
@@ -887,7 +969,7 @@ def capture_douyin(url, folder, *, video_id, timeout=180, max_bytes=MAX_MEDIA,
     node = shutil.which('node')
     if not node or not SCRIPT.is_file():
         raise AppError('douyin_browser_runtime', '匿名浏览器未安装，请重新运行项目安装脚本')
-    timeout = min(max(float(timeout), 3), 180)
+    timeout = min(max(float(timeout), 3), BROWSER_TIMEOUT_SECONDS)
     work = Path(folder).resolve() / ('browser-' + uuid.uuid4().hex)
     broker = _Broker(work, video_id, time.monotonic() + timeout, max_bytes, transport_factory, cancelled)
     # The explicit injected transport selects offline fulfillment contracts only.
@@ -946,7 +1028,8 @@ def capture_douyin(url, folder, *, video_id, timeout=180, max_bytes=MAX_MEDIA,
         reader = threading.Thread(target=read_messages, daemon=True); reader.start()
         send({'type': 'start', 'url': url, 'video_id': str(video_id), 'timeout_ms': int(timeout * 1000),
               'guard_proxy': f'http://127.0.0.1:{guard.server_address[1]}',
-              'native_proxy': native_proxy, 'work_dir': str(work), 'resolve_only': bool(_resolve_only)})
+              'native_proxy': native_proxy, 'work_dir': str(work), 'resolve_only': bool(_resolve_only),
+              'max_bytes': broker.max_bytes, 'max_total_bytes': MAX_TOTAL, 'max_requests': MAX_REQUESTS})
         while result is None:
             broker._check()
             try:

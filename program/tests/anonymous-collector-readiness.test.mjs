@@ -7,7 +7,7 @@ import ts from "typescript";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 
-function fixture({ runtime = {}, worker = {}, quotaAllowed = true } = {}) {
+function fixture({ runtime = {}, worker = {}, quotaAllowed = true, cookieObject } = {}) {
   const now = new Date().toISOString();
   const environment = {
     ANALYZER_SERVICE_TOKEN: "synthetic-service-token",
@@ -31,7 +31,7 @@ function fixture({ runtime = {}, worker = {}, quotaAllowed = true } = {}) {
     [path.join(root, "lib/model-settings.ts"), { readEffectiveModelRuntime: async () => environment }],
     [path.join(root, "db/runtime.ts"), {
       getD1: () => ({ prepare: () => ({ first: async () => presence }) }),
-      getMediaBucket: () => { throw new Error("anonymous readiness must not read stored Cookies"); },
+      getMediaBucket: () => ({ head: async () => { if (cookieObject === undefined) throw new Error("optional Cookie storage unavailable"); return cookieObject; } }),
     }],
     [path.join(root, "lib/operations.ts"), {
       checkOrganizationQuota: async (organizationId, userId, resource) => {
@@ -69,7 +69,7 @@ test("a live anonymous worker accepts public links without personal browser logi
     assert.equal(readiness.publicLinkAuthenticationMode, "anonymous");
     assert.equal(readiness.publicLinkCookieConfigured, false);
     assert.equal(readiness.cookieUpdatedAt, null);
-    assert.equal(analyzerReadinessError(readiness, true), null);
+    assert.equal(analyzerReadinessError(readiness, false), null);
     assert.equal(await f.load("lib/analysis-submission-availability.ts").checkNewAnalysisAvailability({
       organizationId: "organization-1", userId: "user-1", requiresBrowser: true,
     }), null);
@@ -102,6 +102,24 @@ test("anonymous collection still enforces organization analysis quotas", async (
   assert.equal((await result.json()).error.code, "ANALYSIS_QUOTA_EXCEEDED");
 });
 
+test("only an uploaded Cookie snapshot satisfies explicit Cookie collection readiness", async () => {
+  for (const cookieObject of [null, { size: 0 }, { size: 25, customMetadata: { updatedAt: "2026-11-16T00:00:00.000Z" } }]) {
+    const f = fixture({ cookieObject });
+    const { readAnalyzerReadiness, analyzerReadinessError } = f.load("lib/analyzer-readiness.ts");
+    const readiness = await readAnalyzerReadiness("organization-1");
+    const configured = Boolean(cookieObject?.size);
+    assert.equal(readiness.uploadedCookieConfigured, configured);
+    assert.equal(readiness.publicLinkCookieConfigured, false);
+    assert.equal(readiness.cookieUpdatedAt, configured ? cookieObject.customMetadata.updatedAt : null);
+    assert.equal(analyzerReadinessError(readiness, true)?.code ?? null, configured ? null : "ANALYZER_COOKIE_REQUIRED");
+    assert.equal(analyzerReadinessError(readiness, false), null);
+    const result = await f.load("lib/analysis-submission-availability.ts").checkNewAnalysisAvailability({
+      organizationId: "organization-1", userId: "user-1", requiresBrowser: true, collectionMode: "cookie",
+    });
+    assert.equal(result?.status ?? null, configured ? null : 503);
+  }
+});
+
 test("pure visual preflight requires a supported image adapter, while hybrid retains existing readiness", async () => {
   for (const [runtime, supported] of [
     [{}, false],
@@ -117,7 +135,7 @@ test("pure visual preflight requires a supported image adapter, while hybrid ret
     const { readAnalyzerReadiness, analyzerReadinessError } = f.load("lib/analyzer-readiness.ts");
     const readiness = await readAnalyzerReadiness("organization-1");
     assert.equal(readiness.visualModelConfigured, supported);
-    assert.equal(analyzerReadinessError(readiness, true), null);
+    assert.equal(analyzerReadinessError(readiness, false), null);
     const result = await f.load("lib/analysis-submission-availability.ts").checkNewAnalysisAvailability({ organizationId: "organization-1", userId: "user-1", requiresBrowser: true, visualAnalysisMode: "vision_only" });
     if (supported) assert.equal(result, null);
     else {
@@ -126,6 +144,6 @@ test("pure visual preflight requires a supported image adapter, while hybrid ret
       assert.deepEqual(f.quotaChecks, []);
     }
     // Transcript-only extraction does not need a visual model, even if the job retains its visual preference.
-    assert.equal(analyzerReadinessError(readiness, true, true, "vision_only"), null);
+    assert.equal(analyzerReadinessError(readiness, false, true, "vision_only"), null);
   }
 });

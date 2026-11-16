@@ -20,8 +20,8 @@ function urlForm(enabled, ok = true) {
   const requests = [], resets = [], reviewSelections = [], submitting = [], errors = [];
   const bindings = {
     organizationId: "test-company", projectId: "test-project", analysisProfile: "standard",
-    visualAnalysisMode: "vision_only", visualSamplingLevel: "quick",
-    transcriptReviewEnabled: enabled,
+    visualAnalysisMode: "vision_only", visualSamplingLevel: "quick", executionMode: "controlled_parallel",
+    transcriptReviewEnabled: enabled, collectionMode: "anonymous",
     setSubmitting: value => submitting.push(value), setError: value => errors.push(value), setSubmitMessage() {},
     setTranscriptReviewEnabled: value => reviewSelections.push(value),
     taskReader: { current: { reader: { invalidate() {} } } },

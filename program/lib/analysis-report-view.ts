@@ -35,12 +35,43 @@ const legacyGroups: Record<UnifiedModuleKey, Array<[string, string]>> = {
   visual: [["visual", "画面表现"], ["rhythm_analysis", "镜头与节奏"]],
   synthesis: [["highlights", "有效亮点"], ["risks", "问题与缺口"], ["recommendations", "复用建议"]],
 };
-const featuredDimensions: Record<UnifiedModuleKey, readonly string[]> = {
-  text_topic_structure_audience: ["topic.category", "topic.problem", "topic.purpose", "structure.type", "audience.role", "audience.need"],
-  text_expression_value: ["hook.type", "emotion.expressed", "value.type", "value.actionability", "language.tone", "cta.action"],
-  visual: ["content.form", "visual.first_frame_style", "visual.opening", "visual.broll", "visual.composition"],
-  synthesis: ["synthesis.visual_text_relation", "synthesis.retention", "synthesis.opening_fulfillment", "synthesis.problem"],
+/** Presentation priority only. Stored taxonomy order and model contracts stay intact. */
+export const reportClassificationPriority: Record<UnifiedModuleKey, readonly string[]> = {
+  text_topic_structure_audience: [
+    "topic.category", "topic.problem", "topic.purpose", "structure.type", "audience.role", "audience.need",
+    "topic.angle", "topic.granularity", "audience.stage", "audience.context", "audience.use_case",
+    "structure.role", "structure.order", "structure.ending", "audience.knowledge", "audience.targeting",
+  ],
+  text_expression_value: [
+    "hook.type", "value.type", "value.actionability", "technique.retention", "technique.trust", "cta.action",
+    "value.information_type", "value.evidence_form", "technique.understanding", "technique.persuasion",
+    "value.repetition", "technique.memory", "technique.interaction", "emotion.expressed", "emotion.intended",
+    "emotion.connection", "emotion.trajectory", "emotion.trigger", "language.tone", "language.register",
+    "language.text_pattern", "language.memory_marker", "language.sentence", "language.vocabulary",
+    "language.person", "hook.channel", "cta.position",
+  ],
+  visual: [
+    "content.form", "visual.first_frame_style", "visual.opening", "visual.broll", "visual.text_function",
+    "visual.composition", "visual.first_frame_information", "visual.scene", "visual.person_role", "visual.shot_size",
+    "visual.camera_motion", "visual.camera_angle", "visual.transition", "visual.color", "visual.stability",
+    "visual.medium", "visual.person_count",
+  ],
+  synthesis: ["synthesis.problem", "synthesis.retention", "synthesis.opening_fulfillment", "synthesis.visual_text_relation"],
 };
+
+/** Uncertain or empty classifications remain available in More without using a primary slot. */
+export function prioritizeReportClassifications(key: UnifiedModuleKey, rows: readonly ReportClassificationView[]): ReportClassificationView[] {
+  const ranks = new Map(reportClassificationPriority[key].map((id, index) => [id, index]));
+  const sorted = rows.map((row, index) => ({ row, index })).sort((left, right) =>
+    (ranks.get(left.row.dimensionId) ?? Number.MAX_SAFE_INTEGER) - (ranks.get(right.row.dimensionId) ?? Number.MAX_SAFE_INTEGER)
+    || left.index - right.index);
+  let featuredCount = 0;
+  return sorted.map(({ row }) => {
+    const featured = featuredCount < 6 && row.state === "known" && row.tags.some(tag => tag.id.trim() && tag.label.trim());
+    if (featured) featuredCount += 1;
+    return { ...row, featured };
+  });
+}
 const classificationStateNames = { known: "未发现该特征", unknown: "无法判断", not_acquired: "未取得所需材料", not_applicable: "不适用" };
 function classificationReason(row: ContentClassification) {
   const reason = row.reason;
@@ -62,11 +93,11 @@ function classificationReason(row: ContentClassification) {
   return reason;
 }
 
-function classificationView(row: ContentClassification, key: UnifiedModuleKey): ReportClassificationView {
+function classificationView(row: ContentClassification): ReportClassificationView {
   const tags = row.state === "known" ? (row.tags ?? []).map(id => ({ id, label: getTagLabel(row.dimension_id, id), primary: id === row.primary_tag })) : [];
   return { dimensionId: row.dimension_id, label: getDimensionLabel(row.dimension_id), state: row.state, tags,
     value: tags.length ? tags.map(tag => tag.label).join("、") : classificationStateNames[row.state],
-    reason: classificationReason(row), featured: featuredDimensions[key].includes(row.dimension_id) };
+    reason: classificationReason(row), featured: false };
 }
 
 function legacyCtaFindings(report: Record<string, unknown>, evidence: ContentEvidence[]): ReportFindingView[] {
@@ -115,7 +146,7 @@ export function analysisReportView(schema: string, body: unknown): AnalysisRepor
     const sectionRecord = unified?.sections.find(row => row.key === key);
     const legacyState = content?.module_status[key];
     const classifications = legacyState?.status === "completed" && (!sectionRecord || sectionRecord.status === "completed")
-      ? content!.classifications.filter(row => isActiveAnalysisDimension(row.dimension_id) && contentTaxonomyModule(row.dimension_id) === key).map(row => classificationView(row, key)) : [];
+      ? prioritizeReportClassifications(key, content!.classifications.filter(row => isActiveAnalysisDimension(row.dimension_id) && contentTaxonomyModule(row.dimension_id) === key).map(classificationView)) : [];
     const used = new Set<string>();
     const findings: ReportFindingView[] = sectionRecord ? sectionRecord.findings.map(row => ({ id: row.id, title: row.title, text: row.text, evidenceIds: row.evidence_ids })) :
       legacyGroups[key].flatMap(([field, title]) => texts(report[field]).flatMap((text, index) => {

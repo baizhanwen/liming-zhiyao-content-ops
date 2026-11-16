@@ -1,7 +1,6 @@
 """The only public collector entry point. Paths are server-owned task folders."""
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 import shutil
@@ -10,7 +9,8 @@ from uuid import uuid4
 
 from .python import media
 from .python.runtime import media_tools
-from .python.security import AppError
+from .python.security import AppError, sha256_file
+from .python.limits import BROWSER_TIMEOUT_SECONDS
 
 CollectorError = AppError
 MAX_MEDIA_BYTES = media.MAX_UPLOAD
@@ -27,13 +27,13 @@ def _cancel_check(cancelled):
     raise TypeError('cancelled must be callable or threading.Event')
 
 
-def collect(share_text, output_dir, progress=None, cancelled=None, *, browser_timeout=180,
+def collect(share_text, output_dir, progress=None, cancelled=None, *, browser_timeout=BROWSER_TIMEOUT_SECONDS,
             ffmpeg="ffmpeg", ffprobe="ffprobe"):
     with media_tools(ffmpeg, ffprobe):
         return _collect(share_text, output_dir, progress, cancelled, browser_timeout=browser_timeout)
 
 
-def _collect(share_text, output_dir, progress=None, cancelled=None, *, browser_timeout=180):
+def _collect(share_text, output_dir, progress=None, cancelled=None, *, browser_timeout=BROWSER_TIMEOUT_SECONDS):
     """Acquire a single original; failures never leave a successful final asset.
 
     Returns only canonical identity and bounded metadata. Signed CDN URLs,
@@ -75,11 +75,11 @@ def _collect(share_text, output_dir, progress=None, cancelled=None, *, browser_t
             raise CollectorError('unsafe_storage', '采集产物未处于当前任务目录')
         size = raw.stat().st_size
         if not 0 < size <= MAX_MEDIA_BYTES:
-            raise CollectorError('too_large', '原片为空或超过 100 MiB')
+            raise CollectorError('too_large', '原片为空或超过 1 GiB')
         probe = media.inspect_video(raw)
         if not probe['video']:
             raise CollectorError('invalid_media', '采集产物没有有效视频轨')
-        digest = hashlib.sha256(raw.read_bytes()).hexdigest()
+        digest = sha256_file(raw, cancelled=stopped)
         acquisition = source.get('acquisition', {})
         if acquisition.get('media_sha256') != digest:
             raise CollectorError('hash_mismatch', '原片校验值不一致')
@@ -137,7 +137,7 @@ def _collect(share_text, output_dir, progress=None, cancelled=None, *, browser_t
 
 
 class CollectorAdapter:
-    def acquire(self, share_text, output_dir, progress=None, cancelled=None, *, browser_timeout=180,
+    def acquire(self, share_text, output_dir, progress=None, cancelled=None, *, browser_timeout=BROWSER_TIMEOUT_SECONDS,
                 ffmpeg="ffmpeg", ffprobe="ffprobe"):
         return collect(share_text, output_dir, progress, cancelled, browser_timeout=browser_timeout,
                        ffmpeg=ffmpeg, ffprobe=ffprobe)

@@ -105,6 +105,8 @@ class Speech:
 
 
 class Visual:
+    supports_speech_overlap = True
+
     def __init__(self, root, *, hang=False):
         self.root, self.hang = root, hang
 
@@ -115,6 +117,10 @@ class Visual:
                     time.sleep(.02)
             raise RuntimeError("synthetic visual failure after completed ASR")
         return VisualOutput()
+
+    def analyze_for_speech_overlap(self, media, output, ready):
+        ready()
+        return self.analyze(media, output)
 
 
 class Structure:
@@ -410,7 +416,12 @@ def test_artifact_writes_keep_same_attempt_when_heartbeat_advances_version(tmp_p
         if int(headers.get("X-Worker-Attempt", "0")) != state["attempt"]:
             return 409, b'{"error":{"code":"ARTIFACT_LEASE_INVALID"}}'
         state["writes"] += 1
-        return 201, json.dumps({"asset": {"id": "saved", "sha256": hashlib.sha256(data).hexdigest(), "sizeBytes": len(data)}}).encode()
+        digest, size = hashlib.sha256(), 0
+        chunks = (data,) if isinstance(data, bytes) else iter(lambda: data.read(64 * 1024), b"")
+        for chunk in chunks:
+            digest.update(chunk)
+            size += len(chunk)
+        return 201, json.dumps({"asset": {"id": "saved", "sha256": digest.hexdigest(), "sizeBytes": size}}).encode()
     client = AnalyzerApiClient("https://synthetic.invalid", "token", "worker", transport)
     source = tmp_path / "source.bin"
     source.write_bytes(b"original")
@@ -446,12 +457,14 @@ class Control:
 
 @pytest.mark.skipif(os.name not in {"nt", "posix"}, reason="native process isolation")
 @pytest.mark.parametrize("blocked", ["visual", "manuscript"])
-def test_real_isolated_timeout_reuses_finished_asr_in_a_new_child(tmp_path, blocked):
+@pytest.mark.parametrize("execution_mode", ["serial", "controlled_parallel"])
+def test_real_isolated_timeout_reuses_finished_asr_in_a_new_child(tmp_path, blocked, execution_mode):
     settings = {"initialization": 5, "evidence": .35, "artifacts": .35, "poll": .02, "task": 15}
     if "visual" in {field.name for field in fields(ProcessingLimits)}:
         settings["visual"] = .35
     limits = ProcessingLimits(**settings)
     first = job(tmp_path)
+    first = replace(first, source={**first.source, "execution_mode": execution_mode})
     if blocked == "manuscript":
         first = replace(first, source={**first.source, "hang_manuscript": True})
         (tmp_path / "allow-visual").touch()

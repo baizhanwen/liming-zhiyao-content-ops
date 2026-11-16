@@ -1,3 +1,5 @@
+import { normalizeAnalysisCollectionMode, type AnalysisCollectionMode } from "./analysis-collection-mode.ts";
+import { normalizeAnalysisExecutionMode, normalizeNewAnalysisExecutionMode, type AnalysisExecutionMode } from "./analysis-execution-mode.ts";
 import { normalizeVisualSamplingLevel, readVisualSamplingLevel, type VisualSamplingLevel } from "./visual-sampling-level.ts";
 import { normalizeNewVisualAnalysisMode, normalizeVisualAnalysisMode, type VisualAnalysisMode } from "./visual-analysis-mode.ts";
 import { apiError } from "./api-response.ts";
@@ -6,7 +8,7 @@ import { assertProjectWriteAccess, projectWriteAccessBindings, projectWriteAcces
 type Submission = {
   organizationId: string; projectId: string; userId: string; now: string;
   sourceType: "url" | "upload"; sourceHash: string; sourceUrl?: string; filename?: string;
-  transcriptReviewEnabled?: boolean; visualAnalysisMode?: VisualAnalysisMode; visualSamplingLevel?: VisualSamplingLevel;
+  transcriptReviewEnabled?: boolean; visualAnalysisMode?: VisualAnalysisMode; visualSamplingLevel?: VisualSamplingLevel; executionMode?: AnalysisExecutionMode; collectionMode?: AnalysisCollectionMode;
 };
 type Database = Pick<D1Database, "prepare" | "batch">;
 
@@ -19,7 +21,7 @@ export async function resolveVideoSubmission(db: Database, input: Submission, va
   if (duplicate) return apiError("VIDEO_ALREADY_EXISTS", sourceType === "url" ? "该链接已经进入当前项目。" : "相同媒体已经进入当前项目。", 409, { videoId: duplicate.id });
   const canonical = await db.prepare(`
     SELECT library.id AS library_entry_id, v.id, v.platform, v.source_type, v.source_url, v.title, v.author_name, v.status, v.created_at, a.filename, a.size_bytes,
-      job.id AS job_id, job.status AS job_status, job.progress, job.current_stage, job.error_code, job.error_message, job.retry_count, job.analysis_profile, job.transcript_review_enabled, job.visual_analysis_mode, job.visual_sampling_level, job.created_at AS job_created_at, job.updated_at AS job_updated_at,
+      job.id AS job_id, job.status AS job_status, job.progress, job.current_stage, job.error_code, job.error_message, job.retry_count, job.analysis_profile, job.transcript_review_enabled, job.visual_analysis_mode, job.visual_sampling_level, job.execution_mode, job.collection_mode, job.created_at AS job_created_at, job.updated_at AS job_updated_at,
       (SELECT report_job.transcript_review_enabled FROM video_analyses analysis INNER JOIN analysis_jobs report_job ON report_job.id=analysis.analysis_job_id
         AND report_job.organization_id=analysis.organization_id AND report_job.video_id=analysis.video_id
         WHERE analysis.organization_id=v.organization_id AND analysis.video_id=v.id ORDER BY analysis.created_at DESC,analysis.rowid DESC LIMIT 1) AS report_transcript_review_enabled,
@@ -96,8 +98,8 @@ export async function resolveVideoSubmission(db: Database, input: Submission, va
     video: { id: canonical.id, platform: canonical.platform, source_type: canonical.source_type, title: canonical.title, author_name: canonical.author_name, status: canonical.status, created_at: canonical.created_at, is_reference: true, library_entry_id: canonical.library_entry_id,
       ...(sourceType === "url" ? { source_url: canonical.source_url } : { filename: canonical.filename, size_bytes: canonical.size_bytes }) },
     job: canonical.job_id
-      ? { id: canonical.job_id, video_id: canonical.id, status: canonical.job_status, progress: canonical.progress, current_stage: canonical.current_stage, error_code: canonical.error_code, error_message: canonical.error_message, retry_count: canonical.retry_count, analysis_profile: canonical.analysis_profile, visual_analysis_mode: normalizeVisualAnalysisMode(canonical.visual_analysis_mode), visual_sampling_level: readVisualSamplingLevel(canonical.visual_sampling_level), transcript_review_enabled: canonical.transcript_review_enabled !== 0, created_at: canonical.job_created_at, updated_at: canonical.job_updated_at }
-      : { id: `reused-${canonical.id}`, video_id: canonical.id, status: canonical.status === "ready" ? "completed" : "pending", progress: canonical.status === "ready" ? 100 : 0, current_stage: "复用公司素材库分析", retry_count: 0, analysis_profile: "shared", visual_analysis_mode: visualAnalysisMode, visual_sampling_level: visualSamplingLevel, created_at: canonical.created_at, updated_at: canonical.created_at },
+      ? { id: canonical.job_id, video_id: canonical.id, status: canonical.job_status, progress: canonical.progress, current_stage: canonical.current_stage, error_code: canonical.error_code, error_message: canonical.error_message, retry_count: canonical.retry_count, analysis_profile: canonical.analysis_profile, visual_analysis_mode: normalizeVisualAnalysisMode(canonical.visual_analysis_mode), visual_sampling_level: readVisualSamplingLevel(canonical.visual_sampling_level), execution_mode: normalizeAnalysisExecutionMode(canonical.execution_mode), collection_mode: normalizeAnalysisCollectionMode(canonical.collection_mode), transcript_review_enabled: canonical.transcript_review_enabled !== 0, created_at: canonical.job_created_at, updated_at: canonical.job_updated_at }
+      : { id: `reused-${canonical.id}`, video_id: canonical.id, status: canonical.status === "ready" ? "completed" : "pending", progress: canonical.status === "ready" ? 100 : 0, current_stage: "复用公司素材库分析", retry_count: 0, analysis_profile: "shared", visual_analysis_mode: visualAnalysisMode, visual_sampling_level: visualSamplingLevel, execution_mode: normalizeAnalysisExecutionMode(canonical.execution_mode), collection_mode: normalizeAnalysisCollectionMode(canonical.collection_mode), created_at: canonical.created_at, updated_at: canonical.created_at },
   });
 }
 
@@ -117,8 +119,8 @@ export function newVideoSubmissionStatements(db: Database, input: Submission & {
       .bind(videoId, organizationId, projectId, input.mediaAssetId ?? null, sourceType === "url" ? "douyin" : "upload", sourceType, input.sourceUrl ?? null, sourceHash, input.title, userId, userId, now, now, ...projectWriteAccessBindings(input)),
     db.prepare(`INSERT INTO video_library_entries (id, organization_id, source_video_id, category, tags_json, created_by, updated_by, created_at, updated_at) SELECT ?, ?, ?, 'other', '[]', ?, ?, ?, ? WHERE ${written}`)
       .bind(crypto.randomUUID(), organizationId, videoId, userId, userId, now, now, ...writtenBindings),
-    db.prepare(`INSERT INTO analysis_jobs (id, organization_id, project_id, video_id, source_type, source_ref, idempotency_key, status, analysis_profile, transcript_review_enabled, visual_analysis_mode, visual_sampling_level, progress, current_stage, retry_count, created_by, updated_by, created_at, updated_at) SELECT ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, 0, ?, 0, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE ${written}`)
-      .bind(jobId, organizationId, projectId, videoId, sourceType, sourceRef, sourceHash, analysisProfile, input.transcriptReviewEnabled === false ? 0 : 1, normalizeNewVisualAnalysisMode(input.visualAnalysisMode), normalizeVisualSamplingLevel(input.visualSamplingLevel), stage, userId, userId, ...writtenBindings),
+    db.prepare(`INSERT INTO analysis_jobs (id, organization_id, project_id, video_id, source_type, source_ref, idempotency_key, status, analysis_profile, transcript_review_enabled, visual_analysis_mode, visual_sampling_level, execution_mode, collection_mode, progress, current_stage, retry_count, created_by, updated_by, created_at, updated_at) SELECT ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, 0, ?, 0, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE ${written}`)
+      .bind(jobId, organizationId, projectId, videoId, sourceType, sourceRef, sourceHash, analysisProfile, input.transcriptReviewEnabled === false ? 0 : 1, normalizeNewVisualAnalysisMode(input.visualAnalysisMode), normalizeVisualSamplingLevel(input.visualSamplingLevel), normalizeNewAnalysisExecutionMode(input.executionMode), sourceType === "url" ? normalizeAnalysisCollectionMode(input.collectionMode) : "anonymous", stage, userId, userId, ...writtenBindings),
     db.prepare(`INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) SELECT ?, ?, ?, ?, ?, 'video', ?, ?, ? WHERE ${written}`)
       .bind(crypto.randomUUID(), organizationId, projectId, userId, sourceType === "url" ? "video.url_submitted" : "video.uploaded", videoId, JSON.stringify(input.auditMetadata), now, ...writtenBindings),
   ];

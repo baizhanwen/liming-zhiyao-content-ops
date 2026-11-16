@@ -2,7 +2,7 @@
 import { useState, type ReactNode } from "react";
 import { ManuscriptCard } from "./ExtractedManuscript";
 import { contentTimeLabel } from "../lib/content-analysis-presentation";
-import type { AnalysisReportView, ReportClassificationView, ReportFindingView } from "../lib/analysis-report-view";
+import type { AnalysisReportView, ReportClassificationView, ReportFindingView, ReportSectionView } from "../lib/analysis-report-view";
 import type { UnifiedModuleKey } from "../lib/unified-report";
 import type { ModuleRecoveryFeedback } from "../lib/analysis-recovery-view";
 
@@ -30,6 +30,20 @@ function ClassificationRows({ rows, label }: { rows: ReportClassificationView[];
   return <dl className="report-classification-list" aria-label={label}>{rows.map(row => <div key={row.dimensionId} data-dimension={row.dimensionId}>
     <dt>{row.label}</dt><dd>{row.tags.length ? <span className="report-classification-value">{row.tags.map((tag, index) => <span key={tag.id}>{index > 0 && "、"}{tag.label}{tag.primary && row.tags.length > 1 && <small className="report-primary-tag">主</small>}</span>)}</span> : <span className="report-classification-state">{row.value}</span>}{row.reason && <small className="report-classification-reason">{row.reason}</small>}</dd>
   </div>)}</dl>;
+}
+
+function SectionClassifications({ section }: { section: ReportSectionView }) {
+  if (!section.classifications.length) return null;
+  const primary = section.classifications.filter(row => row.featured);
+  const more = section.classifications.filter(row => !row.featured);
+  return <div className="report-core-classifications">
+    <h3>主要分类</h3>
+    {primary.length ? <ClassificationRows rows={primary} label={`${section.name}的主要分类`} /> : <p className="report-empty">暂无可确定的主要分类。</p>}
+    {more.length > 0 && <details className="report-more-classifications">
+      <summary><span className="report-more-expand">展开更多分类（{more.length}）</span><span className="report-more-collapse">收起更多分类（{more.length}）</span></summary>
+      <ClassificationRows rows={more} label={`${section.name}的更多分类`} />
+    </details>}
+  </div>;
 }
 
 export function UnifiedReportContent({ view, assets, canLocate, onLocate, onCopyScript, canCopyScript, failedModuleKeys, onRetry, busy = false, manuscript, retryFeedback }: Props) {
@@ -63,9 +77,8 @@ export function UnifiedReportContent({ view, assets, canLocate, onLocate, onCopy
     {view.summary && <section className="report-overview"><span className="section-kicker">核心结论</span><p>{view.summary}</p>{summaryFinding && evidenceView(summaryFinding)}</section>}
     {view.unified?.version === "unified-report.v1" && view.unified.canonical.status === "failed" ? <section className="report-overview"><h2>口播内容需要先核对</h2><p>该版本的口播校正未完成，其余分析尚未生成。</p></section> : view.sections.map(section => <section className="unified-report-section" id={`report-${section.key}`} key={section.key}><header><h2>{section.name}</h2>{["failed", "not_acquired"].includes(section.status) && <span className="report-section-failed">未完成</span>}</header>
       {section.reason && <div className="report-section-message" aria-busy={retryFeedback?.module === section.key && retryFeedback.tone === "pending"}><p>{section.reason}</p>{onRetry && failedModuleKeys.includes(section.key) && <button type="button" disabled={busy} onClick={() => onRetry(section.key)}>{retryFeedback?.module === section.key && retryFeedback.tone === "pending" ? "正在提交恢复…" : "只补这一部分"}</button>}{recoveryFeedback(section.key)}</div>}
-      {section.classifications.some(row => row.featured) && <div className="report-core-classifications"><h3>主要分类</h3><ClassificationRows rows={section.classifications.filter(row => row.featured)} label={`${section.name}的主要分类`} /></div>}
+      <SectionClassifications section={section} />
       {section.findings.filter(finding => section.key !== "synthesis" || finding.text.trim() !== view.summary.trim()).map(finding => <article className="report-finding" key={finding.id}><h3>{finding.title}</h3><p>{finding.text}</p>{evidenceView(finding)}</article>)}
-      {section.classifications.some(row => !row.featured) && <details className="report-more-classifications"><summary>更多分类</summary><ClassificationRows rows={section.classifications.filter(row => !row.featured)} label={`${section.name}的更多分类`} /></details>}
       {!section.findings.length && !section.reason && <p className="report-empty">这一部分没有可展示的结论。</p>}
     </section>)}
     {scriptSection}

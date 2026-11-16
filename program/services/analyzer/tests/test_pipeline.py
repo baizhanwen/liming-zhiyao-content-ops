@@ -1,6 +1,7 @@
 import time
 import unittest
 from dataclasses import replace
+from threading import Event
 
 from liming_analyzer.adapters import (
     AcquiredSource,
@@ -97,26 +98,41 @@ class PipelineTests(unittest.TestCase):
         self.assertGreaterEqual(sum(status == "analyzing" for status, *_ in stages), 3)
 
     def test_observations_distinguish_candidate_checks_from_completed_ocr(self):
+        speech_release, visual_release = Event(), Event()
         class SlowSpeech(Speech):
             def transcribe(self, audio):
-                time.sleep(0.025)
+                assert speech_release.wait(3), "speech progress was never observed"
                 return super().transcribe(audio)
 
         class ObservedVisual(Visual):
+            supports_speech_overlap = True
+
+            def analyze_for_speech_overlap(self, media, output_dir, ready):
+                ready()
+                return self.analyze(media, output_dir)
+
             def progress_snapshot(self):
                 return {"phase": "ocr", "keyframes_completed": 5, "keyframes_total": 8, "sampled_frames": 1, "ocr_completed": 1}
 
             def analyze(self, media, output_dir):
-                time.sleep(0.05)
+                assert visual_release.wait(3), "completed speech progress was never observed"
                 return super().analyze(media, output_dir)
 
-        job = ClaimedJob("job-counters", "org-1", "project-1", "video-1", "upload", "queued", 1, 2, {})
+        job = ClaimedJob("job-counters", "org-1", "project-1", "video-1", "upload", "queued", 1, 2,
+                         {"execution_mode": "controlled_parallel"})
         events = []
 
         def heartbeat(status, progress, stage):
             return replace(job, status=status, progress=progress)
 
-        heartbeat.observe = events.append
+        def observe_progress(event):
+            events.append(event)
+            if event.get("phase") == "model_vision":
+                if event.get("transcribed_chunks") == 0:
+                    speech_release.set()
+                elif event.get("transcribed_chunks") == 1:
+                    visual_release.set()
+        heartbeat.observe = observe_progress
         AnalysisPipeline(Source(), Media(), SlowSpeech(), ObservedVisual(), Structure(), heartbeat_seconds=0.01).process(job, heartbeat)
         visual_events = [event for event in events if event["phase"] == "model_vision"]
         self.assertTrue(visual_events)

@@ -196,6 +196,7 @@ class OpenAiCompatibleVisionEngine:
     """Analyze representative frames with an API isolated from OCR and structure analysis."""
 
     supports_ocr_overlap = True  # Prompts/images never read OCR text or confidence.
+    supports_speech_overlap = True  # Remote image requests after local preprocessing.
 
     def __init__(
         self,
@@ -531,6 +532,12 @@ class KeyframeVisualAnalyzer:
         self._progress_lock = Lock()
         self._progress: dict[str, Any] = {"phase": "idle"}
 
+    @property
+    def supports_speech_overlap(self) -> bool:
+        # Only known remote adapters opt in. A local/unknown vision model must
+        # not add unbounded CPU/GPU pressure to the speech recognizer.
+        return getattr(self.vision, "supports_speech_overlap", False) is True
+
     def _set_progress(self, progress: Mapping[str, Any]) -> None:
         with self._progress_lock:
             self._progress = dict(progress)
@@ -563,7 +570,17 @@ class KeyframeVisualAnalyzer:
             if callable(setter):
                 setter(self.visual_sampling_level)
 
-    def analyze(self, media: NormalizedMedia, output_dir: Path) -> VisualOutput:
+    def analyze_for_speech_overlap(self, media: NormalizedMedia, output_dir: Path,
+                                   local_preparation_ready) -> VisualOutput:
+        """Release ASR only after extraction, filtering and local OCR are done.
+
+        The callback belongs to this invocation. It never changes the engine's
+        existing paid-call concurrency or permits a second local visual task.
+        """
+        return self.analyze(media, output_dir, _local_preparation_ready=local_preparation_ready)
+
+    def analyze(self, media: NormalizedMedia, output_dir: Path, *,
+                _local_preparation_ready=None) -> VisualOutput:
         vision_only = self.visual_analysis_mode == "vision_only"
         if vision_only and media.info.video_codec and self.vision is None:
             raise RuntimeError("Keyframe visual understanding: 纯视觉模式需要可用的视觉模型；" + self.vision_unavailable_reason)
@@ -743,6 +760,8 @@ class KeyframeVisualAnalyzer:
                         vision_future = executor.submit(run_vision, tuple(selected_frames))
                 branch_times["ocr_finished"] = branch_times["ocr_started"] if vision_only else time.monotonic()
                 update_progress(ocr_finished=True)
+                if callable(_local_preparation_ready):
+                    _local_preparation_ready()
                 if vision_future is not None:
                     vision_observations, vision_stats = vision_future.result()
                 elif self.vision is not None:

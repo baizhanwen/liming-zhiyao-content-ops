@@ -1,3 +1,5 @@
+import { normalizeAnalysisCollectionMode } from "./analysis-collection-mode";
+import { normalizeAnalysisExecutionMode } from "./analysis-execution-mode";
 import { safeProgressObservation } from "./analysis-task-progress";
 
 type Row = Record<string, unknown>;
@@ -34,7 +36,7 @@ export function diagnosticJobSnapshot(value: Row | null) {
   if (!value) return null;
   let observation = null;
   try { observation = safeProgressObservation(JSON.parse(typeof value.progress_json === "string" ? value.progress_json : "null")); } catch { /* Missing historical observation. */ }
-  return sanitizeAnalysisDiagnostics({ ...pick(value, ["id", "status", "analysis_profile", "visual_analysis_mode", "visual_sampling_level", "progress", "current_stage", "error_code", "error_message", "retry_count", "attempt_count", "resume_count", "started_at", "stage_started_at", "last_progress_at", "last_heartbeat_at", "created_at", "updated_at", "completed_at", "checkpoint_stage", "checkpoint_updated_at"]), observation });
+  return sanitizeAnalysisDiagnostics({ ...pick(value, ["id", "status", "analysis_profile", "visual_analysis_mode", "visual_sampling_level", "execution_mode", "collection_mode", "progress", "current_stage", "error_code", "error_message", "retry_count", "attempt_count", "resume_count", "started_at", "stage_started_at", "last_progress_at", "last_heartbeat_at", "created_at", "updated_at", "completed_at", "checkpoint_stage", "checkpoint_updated_at"]), observation });
 }
 
 export function analysisDiagnosticFilename(title: unknown, id: unknown) {
@@ -67,6 +69,8 @@ export function buildAnalysisDiagnosticExport(input: {
     timing("ocr_vision_wall", "文字识别与画面理解合计墙钟耗时", stage.ocr_vision_wall_ms, "analysis_meta.visual_extraction.stage_timing.ocr_vision_wall_ms"),
     timing("ocr_vision_overlap", "文字识别与画面理解重叠时间", stage.ocr_vision_overlap_ms, "analysis_meta.visual_extraction.stage_timing.ocr_vision_overlap_ms", evidenceScope, "overlap"),
     timing("visual_pipeline", "画面处理总耗时", branch.visual_elapsed_ms, "analysis_meta.visual_extraction.branch_timing.visual_elapsed_ms"),
+    timing("speech_visual_wall", "语音与画面合计墙钟耗时", branch.evidence_wall_elapsed_ms, "analysis_meta.visual_extraction.branch_timing.evidence_wall_elapsed_ms"),
+    timing("speech_visual_overlap", "语音与画面重叠时间", branch.speech_visual_overlap_ms, "analysis_meta.visual_extraction.branch_timing.speech_visual_overlap_ms", evidenceScope, "overlap"),
     timing("report_generation", "报告生成", reportTiming.elapsed_ms, "unified_report.timing.elapsed_ms", "report_execution"),
     timing("transcript_review", "口播校对", reportTiming.canonical_elapsed_ms, "unified_report.timing.canonical_elapsed_ms", "report_execution"),
     timing("content_modules", "内容模块生成", reportTiming.modules_elapsed_ms, "unified_report.timing.modules_elapsed_ms", "report_execution"),
@@ -88,10 +92,14 @@ export function buildAnalysisDiagnosticExport(input: {
     analysis: analysis ? sanitizeAnalysisDiagnostics(pick(analysis, ["id", "analysis_job_id", "schema_version", "confidence", "model_provider", "model_name", "prompt_version", "created_at"])) : null,
     report: sanitizeAnalysisDiagnostics(report),
     diagnostics: {
+      collectionMode: normalizeAnalysisCollectionMode(analysis ? meta.collection_mode : job?.collection_mode),
+      executionMode: normalizeAnalysisExecutionMode(analysis ? meta.execution_mode : job?.execution_mode),
+      requestedExecutionMode: normalizeAnalysisExecutionMode(analysis ? meta.requested_execution_mode : job?.execution_mode),
+      executionFallbackReason: analysis && typeof meta.execution_fallback_reason === "string" ? sanitizeAnalysisDiagnostics(meta.execution_fallback_reason, true) : null,
       visualAnalysisMode: analysis ? meta.visual_analysis_mode ?? visual.visual_analysis_mode ?? "hybrid" : job?.visual_analysis_mode ?? (job ? "hybrid" : null),
       visualSamplingLevel: analysis ? "visual_sampling_level" in meta ? meta.visual_sampling_level : visual.visual_sampling_level ?? null : job?.visual_sampling_level ?? null,
       timingUnit: "milliseconds", evidenceReused: reused, timings,
-      notes: ["null 表示未记录或不适用；不会按视频时长估算耗时。", "OCR 与画面理解可能并行，不能把二者耗时直接相加。", "report_evidence 是该报告携带的证据计时，不保证全部由当前执行轮次产生；reused_evidence 明确表示复用。", "任务快照记录导出时状态；同一任务后续重试可能改变它，不代表历史报告生成时状态。", "只包含此视频可访问的报告和任务诊断；不包含主机环境配置或 GPU 环境检测文件。"],
+      notes: ["null 表示未记录或不适用；不会按视频时长估算耗时。", "OCR 与画面理解可能并行，不能把二者耗时直接相加。", "语音与画面也可能重叠；评估总耗时应使用语音与画面合计墙钟耗时，不能直接相加分支耗时。", "report_evidence 是该报告携带的证据计时，不保证全部由当前执行轮次产生；reused_evidence 明确表示复用。", "任务快照记录导出时状态；同一任务后续重试可能改变它，不代表历史报告生成时状态。", "只包含此视频可访问的报告和任务诊断；不包含主机环境配置或 GPU 环境检测文件。"],
       visual: sanitizeAnalysisDiagnostics(visual, true),
       modules: sanitizeAnalysisDiagnostics(modules, true),
       modelRequests: sanitizeAnalysisDiagnostics(meta.model_requests ?? [], true),

@@ -80,5 +80,17 @@
       "databases",
       "historical live evidence"
     ]
+  },
+  "product_limit_update": {
+    "date": "2026-11-16",
+    "max_media_bytes": 1073741824,
+    "max_duration_seconds": 3600,
+    "browser_timeout_seconds": 900,
+    "static_acquisition_timeout_seconds": 900,
+    "adaptations": [
+      "Product limits raised independently of original upstream provenance hashes.",
+      "Large media downloads, overlap verification and hashing use bounded file streaming.",
+      "Complete media identity, length, coverage and official-duration checks retained."
+    ]
   }
 }

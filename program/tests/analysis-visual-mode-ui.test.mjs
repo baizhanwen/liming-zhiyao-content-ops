@@ -26,6 +26,18 @@ const recordedMode = loadFunction("components/AnalysisDetail.tsx", "recordedVisu
 const samplingHelper = { exports: {} };
 new Function("exports", ts.transpileModule(read("lib/visual-sampling-level.ts"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText)(samplingHelper.exports);
 const recordedSamplingLevel = loadFunction("components/AnalysisDetail.tsx", "recordedVisualSamplingLevel", samplingHelper.exports);
+const executionHelper = { exports: {} };
+new Function("exports", ts.transpileModule(read("lib/analysis-execution-mode.ts"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText)(executionHelper.exports);
+const recordedExecutionMode = loadFunction("components/AnalysisDetail.tsx", "recordedExecutionMode", executionHelper.exports);
+
+test("execution history uses recorded behavior while new selections default to controlled parallel", () => {
+  const job = { id: "new-job", execution_mode: "controlled_parallel" };
+  assert.equal(recordedExecutionMode({ analysis_job_id: "old-job", report: {} }, job), "serial");
+  assert.equal(recordedExecutionMode({ analysis_job_id: "new-job", report: {} }, job), "serial");
+  assert.equal(recordedExecutionMode({ analysis_job_id: "old-job", report: { analysis_meta: { execution_mode: "serial" } } }, job), "serial");
+  assert.equal(recordedExecutionMode({ report: { analysis_meta: { execution_mode: "controlled_parallel" } } }, job), "controlled_parallel");
+  assert.equal(recordedExecutionMode(null, job), "controlled_parallel");
+});
 
 test("history mode follows the selected report, never a newer job", () => {
   const job = { id: "new-job", visual_analysis_mode: "vision_only" };
@@ -66,12 +78,12 @@ test("module retry preserves saved visual settings rather than applying the new-
   assert.equal("visualSamplingLevel" in requests[0].body, false);
 });
 
-for (const visualAnalysisMode of ["hybrid", "vision_only"]) for (const visualSamplingLevel of ["quick", "balanced", "detailed"]) {
-  test(`URL creation carries ${visualAnalysisMode}/${visualSamplingLevel} independently of transcript review`, async () => {
+for (const executionMode of ["controlled_parallel", "serial"]) for (const visualAnalysisMode of ["hybrid", "vision_only"]) for (const visualSamplingLevel of ["quick", "balanced", "detailed"]) {
+  test(`URL creation carries ${visualAnalysisMode}/${visualSamplingLevel}/${executionMode} independently of transcript review`, async () => {
     const requests = [];
     const bindings = {
-      organizationId: "synthetic-org", projectId: "synthetic-project", analysisProfile: "max", transcriptReviewEnabled: true, visualAnalysisMode, visualSamplingLevel,
-      setSubmitting() {}, setError() {}, setSubmitMessage() {}, setTranscriptReviewEnabled() {},
+      organizationId: "synthetic-org", projectId: "synthetic-project", analysisProfile: "max", transcriptReviewEnabled: true, visualAnalysisMode, visualSamplingLevel, executionMode,
+      collectionMode: "anonymous", setSubmitting() {}, setError() {}, setSubmitMessage() {}, setTranscriptReviewEnabled() {},
       taskReader: { current: { reader: { invalidate() {} } } },
       FormData: class { get(name) { return name === "url" ? "https://v.douyin.com/synthetic/" : "合成备注"; } },
       scopedFetch: async (url, init) => { requests.push({ url, body: JSON.parse(init.body) }); return Response.json({ video: { id: "video" }, job: { id: "job" } }, { status: 201 }); },
@@ -82,15 +94,16 @@ for (const visualAnalysisMode of ["hybrid", "vision_only"]) for (const visualSam
     assert.equal(requests[0].body.visualAnalysisMode, visualAnalysisMode);
     assert.equal(requests[0].body.visualSamplingLevel, visualSamplingLevel);
     assert.equal(requests[0].body.transcriptReviewEnabled, true);
+    assert.equal(requests[0].body.executionMode, executionMode);
   });
 
-  test(`batch upload carries ${visualAnalysisMode}/${visualSamplingLevel} for every file`, async () => {
+  test(`batch upload carries ${visualAnalysisMode}/${visualSamplingLevel}/${executionMode} for every file`, async () => {
     const requests = [];
     const bindings = {
-      organizationId: "synthetic-org", projectId: "synthetic-project", analysisProfile: "standard", visualAnalysisMode, visualSamplingLevel,
+      organizationId: "synthetic-org", projectId: "synthetic-project", analysisProfile: "standard", visualAnalysisMode, visualSamplingLevel, executionMode,
       setSubmitting() {}, setError() {}, setUploadProgress() {}, setUploadEstimates() {},
       taskReader: { current: { reader: { invalidate() {} } } },
-      scopedFetch: async (url, init) => { requests.push({ url, mode: init.body.get("visualAnalysisMode"), samplingLevel: init.body.get("visualSamplingLevel") }); return Response.json({ video: { id: "video" }, job: { id: "job" } }); },
+      scopedFetch: async (url, init) => { requests.push({ url, mode: init.body.get("visualAnalysisMode"), samplingLevel: init.body.get("visualSamplingLevel"), executionMode: init.body.get("executionMode") }); return Response.json({ video: { id: "video" }, job: { id: "job" } }); },
       readError: async () => "error", appendCreated() {}, loadVideos: async () => {},
     };
     await loadFunction("components/AnalysisWorkspace.tsx", "uploadFile", bindings)({ preventDefault() {}, currentTarget: {
@@ -99,12 +112,13 @@ for (const visualAnalysisMode of ["hybrid", "vision_only"]) for (const visualSam
     assert.equal(requests.length, 2);
     assert.ok(requests.every(request => request.mode === visualAnalysisMode));
     assert.ok(requests.every(request => request.samplingLevel === visualSamplingLevel));
+    assert.ok(requests.every(request => request.executionMode === executionMode));
   });
 
-  test(`reanalyze and manual-transcript reanalysis carry ${visualAnalysisMode}/${visualSamplingLevel}`, async () => {
+  test(`reanalyze and manual-transcript reanalysis carry ${visualAnalysisMode}/${visualSamplingLevel}/${executionMode}`, async () => {
     const requests = [];
     const bindings = {
-      organizationId: "synthetic-org", projectId: "synthetic-project", videoId: "video", profile: "max", visualAnalysisMode, visualSamplingLevel,
+      organizationId: "synthetic-org", projectId: "synthetic-project", videoId: "video", profile: "max", visualAnalysisMode, visualSamplingLevel, executionMode,
       draft: [{ startMs: 0, endMs: 1000, text: "合成原文" }], detail: { transcript: { language: "zh-CN" } },
       setSelectedId() {}, setNotice() {}, setEditing() {}, runAction: async (_name, work) => work(),
       scopedFetch: async (url, init) => { requests.push({ url, body: JSON.parse(init.body) }); return Response.json({}); },
@@ -115,6 +129,7 @@ for (const visualAnalysisMode of ["hybrid", "vision_only"]) for (const visualSam
     assert.equal(requests.length, 2);
     assert.ok(requests.every(request => request.body.visualAnalysisMode === visualAnalysisMode));
     assert.ok(requests.every(request => request.body.visualSamplingLevel === visualSamplingLevel));
+    assert.ok(requests.every(request => request.body.executionMode === executionMode));
     assert.equal(requests[1].body.reanalyze, true);
   });
 }
@@ -166,4 +181,30 @@ test("quick sampling remains an analysis tier and its compact selector keeps the
   const balanced = renderToStaticMarkup(React.createElement(loaded.exports.VisualSamplingLevelSelect, { value: "balanced", onChange() {} }));
   assert.match(balanced, /视觉模型每批最多 2 图/);
   assert.match(balanced, /总抽帧预算不变/);
+});
+
+
+test("execution selector exposes the default and resource tradeoff, including accessible compact help", () => {
+  const source = ts.transpileModule(read("components/AnalysisExecutionModeSelect.tsx"), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
+  }).outputText;
+  const loaded = { exports: {} };
+  new Function("require", "module", "exports", source)(name => {
+    if (name === "react") return React;
+    if (name === "react/jsx-runtime") return jsx;
+    if (name === "../lib/analysis-execution-mode") return executionHelper.exports;
+    throw new Error("Unexpected dependency: " + name);
+  }, loaded, loaded.exports);
+  const html = renderToStaticMarkup(React.createElement(loaded.exports.AnalysisExecutionModeSelect, { value: "controlled_parallel", onChange() {}, disabled: true, compact: true }));
+  assert.match(html, /value="controlled_parallel" selected=""/);
+  assert.match(html, /受控并行（默认）/);
+  assert.match(html, /value="serial"/);
+  assert.match(html, /disabled=""/);
+  assert.match(html, /电脑卡顿时可切换串行/);
+  assert.match(html, /aria-label="分析处理方式"/);
+  const describedBy = html.match(/aria-describedby="([^"]+)"/)?.[1];
+  assert.ok(describedBy && html.includes(`id="${describedBy}"`));
+  const serial = renderToStaticMarkup(React.createElement(loaded.exports.AnalysisExecutionModeSelect, { value: "serial", onChange() {} }));
+  assert.match(serial, /value="serial" selected=""/);
+  assert.match(serial, /降低瞬时资源占用/);
 });

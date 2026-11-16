@@ -1,3 +1,7 @@
+import { isAnalysisCollectionMode, normalizeAnalysisCollectionMode } from "../../../../../lib/analysis-collection-mode";
+import { analyzerReadinessError, readAnalyzerReadiness } from "../../../../../lib/analyzer-readiness";
+import { readTranscriptCheckpoint } from "../../../../../lib/analysis-worker";
+import { isAnalysisExecutionMode, normalizeAnalysisExecutionMode } from "../../../../../lib/analysis-execution-mode";
 import { isVisualSamplingLevel, matchesVisualSamplingLevel } from "../../../../../lib/visual-sampling-level";
 import { isVisualAnalysisMode, normalizeVisualAnalysisMode } from "../../../../../lib/visual-analysis-mode";
 import { readAnalysisModuleRetryState, parseAnalysisModuleRetryKeys, parseReviewSegmentIds, type AnalysisModuleRetryKey } from "../../../../../lib/analysis-module-retry";
@@ -10,7 +14,7 @@ import { resetSegmentForRetry, type SegmentRetryTarget } from "../../../../../li
 import { readRequestIdentity } from "../../../../../lib/request-auth";
 import { isPlainRecord } from "../../../../../lib/service-auth";
 
-type JobRow = { id: string; video_id: string; idempotency_key?: string; organization_id: string; project_id: string; status: string; version: number; retry_count: number; lease_expires_at: string | null; checkpoint_stage: string | null; checkpoint_json: string | null; resume_count: number; visual_analysis_mode: string; visual_sampling_level: string | null };
+type JobRow = { id: string; video_id: string; idempotency_key?: string; organization_id: string; project_id: string; status: string; version: number; retry_count: number; lease_expires_at: string | null; checkpoint_stage: string | null; checkpoint_json: string | null; resume_count: number; visual_analysis_mode: string; visual_sampling_level: string | null; execution_mode: string; collection_mode: string; source_type: string };
 type ScriptVersion = "light_rewrite" | "restructured";
 
 const scriptVersionLabels: Record<ScriptVersion, string> = {
@@ -25,7 +29,9 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     const { jobId } = await context.params;
     const rawPayload = await request.json().catch(() => ({}));
     if (!isPlainRecord(rawPayload)) return apiError("INVALID_RETRY_TARGET", "重试参数格式无效。", 400);
-    const payload = rawPayload as { segmentKey?: unknown; scriptVersion?: unknown; moduleKeys?: unknown; reviewSegmentIds?: unknown; revalidateOnly?: unknown; visualAnalysisMode?: unknown; visualSamplingLevel?: unknown };
+    const payload = rawPayload as { segmentKey?: unknown; scriptVersion?: unknown; moduleKeys?: unknown; reviewSegmentIds?: unknown; revalidateOnly?: unknown; visualAnalysisMode?: unknown; visualSamplingLevel?: unknown; executionMode?: unknown; collectionMode?: unknown };
+    if (payload.collectionMode !== undefined && !isAnalysisCollectionMode(payload.collectionMode)) return apiError("INVALID_ANALYSIS_COLLECTION_MODE", "请选择有效的采集方式。", 400);
+    if (payload.executionMode !== undefined && !isAnalysisExecutionMode(payload.executionMode)) return apiError("INVALID_ANALYSIS_EXECUTION_MODE", "请选择有效的执行方式。", 400);
     if (payload.visualSamplingLevel !== undefined && !isVisualSamplingLevel(payload.visualSamplingLevel)) return apiError("INVALID_VISUAL_SAMPLING_LEVEL", "请选择有效的画面采样档位。", 400);
     if (payload.visualAnalysisMode !== undefined && !isVisualAnalysisMode(payload.visualAnalysisMode)) return apiError("INVALID_VISUAL_ANALYSIS_MODE", "请选择有效的画面分析模式。", 400);
     if (payload.revalidateOnly !== undefined && typeof payload.revalidateOnly !== "boolean") return apiError("REPORT_REVALIDATION_INVALID", "报告复验参数必须为布尔值。", 400);
@@ -43,18 +49,37 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     if (requestedScriptVersion && !(requestedScriptVersion in scriptVersionLabels)) return apiError("SCRIPT_VERSION_INVALID", "口播版本参数无效。", 400);
 
     const db = getD1();
-    const job = await db.prepare("SELECT id, video_id, organization_id, project_id, status, version, retry_count, lease_expires_at, checkpoint_stage, checkpoint_json, resume_count, idempotency_key, visual_analysis_mode, visual_sampling_level FROM analysis_jobs WHERE id = ?").bind(jobId).first<JobRow>();
+    const job = await db.prepare("SELECT id, video_id, organization_id, project_id, status, version, retry_count, lease_expires_at, checkpoint_stage, checkpoint_json, resume_count, idempotency_key, visual_analysis_mode, visual_sampling_level, execution_mode, collection_mode, source_type FROM analysis_jobs WHERE id = ?").bind(jobId).first<JobRow>();
     if (!job) return apiError("JOB_NOT_FOUND", "分析任务不存在。", 404);
     const access = await getProjectAccess(identity.authSubject, job.organization_id, job.project_id);
     if (!access || !canWriteProjectAccess(access)) return apiError("WRITE_ACCESS_REQUIRED", "当前角色不能重试分析任务。", 403);
 
+    let savedCheckpoint: Record<string, unknown> | null = null;
+    try { const saved: unknown = JSON.parse(job.checkpoint_json ?? "null"); if (isPlainRecord(saved)) savedCheckpoint = saved; } catch { /* An invalid snapshot cannot resume collection. */ }
+    const reusableCheckpoint = job.checkpoint_stage === "transcript_ready"
+      ? Boolean(savedCheckpoint && readTranscriptCheckpoint(savedCheckpoint))
+      : ["evidence_ready", "segment_progress"].includes(job.checkpoint_stage ?? "") && Boolean(savedCheckpoint?.checkpoint_version === 1
+        && isPlainRecord(savedCheckpoint.media) && isPlainRecord(savedCheckpoint.transcript) && isPlainRecord(savedCheckpoint.visuals));
+    const collectionMode = job.source_type === "url" ? normalizeAnalysisCollectionMode(payload.collectionMode ?? job.collection_mode) : "anonymous";
+    const collectionModeChanged = payload.collectionMode !== undefined && payload.collectionMode !== normalizeAnalysisCollectionMode(job.collection_mode);
+    if (collectionModeChanged && (job.source_type !== "url" || !["failed", "cancelled"].includes(job.status) || reusableCheckpoint
+      || requestedSegmentKey || requestedScriptVersion || requestedModules || requestedRevalidation)) {
+      return apiError("ANALYSIS_COLLECTION_MODE_MISMATCH", "只有没有可复用检查点的失败或已取消链接任务可以切换采集方式；续跑会复用已有原片，请使用重新分析切换。", 409);
+    }
+    if (job.source_type === "url" && collectionMode === "cookie" && !reusableCheckpoint) {
+      const issue = analyzerReadinessError(await readAnalyzerReadiness(job.organization_id, true), true, true);
+      if (issue) return apiError(issue.code, issue.message, 503);
+    }
+    if (payload.executionMode !== undefined && payload.executionMode !== normalizeAnalysisExecutionMode(job.execution_mode)) {
+      return apiError("ANALYSIS_EXECUTION_MODE_MISMATCH", "重试沿用原任务的执行方式；如需切换，请使用重新分析。", 409);
+    }
     if (payload.visualSamplingLevel !== undefined && payload.visualSamplingLevel !== job.visual_sampling_level) {
       return apiError("VISUAL_SAMPLING_LEVEL_MISMATCH", "重试沿用原任务的画面采样档位；如需切换，请使用重新分析。", 409);
     }
     if (payload.visualAnalysisMode !== undefined && payload.visualAnalysisMode !== normalizeVisualAnalysisMode(job.visual_analysis_mode)) {
       return apiError("VISUAL_ANALYSIS_MODE_MISMATCH", "重试沿用原任务的画面分析模式；如需切换，请使用重新分析。", 409);
     }
-    if (job.checkpoint_json) {
+    if (!collectionModeChanged && job.checkpoint_json) {
       try {
         const saved: unknown = JSON.parse(job.checkpoint_json);
         if (isPlainRecord(saved) && !matchesVisualSamplingLevel(saved.visual_sampling_level, job.visual_sampling_level)) {
@@ -79,8 +104,8 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
       return apiError("JOB_NOT_RETRYABLE", "只有部分完成、失败、已取消或租约过期的任务可以恢复。", 409);
     }
     const user = await ensureUser(identity);
-    const transcriptResume = job.checkpoint_stage === "transcript_ready";
-    const canResume = transcriptResume || job.checkpoint_stage === "evidence_ready" || job.checkpoint_stage === "segment_progress";
+    const transcriptResume = !collectionModeChanged && job.checkpoint_stage === "transcript_ready";
+    const canResume = !collectionModeChanged && (transcriptResume || job.checkpoint_stage === "evidence_ready" || job.checkpoint_stage === "segment_progress");
     let retryCheckpointJson: string | null = null;
     let retryTarget: SegmentRetryTarget | null = null;
     if (requestedSegmentKey) {
@@ -123,7 +148,7 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     let moduleKeys: AnalysisModuleRetryKey[] | null = null;
     let reviewSegmentIds: string[] | null = null;
     if (!requestedSegmentKey && !requestedScriptVersion) {
-      if ((!transcriptResume && ["analysis.v11", "analysis.v12"].includes(latest?.schema_version ?? "")) || requestedModules) {
+      if (!collectionModeChanged && ((!transcriptResume && ["analysis.v11", "analysis.v12"].includes(latest?.schema_version ?? "")) || requestedModules)) {
         const state = moduleState;
         if ((!completedReviewRepair && !["partial", "failed"].includes(job.status)) || !canResume || !state?.available || !state.checkpoint) return apiError("MODULE_RETRY_UNAVAILABLE", "当前报告没有可复用的有效模块检查点，请查看最新报告或主动重新分析。", 409);
         reportRevalidationOnly = Boolean(state.reportRevalidationAvailable && (requestedRevalidation || !requestedModules));
@@ -160,18 +185,19 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
     const progress = canResume && !transcriptResume ? 82 : 0;
     const state = await executeAnalysisJobAction(db, {
       scope, job, action: "retried", now, toStatus: "pending", progress,
-      metadata: { previousStatus: job.status, retryCount: job.retry_count + 1, staleLease, checkpointStage: job.checkpoint_stage, canResume, segmentKey: requestedSegmentKey || null, segmentRetryTarget: retryTarget, scriptVersion: scriptVersion || null, moduleKeys, reviewSegmentIds, reportRevalidationOnly },
+      metadata: { collectionMode, previousCollectionMode: normalizeAnalysisCollectionMode(job.collection_mode), previousStatus: job.status, retryCount: job.retry_count + 1, staleLease, checkpointStage: job.checkpoint_stage, canResume, segmentKey: requestedSegmentKey || null, segmentRetryTarget: retryTarget, scriptVersion: scriptVersion || null, moduleKeys, reviewSegmentIds, reportRevalidationOnly },
       guard: `(status IN ('partial', 'failed', 'cancelled') OR (?=1 AND status='completed') OR (status NOT IN ('pending', 'completed', 'partial', 'failed', 'cancelled') AND lease_expires_at <= ?))
         AND EXISTS (SELECT 1 FROM videos v WHERE v.id = analysis_jobs.video_id AND v.organization_id = analysis_jobs.organization_id AND v.project_id = analysis_jobs.project_id AND v.deleted_at IS NULL)
         AND NOT EXISTS (SELECT 1 FROM analysis_jobs other WHERE other.organization_id = analysis_jobs.organization_id
           AND other.project_id = analysis_jobs.project_id AND other.video_id = analysis_jobs.video_id AND other.id != analysis_jobs.id
           AND other.status IN (${ACTIVE_ANALYSIS_STATUSES_SQL}))`,
       guardBindings: [completedReviewRepair ? 1 : 0, now],
-      mutate: (marker, markerId) => db.prepare(`UPDATE analysis_jobs SET status = 'pending', progress = CASE WHEN checkpoint_stage IN ('evidence_ready', 'segment_progress') THEN 82 ELSE 0 END,
-        checkpoint_json = COALESCE(?, checkpoint_json), checkpoint_updated_at = COALESCE(?, checkpoint_updated_at), current_stage = ?, error_code = NULL, error_message = NULL,
+      mutate: (marker, markerId) => db.prepare(`UPDATE analysis_jobs SET status = 'pending', collection_mode = ?, progress = CASE WHEN ?=0 AND checkpoint_stage IN ('evidence_ready', 'segment_progress') THEN 82 ELSE 0 END,
+        checkpoint_stage = CASE WHEN ?=1 THEN NULL ELSE checkpoint_stage END, checkpoint_json = CASE WHEN ?=1 THEN NULL ELSE COALESCE(?, checkpoint_json) END,
+        checkpoint_updated_at = CASE WHEN ?=1 THEN NULL ELSE COALESCE(?, checkpoint_updated_at) END, current_stage = ?, error_code = NULL, error_message = NULL,
         completed_at = NULL, started_at = NULL, stage_started_at = NULL, last_progress_at = ?, progress_json = NULL, retry_count = retry_count + 1, recovery_attempt_count = 0, queue_user_id = ?, enqueued_at = ?, lease_owner = NULL, lease_expires_at = NULL,
         last_heartbeat_at = NULL, result_key = NULL, version = version + 1, updated_by = ?, updated_at = ? WHERE id = ? AND ${marker}`)
-        .bind(retryCheckpointJson, retryCheckpointJson ? now : null, stage, now, user.id, now, user.id, now, jobId, markerId),
+        .bind(collectionMode, collectionModeChanged ? 1 : 0, collectionModeChanged ? 1 : 0, collectionModeChanged ? 1 : 0, retryCheckpointJson, collectionModeChanged ? 1 : 0, retryCheckpointJson ? now : null, stage, now, user.id, now, user.id, now, jobId, markerId),
     });
     if (!state) {
       await assertAccess();

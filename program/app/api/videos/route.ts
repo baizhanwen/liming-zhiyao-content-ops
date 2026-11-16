@@ -7,7 +7,7 @@ import { apiError, errorResponse } from "../../../lib/api-response";
 import { summarizeSegmentProgress } from "../../../lib/analysis-segment-progress";
 import { readRequestIdentity } from "../../../lib/request-auth";
 
-const jobColumns = ["id","video_id","status","analysis_profile","visual_analysis_mode","visual_sampling_level","progress","current_stage","error_code","error_message","retry_count","lease_expires_at","checkpoint_stage","checkpoint_json","checkpoint_updated_at","resume_count","attempt_count","started_at","stage_started_at","last_progress_at","progress_json","last_heartbeat_at","lease_owner","completed_at","created_at","updated_at"].map(name => `analysis_jobs.${name}`).join(",");
+const jobColumns = ["id","video_id","status","analysis_profile","visual_analysis_mode","visual_sampling_level","execution_mode","collection_mode","progress","current_stage","error_code","error_message","retry_count","lease_expires_at","checkpoint_stage","checkpoint_json","checkpoint_updated_at","resume_count","attempt_count","started_at","stage_started_at","last_progress_at","progress_json","last_heartbeat_at","lease_owner","completed_at","created_at","updated_at"].map(name => `analysis_jobs.${name}`).join(",");
 
 export async function GET(request: Request) {
   const identity = await readRequestIdentity(request);
@@ -89,6 +89,7 @@ export async function GET(request: Request) {
         credentialConfigured: readiness.credentialConfigured,
         modelConfigured: readiness.modelConfigured,
         publicLinkCookieConfigured: readiness.publicLinkCookieConfigured,
+        uploadedCookieConfigured: readiness.uploadedCookieConfigured,
         publicLinkAuthenticationMode: readiness.publicLinkAuthenticationMode,
         browserLoginStatus: readiness.browserLoginStatus,
         browserLoginDetected: readiness.browserLoginDetected,

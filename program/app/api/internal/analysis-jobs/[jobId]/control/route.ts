@@ -18,6 +18,7 @@ export async function GET(request: Request, context: { params: Promise<{ jobId: 
     if (!isLeasedAnalysisStatus(job.status) || job.lease_owner !== workerId || attempt !== job.attempt_count || !job.lease_expires_at || job.lease_expires_at <= new Date().toISOString()) {
       return apiError("JOB_EXECUTION_REVOKED", "任务已取消、结束或失去执行权，停止处理。", 409);
     }
-    return Response.json({ status: job.status, version: job.version, progress: job.progress }, { headers: { "cache-control": "no-store" } });
+    return Response.json({ status: job.status, version: job.version, progress: job.progress,
+      leaseExpiresAt: job.lease_expires_at, attempt: job.attempt_count }, { headers: { "cache-control": "no-store" } });
   } catch (error) { return errorResponse(error); }
 }

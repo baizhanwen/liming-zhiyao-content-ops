@@ -6,7 +6,7 @@ export class AnalysisJobActionStatusUnknownError extends Error {
 }
 
 type ActionJob = { id: string; video_id: string; status: string; version: number };
-type ActionState = { id: string; status: string; progress: number; current_stage: string | null; retry_count: number; checkpoint_stage: string | null; resume_count: number; version: number; updated_at: string };
+type ActionState = { id: string; status: string; progress: number; current_stage: string | null; retry_count: number; checkpoint_stage: string | null; resume_count: number; collection_mode: string; version: number; updated_at: string };
 
 // The audit marker, state transition and event commit together. A lost batch
 // acknowledgement is reconciled by this request's marker, never by replaying it.
@@ -19,7 +19,7 @@ export async function executeAnalysisJobAction(db: D1Database, options: {
   const { scope, job, action, now } = options;
   const markerId = crypto.randomUUID();
   const markerCondition = "EXISTS (SELECT 1 FROM audit_logs WHERE id = ?)";
-  const select = () => db.prepare(`SELECT id, status, progress, current_stage, retry_count, checkpoint_stage, resume_count, version, updated_at
+  const select = () => db.prepare(`SELECT id, status, progress, current_stage, retry_count, checkpoint_stage, resume_count, collection_mode, version, updated_at
     FROM analysis_jobs WHERE id = ? AND organization_id = ? AND project_id = ?`).bind(job.id, scope.organizationId, scope.projectId);
   const statements = [
     db.prepare(`INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at)

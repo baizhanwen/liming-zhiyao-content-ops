@@ -48,10 +48,13 @@ test("analysis workspace reports readiness and uploads multiple files sequential
   assert.match(workspace, /批量上传结束/);
   assert.match(workspace, /待核对/);
   assert.match(workspace, /未尝试/);
-  assert.match(workspace, /分析服务就绪状态/);
+  assert.match(workspace, /分析服务凭据未配置/);
+  assert.match(workspace, /请先配置分析模型/);
+  assert.match(workspace, /分析服务未连接/);
+  assert.match(workspace, /uploadedCookieConfigured/);
   assert.match(videos, /credentialConfigured/);
   assert.match(videos, /modelConfigured/);
   assert.match(videos, /lastWorkerHeartbeat/);
   assert.match(videos, /publicLinkCookieConfigured/);
-  assert.match(workspace, /视频采集方式/);
+  assert.match(workspace, /AnalysisCollectionModeSelect/);
 });

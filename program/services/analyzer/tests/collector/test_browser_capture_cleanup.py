@@ -59,7 +59,7 @@ class Guard:
         self.stop_tunnels = Mock()
 
 
-def run_capture(tmp_path, monkeypatch, *, stream=None, outcome='success', cleanup=None, cancelled=None, executor=None):
+def run_capture(tmp_path, monkeypatch, *, stream=None, outcome='success', cleanup=None, cancelled=None, executor=None, capture_options=None):
     ok = outcome != 'business'
     result = {'type': 'result', 'ok': ok, 'code': 'douyin_not_found', 'page_url': PAGE,
               'observed_video_id': VIDEO, 'title': 'fixture', 'observations': [{'duration': 1}]}
@@ -94,7 +94,19 @@ def run_capture(tmp_path, monkeypatch, *, stream=None, outcome='success', cleanu
               'cancelled': cancelled}
     if outcome == 'resolve':
         kwargs.update(video_id='0', _resolve_only=True)
+    kwargs.update(capture_options or {})
     return lambda: capture.capture_douyin(SHORT if outcome == 'resolve' else PAGE, tmp_path, **kwargs), driver, guard, close_broker
+
+
+@pytest.mark.parametrize('options,expected_timeout', [({}, 900000), ({'timeout': 10000, 'max_bytes': 2 * 1024 ** 3}, 900000), ({'timeout': 600}, 600000)])
+def test_capture_default_and_clamped_limits_reach_renderer(tmp_path, monkeypatch, options, expected_timeout):
+    invoke, driver, _, _ = run_capture(tmp_path, monkeypatch, capture_options=options)
+    invoke()
+    start = next(message for value in driver.stdin.write_attempts if (message := json.loads(value)).get('type') == 'start')
+    assert start['timeout_ms'] == expected_timeout
+    assert start['max_bytes'] == 1024 ** 3
+    assert start['max_total_bytes'] == 4 * 1024 ** 3
+    assert start['max_requests'] == 1536
 
 
 @pytest.mark.parametrize('stream', ['stdin', 'stdout'])

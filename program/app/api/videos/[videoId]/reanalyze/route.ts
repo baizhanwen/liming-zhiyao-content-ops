@@ -1,3 +1,5 @@
+import { isAnalysisCollectionMode, normalizeAnalysisCollectionMode } from "../../../../../lib/analysis-collection-mode";
+import { isAnalysisExecutionMode, normalizeNewAnalysisExecutionMode } from "../../../../../lib/analysis-execution-mode";
 import { activeAnalysisStatuses as activeStatuses } from "../../../../../lib/analysis-jobs";
 import { canWriteProjectAccess, ensureUser, getD1, getLegacyMediaBucket, getMediaBucket, getProjectAccess } from "../../../../../db/runtime";
 import { analyzerReadinessError, readAnalyzerReadiness } from "../../../../../lib/analyzer-readiness";
@@ -30,10 +32,12 @@ export async function POST(request: Request, context: { params: Promise<{ videoI
   const identity = await readRequestIdentity(request);
   if (!identity) return apiError("AUTH_REQUIRED", "请先登录后再重新分析。", 401);
   try {
-    const payload = await request.json() as { organizationId?: string; projectId?: string; analysisProfile?: unknown; task?: unknown; transcriptReviewEnabled?: unknown; visualAnalysisMode?: unknown; visualSamplingLevel?: unknown };
+    const payload = await request.json() as { organizationId?: string; projectId?: string; analysisProfile?: unknown; task?: unknown; transcriptReviewEnabled?: unknown; visualAnalysisMode?: unknown; visualSamplingLevel?: unknown; executionMode?: unknown; collectionMode?: unknown };
     if (payload.transcriptReviewEnabled !== undefined && typeof payload.transcriptReviewEnabled !== "boolean") return apiError("INVALID_TRANSCRIPT_REVIEW_OPTION", "口播稿 AI 核对选项必须为布尔值。", 400);
     if (payload.visualAnalysisMode !== undefined && !isVisualAnalysisMode(payload.visualAnalysisMode)) return apiError("INVALID_VISUAL_ANALYSIS_MODE", "请选择有效的画面分析模式。", 400);
     if (payload.visualSamplingLevel !== undefined && !isVisualSamplingLevel(payload.visualSamplingLevel)) return apiError("INVALID_VISUAL_SAMPLING_LEVEL", "请选择有效的画面采样档位。", 400);
+    if (payload.executionMode !== undefined && !isAnalysisExecutionMode(payload.executionMode)) return apiError("INVALID_ANALYSIS_EXECUTION_MODE", "请选择有效的执行方式。", 400);
+    if (payload.collectionMode !== undefined && !isAnalysisCollectionMode(payload.collectionMode)) return apiError("INVALID_ANALYSIS_COLLECTION_MODE", "请选择有效的采集方式。", 400);
     const transcriptOnly = payload.task === "transcript";
     if (payload.task !== undefined && !transcriptOnly) return apiError("INVALID_TASK", "不支持的任务类型。", 400);
     const organizationId = payload.organizationId?.trim() ?? ""; const projectId = payload.projectId?.trim() ?? "";
@@ -44,11 +48,10 @@ export async function POST(request: Request, context: { params: Promise<{ videoI
     if (!video) return apiError("VIDEO_NOT_FOUND", "视频不存在或不属于当前项目。", 404);
     const active = await db.prepare(`SELECT id FROM analysis_jobs WHERE organization_id = ? AND project_id = ? AND video_id = ? AND status IN (${activeStatuses.map(() => "?").join(",")}) LIMIT 1`).bind(organizationId, projectId, videoId, ...activeStatuses).first();
     if (active) return apiError("ANALYSIS_ALREADY_RUNNING", "当前视频已有分析任务正在运行。", 409);
-    const previousJob = await db.prepare("SELECT transcript_review_enabled, visual_analysis_mode, visual_sampling_level FROM analysis_jobs WHERE organization_id = ? AND project_id = ? AND video_id = ? AND idempotency_key NOT LIKE 'transcript:%' ORDER BY created_at DESC, rowid DESC LIMIT 1").bind(organizationId, projectId, videoId).first<{ transcript_review_enabled: number; visual_analysis_mode: string; visual_sampling_level: string | null }>();
+    const previousJob = await db.prepare("SELECT transcript_review_enabled, visual_analysis_mode, visual_sampling_level, execution_mode, collection_mode FROM analysis_jobs WHERE organization_id = ? AND project_id = ? AND video_id = ? AND idempotency_key NOT LIKE 'transcript:%' ORDER BY created_at DESC, rowid DESC LIMIT 1").bind(organizationId, projectId, videoId).first<{ transcript_review_enabled: number; visual_analysis_mode: string; visual_sampling_level: string | null; execution_mode: string; collection_mode: string }>();
+    const executionMode = normalizeNewAnalysisExecutionMode(payload.executionMode ?? previousJob?.execution_mode);
     const visualSamplingLevel = normalizeVisualSamplingLevel(payload.visualSamplingLevel ?? previousJob?.visual_sampling_level);
     const visualAnalysisMode = normalizeNewVisualAnalysisMode(payload.visualAnalysisMode ?? previousJob?.visual_analysis_mode);
-    const readinessIssue = analyzerReadinessError(await readAnalyzerReadiness(organizationId, transcriptOnly), video.source_type === "url", transcriptOnly, visualAnalysisMode);
-    if (readinessIssue) return apiError(readinessIssue.code, readinessIssue.message, 503);
     const user = await ensureUser(identity); const quota = await checkOrganizationQuota(organizationId, user.id, "analyses");
     if (!quota.allowed) return apiError("ANALYSIS_QUOTA_EXCEEDED", `本月分析任务已达到 ${quota.limit} 次套餐上限。`, 429, { usage: quota.current, limit: quota.limit });
     const scope = { organizationId, projectId, userId: user.id };
@@ -61,6 +64,9 @@ export async function POST(request: Request, context: { params: Promise<{ videoI
       if (stored && stored.size > 0 && stored.size === asset?.size_bytes) sourceType = "upload";
       else if (sourceType === "upload") return apiError("SOURCE_UNAVAILABLE", "已保存的原片缺失或大小不符，请重新上传。", 409);
     }
+    const collectionMode = sourceType === "url" ? normalizeAnalysisCollectionMode(payload.collectionMode ?? previousJob?.collection_mode) : "anonymous";
+    const readinessIssue = analyzerReadinessError(await readAnalyzerReadiness(organizationId, transcriptOnly, collectionMode === "cookie"), collectionMode === "cookie", transcriptOnly, visualAnalysisMode);
+    if (readinessIssue) return apiError(readinessIssue.code, readinessIssue.message, 503);
     const sourceRef = sourceType === "upload" ? video.media_asset_id : video.source_url;
     if (!sourceRef) return apiError("SOURCE_UNAVAILABLE", "原始媒体来源不存在，无法重新分析。", 409);
     if (!await db.prepare(`SELECT 1 WHERE ${currentSourceCondition}`).bind(...sourceBindings(scope,video)).first()) return await conflictResponse(db,scope,video);
@@ -70,13 +76,13 @@ export async function POST(request: Request, context: { params: Promise<{ videoI
     const stage = transcriptOnly ? "等待提取完整口播稿" : "等待按新模式重新分析";
     await assertAccess();
     const results = await db.batch([
-      db.prepare(`INSERT INTO analysis_jobs (id, organization_id, project_id, video_id, input_transcript_id, source_type, source_ref, idempotency_key, status, analysis_profile, transcript_review_enabled, visual_analysis_mode, visual_sampling_level, progress, current_stage, retry_count, created_by, updated_by, created_at, updated_at)
-        SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, 0, ?, 0, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')
+      db.prepare(`INSERT INTO analysis_jobs (id, organization_id, project_id, video_id, input_transcript_id, source_type, source_ref, idempotency_key, status, analysis_profile, transcript_review_enabled, visual_analysis_mode, visual_sampling_level, execution_mode, collection_mode, progress, current_stage, retry_count, created_by, updated_by, created_at, updated_at)
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, 0, ?, 0, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')
         WHERE ${projectWriteAccessCondition} AND ${currentSourceCondition} AND NOT EXISTS (SELECT 1 FROM analysis_jobs WHERE organization_id = ? AND project_id = ? AND video_id = ? AND status IN (${activeStatuses.map(() => "?").join(",")}))
-      `).bind(jobId, organizationId, projectId, videoId, transcript?.id ?? null, sourceType, sourceRef, `${transcriptOnly ? "transcript" : "reanalyze"}:${jobId}`, analysisProfile, transcriptReviewEnabled ? 1 : 0, visualAnalysisMode, visualSamplingLevel, stage, user.id, user.id, ...projectWriteAccessBindings(scope), ...sourceBindings(scope,video), organizationId, projectId, videoId, ...activeStatuses),
-      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) SELECT ?, ?, ?, ?, ?, 'analysis_job', ?, ?, ? WHERE EXISTS (SELECT 1 FROM analysis_jobs WHERE id = ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, transcriptOnly ? "analysis_job.transcript_requested" : "analysis_job.reanalysis_created", jobId, JSON.stringify({ videoId, analysisProfile, transcriptReviewEnabled, visualAnalysisMode, visualSamplingLevel, inputTranscriptId: transcript?.id ?? null }), now, jobId),
+      `).bind(jobId, organizationId, projectId, videoId, transcript?.id ?? null, sourceType, sourceRef, `${transcriptOnly ? "transcript" : "reanalyze"}:${jobId}`, analysisProfile, transcriptReviewEnabled ? 1 : 0, visualAnalysisMode, visualSamplingLevel, executionMode, collectionMode, stage, user.id, user.id, ...projectWriteAccessBindings(scope), ...sourceBindings(scope,video), organizationId, projectId, videoId, ...activeStatuses),
+      db.prepare("INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) SELECT ?, ?, ?, ?, ?, 'analysis_job', ?, ?, ? WHERE EXISTS (SELECT 1 FROM analysis_jobs WHERE id = ?)").bind(crypto.randomUUID(), organizationId, projectId, user.id, transcriptOnly ? "analysis_job.transcript_requested" : "analysis_job.reanalysis_created", jobId, JSON.stringify({ videoId, analysisProfile, transcriptReviewEnabled, visualAnalysisMode, visualSamplingLevel, executionMode, collectionMode, inputTranscriptId: transcript?.id ?? null }), now, jobId),
     ]);
     if (!results[0].meta.changes) return await conflictResponse(db,scope,video);
-    return Response.json({ job: { id: jobId, video_id: videoId, status: "pending", analysis_profile: analysisProfile, visual_analysis_mode: visualAnalysisMode, visual_sampling_level: visualSamplingLevel, transcript_review_enabled: transcriptReviewEnabled, progress: 0, current_stage: stage, retry_count: 0, created_at: now, updated_at: now } }, { status: 201 });
+    return Response.json({ job: { id: jobId, video_id: videoId, status: "pending", analysis_profile: analysisProfile, visual_analysis_mode: visualAnalysisMode, visual_sampling_level: visualSamplingLevel, execution_mode: executionMode, collection_mode: collectionMode, transcript_review_enabled: transcriptReviewEnabled, progress: 0, current_stage: stage, retry_count: 0, created_at: now, updated_at: now } }, { status: 201 });
   } catch (error) { return error instanceof ProjectWriteAccessChangedError ? apiError(error.code,"当前登录或项目权限已改变，本次没有创建分析任务。请刷新核对后再操作。",403) : errorResponse(error); }
 }

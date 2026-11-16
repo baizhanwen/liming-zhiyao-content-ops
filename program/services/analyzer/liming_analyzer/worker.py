@@ -30,6 +30,7 @@ def classify_worker_error(error: Exception) -> tuple[str, str]:
     if isinstance(error, AnalyzerApiError) and error.code in {
         "STORAGE_QUOTA_EXCEEDED", "ANALYSIS_QUOTA_EXCEEDED", "CAPACITY_UNAVAILABLE", "INVALID_MEDIA_SIZE",
         "MEDIA_UPLOAD_STATUS_UNKNOWN", "MEDIA_UPLOAD_CLEANUP_PENDING",
+        "SOURCE_PERSISTENCE_FAILED", "ANALYZER_HEARTBEAT_UNAVAILABLE", "CONTROL_CHECK_TIMEOUT",
     }:
         return error.code, str(error)
     if isinstance(error, ProcessingFailure):

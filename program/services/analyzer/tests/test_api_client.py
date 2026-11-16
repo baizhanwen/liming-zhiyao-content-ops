@@ -248,7 +248,7 @@ class ApiClientTests(unittest.TestCase):
                 return chunk
 
         client = AnalyzerApiClient("https://example.test", "secret", "worker-01")
-        job = ClaimedJob("job-1", "org-1", "project-1", "video-1", "url", "queued", 1, 3, {})
+        job = ClaimedJob("job-1", "org-1", "project-1", "video-1", "url", "queued", 1, 3, {"collection_mode": "cookie"}, attempt_count=2)
         with tempfile.TemporaryDirectory() as temporary, patch("liming_analyzer.api_client.urllib.request.urlopen", return_value=Stream()) as opener:
             destination = Path(temporary) / "cookies.txt"
             self.assertTrue(client.download_cookie_snapshot(job, destination))
@@ -256,10 +256,12 @@ class ApiClientTests(unittest.TestCase):
         request = opener.call_args.args[0]
         self.assertTrue(request.full_url.endswith("/api/internal/analysis-jobs/job-1/cookies"))
         self.assertEqual(request.get_header("X-worker-id"), "worker-01")
+        self.assertEqual(request.get_header("X-worker-attempt"), "2")
+        self.assertEqual(request.get_header("X-job-version"), "3")
 
     def test_missing_cookie_snapshot_removes_stale_local_file(self):
         client = AnalyzerApiClient("https://example.test", "secret", "worker-01")
-        job = ClaimedJob("job-1", "org-1", "project-1", "video-1", "url", "queued", 1, 3, {})
+        job = ClaimedJob("job-1", "org-1", "project-1", "video-1", "url", "queued", 1, 3, {"collection_mode": "cookie"}, attempt_count=2)
         missing = urllib.error.HTTPError("https://example.test/cookies", 404, "Not Found", {}, None)
         with tempfile.TemporaryDirectory() as temporary, patch("liming_analyzer.api_client.urllib.request.urlopen", side_effect=missing):
             destination = Path(temporary) / "cookies.txt"

@@ -24,7 +24,7 @@ from .providers import (
     SparseTailFallbackSpeechRecognizer,
 )
 from .quality_speech import build_quality_recognizer
-from .sources import PlatformSourceProvider, SkillCollectPublicVideoResolver
+from .sources import PlatformSourceProvider, SkillCollectPublicVideoResolver, YtDlpPublicVideoResolver
 from .vision_capabilities import resolve_vision_capability
 from .visual import KeyframeVisualAnalyzer, OpenAiCompatibleVisionEngine
 from .visual_mode import normalize_visual_analysis_mode
@@ -237,7 +237,7 @@ def build_client(settings: AnalyzerSettings) -> AnalyzerApiClient:
         browser_auth_probe=lambda: {
             "status": "disabled", "browser": None,
             "checkedAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-            "message": "使用 Skill Collect 独立匿名 Chromium 采集，无需个人浏览器登录态或 Cookie。",
+            "message": "默认独立匿名浏览器采集；显式选择 Cookie 采集时仅使用当前公司的上传快照，不读取主机浏览器登录态。",
         },
     )
 
@@ -376,7 +376,11 @@ def build_pipeline(settings: AnalyzerSettings, client: AnalyzerApiClient, *, tra
             )
     else:
         raise RuntimeError("Unsupported ANALYZER_ASR_ENGINE; choose faster-whisper or funasr.")
-    source = PlatformSourceProvider(client, SkillCollectPublicVideoResolver(ffmpeg=resolved_ffmpeg, ffprobe=resolved_ffprobe))
+    source = PlatformSourceProvider(
+        client, SkillCollectPublicVideoResolver(ffmpeg=resolved_ffmpeg, ffprobe=resolved_ffprobe),
+        cookie_video_factory=lambda: YtDlpPublicVideoResolver(
+            organization_cookie_only=True, ffmpeg_location=resolved_ffmpeg, ffprobe_location=resolved_ffprobe),
+    )
     artifact_store = ApiArtifactStore(client)
     ocr = None
     if visual_analysis_mode != "vision_only":

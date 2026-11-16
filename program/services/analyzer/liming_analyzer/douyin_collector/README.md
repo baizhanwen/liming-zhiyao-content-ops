@@ -25,7 +25,9 @@ result = collect(share_text, server_owned_task_folder,
 
 返回字段包括 `media_path`、`video_id`、`source_url`（规范化官方页面）、`title`、`sha256`、`size_bytes`、`duration`、`has_video`、`has_audio`、`limitations`、`acquisition_method`、`identity_verified`、`coverage`、`reported_duration` 和脱敏 `evidence`。失败抛出 `CollectorError`，只对外使用 `code`、`message`、`retryable`，不要序列化任意异常属性。
 
-本适配器限定单条官方 HTTPS 分享链接；所有 DNS 地址必须是公网地址，连接固定到验证 IP 并保留 TLS 校验。分享跳转链需始终官方且仅含一个目标 ID。静态路径补齐 Content-Range、Content-Length 和官方时长对齐；没有官方时长时进入浏览器路径。浏览器路径保留官方元数据归属、分段完整覆盖、分轨同目标/时长校验、SHA-256 和 FFprobe。最终视频限制 100 MiB、0～1200 秒；阶段预算分别控制，浏览器 180 秒不是整个任务时限。
+本适配器限定单条官方 HTTPS 分享链接；所有 DNS 地址必须是公网地址，连接固定到验证 IP 并保留 TLS 校验。分享跳转链需始终官方且仅含一个目标 ID。静态路径补齐 Content-Range、Content-Length 和官方时长对齐；没有官方时长时进入浏览器路径。浏览器路径保留官方元数据归属、分段完整覆盖、分轨同目标/时长校验、SHA-256 和 FFprobe。最终视频限制 1 GiB、0～3600 秒；阶段预算分别控制，静态公开页与所有候选下载共用 900 秒，浏览器最多 900 秒，均不是整个分析任务时限。大媒体下载、拼接校验和 SHA-256 按块处理，仍要求完整 Range 覆盖及官方时长匹配。
+
+浏览器阶段总网络预算为 4 GiB、1536 个请求，包含页面资源、预读和必要的补全请求；它与最终原片的 1 GiB 上限分别计算。Range 补全单次请求最多 8 MiB，最多 1032 次，无进展时提前结束；分段响应、重叠内容和总长度均须一致。官方 JSON 的 `duration` 按毫秒解析，显式秒／毫秒字段需互相一致；浏览器媒体元素的时长保持秒单位。
 
 临时资源仅在任务私有子目录产生，取消和失败清理；完成后 fsync 并原子改名。媒体没有音轨时保留限制，不表示已获得原音。访问受限、登录、验证码、删除或网络错误不会生成成功媒体；调用方可按错误分类重试或提供上传备用。
 

@@ -10,7 +10,7 @@ from concurrent.futures import ALL_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import RLock
+from threading import Event, Lock, RLock
 from typing import Any, TypeVar
 
 from .adapters import (
@@ -34,7 +34,9 @@ from .adapters import (
     build_analysis_result,
 )
 from .api_client import AnalysisResult, ClaimedJob
+from .collection_mode import job_collection_mode
 from .evidence import clean_transcript
+from .execution_mode import job_execution_mode, normalize_execution_mode
 from .task_progress import observe
 from .visual import OcrEngine
 from .visual_mode import job_visual_analysis_mode, normalize_visual_analysis_mode
@@ -151,12 +153,15 @@ def _metadata_payload(metadata: SourceMetadata | None) -> dict[str, Any] | None:
     }
 
 
-def _evidence_checkpoint(media: NormalizedMedia, transcript: TranscriptOutput, visuals: VisualOutput, metadata: SourceMetadata | None, *, transcript_review_enabled: bool = True, visual_analysis_mode: str = "hybrid", visual_sampling_level: str | None = None) -> dict[str, Any]:
+def _evidence_checkpoint(media: NormalizedMedia, transcript: TranscriptOutput, visuals: VisualOutput, metadata: SourceMetadata | None, *, transcript_review_enabled: bool = True, visual_analysis_mode: str = "hybrid", visual_sampling_level: str | None = None, collection_mode: str = "anonymous") -> dict[str, Any]:
     return {
         "checkpoint_version": 1,
         "transcript_review_enabled": transcript_review_enabled,
         "visual_analysis_mode": normalize_visual_analysis_mode(visual_analysis_mode),
         "visual_sampling_level": normalize_visual_sampling_level(visual_sampling_level),
+        "collection_mode": collection_mode if collection_mode in ("anonymous", "cookie") else "anonymous",
+        # Scheduling metadata is diagnostic only and never gates evidence reuse.
+        "execution_mode": normalize_execution_mode(visuals.stats.get("execution_mode")),
         "media": {
             "duration_ms": media.info.duration_ms, "width": media.info.width, "height": media.info.height,
             "video_codec": media.info.video_codec, "audio_codec": media.info.audio_codec,
@@ -298,6 +303,8 @@ class AnalysisPipeline:
                  "transcript_review_enabled": job.source.get("transcript_review_enabled") is not False,
                  "visual_analysis_mode": job_visual_analysis_mode(job),
                  "visual_sampling_level": job_visual_sampling_level(job),
+                 "collection_mode": job_collection_mode(job),
+                 "execution_mode": job_execution_mode(job),
                  "manual_source_hash": _manual_source_hash(job)}
         self.checkpoints.save(job, "transcript_ready", value)
 
@@ -452,7 +459,7 @@ class AnalysisPipeline:
             base_checkpoint = {**_evidence_checkpoint(media, transcript, visuals, source_metadata,
                 transcript_review_enabled=current.source.get("transcript_review_enabled") is not False,
                 visual_analysis_mode=job_visual_analysis_mode(current),
-                visual_sampling_level=job_visual_sampling_level(current)), **retry_metadata}
+                visual_sampling_level=job_visual_sampling_level(current), collection_mode=job_collection_mode(current)), **retry_metadata}
 
             def persist_segment_progress(progress_payload: Mapping[str, Any]) -> None:
                 rows = progress_payload.get("segments")
@@ -469,7 +476,7 @@ class AnalysisPipeline:
             base_checkpoint = {**_evidence_checkpoint(media, transcript, visuals, source_metadata,
                 transcript_review_enabled=current.source.get("transcript_review_enabled") is not False,
                 visual_analysis_mode=job_visual_analysis_mode(current),
-                visual_sampling_level=job_visual_sampling_level(current)), **retry_metadata}
+                visual_sampling_level=job_visual_sampling_level(current), collection_mode=job_collection_mode(current)), **retry_metadata}
 
             def persist_unified_progress(payload: Mapping[str, Any]) -> None:
                 modules = payload.get("modules", {})
@@ -498,8 +505,62 @@ class AnalysisPipeline:
             if callable(set_unified):
                 set_unified(None)
 
+    def _visual_snapshot(self) -> Mapping[str, Any]:
+        read = getattr(self.visual, "progress_snapshot", None)
+        return read() if callable(read) else {}
+
+    @staticmethod
+    def _observe_visual(heartbeat, snapshot: Mapping[str, Any], speech_metrics=None) -> None:
+        phase = "frames" if snapshot.get("phase") == "extracting_frames" else "model_vision"
+        metrics = {
+            key: _progress_count(snapshot[source]) for key, source in (
+                ("candidates_checked", "candidates_checked" if "candidates_checked" in snapshot else "keyframes_completed"),
+                ("candidates_total", "candidates_total" if "candidates_total" in snapshot else "keyframes_total"),
+                ("sampled_frames", "sampled_frames"), ("total_frames", "total_frames"),
+                ("ocr_completed", "ocr_completed"), ("ocr_total", "ocr_total"),
+                ("vision_batches_completed", "batch_completed"), ("vision_batches_total", "batch_total"),
+            ) if source in snapshot
+        }
+        observe(heartbeat, phase, **metrics, **(speech_metrics or {}))
+
+    def _wait_visual(self, future, current, heartbeat, *, ready: Event | None = None,
+                     speech_metrics=None) -> ClaimedJob:
+        """Only this orchestration thread writes the job lease/version."""
+        while not future.done() and not (ready is not None and ready.is_set()):
+            if ready is not None:
+                ready.wait(self.heartbeat_seconds)
+            else:
+                wait((future,), timeout=self.heartbeat_seconds, return_when=ALL_COMPLETED)
+            if future.done() or (ready is not None and ready.is_set()):
+                break
+            snapshot = self._visual_snapshot()
+            progress, detail = _visual_heartbeat_progress(snapshot)
+            self._observe_visual(heartbeat, snapshot, speech_metrics)
+            label = "正在准备画面，随后并行提取口播" if ready is not None else "正在识别关键画面"
+            current = heartbeat("transcribing", max(current.progress, progress),
+                                label + (f" · {detail}" if detail else ""))
+        # A failure before the preparation gate must not start ASR. A later
+        # visual failure is read after ASR has persisted its raw checkpoint.
+        if ready is not None and future.done() and not ready.is_set():
+            future.result()
+        return current
+
+    @staticmethod
+    def _execution_structure(structure: StructureOutput, job: ClaimedJob,
+                             visuals: VisualOutput) -> StructureOutput:
+        report = dict(structure.report)
+        meta = report.get("analysis_meta")
+        meta = dict(meta) if isinstance(meta, Mapping) else {}
+        meta.update(execution_mode=normalize_execution_mode(visuals.stats.get("execution_mode")),
+                    requested_execution_mode=job_execution_mode(job), collection_mode=job_collection_mode(job))
+        if reason := visuals.stats.get("execution_fallback_reason"):
+            meta["execution_fallback_reason"] = reason
+        report["analysis_meta"] = meta
+        return replace(structure, report=report)
+
     def process(self, job: ClaimedJob, heartbeat) -> AnalysisResult:
         mode = job_visual_analysis_mode(job)
+        execution_mode = job_execution_mode(job)
         with TemporaryDirectory(prefix="liming-analysis-") as temporary:
             workspace = Path(temporary)
             restored = _restore_evidence_checkpoint(job, workspace)
@@ -514,7 +575,7 @@ class AnalysisPipeline:
                 observe(heartbeat, "model_analysis")
                 current = heartbeat("analyzing", max(84, job.progress), "已从证据检查点恢复，正在继续结构分析")
                 current, structure = self._run_structure(current, media, transcript, visuals, source_metadata, heartbeat, max(84, current.progress), "正在从证据检查点继续生成结构化结论")
-                return build_analysis_result(transcript, structure, source_metadata)
+                return build_analysis_result(transcript, self._execution_structure(structure, job, visuals), source_metadata)
             durable_transcript = (self.checkpoints is not None
                 and callable(getattr(type(self.artifacts), "restore_source", None)))
             transcript_checkpoint = self._restore_transcript(job) if durable_transcript else None
@@ -567,6 +628,9 @@ class AnalysisPipeline:
             source_asset = transcript_checkpoint["source_asset"] if transcript_checkpoint else None
             if durable_transcript and source_asset is None:
                 self._phase("artifacts")
+                # Publish the actual boundary before a short upload failure can
+                # leave the UI displaying the preceding media-preparation step.
+                current = heartbeat("processing", max(25, current.progress), "正在保存原片以支持转写恢复")
                 current, source_asset = self._run_monitored(
                     lambda: self.artifacts.persist_source(current, media), current, heartbeat,
                     "processing", max(25, current.progress), "正在保存原片以支持转写恢复",
@@ -582,99 +646,132 @@ class AnalysisPipeline:
             configure_speech_context = getattr(self.speech, "set_context", None)
             if callable(configure_speech_context):
                 configure_speech_context(acquired.metadata.title if acquired.metadata else None)
-            prepared_transcript = manual_transcript
             transcript_only = current.source.get("transcript_only") is True
-            extraction_started = time.monotonic()
-            if (durable_transcript or current.source.get("transcript_review_enabled") is False or self.manuscript_ocr is not None
-                    or transcript_only or callable(getattr(self.artifacts, "persist_manuscript", None))):
-                current, prepared_transcript = self._extract_manuscript(current, media, manual_transcript, workspace, heartbeat,
-                    restored_raw=restored_raw, source_asset=source_asset, source_metadata=acquired.metadata)
-                if transcript_only:
-                    if not prepared_transcript.segments:
-                        raise RuntimeError("Speech recognition: 这段素材没有识别到可提取的口播。")
-                    current = heartbeat("extracting", 95, "正在保存完整口播稿")
-                    persist_source = getattr(self.artifacts, "persist_source", None)
-                    if callable(persist_source) and source_asset is None:
-                        self._phase("artifacts")
-                        current, _ = self._run_monitored(
-                            lambda: persist_source(current, media), current, heartbeat,
-                            "extracting", 95, "正在保存原片与口播稿",
-                        )
-                    return build_analysis_result(prepared_transcript, StructureOutput("transcript.v1", {}, None), acquired.metadata)
-            observe(heartbeat, "model_transcription", **({"transcribed_chunks": 0, "total_chunks": 1} if media.audio_path and prepared_transcript is None else {}))
-            current = heartbeat("transcribing", max(35, current.progress), "口播稿已提取，正在处理画面" if prepared_transcript else "正在并行转写语音与提取画面")
+            if transcript_only:
+                current, transcript = self._extract_manuscript(
+                    current, media, manual_transcript, workspace, heartbeat, restored_raw=restored_raw,
+                    source_asset=source_asset, source_metadata=acquired.metadata)
+                if not transcript.segments:
+                    raise RuntimeError("Speech recognition: 这段素材没有识别到可提取的口播。")
+                current = heartbeat("extracting", 95, "正在保存完整口播稿")
+                persist_source = getattr(self.artifacts, "persist_source", None)
+                if callable(persist_source) and source_asset is None:
+                    self._phase("artifacts")
+                    current, _ = self._run_monitored(
+                        lambda: persist_source(current, media), current, heartbeat,
+                        "extracting", 95, "正在保存原片与口播稿")
+                # transcript.v1 deliberately has an empty report contract. The
+                # requested mode stays on the job; there is no visual branch.
+                return build_analysis_result(transcript, StructureOutput("transcript.v1", {}), acquired.metadata)
 
+            overlap_analyze = getattr(self.visual, "analyze_for_speech_overlap", None)
+            can_overlap = (execution_mode == "controlled_parallel" and callable(overlap_analyze)
+                           and getattr(self.visual, "supports_speech_overlap", False) is True
+                           and media.info.video_codec and media.audio_path is not None
+                           and manual_transcript is None and restored_raw is None)
+            actual_mode = "controlled_parallel" if can_overlap else "serial"
+            fallback_reason = (None if can_overlap or execution_mode == "serial" else
+                               "transcript_reused" if restored_raw is not None else
+                               "no_speech_work" if manual_transcript is not None or media.audio_path is None else
+                               "no_video_work" if not media.info.video_codec else
+                               "visual_adapter_without_preparation_gate")
             branch_timing: dict[str, int] = {}
-            if prepared_transcript and manual_transcript is None:
-                branch_timing["transcription_elapsed_ms"] = round((time.monotonic() - extraction_started) * 1000)
+            interval: dict[str, float] = {}
+            evidence_started = time.monotonic()
+            preparation_ready = Event()
+            monitor = getattr(self, "runtime_monitor", None)
 
-            def timed_branch(name: str, operation):
-                began = time.monotonic()
+            def visual_operation():
+                interval["visual_start"] = time.monotonic()
+                if can_overlap and callable(monitor):
+                    monitor("branch_start", "visual")
                 try:
-                    return operation()
+                    if can_overlap:
+                        return overlap_analyze(media, workspace / "visuals", preparation_ready.set)
+                    return self.visual.analyze(media, workspace / "visuals")
                 finally:
-                    branch_timing[name] = round((time.monotonic() - began) * 1000)
+                    interval["visual_end"] = time.monotonic()
+                    branch_timing["visual_elapsed_ms"] = round((interval["visual_end"] - interval["visual_start"]) * 1000)
+                    if can_overlap and callable(monitor):
+                        monitor("branch_end", "visual")
 
-            self._phase("visual")
-            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="liming-evidence") as executor:
-                transcript_future = executor.submit(timed_branch, "transcription_elapsed_ms", lambda: self.speech.transcribe(media.audio_path)) if media.audio_path and prepared_transcript is None else None
-                visuals_future = executor.submit(timed_branch, "visual_elapsed_ms", lambda: self.visual.analyze(media, workspace / "visuals"))
-                pending = {visuals_future}
-                if transcript_future:
-                    pending.add(transcript_future)
-                progress = 40
-                while pending:
-                    _done, pending = wait(pending, timeout=self.heartbeat_seconds, return_when=ALL_COMPLETED)
-                    if pending:
-                        progress_snapshot = getattr(
-                            self.visual,
-                            "progress_snapshot",
-                            None,
-                        )
-                        snapshot = (
-                            progress_snapshot()
-                            if callable(progress_snapshot)
-                            else {}
-                        )
-                        if snapshot:
-                            visual_progress, detail = _visual_heartbeat_progress(snapshot)
-                            progress = max(progress, visual_progress)
-                        else:
-                            detail = ""
-                            # No provider counters means no measurable new work.
-                            progress = max(40, progress)
-                        speech_pending = (
-                            transcript_future is not None
-                            and transcript_future in pending
-                        )
-                        visual_pending = visuals_future in pending
-                        if speech_pending and visual_pending:
-                            stage = "正在转写语音并识别关键画面"
-                        elif visual_pending:
-                            stage = "正在识别关键画面"
-                        else:
-                            stage = "正在转写语音"
-                        if detail:
-                            stage += f" · {detail}"
-                        observed_phase = "frames" if visual_pending and snapshot.get("phase") == "extracting_frames" else "model_vision" if visual_pending else "model_transcription"
-                        observed_metrics = {
-                            key: _progress_count(snapshot[source]) for key, source in (
-                                ("candidates_checked", "candidates_checked" if "candidates_checked" in snapshot else "keyframes_completed"),
-                                ("candidates_total", "candidates_total" if "candidates_total" in snapshot else "keyframes_total"),
-                                ("sampled_frames", "sampled_frames"), ("total_frames", "total_frames"),
-                                ("ocr_completed", "ocr_completed"), ("ocr_total", "ocr_total"),
-                                ("vision_batches_completed", "batch_completed"), ("vision_batches_total", "batch_total"),
-                            ) if source in snapshot
-                        }
-                        if transcript_future is not None:
-                            observed_metrics.update(transcribed_chunks=int(transcript_future.done() and transcript_future.exception() is None), total_chunks=1)
-                        observe(heartbeat, observed_phase, **observed_metrics)
-                        current = heartbeat("transcribing", progress, stage)
-                transcript = prepared_transcript or clean_transcript(transcript_future.result() if transcript_future else TranscriptOutput("zh-CN", ()))
+            # There is only one visual orchestration future. Heavy local frame
+            # extraction/filtering/OCR finishes before the preparation gate lets
+            # ASR start; only the existing cloud calls overlap with speech.
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="liming-evidence") as executor:
+                visuals_future = None
+                if can_overlap:
+                    self._phase("visual")
+                    current = heartbeat("transcribing", max(35, current.progress), "正在准备画面，随后并行提取口播")
+                    visuals_future = executor.submit(visual_operation)
+                    current = self._wait_visual(visuals_future, current, heartbeat, ready=preparation_ready)
+
+                speech_metrics = {}
+                speech_lock = Lock()
+                observer = getattr(heartbeat, "observe", None)
+                def speech_observe(payload):
+                    if isinstance(payload, Mapping):
+                        raw = payload.get("metrics") if isinstance(payload.get("metrics"), Mapping) else payload
+                        with speech_lock:
+                            speech_metrics.update({key: _progress_count(raw[key]) for key in ("transcribed_chunks", "total_chunks") if key in raw})
+                    if callable(observer):
+                        observer(payload)
+
+                progress_floor = [current.progress]
+                def speech_heartbeat(status, progress, stage):
+                    progress_floor[0] = max(progress_floor[0], progress)
+                    if visuals_future is not None and not visuals_future.done():
+                        snapshot = self._visual_snapshot()
+                        with speech_lock:
+                            metrics = dict(speech_metrics)
+                        self._observe_visual(heartbeat, snapshot, metrics)
+                        stage += " · 画面理解并行中"
+                    return heartbeat(status, progress_floor[0], stage)
+                speech_heartbeat.observe = speech_observe
+
+                interval["speech_start"] = time.monotonic()
+                if (durable_transcript or current.source.get("transcript_review_enabled") is False
+                        or self.manuscript_ocr is not None
+                        or callable(getattr(self.artifacts, "persist_manuscript", None))):
+                    current, transcript = self._extract_manuscript(
+                        current, media, manual_transcript, workspace, speech_heartbeat,
+                        restored_raw=restored_raw, source_asset=source_asset, source_metadata=acquired.metadata)
+                elif manual_transcript is not None:
+                    transcript = manual_transcript
+                elif media.audio_path is not None:
+                    # Minimal injected pipelines retain their existing clean-only
+                    # contract; production manuscript persistence uses the path
+                    # above. Both scheduling modes still finish this one branch.
+                    observe(speech_heartbeat, "model_transcription", transcribed_chunks=0, total_chunks=1)
+                    current = speech_heartbeat("transcribing", max(35, current.progress), "正在转写完整音轨")
+                    current, raw = self._run_monitored(lambda: self.speech.transcribe(media.audio_path),
+                        current, speech_heartbeat, "transcribing", max(35, current.progress), "正在转写完整音轨")
+                    transcript = clean_transcript(raw)
+                    observe(speech_heartbeat, "model_transcription", transcribed_chunks=1, total_chunks=1)
+                else:
+                    transcript = TranscriptOutput("zh-CN", ())
+                interval["speech_end"] = time.monotonic()
+                if manual_transcript is None:
+                    branch_timing["transcription_elapsed_ms"] = round((interval["speech_end"] - interval["speech_start"]) * 1000)
+
+                self._phase("visual")
+                if visuals_future is None:
+                    current = heartbeat("transcribing", max(40, current.progress), "口播稿已提取，正在处理画面")
+                    visuals_future = executor.submit(visual_operation)
+                with speech_lock:
+                    metrics = dict(speech_metrics)
+                current = self._wait_visual(visuals_future, current, heartbeat, speech_metrics=metrics)
                 visuals = visuals_future.result()
-            visuals = replace(visuals, stats={**visuals.stats, "branch_timing": branch_timing})
 
-            observe(heartbeat, "vision_complete", **({"transcribed_chunks": 1, "total_chunks": 1} if transcript_future is not None else {}), sampled_frames=len(visuals.keyframes), total_frames=len(visuals.keyframes))
+            branch_timing["evidence_wall_elapsed_ms"] = round((time.monotonic() - evidence_started) * 1000)
+            branch_timing["speech_visual_overlap_ms"] = round(max(0,
+                min(interval["speech_end"], interval["visual_end"]) - max(interval["speech_start"], interval["visual_start"])) * 1000)
+            execution_stats = {"execution_mode": actual_mode, "requested_execution_mode": execution_mode}
+            if fallback_reason:
+                execution_stats["execution_fallback_reason"] = fallback_reason
+            visuals = replace(visuals, stats={**visuals.stats, **execution_stats, "branch_timing": branch_timing})
+
+            observe(heartbeat, "vision_complete", sampled_frames=len(visuals.keyframes), total_frames=len(visuals.keyframes))
             current = heartbeat("transcribing", max(68, current.progress), "语音与画面证据已取得")
             observe(heartbeat, "saving")
             self._phase("artifacts")
@@ -699,10 +796,10 @@ class AnalysisPipeline:
                     self.checkpoints.save(current, "evidence_ready", _evidence_checkpoint(media, transcript, visuals, acquired.metadata,
                         transcript_review_enabled=current.source.get("transcript_review_enabled") is not False,
                         visual_analysis_mode=job_visual_analysis_mode(current),
-                        visual_sampling_level=job_visual_sampling_level(current)))
+                        visual_sampling_level=job_visual_sampling_level(current), collection_mode=job_collection_mode(current)))
                 except Exception as error:  # noqa: BLE001 - checkpoint is resumability only
                     logger.warning("Could not persist the analysis checkpoint: %s", error)
             observe(heartbeat, "model_analysis")
             current = heartbeat("analyzing", 84, "正在生成可追溯结构化结论")
             current, structure = self._run_structure(current, media, transcript, visuals, acquired.metadata, heartbeat, 88, "模型正在生成可追溯结构化结论")
-            return build_analysis_result(transcript, structure, acquired.metadata)
+            return build_analysis_result(transcript, self._execution_structure(structure, job, visuals), acquired.metadata)

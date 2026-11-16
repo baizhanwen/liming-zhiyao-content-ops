@@ -198,8 +198,17 @@ def test_obtain_media_validates_actual_file_and_saves_hash_without_signed_url(tm
     def fetch(url, max_bytes=2_000_000, **kwargs):
         seen.append(url)
         assert 'iPhone' in kwargs['headers']['User-Agent']
-        return (page, PAGE_URL, {}) if url == PAGE_URL else (downloaded, PUBLISHED_URL, {})
+        assert url == PAGE_URL
+        return page, PAGE_URL, {}
+    def download(url, destination, max_bytes, **kwargs):
+        seen.append(url)
+        assert max_bytes == 1024 ** 3
+        assert 'iPhone' in kwargs['headers']['User-Agent']
+        destination.write_bytes(downloaded)
+        return {'size_bytes': len(downloaded), 'sha256': hashlib.sha256(downloaded).hexdigest(),
+                'resolved_url': PUBLISHED_URL, 'headers': {}}
     monkeypatch.setattr(media, 'fetch_public', fetch)
+    monkeypatch.setattr(media, 'download_public_to_file', download)
     def probe(path):
         assert path.read_bytes() == downloaded
         return {'video': True, 'audio': True, 'duration': 144.799}
@@ -259,9 +268,59 @@ def test_desktop_page_falls_back_to_public_share_for_same_id_only(tmp_path, monk
     assert error.value.code == 'douyin_browser_material' and calls == [desktop, PAGE_URL]
 
 
-@pytest.mark.parametrize('duration', ['nan', 'inf', '-1', '1201'])
+@pytest.mark.parametrize('duration', ['nan', 'inf', '-1', '3601'])
 def test_probe_rejects_nonfinite_and_out_of_range_duration(monkeypatch, tmp_path, duration):
     monkeypatch.setattr(media, 'run_media', lambda *args: json.dumps({'format': {'duration': duration}, 'streams': [{'codec_type': 'video'}]}).encode())
     with pytest.raises(AppError) as error:
         media.inspect_video(tmp_path / 'synthetic.mp4')
     assert error.value.code == 'duration'
+
+
+@pytest.mark.parametrize('seconds', [1201, 1800, 3600])
+def test_probe_accepts_long_video_through_new_sixty_minute_limit(monkeypatch, tmp_path, seconds):
+    monkeypatch.setattr(media, 'run_media', lambda *args: json.dumps({
+        'format': {'duration': seconds}, 'streams': [{'codec_type': 'video'}]}).encode())
+    assert media.inspect_video(tmp_path / 'synthetic.mp4')['duration'] == seconds
+
+
+@pytest.mark.parametrize('duration,expected', [(2000, 2), (3000, 3), (1800000, 1800), (3600000, 3600)])
+def test_official_duration_milliseconds_do_not_depend_on_product_limit(duration, expected):
+    page = router_page([{'aweme_id': VIDEO_ID, 'video': {'duration': duration}}])
+    assert media._published_duration(page, VIDEO_ID) == expected
+
+
+@pytest.mark.parametrize('field,value', [('duration_seconds', 1800), ('duration_ms', 1800000)])
+def test_explicit_duration_fields_keep_their_declared_units(field, value):
+    page = router_page([{'aweme_id': VIDEO_ID, 'video': {field: value}}])
+    assert media._published_duration(page, VIDEO_ID) == 1800
+
+
+@pytest.mark.parametrize('other', [3600000, '1800000', True, None, float('nan'), float('inf'), -1, 3600001])
+def test_conflicting_or_invalid_secondary_duration_is_not_silently_overridden(other):
+    page = router_page([{'aweme_id': VIDEO_ID, 'video': {'duration_seconds': 1800, 'duration_ms': other}}])
+    assert media._published_duration(page, VIDEO_ID) is None
+
+
+def test_consistent_explicit_duration_declarations_are_accepted():
+    page = router_page([{'aweme_id': VIDEO_ID, 'video': {
+        'duration_seconds': 1800, 'duration_ms': 1800000, 'duration': 1800000}}])
+    assert media._published_duration(page, VIDEO_ID) == 1800
+
+
+def test_static_candidates_share_one_deadline_before_browser_fallback(tmp_path, monkeypatch):
+    clock, downloads, pages = [0.0], [], []
+    page = router_page([{'aweme_id': VIDEO_ID, 'video': {'duration': 1800000,
+        'play_addr': {'url_list': [PUBLISHED_URL, 'https://other.contract.invalid/clip.mp4']}}}]).encode()
+    monkeypatch.setattr(media.time, 'monotonic', lambda: clock[0])
+    def fetch(url, **options):
+        pages.append(options['deadline'])
+        return page, PAGE_URL, {}
+    def download(url, _path, _limit, **options):
+        downloads.append((url, options['deadline']))
+        clock[0] = 901.0
+        raise AppError('source_timeout', 'synthetic phase deadline', True)
+    monkeypatch.setattr(media, 'fetch_public', fetch)
+    monkeypatch.setattr(media, 'download_public_to_file', download)
+    monkeypatch.setattr(media, '_browser_douyin_source', lambda *_args, **_options: {'browser_fallback': True})
+    assert media.douyin_source(PAGE_URL, tmp_path) == {'browser_fallback': True}
+    assert pages == [900.0] and downloads == [(PUBLISHED_URL, 900.0)]

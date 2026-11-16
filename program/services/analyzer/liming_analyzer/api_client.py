@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import logging
+import os
 import threading
 import time
 import urllib.error
@@ -11,12 +12,13 @@ from urllib.parse import urlencode
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, BinaryIO, Protocol
 
 if TYPE_CHECKING:
     from .adapters import SourceMetadata
 
 logger = logging.getLogger(__name__)
+SOURCE_UPLOAD_TIMEOUT_SECONDS = 120
 
 
 class AnalyzerApiError(RuntimeError):
@@ -27,7 +29,24 @@ class AnalyzerApiError(RuntimeError):
 
 
 class Transport(Protocol):
-    def __call__(self, method: str, url: str, headers: Mapping[str, str], body: bytes) -> tuple[int, bytes]: ...
+    def __call__(self, method: str, url: str, headers: Mapping[str, str], body: bytes | BinaryIO) -> tuple[int, bytes]: ...
+
+
+class _SourceUploadBody:
+    """Bound every read and never send more than the declared source length."""
+
+    def __init__(self, stream: BinaryIO, length: int) -> None:
+        self.stream, self.remaining = stream, length
+
+    def read(self, size: int = -1) -> bytes:
+        if not self.remaining or size == 0:
+            return b""
+        count = min(self.remaining, 1024 * 1024, size if size > 0 else 1024 * 1024)
+        chunk = self.stream.read(count)
+        if not chunk:
+            raise OSError("Source artifact ended before its declared length")
+        self.remaining -= len(chunk)
+        return chunk
 
 
 @dataclass(frozen=True)
@@ -46,6 +65,7 @@ class ClaimedJob:
     checkpoint: Mapping[str, Any] | None = None
     resume_count: int = 0
     attempt_count: int = 0
+    lease_expires_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -68,7 +88,7 @@ class AnalysisResult:
     source_metadata: SourceMetadata | None = None
 
 
-def _urllib_transport(method: str, url: str, headers: Mapping[str, str], body: bytes, *, timeout_seconds: float = 30) -> tuple[int, bytes]:
+def _urllib_transport(method: str, url: str, headers: Mapping[str, str], body: bytes | BinaryIO, *, timeout_seconds: float = 30) -> tuple[int, bytes]:
     request = urllib.request.Request(url, data=None if method == "GET" else body, headers=dict(headers), method=method)
     try:
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
@@ -130,9 +150,15 @@ class AnalyzerApiClient:
         )
         # Heartbeats run in the owner process; a stalled local HTTP connection
         # must not postpone subprocess timeout/cancellation for 30 seconds.
-        status, raw = (_urllib_transport(*arguments, timeout_seconds=3)
-                       if path.endswith("/heartbeat") and self._transport is _urllib_transport
-                       else self._transport(*arguments))
+        try:
+            status, raw = (_urllib_transport(*arguments, timeout_seconds=3)
+                           if path.endswith("/heartbeat") and self._transport is _urllib_transport
+                           else self._transport(*arguments))
+        except OSError as error:
+            if not path.endswith("/heartbeat"):
+                raise
+            logger.warning("Analyzer API transport unavailable: operation=heartbeat type=%s", type(error).__name__)
+            raise AnalyzerApiError(503, "ANALYZER_HEARTBEAT_UNAVAILABLE", "分析服务心跳请求超时或连接中断。") from error
         if status == 204 and allow_empty:
             return None
         try:
@@ -166,6 +192,7 @@ class AnalyzerApiClient:
             checkpoint=job["checkpoint"] if isinstance(job.get("checkpoint"), dict) else None,
             resume_count=int(job.get("resume_count") or 0),
             attempt_count=int(job.get("attempt_count") or 0),
+            lease_expires_at=job.get("lease_expires_at") if isinstance(job.get("lease_expires_at"), str) else None,
         )
 
     def check_control(self, job: ClaimedJob) -> Mapping[str, Any]:
@@ -173,8 +200,12 @@ class AnalyzerApiClient:
             "GET", f"{self.base_url}/api/internal/analysis-jobs/{job.id}/control",
             {"Authorization": f"Bearer {self._token}", "X-Worker-Id": self.worker_id, "X-Worker-Attempt": str(job.attempt_count), "Accept": "application/json"}, b"",
         )
-        status, raw = (_urllib_transport(*arguments, timeout_seconds=2)
-                       if self._transport is _urllib_transport else self._transport(*arguments))
+        try:
+            status, raw = (_urllib_transport(*arguments, timeout_seconds=2)
+                           if self._transport is _urllib_transport else self._transport(*arguments))
+        except OSError as error:
+            logger.warning("Analyzer API transport unavailable: operation=control job=%s type=%s", job.id, type(error).__name__)
+            raise AnalyzerApiError(503, "CONTROL_CHECK_TIMEOUT", "分析服务执行权检查请求超时或连接中断。") from error
         try:
             data = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, ValueError) as error:
@@ -184,6 +215,8 @@ class AnalyzerApiClient:
             raise AnalyzerApiError(status, str(detail.get("code", "CONTROL_UNAVAILABLE")), "Unable to verify analyzer execution ownership")
         if not isinstance(data, dict) or not isinstance(data.get("version"), int):
             raise AnalyzerApiError(status, "INVALID_RESPONSE", "control response is malformed")
+        if "attempt" in data and (type(data["attempt"]) is not int or data["attempt"] != job.attempt_count):
+            raise AnalyzerApiError(409, "JOB_EXECUTION_REVOKED", "Analyzer execution attempt no longer matches")
         return data
 
     def release_cancelled(self, job: ClaimedJob) -> None:
@@ -219,11 +252,15 @@ class AnalyzerApiClient:
             # the owned attempt before deciding whether the worker must stop.
             owned = self.check_control(job)
             if owned["version"] == job.version + 1 and owned.get("status") == status and owned.get("progress") == progress:
-                return replace(job, status=status, progress=progress, version=owned["version"])
+                expiry = owned.get("leaseExpiresAt")
+                return replace(job, status=status, progress=progress, version=owned["version"],
+                               lease_expires_at=expiry if isinstance(expiry, str) else job.lease_expires_at)
             raise
         assert response is not None
         updated = response["job"]
-        return replace(job, status=str(updated["status"]), progress=int(updated["progress"]), version=int(updated["version"]))
+        expiry = updated.get("leaseExpiresAt", updated.get("lease_expires_at"))
+        return replace(job, status=str(updated["status"]), progress=int(updated["progress"]), version=int(updated["version"]),
+                       lease_expires_at=expiry if isinstance(expiry, str) else job.lease_expires_at)
 
     def model_configuration(self, job: ClaimedJob) -> Mapping[str, str]:
         """Retrieve only this leased job's organization model snapshot."""
@@ -292,7 +329,6 @@ class AnalyzerApiClient:
     ) -> Mapping[str, Any]:
         if kind not in {"keyframe", "subtitle", "report", "source_video", "source_audio"}:
             raise ValueError("unsupported analysis artifact kind")
-        body = path.read_bytes()
         headers = {
             "Authorization": f"Bearer {self._token}",
             "Content-Type": content_type,
@@ -308,12 +344,25 @@ class AnalyzerApiClient:
             headers["X-Artifact-Timestamp-Ms"] = str(timestamp_ms)
         if confidence is not None:
             headers["X-Artifact-Confidence"] = str(confidence)
-        status, raw = self._transport(
-            "POST",
-            f"{self.base_url}/api/internal/analysis-jobs/{job.id}/artifacts",
-            headers,
-            body,
-        )
+        url = f"{self.base_url}/api/internal/analysis-jobs/{job.id}/artifacts"
+        if kind in {"source_video", "source_audio"}:
+            # urllib/http.client accepts a readable request body when its length
+            # is explicit. The descriptor stays open until the response returns.
+            from .douyin_collector.python.limits import MAX_MEDIA_BYTES
+            try:
+                with path.open("rb") as stream:
+                    size = os.fstat(stream.fileno()).st_size
+                    if not 0 < size <= MAX_MEDIA_BYTES:
+                        raise ValueError("Source artifact must be between 1 byte and 1 GiB")
+                    headers["Content-Length"] = str(size)
+                    arguments = ("POST", url, headers, _SourceUploadBody(stream, size))
+                    status, raw = (_urllib_transport(*arguments, timeout_seconds=SOURCE_UPLOAD_TIMEOUT_SECONDS)
+                                   if self._transport is _urllib_transport else self._transport(*arguments))
+            except OSError as error:
+                logger.warning("Analyzer API transport unavailable: operation=source_upload job=%s type=%s", job.id, type(error).__name__)
+                raise AnalyzerApiError(504, "SOURCE_PERSISTENCE_FAILED", "原片保存请求超时或连接中断，尚未取得保存回执。请检查主机服务后重试。") from error
+        else:
+            status, raw = self._transport("POST", url, headers, path.read_bytes())
         data = json.loads(raw.decode("utf-8")) if raw else {}
         if not 200 <= status < 300:
             error = data.get("error", {}) if isinstance(data, dict) else {}
@@ -388,40 +437,50 @@ class AnalyzerApiClient:
         return destination
 
     def download_cookie_snapshot(self, job: ClaimedJob, destination: Path, max_bytes: int = 1024 * 1024) -> bool:
-        if job.source_type != "url":
-            raise ValueError("only public URL jobs use the cookie snapshot endpoint")
+        if job.source_type != "url" or job.source.get("collection_mode") != "cookie":
+            raise ValueError("only explicitly selected Cookie URL jobs use the cookie snapshot endpoint")
         request = urllib.request.Request(
             f"{self.base_url}/api/internal/analysis-jobs/{job.id}/cookies",
-            headers={"Authorization": f"Bearer {self._token}", "X-Worker-Id": self.worker_id, "Accept": "text/plain"},
+            headers={"Authorization": f"Bearer {self._token}", "X-Worker-Id": self.worker_id,
+                     "X-Worker-Attempt": str(job.attempt_count), "X-Job-Version": str(job.version), "Accept": "text/plain"},
             method="GET",
         )
         destination = destination.expanduser().resolve(); destination.parent.mkdir(parents=True, exist_ok=True)
         partial = destination.with_name(f"{destination.name}.part"); written = 0
+        expected_length = None
         try:
-            with urllib.request.urlopen(request, timeout=30) as response, partial.open("wb") as output:
+            with urllib.request.urlopen(request, timeout=30) as response, partial.open("xb") as output:
+                partial.chmod(0o600)
                 content_length = response.headers.get("Content-Length")
-                if content_length and int(content_length) > max_bytes:
-                    raise AnalyzerApiError(413, "COOKIE_SNAPSHOT_TOO_LARGE", "cookie snapshot exceeds worker limit")
+                if content_length:
+                    try:
+                        expected_length = int(content_length)
+                    except ValueError:
+                        raise AnalyzerApiError(502, "COOKIE_SNAPSHOT_INVALID", "Cookie 快照长度声明无效。") from None
+                    if expected_length <= 0 or expected_length > max_bytes:
+                        raise AnalyzerApiError(413, "COOKIE_SNAPSHOT_TOO_LARGE", "Cookie 快照为空或超过限制。")
                 while chunk := response.read(64 * 1024):
                     written += len(chunk)
                     if written > max_bytes:
-                        raise AnalyzerApiError(413, "COOKIE_SNAPSHOT_TOO_LARGE", "cookie snapshot exceeds worker limit")
+                        raise AnalyzerApiError(413, "COOKIE_SNAPSHOT_TOO_LARGE", "Cookie 快照超过限制。")
                     output.write(chunk)
         except urllib.error.HTTPError as error:
             partial.unlink(missing_ok=True)
             if error.code == 404:
                 destination.unlink(missing_ok=True)
                 return False
-            payload = json.loads(error.read().decode("utf-8")) if error.fp else {}
-            detail = payload.get("error", {}) if isinstance(payload, dict) else {}
-            raise AnalyzerApiError(error.code, str(detail.get("code", "COOKIE_DOWNLOAD_FAILED")), str(detail.get("message", "cookie snapshot download failed"))) from error
+            raise AnalyzerApiError(error.code, "COOKIE_DOWNLOAD_FAILED", "当前公司的 Cookie 快照暂不可用，请确认任务权限和 Cookie 设置。") from None
         except Exception:
             partial.unlink(missing_ok=True)
             raise
         if written == 0:
             partial.unlink(missing_ok=True)
             raise AnalyzerApiError(502, "EMPTY_COOKIE_SNAPSHOT", "cookie snapshot is empty")
+        if expected_length is not None and written != expected_length:
+            partial.unlink(missing_ok=True)
+            raise AnalyzerApiError(502, "COOKIE_SNAPSHOT_INCOMPLETE", "Cookie 快照传输不完整，请重试。")
         partial.replace(destination)
+        destination.chmod(0o600)
         return True
 
 

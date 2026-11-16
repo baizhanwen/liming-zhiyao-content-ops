@@ -4,6 +4,7 @@ import os
 import tempfile
 from contextlib import nullcontext
 from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from liming_analyzer.api_client import AnalysisResult, ClaimedJob
@@ -79,7 +80,8 @@ def test_owner_forwards_whitelisted_observations_before_heartbeat_and_accepts_le
         heartbeat.observe = observed.append
         with tempfile.TemporaryDirectory() as folder:
             processor = IsolatedProcessor(None, Client(), root=folder, limits=ProcessingLimits(poll=0.01))
-            processor.process = object()  # Existing child, so no process or model is started.
+            # Model an existing live child without creating an OS process/model.
+            processor.process = SimpleNamespace(pid=None, is_alive=lambda: True, close=lambda: None)
             processor._source_stamp = _processing_source_stamp()
             processor.connection = connection
             assert processor(current, heartbeat).schema_version == "analysis.v1"

@@ -1,3 +1,5 @@
+import { isAnalysisCollectionMode, type AnalysisCollectionMode } from "./analysis-collection-mode";
+import { isAnalysisExecutionMode, type AnalysisExecutionMode } from "./analysis-execution-mode";
 import { isVisualSamplingLevel, type VisualSamplingLevel } from "./visual-sampling-level";
 import { isVisualAnalysisMode } from "./visual-analysis-mode";
 import { safeProgressObservation } from "./analysis-task-progress";
@@ -14,6 +16,8 @@ export type WorkerJobRow = {
   lease_owner: string | null; lease_expires_at: string | null; attempt_count: number; version: number; result_key: string | null;
   visual_analysis_mode?: "hybrid" | "vision_only";
   visual_sampling_level?: VisualSamplingLevel | null;
+  execution_mode?: AnalysisExecutionMode;
+  collection_mode?: AnalysisCollectionMode;
   progress_json?: string | null; stage_started_at?: string | null; last_progress_at?: string | null;
   checkpoint_stage?: string | null; checkpoint_json?: string | null; checkpoint_updated_at?: string | null; resume_count?: number;
 };
@@ -76,6 +80,8 @@ export function readTranscriptCheckpoint(value: unknown) {
     || typeof value.transcript_review_enabled !== "boolean"
     || (value.visual_analysis_mode !== undefined && !isVisualAnalysisMode(value.visual_analysis_mode))
     || (value.visual_sampling_level != null && !isVisualSamplingLevel(value.visual_sampling_level))
+    || (value.collection_mode !== undefined && !isAnalysisCollectionMode(value.collection_mode))
+    || (value.execution_mode !== undefined && !isAnalysisExecutionMode(value.execution_mode))
     || !Number.isSafeInteger(value.media.duration_ms) || Number(value.media.duration_ms) < 0
     || typeof transcript.language !== "string" || !transcript.language || transcript.language.length > 32
     || !Array.isArray(transcript.segments) || transcript.segments.length > 5_000) return null;

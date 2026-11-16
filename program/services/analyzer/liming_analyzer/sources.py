@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import shutil
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -14,7 +16,9 @@ from urllib.parse import urlparse
 
 from .adapters import AcquiredSource, SourceMetadata
 from .api_client import AnalyzerApiClient, ClaimedJob
+from .collection_mode import job_collection_mode
 from .source_errors import SourceDownloadError, classify_source_message, safe_source_diagnostic
+from .douyin_collector.python.limits import BROWSER_TIMEOUT_SECONDS, MAX_DURATION_SECONDS, MAX_MEDIA_BYTES
 
 logger = logging.getLogger(__name__)
 
@@ -50,15 +54,29 @@ def is_allowed_douyin_url(value: str) -> bool:
 
 
 class PlatformSourceProvider:
-    def __init__(self, client: AnalyzerApiClient, public_video: PublicVideoResolver, cookie_file: str = "") -> None:
+    def __init__(self, client: AnalyzerApiClient, public_video: PublicVideoResolver, cookie_file: str = "", *,
+                 cookie_video_factory: Callable[[], PublicVideoResolver] | None = None) -> None:
         self.client = client
         self.public_video = public_video
-        self.cookie_file = Path(cookie_file).expanduser().resolve() if cookie_file else None
+        # A legacy host path may still be supplied by older integrations. It is
+        # intentionally never read: organization jobs only use their own snapshot.
+        self._cookie_video_factory = cookie_video_factory or (lambda: YtDlpPublicVideoResolver(organization_cookie_only=True))
+        self._progress = None
 
     def set_progress(self, callback) -> None:
-        setter = getattr(self.public_video, "set_progress", None)
+        self._progress = callback
+
+    def _download(self, resolver, source_url, destination, *, cookie_file=None):
+        setter = getattr(resolver, "set_progress", None)
         if callable(setter):
-            setter(callback)
+            setter(self._progress)
+        try:
+            resolved = (resolver.download(source_url, destination) if cookie_file is None else
+                        resolver.download(source_url, destination, cookie_file=cookie_file))
+            return resolved if isinstance(resolved, AcquiredSource) else AcquiredSource(resolved)
+        finally:
+            if callable(setter):
+                setter(None)
 
     def acquire(self, job: ClaimedJob, destination: Path) -> AcquiredSource:
         if job.source_type == "upload":
@@ -66,22 +84,30 @@ class PlatformSourceProvider:
         source_url = job.source.get("source_url")
         if not isinstance(source_url, str) or not is_allowed_douyin_url(source_url):
             raise ValueError("claimed public source is not an allowed Douyin URL")
-        if getattr(self.public_video, "uses_cookie_snapshots", True) is False:
-            # Skill Collect owns a fresh anonymous context for each acquisition.
-            # Existing Cookie APIs remain available for older clients, but their
-            # personal/organization snapshots never enter this collector.
-            return self.public_video.download(source_url, destination)
-        # Remote organization snapshots are job-local. A 404 may delete this
-        # temporary file, but must never erase the host's manually imported file.
+        mode = job_collection_mode(job)
+        if mode == "anonymous":
+            # The default never reads an organization snapshot, personal browser
+            # state or a manually imported host Cookie file.
+            if getattr(self.public_video, "uses_cookie_snapshots", False) is True:
+                raise SourceDownloadError("SOURCE_RUNTIME_UNAVAILABLE", "匿名采集器尚未就绪，请检查独立浏览器采集环境。")
+            return self._download(self.public_video, source_url, destination)
+        # Every explicit Cookie attempt gets a new resolver and private copy, so
+        # mutable yt-dlp Cookie jars cannot leak across organizations or jobs.
         with TemporaryDirectory(prefix="liming-job-cookies-") as temporary:
             snapshot = Path(temporary) / "cookies.txt"
-            uploaded = self.client.download_cookie_snapshot(job, snapshot)
             try:
-                resolved = self.public_video.download(source_url, destination, cookie_file=snapshot if uploaded else self.cookie_file)
+                uploaded = self.client.download_cookie_snapshot(job, snapshot)
+                if not uploaded or not snapshot.is_file() or snapshot.stat().st_size == 0:
+                    raise SourceDownloadError("SOURCE_COOKIE_REQUIRED", "当前公司尚未提供抖音 Cookie，请先上传 Cookie，再重试 Cookie 采集。")
+                snapshot.chmod(0o600)
+                resolver = self._cookie_video_factory()
+                return self._download(resolver, source_url, destination, cookie_file=snapshot)
             except SourceDownloadError as error:
                 logger.warning("Video source failed: job=%s code=%s", job.id, error.code)
                 raise
-        return resolved if isinstance(resolved, AcquiredSource) else AcquiredSource(resolved)
+            except Exception:
+                logger.warning("Cookie source unavailable: job=%s", job.id)
+                raise SourceDownloadError("SOURCE_COOKIE_UNAVAILABLE", "当前公司的 Cookie 采集未完成，请检查采集环境及 Cookie 状态后重试。") from None
 
 
 class SkillCollectPublicVideoResolver:
@@ -95,7 +121,7 @@ class SkillCollectPublicVideoResolver:
         *,
         ffmpeg: str = "ffmpeg",
         ffprobe: str = "ffprobe",
-        browser_timeout: int = 180,
+        browser_timeout: int = BROWSER_TIMEOUT_SECONDS,
         progress=None,
         cancelled=None,
     ) -> None:
@@ -216,7 +242,7 @@ def _collector_failure(code: str) -> SourceDownloadError:
     if code == "douyin_not_found":
         return SourceDownloadError("SOURCE_UNAVAILABLE", "原视频不存在、已删除或不可访问，请确认链接或上传本地视频。")
     if code in {"duration", "too_large"}:
-        return SourceDownloadError("SOURCE_UNAVAILABLE", "原视频须不超过 100 MiB，且时长在 20 分钟以内；可上传本地视频继续。")
+        return SourceDownloadError("SOURCE_UNAVAILABLE", "原视频须不超过 1 GiB，且时长在 60 分钟以内；可上传符合上传限制的本地视频继续。")
     return SourceDownloadError("SOURCE_DOWNLOAD_FAILED", "未能获取完整且身份一致的原片，请确认链接后重试或上传本地视频。")
 
 
@@ -255,6 +281,8 @@ class _DownloadDiagnostics:
 class YtDlpPublicVideoResolver:
     """Best-effort public resolver kept behind an adapter because platform support changes."""
 
+    uses_cookie_snapshots = True
+
     def __init__(
         self,
         factory: Callable[[Mapping[str, Any]], Any] | None = None,
@@ -262,6 +290,10 @@ class YtDlpPublicVideoResolver:
         cookies_from_browser: str = "",
         cookie_file: str = "",
         ffmpeg_location: str = "",
+        ffprobe_location: str = "ffprobe",
+        organization_cookie_only: bool = False,
+        media_inspector=None,
+        cancelled=None,
     ) -> None:
         if factory is None:
             try:
@@ -273,8 +305,66 @@ class YtDlpPublicVideoResolver:
         self._cookies_from_browser = parse_browser_cookie_spec(cookies_from_browser)
         self._cookie_file = Path(cookie_file).expanduser().resolve() if cookie_file else None
         self._ffmpeg_location = ffmpeg_location.strip()
+        self._ffprobe_location = ffprobe_location
+        self._organization_cookie_only = organization_cookie_only
+        self._media_inspector = media_inspector
+        self._cancelled = cancelled
+        self._progress = None
+
+    def set_progress(self, callback) -> None:
+        self._progress = callback
+
+    def _check_cancelled(self):
+        if self._cancelled is not None and self._cancelled():
+            raise SourceDownloadError("SOURCE_CANCELLED", "视频采集已取消。")
+
+    @staticmethod
+    def _limit_failure():
+        return SourceDownloadError("SOURCE_UNAVAILABLE", "原视频须不超过 1 GiB，且时长在 60 分钟以内；请使用符合限制的素材。")
 
     def download(self, url: str, destination: Path, *, cookie_file: Path | None = None) -> AcquiredSource:
+        self._check_cancelled()
+        if self._organization_cookie_only:
+            # A strict organization resolver never falls back to configured host
+            # files, a browser profile or an unauthenticated request.
+            if cookie_file is None or not cookie_file.is_file() or not cookie_file.stat().st_size:
+                raise SourceDownloadError("SOURCE_COOKIE_REQUIRED", "当前公司尚未提供抖音 Cookie，请先上传 Cookie，再重试 Cookie 采集。")
+            destination = Path(destination)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with TemporaryDirectory(prefix=".cookie-source-", dir=destination.parent.resolve()) as temporary:
+                folder = Path(temporary)
+                result = self._download(url, folder / "source", cookie_file, folder / "cookies.txt")
+                path = Path(result.path)
+                if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(folder.resolve()):
+                    raise SourceDownloadError("SOURCE_DOWNLOAD_FAILED", "Cookie 采集未取得当前任务的有效原片。")
+                if not 0 < path.stat().st_size <= MAX_MEDIA_BYTES:
+                    raise self._limit_failure()
+                try:
+                    if self._media_inspector is not None:
+                        probe = self._media_inspector(path)
+                    else:
+                        from .douyin_collector.python.media import inspect_video
+                        from .douyin_collector.python.runtime import media_tools
+                        with media_tools(self._ffmpeg_location or "ffmpeg", self._ffprobe_location):
+                            probe = inspect_video(path)
+                except SourceDownloadError:
+                    raise
+                except Exception as error:
+                    code = getattr(error, "code", None)
+                    if code in {"duration", "too_large"}:
+                        raise self._limit_failure() from None
+                    if code == "cancelled":
+                        raise SourceDownloadError("SOURCE_CANCELLED", "视频采集已取消。") from None
+                    raise SourceDownloadError("SOURCE_DOWNLOAD_FAILED", "Cookie 原片校验未完成，请检查媒体工具与视频文件后重试。") from None
+                duration = probe.get("duration") if isinstance(probe, Mapping) else None
+                if (not isinstance(duration, (int, float)) or isinstance(duration, bool)
+                        or not math.isfinite(duration) or not 0 < duration <= MAX_DURATION_SECONDS):
+                    raise self._limit_failure()
+                if not probe.get("video"):
+                    raise SourceDownloadError("SOURCE_DOWNLOAD_FAILED", "Cookie 采集未取得有效视频轨，不能作为原片分析。")
+                self._check_cancelled()
+                path.replace(destination)
+                return AcquiredSource(destination, replace(result.metadata, duration_sec=_integer(duration)))
         # yt-dlp saves its cookie jar on close. Give it a writable private copy
         # so it cannot overwrite an uploaded/master snapshot or another job.
         with TemporaryDirectory(prefix="liming-download-cookies-") as temporary:
@@ -291,18 +381,44 @@ class YtDlpPublicVideoResolver:
             "no_warnings": True,
             "restrictfilenames": True,
             "merge_output_format": "mp4",
-            "max_filesize": 2_000_000_000,
+            "max_filesize": MAX_MEDIA_BYTES,
             "socket_timeout": 30,
             "retries": 2,
         }
+        limit_failure = None
+        if self._organization_cookie_only:
+            def check_metadata(info, *, incomplete=False):
+                nonlocal limit_failure
+                self._check_cancelled()
+                duration = info.get("duration")
+                size = info.get("filesize") or info.get("filesize_approx")
+                if ((isinstance(duration, (int, float)) and not isinstance(duration, bool)
+                     and (not math.isfinite(duration) or duration <= 0 or duration > MAX_DURATION_SECONDS))
+                        or (isinstance(size, (int, float)) and not isinstance(size, bool) and size > MAX_MEDIA_BYTES)):
+                    limit_failure = self._limit_failure()
+                    raise limit_failure
+                return None
+            def progress(event):
+                nonlocal limit_failure
+                self._check_cancelled()
+                received = event.get("downloaded_bytes")
+                if isinstance(received, (int, float)) and received > MAX_MEDIA_BYTES:
+                    limit_failure = self._limit_failure()
+                    raise limit_failure
+                if callable(self._progress):
+                    self._progress({"phase": "browser", "downloaded_bytes": received}
+                                   if type(received) is int and received >= 0 else {"phase": "browser"})
+            options.update(match_filter=check_metadata, progress_hooks=[progress])
         if self._ffmpeg_location:
             options["ffmpeg_location"] = self._ffmpeg_location
         cookie_file_available = cookie_file is not None and cookie_file.is_file()
         attempts: list[tuple[str, dict[str, Any]]] = []
         if cookie_file_available:
             attempts.append(("cookie_file", {"cookiefile": str(scratch_cookie)}))
-        if self._cookies_from_browser is not None:
+        if not self._organization_cookie_only and self._cookies_from_browser is not None:
             attempts.append(("browser", {"cookiesfrombrowser": self._cookies_from_browser}))
+        if not attempts and self._organization_cookie_only:
+            raise SourceDownloadError("SOURCE_COOKIE_REQUIRED", "当前公司尚未提供抖音 Cookie，请先上传 Cookie，再重试 Cookie 采集。")
         if not attempts:
             attempts.append(("none", {}))
         info: Any = None
@@ -314,12 +430,17 @@ class YtDlpPublicVideoResolver:
                     if authentication_mode == "cookie_file":
                         assert cookie_file is not None
                         shutil.copyfile(cookie_file, scratch_cookie)
+                        scratch_cookie.chmod(0o600)
+                    self._check_cancelled()
                     with self._factory({**options, **authentication_options, "logger": diagnostics}) as downloader:
                         info = downloader.extract_info(url, download=True)
+                    if limit_failure is not None:
+                        raise limit_failure
                     break
                 except Exception as error:
                     info = None
-                    failure = diagnostics.failure or classify_source_message(str(error))
+                    failure = (error if isinstance(error, SourceDownloadError) else
+                               limit_failure or diagnostics.failure or classify_source_message(str(error)))
                     logger.warning("Douyin download attempt failed: mode=%s attempt=%s code=%s", authentication_mode, request_attempt + 1, failure.code)
                     if failure.code == "SOURCE_NETWORK_FAILED" and request_attempt == 0:
                         time.sleep(3)
@@ -332,6 +453,8 @@ class YtDlpPublicVideoResolver:
                         failure = primary_error
                     if failure.code == "DOUYIN_ACCESS_REJECTED" and authentication_mode == "browser" and primary_error is None:
                         failure = SourceDownloadError(failure.code, "抖音暂未接受分析主机浏览器登录态或请求。请稍后重试；持续失败时确认视频可访问并上传 Cookie。")
+                    if self._organization_cookie_only:
+                        raise failure from None
                     raise failure from error
             if info is not None:
                 break

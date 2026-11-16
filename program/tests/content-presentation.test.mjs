@@ -58,23 +58,41 @@ test("actual v11 renders one four-module report with evidence and a copyable man
   assert.doesNotMatch(render(view, { canLocate: false }), /跳转播放/);
 });
 
-test("the four modules expose named core classifications directly and keep the remaining taxonomy rows in disclosures", () => {
+test("each direction shows up to six concrete classifications with more directly below them", () => {
   const view = analysisReportView("analysis.v11", produced), html = render(view);
-  assert.deepEqual(view.sections.map(section => section.classifications.filter(row => row.featured).length), [6, 6, 5, 4]);
   const rows = view.sections.flatMap(section => section.classifications);
   assert.equal(rows.length, 64); assert.equal(new Set(rows.map(row => row.dimensionId)).size, 64);
-  assert.equal(rows.filter(row => !row.featured).length, 43);
-  const visible = [...html.matchAll(/<div class="report-core-classifications">([\s\S]*?)<\/dl><\/div>/g)];
-  assert.equal(visible.length, 4);
+  const sections = [...html.matchAll(/<section class="unified-report-section" id="report-([^"]+)"[^>]*>([\s\S]*?)<\/section>/g)];
+  assert.equal(sections.length, 4);
   for (const [index, section] of view.sections.entries()) {
-    for (const row of section.classifications.filter(row => row.featured)) {
-      assert.ok(visible[index][1].includes(`<dt>${row.label}</dt>`), row.dimensionId);
-      assert.ok(visible[index][1].includes(row.tags[0]?.label ?? row.value), row.dimensionId);
+    const primary = section.classifications.filter(row => row.featured);
+    const more = section.classifications.filter(row => !row.featured);
+    assert.equal(primary.length, Math.min(6, section.classifications.filter(row => row.state === "known" && row.tags.length).length));
+    assert.ok(primary.every(row => row.state === "known" && row.tags.length));
+    const body = sections[index][2];
+    const primaryHtml = body.match(/<dl class="report-classification-list" aria-label="[^"]*的主要分类">([\s\S]*?)<\/dl>/)?.[1] || "";
+    assert.deepEqual([...primaryHtml.matchAll(/data-dimension="([^"]+)"/g)].map(match => match[1]), primary.map(row => row.dimensionId));
+    assert.doesNotMatch(primaryHtml, /report-classification-state/);
+    if (more.length) {
+      assert.ok(body.indexOf('class="report-more-classifications"') < body.indexOf('class="report-finding"'));
+      assert.match(body, new RegExp(`展开更多分类（${more.length}）`));
+      assert.match(body, new RegExp(`收起更多分类（${more.length}）`));
+      assert.doesNotMatch(body, /<details class="report-more-classifications" open/);
+      const moreHtml = body.match(/<details class="report-more-classifications">([\s\S]*?)<\/details>/)?.[1] || "";
+      assert.deepEqual([...moreHtml.matchAll(/data-dimension="([^"]+)"/g)].map(match => match[1]), more.map(row => row.dimensionId));
     }
-    assert.doesNotMatch(visible[index][1], /<details/);
   }
-  assert.equal((html.match(/<details class="report-more-classifications">/g) || []).length, 3);
   assert.doesNotMatch(html, /report-section-tags|识别出的内容特征|content-dimension-card/);
+});
+
+test("all unknown results remain available in the disclosure without occupying the primary group", () => {
+  const report = structuredClone(produced);
+  for (const row of report.content_analysis.classifications) Object.assign(row, { state: "unknown", tags: null, primary_tag: null, reason: "model_could_not_determine_from_available_evidence", evidence_ids: [] });
+  const view = analysisReportView("analysis.v11", report), html = render(view);
+  assert.ok(view.sections.every(section => section.classifications.every(row => !row.featured)));
+  assert.equal((html.match(/暂无可确定的主要分类。/g) || []).length, 4);
+  assert.equal((html.match(/<details class="report-more-classifications">/g) || []).length, 4);
+  assert.equal((html.match(/data-dimension=/g) || []).length, 64);
 });
 
 test("classification values preserve primary labels, unknown, absent, unavailable and inapplicable as distinct states", () => {

@@ -151,6 +151,8 @@ export const videoAnalyses = sqliteTable("video_analyses", {
 }, (table) => [index("idx_video_analyses_video_created").on(table.organizationId, table.projectId, table.videoId, table.createdAt), index("idx_video_analyses_analysis_job").on(table.analysisJobId)]);
 
 export const analysisJobs = sqliteTable("analysis_jobs", {
+  collectionMode: text("collection_mode", { enum: ["anonymous", "cookie"] }).notNull().default("anonymous"),
+  executionMode: text("execution_mode", { enum: ["serial", "controlled_parallel"] }).notNull().default("serial"),
   visualSamplingLevel: text("visual_sampling_level", { enum: ["quick", "balanced", "detailed"] }),
   visualAnalysisMode: text("visual_analysis_mode", { enum: ["hybrid", "vision_only"] }).notNull().default("hybrid"),
   transcriptReviewEnabled: integer("transcript_review_enabled", { mode: "boolean" }).notNull().default(true),

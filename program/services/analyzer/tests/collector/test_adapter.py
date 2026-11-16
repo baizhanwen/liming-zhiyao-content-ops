@@ -132,6 +132,43 @@ def test_cancel_after_response_cleans_all_files(tmp_path, monkeypatch):
     assert err.value.code == 'cancelled' and not list(tmp_path.iterdir())
 
 
+@pytest.mark.parametrize('size', [100 * 1024 * 1024 + 1, 1024 ** 3])
+def test_adapter_accepts_new_large_file_boundary_without_whole_file_reads(size, tmp_path, monkeypatch):
+    """Sparse fixtures exercise byte gates without allocating a GiB in RAM/disk."""
+    digest = 'a' * 64
+    observed = []
+    def source(_url, folder, **options):
+        observed.append(options['browser_timeout'])
+        path = folder / 'douyin.mp4'
+        with path.open('wb') as stream:
+            stream.truncate(size)
+        return {'media_path': str(path), 'video_id': '1234567890123456789', 'title': 'fixture',
+                'acquisition': {'media_sha256': digest, 'method': 'sparse-fixture'}}
+    monkeypatch.setattr(media, 'douyin_source', source)
+    monkeypatch.setattr(media, 'inspect_video', lambda _path: {'video': True, 'audio': True, 'duration': 3600})
+    monkeypatch.setattr(adapter, 'sha256_file', lambda _path, **_options: digest)
+    monkeypatch.setattr(Path, 'read_bytes', lambda _path: pytest.fail('no whole-file reads'))
+    result = collect(PAGE, tmp_path)
+    assert result['size_bytes'] == size and result['duration'] == 3600
+    assert Path(result['media_path']).stat().st_size == size
+    assert observed == [900]
+
+
+def test_adapter_rejects_one_byte_over_one_gib_before_probe_or_hash(tmp_path, monkeypatch):
+    def source(_url, folder, **_options):
+        path = folder / 'douyin.mp4'
+        with path.open('wb') as stream:
+            stream.truncate(1024 ** 3 + 1)
+        return {'media_path': str(path)}
+    monkeypatch.setattr(media, 'douyin_source', source)
+    monkeypatch.setattr(media, 'inspect_video', lambda _path: pytest.fail('size gate must precede probe'))
+    monkeypatch.setattr(adapter, 'sha256_file', lambda *_args, **_options: pytest.fail('size gate must precede hashing'))
+    with pytest.raises(CollectorError) as error:
+        collect(PAGE, tmp_path)
+    assert error.value.code == 'too_large'
+    assert not list(tmp_path.iterdir())
+
+
 def test_symlink_ancestor_rejected(tmp_path):
     real=tmp_path/'real'; real.mkdir()
     link=tmp_path/'link';link.symlink_to(real,target_is_directory=True)

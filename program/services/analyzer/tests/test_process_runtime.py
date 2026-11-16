@@ -61,6 +61,41 @@ def phase_factory(_settings, _client, monitor):
     return processor
 
 
+def parallel_phase_factory(_settings, _client, monitor):
+    def processor(job, heartbeat):
+        monitor("phase", "speech")
+        heartbeat("transcribing", 40, "synthetic parallel evidence")
+        if job.id == "parallel-hang":
+            monitor("branch_start", "visual")
+            index = 0
+            while True:
+                # Neither an owner-phase change nor a duplicate start may
+                # reset the original visual branch's clock.
+                monitor("branch_start", "visual")
+                monitor("phase", "speech" if index % 2 else "artifacts")
+                heartbeat("transcribing", 40, "synthetic parallel save")
+                time.sleep(.03)
+                index += 1
+        if job.id == "parallel-revisit":
+            for _ in range(2):
+                monitor("branch_start", "visual")
+                time.sleep(.10)
+                monitor("branch_end", "visual")
+                time.sleep(.02)
+        elif job.id in {"parallel-unfinished", "parallel-unfinished-retire"}:
+            monitor("branch_start", "visual")
+            if job.id == "parallel-unfinished-retire":
+                request_processor_retirement("capture_cleanup_unconfirmed")
+        else:
+            monitor("branch_start", "visual")
+            time.sleep(.03)
+            monitor("branch_end", "visual")
+            # Speech legitimately outlives the completed visual branch.
+            time.sleep(.20)
+        return AnalysisResult("analysis.v7", {"pid": os.getpid()})
+    return processor
+
+
 class ControlClient:
     def __init__(self):
         self.cancel_at = None
@@ -302,6 +337,63 @@ class PrecisePhaseRuntimeTests(unittest.TestCase):
             self.run_job("revisit-speech")
         self.assertEqual(caught.exception.code, "ANALYZER_STAGE_TIMEOUT")
         self.assertIn("speech", str(caught.exception))
+
+
+@unittest.skipUnless(os.name in {"nt", "posix"}, "native process isolation")
+class ParallelBranchRuntimeTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.limits = ProcessingLimits(initialization=5, evidence=2, speech=2,
+            visual=.16, artifacts=2, task=3, poll=.01)
+        self.processor = IsolatedProcessor(None, ControlClient(), root=Path(self.temporary.name),
+            limits=self.limits, factory=parallel_phase_factory)
+        self.addCleanup(self.processor.close)
+
+    def run_job(self, name):
+        job = ClaimedJob(name, "org", "project", "video", "url", "queued", 1, 1, {})
+        return self.processor(job, lambda status, progress, _stage: replace(job, status=status, progress=progress))
+
+    def test_visual_branch_budget_survives_owner_phases_and_duplicate_starts(self):
+        first = self.run_job("healthy")
+        began = time.monotonic()
+        with self.assertRaises(ProcessingFailure) as caught:
+            self.run_job("parallel-hang")
+        self.assertEqual(caught.exception.code, "ANALYZER_STAGE_TIMEOUT")
+        self.assertIn("visual", str(caught.exception))
+        self.assertLess(time.monotonic() - began, 1.2)
+        self.assertTrue(self.processor.resources_released)
+        recovered = self.run_job("healthy-after-timeout")
+        self.assertNotEqual(recovered.report["pid"], first.report["pid"])
+
+    def test_completed_branch_does_not_time_out_during_later_speech_or_next_job(self):
+        first = self.run_job("healthy")
+        second = self.run_job("healthy-again")
+        self.assertEqual(first.report["pid"], second.report["pid"])
+
+    def test_restarting_branch_preserves_cumulative_time_budget(self):
+        with self.assertRaises(ProcessingFailure) as caught:
+            self.run_job("parallel-revisit")
+        self.assertEqual(caught.exception.code, "ANALYZER_STAGE_TIMEOUT")
+        self.assertIn("visual", str(caught.exception))
+
+    def test_task_deadline_still_applies_during_parallel_work(self):
+        self.run_job("healthy")
+        self.processor.limits = replace(self.limits, task=.10, visual=2)
+        with self.assertRaises(ProcessingFailure) as caught:
+            self.run_job("parallel-hang")
+        self.assertEqual(caught.exception.code, "ANALYZER_TASK_TIMEOUT")
+
+    def test_result_cannot_reuse_child_with_unfinished_branch(self):
+        for name in ("parallel-unfinished", "parallel-unfinished-retire"):
+            with self.subTest(name=name), self.assertRaises(ProcessingFailure) as caught:
+                self.run_job(name)
+            self.assertEqual(caught.exception.code, "ANALYZER_PROCESS_CRASHED")
+            self.assertIsNone(self.processor.process)
+            self.assertTrue(self.processor.resources_released)
+        first = self.run_job("healthy-after-unfinished")
+        second = self.run_job("healthy-after-recovery")
+        self.assertEqual(first.report["pid"], second.report["pid"])
 
 
 if __name__ == "__main__":
