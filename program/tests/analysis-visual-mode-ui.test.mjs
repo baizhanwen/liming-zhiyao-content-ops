@@ -55,7 +55,7 @@ test("module retry preserves saved visual settings rather than applying the new-
   const retry = loadFunction("components/AnalysisDetail.tsx", "retryModule", {
     detail: { job: { id: "saved-job" } }, canRetry: true,
     organizationId: "synthetic-org", projectId: "synthetic-project", visualAnalysisMode: "vision_only", visualSamplingLevel: "detailed",
-    runAction: async (_name, work) => work(), setNotice() {},
+    runAction: async (_name, work) => work(), setNotice() {}, setModuleFeedback() {}, requestUrl: "synthetic-report-url",
     scopedFetch: async (url, init) => { requests.push({ url, body: JSON.parse(init.body) }); return Response.json({}); },
     readApiError: async () => "error",
   });

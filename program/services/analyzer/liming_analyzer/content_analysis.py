@@ -1131,7 +1131,7 @@ def build_content_analysis(
             candidate = getattr(error, "safe_failure_reason", kind) if _compact_payload else None
             reason = candidate if isinstance(candidate, str) and re.fullmatch(r"[a-z_]{1,80}", candidate) else "classification_request_failed"
             safe_issues = getattr(error, "safe_validation_issues", None)
-            issues = safe_issues if isinstance(safe_issues, list) and all(
+            issues = safe_issues if isinstance(safe_issues, list) and safe_issues and all(
                 isinstance(issue, str) and re.fullmatch(r"[a-zA-Z0-9_.:-]{1,180}", issue)
                 for issue in safe_issues
             ) else [reason]
@@ -1461,11 +1461,19 @@ def build_content_analysis_bundle(
                 if (not isinstance(previous, Mapping) or previous.get("status") != "completed"
                         or not isinstance(previous.get("validation"), Mapping)
                         or previous["validation"].get("passed") is not True):
+                    # A retried sibling may no longer have an old response.
+                    # Use only its fully checked current result to reconstruct
+                    # the retired wire, then require the exact saved hash below.
+                    # Changed active labels therefore cannot reuse the summary.
+                    previous = completed.get(key)
+                if (not isinstance(previous, Mapping) or previous.get("status") != "completed"
+                        or not isinstance(previous.get("validation"), Mapping)
+                        or previous["validation"].get("passed") is not True):
                     raise CompactProtocolError("retired_cache_upstream_unavailable")
                 return previous["response"]
 
-            # Replay only saved responses. This reproduces the reviewed-flow
-            # source subset and upstream coverage as well as prior labels.
+            # Replay checked responses to reconstruct the old source subset,
+            # coverage and prior labels; the saved wire hash must still match.
             build_content_analysis(
                 media, transcript, visuals, previous_request, profile=profile, metrics=metrics,
                 transcript_source=transcript_source, _compact_payload=True,

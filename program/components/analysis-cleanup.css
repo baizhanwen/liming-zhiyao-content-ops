@@ -16,6 +16,17 @@
 .analysis-layout .analysis-completed-record { grid-column: 1 / -1; padding-top: 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
 .analysis-layout .analysis-completed-record > summary { width: fit-content; cursor: pointer; }
 .analysis-layout .analysis-completed-record > section { margin-top: 10px; }
+.analysis-layout .job-recovery-feedback { max-width: 240px; margin: 2px 0 0; color: var(--brand); font-size: 11px; line-height: 1.6; text-align: right; }
+.analysis-layout .job-recovery-feedback.error { color: var(--danger); }
+.unified-analysis-page .report-recovery-summary { margin: 12px 0; padding: 12px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); color: var(--muted); font-size: 12px; line-height: 1.7; }
+.unified-analysis-page .report-recovery-summary p { margin: 0; }
+.unified-analysis-page .report-retry-feedback { margin: 8px 0 0; color: var(--brand); font-size: 12px; line-height: 1.7; }
+.unified-analysis-page .report-retry-feedback.error { color: var(--danger); }
+@media (max-width: 560px) {
+  .analysis-layout .analysis-status { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; min-width: 0; }
+  .analysis-layout .analysis-status .job-profile { flex: 1 1 100%; }
+  .analysis-layout .analysis-status .job-recovery-feedback { flex: 1 1 100%; max-width: none; text-align: left; }
+}
 .analysis-layout .primary-button, .script-rewrite-workspace .primary-button { font-size: 12px; }
 .analysis-layout .primary-button::after, .script-rewrite-workspace .primary-button::after { content: none; }
 

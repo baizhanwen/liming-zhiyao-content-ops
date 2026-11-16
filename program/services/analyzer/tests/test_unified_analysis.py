@@ -244,18 +244,23 @@ def test_expression_module_starts_at_its_observed_budget_without_an_extra_sdk_ca
 
 
 @pytest.mark.parametrize("configured_cap", [2500, 5000, 6000, 12000])
-def test_expression_length_at_its_hard_cap_never_repeats_the_same_paid_budget(configured_cap):
+def test_expression_length_at_its_hard_cap_has_one_directed_compaction_attempt(configured_cap):
     task = "content_classification:" + MODULES[1]
     result, sdk, ledger, *_rest = run_unified(
         cap=configured_cap, sdk=OfflineSdk(failures={task: ["length", "length"]}),
     )
     expected = min(configured_cap, 6000)
-    assert [row["max_completion_tokens"] for row in sdk.calls if row["task"] == task] == [expected]
+    calls = [row for row in sdk.calls if row["task"] == task]
+    assert [row["max_completion_tokens"] for row in calls] == [expected, expected]
+    assert "output_length_recovery" not in payload_of(calls[0])
+    recovery_payload = payload_of(calls[1])
+    assert recovery_payload.pop("output_length_recovery")["previous_finish_reason"] == "length"
+    assert recovery_payload == payload_of(calls[0])
     assert not any(row["task"] == "content_classification:synthesis" for row in sdk.calls)
     diag = module_section(result, MODULES[1])["diagnostics"]
-    assert diag["attempts"] == 1 and diag["output_budget"] == expected
+    assert diag["attempts"] == 2 and diag["output_budget"] == expected
     assert diag["failure_kind"] == "length"
-    assert len([row for row in ledger.events if row["status"] == "failed"]) == 1
+    assert len([row for row in ledger.events if row["status"] == "failed"]) == 2
 
 
 def test_standard_expression_length_can_increase_from_4500_to_6000_once():

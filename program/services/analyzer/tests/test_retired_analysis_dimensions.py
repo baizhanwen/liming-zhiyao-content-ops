@@ -4,6 +4,10 @@ from dataclasses import replace
 from unittest.mock import patch
 
 import pytest
+from test_content_analysis import synthetic_inputs, synthetic_response
+from test_content_module_protocol import compact_synthetic_response, wire_label_index
+from test_report_revalidation import fixture as saved_report_fixture
+from test_unified_analysis import payload_of
 
 from liming_analyzer.content_analysis import (
     MODULES,
@@ -12,10 +16,6 @@ from liming_analyzer.content_analysis import (
     create_content_response_model,
     load_taxonomy,
 )
-from test_content_analysis import synthetic_inputs, synthetic_response
-from test_content_module_protocol import compact_synthetic_response, wire_label_index
-from test_report_revalidation import fixture as saved_report_fixture
-
 
 RETIRED = "visual.cut_pattern"
 RETIRED_LABEL = "镜头切换模式"
@@ -91,6 +91,9 @@ def test_v11_v12_saved_reports_migrate_retired_caches_with_zero_model_calls(revi
 @pytest.mark.parametrize("reviewed", [False, True])
 def test_retrying_one_sibling_reuses_retired_visual_and_synthesis_caches(reviewed):
     analyzer, job, supplied, sdk, ledger = old_saved_report(reviewed)
+    previous = copy.deepcopy(job.checkpoint["unified_progress"])
+    saved = []
+    analyzer.set_unified_checkpoint(lambda value: saved.append(copy.deepcopy(value)))
     job.checkpoint.pop("report_revalidation_only")
     job.checkpoint["retry_module_keys"] = [MODULES[1]]
     del job.checkpoint["unified_progress"]["modules"][MODULES[1]]
@@ -98,6 +101,46 @@ def test_retrying_one_sibling_reuses_retired_visual_and_synthesis_caches(reviewe
     assert result.report["unified_report"]["status"] == "complete", result.report["unified_report"]["validation"]
     assert [row["task"] for row in sdk.calls] == ["content_classification:" + MODULES[1]]
     assert [row["task"] for row in ledger.events if row["status"] == "started"] == ["content_classification:" + MODULES[1]]
+    assert saved[-1]["source_signature"] == previous["source_signature"]
+    assert saved[-1]["modules"][MODULES[1]]["response"]["classifications"] == previous["modules"][MODULES[1]]["response"]["classifications"]
+    for key in ("visual", "synthesis"):
+        assert saved[-1]["modules"][key]["generation_signature"] == previous["modules"][key]["signature"]
+        assert saved[-1]["modules"][key]["revalidated_from_signature"] == previous["modules"][key]["signature"]
+
+
+def test_retirement_does_not_hide_changed_active_prior_when_the_sibling_cache_is_missing():
+    analyzer, job, supplied, sdk, ledger = old_saved_report(True)
+    previous = copy.deepcopy(job.checkpoint["unified_progress"])
+    saved = []
+    analyzer.set_unified_checkpoint(lambda value: saved.append(copy.deepcopy(value)))
+    job.checkpoint.pop("report_revalidation_only")
+    job.checkpoint["retry_module_keys"] = [MODULES[1]]
+    del job.checkpoint["unified_progress"]["modules"][MODULES[1]]
+    original = sdk.create_with_completion
+
+    def changed_active_result(**arguments):
+        response, completion = original(**arguments)
+        wire = payload_of(arguments)
+        if wire.get("m") == MODULES[1]:
+            hook = next(row["i"] for row in wire["d"] if row["n"] == "开头Hook")
+            value = response.model_dump(mode="json")
+            value["c"] = [{"d": hook, "s": 1} if row["d"] == hook else row for row in value["c"]]
+            response = arguments["response_model"].model_validate(value)
+        return response, completion
+
+    sdk.create_with_completion = changed_active_result
+    result = analyzer.analyze(job, *supplied)
+    assert result.report["unified_report"]["status"] == "complete", result.report["unified_report"]["validation"]
+    assert [row["task"] for row in sdk.calls] == ["content_classification:" + MODULES[1], "content_classification:synthesis"]
+    assert sum(row["status"] == "started" for row in ledger.events) == 2
+    assert saved[-1]["source_signature"] == previous["source_signature"]
+    old_hook = next(row for row in previous["modules"][MODULES[1]]["response"]["classifications"] if row["dimension_id"] == "hook.type")
+    new_hook = next(row for row in saved[-1]["modules"][MODULES[1]]["response"]["classifications"] if row["dimension_id"] == "hook.type")
+    assert old_hook["state"] == "known" and new_hook["state"] == "unknown"
+    assert not any(row[0] == "开头Hook" for row in payload_of(sdk.calls[-1])["prior"])
+    assert saved[-1]["modules"]["synthesis"]["signature"] != previous["modules"]["synthesis"]["signature"]
+    assert "generation_signature" not in saved[-1]["modules"]["synthesis"]
+    assert saved[-1]["modules"]["visual"]["generation_signature"] == previous["modules"]["visual"]["signature"]
 
 
 @pytest.mark.parametrize("reviewed", [False, True])

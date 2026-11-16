@@ -45,6 +45,46 @@ test("module retry preserves acquired evidence and successful caches and creates
   assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM audit_logs WHERE action='analysis_job.retried'").get().n, 1);
 });
 
+test("historical empty length validation restores checkpoint retry without reacquiring evidence or altering the saved report", async t => {
+  const f = await fixture(t);
+  const report = JSON.parse(readFileSync(new URL("./fixtures/unified-analysis-original.json", import.meta.url), "utf8"));
+  const key = "text_expression_value", checkpoint = structuredClone(f.checkpoint);
+  report.analysis_meta.visual_analysis_mode = "vision_only";
+  report.analysis_meta.visual_sampling_level = "quick";
+  report.unified_report.status = report.content_analysis.status = "partial";
+  report.unified_report.outcome.report = "partial";
+  report.unified_report.validation = report.content_analysis.validation = { passed: false, issues: [`${key}:length`] };
+  Object.assign(report.content_analysis.module_status[key], { status: "failed", reason: "length", validation: { passed: false, issues: [] } });
+  const section = report.unified_report.sections.find(row => row.key === key);
+  Object.assign(section, { status: "failed", reason: "length", findings: [] });
+  Object.assign(section.diagnostics, { failure_kind: "length", finish_reason: "length", attempts: 1 });
+  Object.assign(report.analysis_meta.quality_audit, { status: "review", acceptance_passed: false, requires_review: true, completion_status: "partial", issues: [`${key}:length`] });
+  checkpoint.visual_analysis_mode = "vision_only";
+  checkpoint.visual_sampling_level = "quick";
+  Object.assign(checkpoint.unified_progress, { version: "unified-progress.v2", protocol_version: "unified-analysis.v2", source_signature: report.unified_report.source_signature });
+  checkpoint.unified_progress.modules = Object.fromEntries(report.unified_report.sections.filter(row => row.status === "completed").map(row => [row.key, {
+    status: "completed", signature: "a".repeat(64), validation: { passed: true, issues: [] }, response: { sentinel: row.key }, findings: row.findings,
+  }]));
+  f.sqlite.prepare("UPDATE analysis_jobs SET visual_analysis_mode='vision_only',visual_sampling_level='quick',checkpoint_json=? WHERE id=?").run(JSON.stringify(checkpoint), f.jobId);
+  f.saveReport(report, "analysis.v12", "2099-01-01");
+  const before = f.sqlite.prepare("SELECT report_json FROM video_analyses ORDER BY created_at DESC LIMIT 1").get().report_json;
+  const response = await f.retry();
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.deepEqual(body.job.moduleKeys, [key]);
+  assert.equal(body.job.revalidationOnly, false);
+  const current = f.sqlite.prepare("SELECT * FROM analysis_jobs WHERE id=?").get(f.jobId), saved = JSON.parse(current.checkpoint_json);
+  assert.equal(current.status, "pending");
+  assert.equal(current.checkpoint_stage, "evidence_ready");
+  assert.equal(current.visual_analysis_mode, "vision_only");
+  assert.equal(current.visual_sampling_level, "quick");
+  assert.deepEqual(saved.visuals, checkpoint.visuals);
+  assert.deepEqual(saved.transcript, checkpoint.transcript);
+  assert.deepEqual(saved.unified_progress.modules, checkpoint.unified_progress.modules);
+  assert.deepEqual(saved.retry_module_keys, [key]);
+  assert.equal(f.sqlite.prepare("SELECT report_json FROM video_analyses ORDER BY created_at DESC LIMIT 1").get().report_json, before);
+});
+
 test("a completed v12 report keeps successful caches and queues only explicitly pending manuscript IDs", async t => {
   const f = await fixture(t), report = structuredClone(reviewed), checkpoint = structuredClone(f.checkpoint);
   Object.assign(checkpoint.unified_progress, { version: "unified-progress.v2", protocol_version: "unified-analysis.v2", source_signature: report.unified_report.source_signature });

@@ -85,25 +85,44 @@ def test_explicit_saved_candidate_repair_carries_error_and_requests_only_failed_
     assert result["content_analysis"]["status"] == "complete"
 
 
-def test_targeted_repair_revalidates_existing_synthesis_without_a_new_summary_call():
+def test_targeted_repair_refreshes_synthesis_when_new_active_topic_classifications_change_its_input():
     task = "content_classification:" + MODULES[0]
-    first_sdk = ReviewedSdk()
+
+    class TopicAwareSdk(ReviewedSdk):
+        def create_with_completion(self, **arguments):
+            response, completion = super().create_with_completion(**arguments)
+            payload = payload_of(arguments)
+            if payload.get("m") == "synthesis":
+                value = response.model_dump(mode="json")
+                topic_known = any(row[0] == "选题赛道" for row in payload["prior"])
+                value["f"][0]["x"] = ("职场成长赛道，以会后行动清单教学为主题。" if topic_known
+                                         else "选题分类尚未取得，保留其余独立观察。")
+                response = arguments["response_model"].model_validate(value)
+            return response, completion
+
+    first_sdk = TopicAwareSdk()
     first_sdk.failures = {task: ["schema", "schema"]}
     first, _sdk, _ledger, checkpoints = run_reviewed(first_sdk)
     previous = checkpoints[-1]
     assert module_section(first, MODULES[0])["status"] == "failed"
     assert module_section(first, "synthesis")["status"] == "completed"
+    assert "选题分类尚未取得" in module_section(first, "synthesis")["findings"][0]["text"]
     original_signature = previous["modules"]["synthesis"]["signature"]
 
-    result, sdk, ledger, resumed = run_reviewed(checkpoint=previous, targets=[MODULES[0]])
-    assert [row["task"] for row in sdk.calls] == [task]
-    assert sum(row["status"] == "started" for row in ledger.events) == 1
+    result, sdk, ledger, resumed = run_reviewed(TopicAwareSdk(), checkpoint=previous, targets=[MODULES[0]])
+    assert [row["task"] for row in sdk.calls] == [task, "content_classification:synthesis"]
+    assert sum(row["status"] == "started" for row in ledger.events) == 2
     assert result.report["unified_report"]["status"] == "complete"
-    assert module_section(result, "synthesis")["diagnostics"]["reused"] is True
+    assert module_section(result, "synthesis")["diagnostics"]["reused"] is False
+    assert "会后行动清单教学" in module_section(result, "synthesis")["findings"][0]["text"]
+    for module in (MODULES[1], "visual"):
+        assert module_section(result, module)["diagnostics"]["reused"] is True
+        assert resumed[-1]["modules"][module] == previous["modules"][module]
     saved = resumed[-1]["modules"]["synthesis"]
-    assert saved["generation_signature"] == original_signature
-    assert saved["revalidated_from_signature"] == original_signature
+    assert "generation_signature" not in saved
+    assert "revalidated_from_signature" not in saved
     assert saved["signature"] != original_signature
+    assert resumed[-1]["source_signature"] == previous["source_signature"]
 
 
 def test_changed_source_cannot_revalidate_a_previous_synthesis_on_targeted_retry():

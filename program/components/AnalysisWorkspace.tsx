@@ -41,7 +41,7 @@ const errorGuidance: Record<string, string> = {
   ANALYZER_PROCESS_CRASHED: "处理进程异常退出，后续任务会继续。请查看主机内存、磁盘和分析日志。",
   ANALYZER_PROCESS_START_FAILED: "处理进程未能启动，请检查主机分析日志和 Python 依赖。",
   ANALYZER_RECOVERY_EXHAUSTED: "连续三次执行中断，已停止自动恢复。请检查主机和网络后手动重试，已有检查点会保留。",
-  ANALYSIS_PARTIAL: "报告已经生成；请查看质量验收中未通过的项目，配置缺失能力或修正来源后再重试。",
+  ANALYSIS_PARTIAL: "已完成内容会保留。打开报告查看待补部分，可从有效检查点继续。",
   DOUYIN_COOKIE_EXPIRED: "该历史任务使用旧版登录采集，请重试以使用当前匿名采集；受限视频可直接上传原文件。",
   DOUYIN_ACCESS_REJECTED: "请稍后重试。若公开视频仍无法匿名访问，可上传原视频；需要登录或验证码的页面无法自动采集。",
   DOUYIN_BROWSER_UNAVAILABLE: "请运行 tools\\setup-analyzer.bat 安装或修复独立 Chromium 采集环境，然后重启分析服务。",
@@ -67,6 +67,7 @@ const errorGuidance: Record<string, string> = {
 };
 
 function visibleJobError(job: Job) {
+  if (job.status === "partial" && job.error_code === "ANALYSIS_PARTIAL") return "报告部分完成，打开报告可查看已完成内容和待补模块。";
   if (job.error_code && ["DOUYIN_ACCESS_REJECTED", "DOUYIN_BROWSER_UNAVAILABLE", "DOUYIN_COOKIE_INVALID", "SOURCE_NETWORK_FAILED", "SOURCE_RATE_LIMITED", "SOURCE_UNAVAILABLE"].includes(job.error_code)) return job.error_message;
   if (job.progress === 18 && (job.error_message?.includes("[WinError 2]") || job.error_message?.includes("executable was not found"))) {
     return "分析主机没有找到 FFmpeg/ffprobe 媒体运行时。";
@@ -158,6 +159,8 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
   const [queue, setQueue] = useState<QueueStatus | null>(null);
   const [cookieUpdating, setCookieUpdating] = useState(false); const [cookieDeleting, setCookieDeleting] = useState(false); const [cookieMessage, setCookieMessage] = useState(""); const cookieFileRef = useRef<HTMLInputElement>(null);
   const [jobActionId, setJobActionId] = useState("");
+  const [jobFeedback, setJobFeedback] = useState<Record<string, { tone: "pending" | "success" | "error"; message: string }>>({});
+  const pendingJobActions = useRef(new Set<string>());
   const [analysisProfile, updateAnalysisProfile] = useAnalysisProfile();
   const [visualAnalysisMode, setVisualAnalysisMode] = useState<VisualAnalysisMode>("hybrid");
   const [visualSamplingLevel, setVisualSamplingLevel] = useState<VisualSamplingLevel>("balanced");
@@ -173,6 +176,7 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
   const clearTaskScope = useCallback(() => {
     taskReader.current?.reader.dispose(); taskReader.current = null;
     setVideos([]); setJobs([]); setService(null); setQueue(null); setCanWrite(false);
+    setJobFeedback({});
     setTaskConnection({ ...initialTaskRefresh }); setTaskSnapshotTimes({});
   }, []);
 
@@ -310,20 +314,35 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
   }
 
   async function retry(jobId: string, segmentKey?: string) {
+    if (pendingJobActions.current.has(jobId)) return;
+    pendingJobActions.current.add(jobId);
     setError(""); setJobActionId(jobId);
     const requestedScope = taskReader.current;
+    setJobFeedback(current => ({ ...current, [jobId]: { tone: "pending", message: "正在提交恢复请求…" } }));
     try {
       const response = await scopedFetch(`/api/analysis-jobs/${jobId}/retry`, { method: "POST", ...(segmentKey ? { headers: { "content-type": "application/json" }, body: JSON.stringify({ segmentKey }) } : {}) });
       if (taskReader.current !== requestedScope) return;
-      if (!response.ok) { setError(await readError(response)); return; }
+      if (!response.ok) {
+        const message = await readError(response);
+        setError(message); setJobFeedback(current => ({ ...current, [jobId]: { tone: "error", message } })); return;
+      }
       const body = await response.json() as { job: Job };
       if (taskReader.current !== requestedScope) return;
       requestedScope?.reader.invalidate();
       setJobs((current) => current.map((job) => job.id === jobId ? { ...job, ...body.job, taskProgress: body.job.taskProgress } : job));
       setTaskSnapshotTimes((current) => ({ ...current, [jobId]: Date.now() }));
-      await loadVideos(organizationId, projectId);
-    } catch (reason) { if (taskReader.current === requestedScope) setError(reason instanceof Error ? reason.message : "任务重试失败，请稍后再试。"); }
-    finally { setJobActionId(""); }
+      setJobFeedback(current => ({ ...current, [jobId]: { tone: "success", message: "恢复请求已受理，等待主机接手；已有取证和未受影响结果将复用，相关综合结论会同步更新。" } }));
+      try { await loadVideos(organizationId, projectId); }
+      catch {
+        if (taskReader.current === requestedScope) setJobFeedback(current => ({ ...current, [jobId]: { tone: "error", message: "恢复请求已受理，但状态刷新失败。请刷新列表核对，不必再次提交。" } }));
+      }
+    } catch (reason) {
+      if (taskReader.current === requestedScope) {
+        const message = `${reason instanceof Error ? reason.message : "恢复请求未能确认。"} 请刷新任务状态核对后再试。`;
+        setError(message); setJobFeedback(current => ({ ...current, [jobId]: { tone: "error", message } }));
+      }
+    }
+    finally { pendingJobActions.current.delete(jobId); setJobActionId(current => current === jobId ? "" : current); }
   }
 
   async function cancelJob(jobId: string) {
@@ -420,10 +439,11 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
               {!missingReport && (job?.status === "completed" || job?.status === "partial") && <Link href={`/analysis/${video.id}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`}>{initialView === "assets" ? "查看资产" : "查看结果"}</Link>}
               {job?.error_code && ["DOUYIN_COOKIE_EXPIRED", "DOUYIN_ACCESS_REJECTED", "DOUYIN_BROWSER_UNAVAILABLE", "DOUYIN_COOKIE_INVALID"].includes(job.error_code) && service?.canManageCookies && !anonymousCollection && <button type="button" disabled={cookieUpdating} onClick={() => cookieFileRef.current?.click()}>更新 Cookie</button>}
               {Boolean(job?.is_imported_job) && partial && canWrite && !video.is_reference && <Link href={`/analysis/${video.id}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`}>重新分析</Link>}
-              {stale && job && !job.is_imported_job && canWrite && !video.is_reference && <button type="button" disabled={jobActionId === job.id} onClick={() => retry(job.id)}>{resumableCheckpointStages.has(job.checkpoint_stage ?? "") ? job.checkpoint_stage === "transcript_ready" ? "复用口播继续" : "从检查点继续" : "恢复"}</button>}
-              {retryable && job && canWrite && !video.is_reference && <button type="button" disabled={jobActionId === job.id} onClick={() => retry(job.id)}>{resumableCheckpointStages.has(job.checkpoint_stage ?? "") ? job.checkpoint_stage === "transcript_ready" ? "复用口播继续" : "从检查点继续" : "重试"}</button>}
-              {(retryable || stale) && job && !job.is_imported_job && canWrite && !video.is_reference && job.segment_progress?.segments.filter((segment) => segment.status !== "completed").map((segment) => <button key={`${job.id}-${segment.windowKey}`} type="button" disabled={jobActionId === job.id} onClick={() => retry(job.id, segment.windowKey)}>重试第 {segment.index} 段</button>)}
+              {stale && job && !job.is_imported_job && canWrite && !video.is_reference && <button type="button" disabled={jobActionId === job.id} onClick={() => retry(job.id)}>{jobActionId === job.id ? "正在提交恢复…" : resumableCheckpointStages.has(job.checkpoint_stage ?? "") ? job.checkpoint_stage === "transcript_ready" ? "复用口播继续" : "从检查点继续" : "恢复"}</button>}
+              {retryable && job && canWrite && !video.is_reference && <button type="button" disabled={jobActionId === job.id} onClick={() => retry(job.id)}>{jobActionId === job.id ? "正在提交恢复…" : resumableCheckpointStages.has(job.checkpoint_stage ?? "") ? job.checkpoint_stage === "transcript_ready" ? "复用口播继续" : "从检查点继续" : "重试"}</button>}
+              {(retryable || stale) && job && !job.is_imported_job && canWrite && !video.is_reference && job.segment_progress?.segments.filter((segment) => segment.status !== "completed").map((segment) => <button key={`${job.id}-${segment.windowKey}`} type="button" disabled={jobActionId === job.id} onClick={() => retry(job.id, segment.windowKey)}>{jobActionId === job.id ? "正在提交恢复…" : `重试第 ${segment.index} 段`}</button>)}
               {active && !stale && job && !job.is_imported_job && canWrite && !video.is_reference && <button type="button" disabled={jobActionId === job.id} onClick={() => cancelJob(job.id)}>取消</button>}
+              {job && jobFeedback[job.id] && <p className={`job-recovery-feedback ${jobFeedback[job.id].tone}`} role={jobFeedback[job.id].tone === "error" ? "alert" : "status"}>{jobFeedback[job.id].message}</p>}
             </div>
             {job?.status === "completed" && !missingReport && !job.is_imported_job ? <details className="analysis-completed-record"><summary>查看处理记录</summary>{taskProgress}</details> : taskProgress}
           </article>;

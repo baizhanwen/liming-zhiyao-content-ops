@@ -206,15 +206,15 @@ test("v11 preflight estimates canonical plus four compact modules and keeps imag
     const budget = contentTaxonomyFixture.budgets[profile].compact;
     const expected = Object.entries(budget.modules).reduce((sum, [module, hardCap]) => {
       const initial = Math.min(hardCap, budget.initial_output_tokens_by_module[module] ?? budget.initial_output_tokens);
-      return sum + budget.input_token_limit + initial + (initial < hardCap
-        ? budget.input_token_limit + Math.min(hardCap, Math.max(initial + 1500, initial * 2)) : 0);
+      return sum + 2 * budget.input_token_limit + initial
+        + Math.min(hardCap, Math.max(initial + 1500, initial * 2));
     }, 0);
     assert.equal(estimateContentClassificationMaximumTokens(profile), expected);
     const estimate = estimateUnifiedAnalysisBudget(60, profile);
     assert.equal(estimateAnalysisMaximumTokens(60, profile), expected + estimate.canonical.retryTokensEstimate);
     assert.equal(estimate.modules.length, 4);
     assert.equal(estimate.visualTokens, null); assert.equal(estimate.includesImageModelCalls, false);
-    assert.equal(estimate.isHardCap, false); assert.equal(estimate.maximumRequestCount, profile === "max" ? 9 : 10);
+    assert.equal(estimate.isHardCap, false); assert.equal(estimate.maximumRequestCount, 10);
     assert.ok(estimateAnalysisMaximumTokens(3_600, profile) > estimateAnalysisMaximumTokens(60, profile));
   }
 });

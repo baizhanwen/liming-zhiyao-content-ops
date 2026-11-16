@@ -23,6 +23,7 @@ from .unified_analysis import (
     DeferredModuleError,
     UnifiedRequestError,
     _compatibility_fields,
+    _content_length_recovery_payload,
     _empty_diagnostics,
     _finish_reason,
     _get,
@@ -144,6 +145,7 @@ def analyze_reviewed(analyzer: Any, job: Any, media: Any, transcript: Any, visua
         requested = min(hard_cap, initial)
         attempts = [row for row in records if row["task"] == task] if task.startswith("content_classification:") else []
         repairing = "response_repair" in payload
+        request_payload = payload
         call_key = "canonical:" + str(payload.get("batch_id", "default")) if task in {"canonical_review", "canonical_repair"} else task
         for attempt in range(1 if repairing else 2):
             with lock:
@@ -158,7 +160,7 @@ def analyze_reviewed(analyzer: Any, job: Any, media: Any, transcript: Any, visua
             arguments = {"model": analyzer.model, "response_model": response_model, "max_retries": single_attempt_retry(),
                          "temperature": 0.1, **options, "messages": [
                 {"role": "system", "content": _system_prompt(task)},
-                {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))}]}
+                {"role": "user", "content": json.dumps(request_payload, ensure_ascii=False, separators=(",", ":"))}]}
             raw = None
             error = None
             detail = {"failure_kind": None, "http_status": None, "finish_reason": None}
@@ -187,9 +189,13 @@ def analyze_reviewed(analyzer: Any, job: Any, media: Any, transcript: Any, visua
                 diagnostics[task] = aggregate
             if error is None:
                 return response.model_dump(mode="json") if hasattr(response, "model_dump") else dict(response)
-            if detail["failure_kind"] == "length" and not repairing and attempt == 0 and requested < hard_cap:
-                requested = min(hard_cap, max(requested + 1_500, requested * 2))
-                continue
+            if detail["failure_kind"] == "length" and not repairing and attempt == 0:
+                if requested < hard_cap:
+                    requested = min(hard_cap, max(requested + 1_500, requested * 2))
+                    continue
+                if task.startswith("content_classification:"):
+                    request_payload = _content_length_recovery_payload(payload, requested)
+                    continue
             raise UnifiedRequestError(aggregate, safe_candidate=_safe_schema_candidate(error, detail, allow_markdown=True),
                                       safe_validation_issues=_schema_validation_issues(error)) from error
         raise RuntimeError("bounded request did not produce a result")
@@ -273,8 +279,9 @@ def analyze_reviewed(analyzer: Any, job: Any, media: Any, transcript: Any, visua
         transcript_source="manual" if job.source.get("manual_transcript") else "asr",
         max_workers=2, on_module_checkpoint=module_completed, on_module_failure=module_failed,
         resume_modules=progress.get("modules"), resume_failures=progress.get("failed_modules"), retry_module_keys=tuple(targets),
-        allow_revalidated_synthesis_cache=bool(targets and "canonical" not in targets
-            and existing.get("source_signature") == signature and existing.get("protocol_version") == PIPELINE_VERSION),
+        # An unchanged source does not imply unchanged synthesis inputs: newly
+        # completed classifications must refresh their dependent conclusion.
+        allow_revalidated_synthesis_cache=False,
         review_context=canonical_result.review_context)
     modules_ms = round((time.monotonic() - modules_started) * 1000)
     content = bundle["content_analysis"]

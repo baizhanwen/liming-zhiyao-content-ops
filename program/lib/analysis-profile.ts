@@ -49,7 +49,7 @@ function configuredOutputLimit(options: UnifiedBudgetOptions) {
   return limit;
 }
 
-/** Match unified_analysis.py: only confirmed length exhaustion can trigger this second budget. */
+/** Match the two-call ceiling: confirmed length can grow or compact at the same cap. */
 function outputAttempts(profile: AnalysisProfile, ceiling: number, configuredLimit: number, moduleKey?: string) {
   const budget = unifiedAnalysisProfileBudgets[profile];
   const hardCap = Math.min(ceiling, configuredLimit);
@@ -57,7 +57,10 @@ function outputAttempts(profile: AnalysisProfile, ceiling: number, configuredLim
   const initial = moduleKey ? initialByModule[moduleKey] ?? budget.initial_output_tokens : budget.initial_output_tokens;
   let requested = Math.min(hardCap, initial);
   const attempts = [requested];
-  for (let attempt = 1; attempt < Math.min(2, budget.max_api_attempts_per_module) && requested < hardCap; attempt += 1) {
+  for (let attempt = 1; attempt < Math.min(2, budget.max_api_attempts_per_module); attempt += 1) {
+    // Content modules can regenerate a shorter complete response at the cap.
+    // Canonical review retains its existing separate repair planning below.
+    if (requested >= hardCap && !moduleKey) break;
     requested = Math.min(hardCap, Math.max(requested + 1_500, requested * 2));
     attempts.push(requested);
   }

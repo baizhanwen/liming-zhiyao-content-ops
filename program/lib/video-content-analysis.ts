@@ -47,6 +47,10 @@ export type ContentEvidence = ContentAnalysis["evidence_registry"][number];
 export type ContentClassification = ContentAnalysis["classifications"][number];
 export type ContentAnalysisReadResult = { status: "valid"; value: ContentAnalysis; issues: [] } | { status: "missing" | "invalid" | "unsupported"; value: null; issues: string[] };
 const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+const historicalModuleFailureReasons: ReadonlySet<string> = new Set([
+  "length", "overloaded", "timeout", "provider_error", "schema_invalid", "evidence_invalid", "input_budget", "canonical_failed",
+  "input_budget_exceeded", "classification_request_failed", "not_requested", "upstream_module_failed",
+]);
 
 /** Validate stored facts; never infer taxonomy labels from prose or library tags. */
 export function readVideoContentAnalysis(value: unknown): ContentAnalysisReadResult {
@@ -59,6 +63,13 @@ export function readVideoContentAnalysis(value: unknown): ContentAnalysisReadRes
   const parsed = contentSchema.safeParse(value);
   if (!parsed.success) return { status: "invalid", value: null, issues: [...new Set(parsed.error.issues.slice(0, 12).map(issue => `结构化分析字段无效：${issue.path.slice(0, 6).join(".") || "content_analysis"}`))] };
   const content = parsed.data;
+  // Older producers kept an empty SDK issue list after a classified failure.
+  // Zod has cloned the input: restore only its missing diagnostic code here,
+  // then apply every existing fact/reference/validation check unchanged.
+  for (const state of Object.values(content.module_status)) {
+    if (state.status === "failed" && state.validation.passed === false && state.validation.issues.length === 0
+      && state.reason !== null && historicalModuleFailureReasons.has(state.reason)) state.validation.issues = [state.reason];
+  }
   const issues: string[] = [];
   const add = (code: string) => { if (issues.length < 30 && !issues.includes(code)) issues.push(code); };
   const evidenceById = new Map<string, ContentEvidence>();

@@ -197,6 +197,26 @@ def _empty_diagnostics(*, reused: bool = False) -> dict[str, Any]:
             "total_tokens": None, "reasoning_tokens": None, "output_budget": None, "reused": reused}
 
 
+def _content_length_recovery_payload(payload: Mapping[str, Any], output_budget: int) -> dict[str, Any]:
+    """Recreate complete compact JSON at the existing cap, retaining all sources.
+
+    This request-only guidance is intentionally outside the taxonomy and source
+    signature: existing evidence and verified modules remain reusable. Never
+    include a truncated candidate or ask the model to continue its partial JSON.
+    """
+    return {**payload, "output_length_recovery": {
+        "previous_finish_reason": "length", "output_budget": output_budget,
+        "instruction": "上次输出达到长度上限。本次从相同完整证据重新生成完整c/g/u/f JSON，"
+                       "不要续写上次截断内容，不输出推理过程、schema、代码围栏或额外说明。"
+                       "c仍须完整覆盖expected_d各索引一次，保留分类所需的有效证据引用。"
+                       "g/u按独立语义合并相邻事件和重复信息，不按每句ASR机械拆段，不填满数组上限。"
+                       "f每个方面只保留一条有依据的简洁结论；省略无信息增量的可选解释，"
+                       "所有文字仍遵守limits.text_chars及limits.total_text_chars。"
+                       "保留真实CTA原句及不同动作，数字、专名、否定、事实方向和必要来源不得为压缩改写或删去；"
+                       "不能把尚未完整返回的内容当成已确认结果，不得为了省字把缺少依据的分类标为已知。",
+    }}
+
+
 def _sum_known(records: list[dict[str, Any]], key: str) -> int | None:
     values = [record.get(key) for record in records]
     return sum(values) if all(value is not None for value in values) else None
@@ -379,6 +399,7 @@ def analyze_unified(analyzer: Any, job: Any, media: Any, transcript: Any, visual
         requested = min(hard_cap, initial)
         attempts = [row for row in records if row["task"] == task] if task.startswith("content_classification:") else []
         repairing = "response_repair" in payload
+        request_payload = payload
         for attempt in range(1 if repairing else 2):
             if task.startswith("content_classification:"):
                 with lock:
@@ -400,7 +421,7 @@ def analyze_unified(analyzer: Any, job: Any, media: Any, transcript: Any, visual
                  "报告直接给视频内容的观察和可执行建议；采样口径、模型约束或缺少外部数据不是视频本身的问题，不能用材料不足凑结论。"
                  "无法判断时在对应分类保留未知；没有明确内容问题证据就省略problem结论。逐一核对口播中的行动引导，包括结尾推荐、尝试或实践，不把署名和下期预告当成行动引导。"
                  "只分析文字和可见画面，不分析音乐、语气、音量、静音、音效。"},
-                {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))}]}
+                {"role": "user", "content": json.dumps(request_payload, ensure_ascii=False, separators=(",", ":"))}]}
             raw = None
             error = None
             detail = {"failure_kind": None, "http_status": None, "finish_reason": None}
@@ -429,9 +450,13 @@ def analyze_unified(analyzer: Any, job: Any, media: Any, transcript: Any, visual
                 diagnostics[task] = aggregate
             if error is None:
                 return response.model_dump(mode="json") if hasattr(response, "model_dump") else dict(response)
-            if detail["failure_kind"] == "length" and not repairing and attempt == 0 and requested < hard_cap:
-                requested = min(hard_cap, max(requested + 1_500, requested * 2))
-                continue
+            if detail["failure_kind"] == "length" and not repairing and attempt == 0:
+                if requested < hard_cap:
+                    requested = min(hard_cap, max(requested + 1_500, requested * 2))
+                    continue
+                if task.startswith("content_classification:"):
+                    request_payload = _content_length_recovery_payload(payload, requested)
+                    continue
             raise UnifiedRequestError(aggregate, safe_candidate=_safe_schema_candidate(error, detail),
                                       safe_validation_issues=_schema_validation_issues(error)) from error
         raise RuntimeError("bounded request did not produce a result")

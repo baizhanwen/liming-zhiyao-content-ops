@@ -16,7 +16,7 @@ test("fresh short media budgets exactly one canonical batch and four compact mod
   const { estimateUnifiedAnalysisBudget } = load();
   for (const [profile, initial, retried, output, expression, maximumCalls] of [
     ["standard", 46_500, 106_500, [3000, 6000], [4500, 6000], 10],
-    ["max", 84_000, 156_000, [4500, 6000], [6000], 9],
+    ["max", 84_000, 174_000, [4500, 6000], [6000, 6000], 10],
   ]) {
     const estimate = estimateUnifiedAnalysisBudget(60, profile);
     assert.equal(estimate.pipelineVersion, "analysis.v12");
@@ -35,24 +35,24 @@ test("inputs are charged again for four modules and their potential retries", ()
   const { estimateUnifiedAnalysisBudget } = load();
   const estimate = estimateUnifiedAnalysisBudget(60, "max");
   assert.equal(estimate.initialInputTokensEstimate, 5 * 12_000);
-  assert.equal(estimate.retryInputTokensEstimate, 9 * 12_000);
-  assert.equal(estimate.retryTextTokensEstimate - estimate.retryInputTokensEstimate, 4 * (4500 + 6000) + 6000);
+  assert.equal(estimate.retryInputTokensEstimate, 10 * 12_000);
+  assert.equal(estimate.retryTextTokensEstimate - estimate.retryInputTokensEstimate, 4 * (4500 + 6000) + 2 * 6000);
   assert.equal(estimate.includesImageModelCalls, false);
   assert.ok(estimate.modules.some(row => row.key === "visual")); // This is a text-classification call, not an image-model bill.
 });
 
-test("configured caps prevent repeated module length attempts while preserving a bounded canonical repair", () => {
+test("configured caps bound module compaction attempts and preserve the canonical repair plan", () => {
   const { estimateUnifiedAnalysisBudget } = load();
   const low = estimateUnifiedAnalysisBudget(60, "max", { maxOutputTokens: 2500 });
-  assert.equal(low.maximumRequestCount, 6);
-  assert.equal(low.retryTextTokensEstimate - low.initialTextTokensEstimate, 12_000 + 2500);
+  assert.equal(low.maximumRequestCount, 10);
+  assert.equal(low.retryTextTokensEstimate - low.initialTextTokensEstimate, 5 * (12_000 + 2500));
   assert.deepEqual(low.canonical.outputTokenBudgets, [2500, 2500]);
-  assert.ok(low.modules.every(row => row.outputTokenBudgets.join() === "2500"));
+  assert.ok(low.modules.every(row => row.outputTokenBudgets.join() === "2500,2500"));
   const high = estimateUnifiedAnalysisBudget(60, "max", { maxOutputTokens: 12_000 });
   assert.deepEqual(high.canonical.outputTokenBudgets, [4500, 9000]);
-  for (const row of high.modules) assert.deepEqual(row.outputTokenBudgets, row.key === "text_expression_value" ? [6000] : [4500, 6000]);
+  for (const row of high.modules) assert.deepEqual(row.outputTokenBudgets, row.key === "text_expression_value" ? [6000, 6000] : [4500, 6000]);
   const bounded = estimateUnifiedAnalysisBudget(60, "max", { maxOutputTokens: 5000 });
-  assert.deepEqual(bounded.modules.find(row => row.key === "text_expression_value").outputTokenBudgets, [5000]);
+  assert.deepEqual(bounded.modules.find(row => row.key === "text_expression_value").outputTokenBudgets, [5000, 5000]);
   assert.ok(bounded.modules.filter(row => row.key !== "text_expression_value").every(row => row.outputTokenBudgets.join() === "4500,5000"));
 });
 
@@ -62,8 +62,8 @@ test("long media grows canonical batches, never legacy report passes or module c
   assert.equal(estimateCanonicalBatchCount(96.01), 2);
   const actualShort = estimateUnifiedAnalysisBudget(114.816, "max");
   assert.equal(actualShort.canonical.batchCountEstimate, 2);
-  assert.equal(actualShort.maximumRequestCount, 11);
-  assert.equal(actualShort.retryTextTokensEstimate, 190_500);
+  assert.equal(actualShort.maximumRequestCount, 12);
+  assert.equal(actualShort.retryTextTokensEstimate, 208_500);
   const short = estimateUnifiedAnalysisBudget(60, "max"), long = estimateUnifiedAnalysisBudget(3600, "max");
   assert.ok(long.canonical.batchCountEstimate > short.canonical.batchCountEstimate);
   assert.deepEqual(long.modules, short.modules);
@@ -92,7 +92,7 @@ test("legacy profile settings and old classification budgets never add a second 
   profile.analysisProfileBudgets.max.outputTokens = 999_999;
   profile.analysisProfileBudgets.max.sourceTokens = 999_999;
   assert.equal(profile.estimateAnalysisMaximumTokens(60, "max"), baseline);
-  assert.equal(baseline, 156_000);
+  assert.equal(baseline, 174_000);
   const legacy = load();
   assert.equal(legacy.analysisProfileBudgets.max.outputTokens, 12_000);
   assert.equal(legacy.estimateMediaSourceTokens(36_000, "standard"), 32_000);
