@@ -477,7 +477,8 @@ def test_check_gpu_uses_only_the_remaining_budget_and_never_runs_after_deadline(
     monkeypatch.setattr(module.subprocess, "run", run)
     result = module.readiness_snapshot()
     module.check_timing_gpu(result, deadline=time.monotonic() + 14)
-    assert len(calls) == 1 and 0 < calls[0] <= 9
+    # Windows monotonic subtraction can round the 9-second budget to 9.000000000000057.
+    assert len(calls) == 1 and 0 < calls[0] <= 9 + 1e-9
     result = module.readiness_snapshot()
     module.check_timing_gpu(result, deadline=time.monotonic() - 1)
     assert len(calls) == 1
