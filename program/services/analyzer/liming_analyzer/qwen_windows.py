@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-import logging
+import errno
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+
+import httpx
 
 from .qwen_speech import QWEN_FILES, QwenSpeechRecognizer, _file_digest
 
@@ -40,26 +42,97 @@ def _valid(path: Path, name: str) -> bool:
     try:
         stat = path.stat()
         return stat.st_size == size and _file_digest(path, size, stat.st_mtime_ns) == digest
-    except OSError:
+    except (FileNotFoundError, NotADirectoryError):
         return False
+
+
+def _raise_storage_error(error: BaseException) -> None:
+    # Changing download servers cannot repair local permissions or a full disk.
+    # SDKs may wrap these errors, so inspect their original exception as well.
+    seen: set[int] = set()
+    while id(error) not in seen:
+        seen.add(id(error))
+        if isinstance(error, PermissionError) or (
+            isinstance(error, OSError)
+            and error.errno
+            in {
+                errno.EACCES,
+                errno.EPERM,
+                errno.ENOSPC,
+                errno.EROFS,
+                errno.EIO,
+                errno.EISDIR,
+                errno.ENOTDIR,
+                getattr(errno, "EDQUOT", -1),
+            }
+        ):
+            raise error
+        original = error.__cause__ or error.__context__
+        if original is None:
+            return
+        error = original
+
+
+def _publish_verified(folder: Path, downloaded: Path, name: str) -> None:
+    if not _valid(downloaded, name):
+        raise RuntimeError(f"Qwen 模型文件校验失败：{name}")
+    target = folder / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(downloaded, target)
 
 
 def _fetch_original(folder: Path, missing: list[str]) -> None:
     from modelscope.hub.file_download import model_file_download
+    from modelscope_hub.errors import HubError
+    from urllib3.exceptions import HTTPError as Urllib3HTTPError
 
     with TemporaryDirectory(prefix=".qwen-download-", dir=folder) as staging:
         for name in missing:
             remote = f"model_1.7B/{name}" if name.endswith(".onnx") else name
-            downloaded = Path(
-                model_file_download(
-                    MODELSCOPE_REPO, remote, revision=MODELSCOPE_REVISION, local_dir=staging
+            try:
+                downloaded = Path(
+                    model_file_download(
+                        MODELSCOPE_REPO,
+                        remote,
+                        revision=MODELSCOPE_REVISION,
+                        local_dir=staging,
+                        endpoint="https://modelscope.cn",
+                        token="",
+                    )
                 )
-            )
-            if not _valid(downloaded, name):
-                raise RuntimeError(f"Qwen 模型文件校验失败：{name}")
-            target = folder / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(downloaded, target)
+            except (HubError, Urllib3HTTPError) as error:
+                _raise_storage_error(error)
+                # SDK messages may contain signed URLs; expose only a safe category.
+                raise RuntimeError("ModelScope 模型文件下载失败") from None
+            _publish_verified(folder, downloaded, name)
+
+
+def _fetch_huggingface(folder: Path, missing: list[str]) -> None:
+    from huggingface_hub import hf_hub_download
+
+    with TemporaryDirectory(prefix=".qwen-download-", dir=folder) as staging:
+        for name in missing:
+            try:
+                # snapshot_download first enumerates the repository without a
+                # timeout in the pinned SDK. The fixed manifest needs no listing.
+                hf_hub_download(
+                    HUB_REPO,
+                    filename=name,
+                    revision=HUB_REVISION,
+                    local_dir=staging,
+                    etag_timeout=10,
+                    endpoint="https://huggingface.co",
+                    token=False,
+                    force_download=(folder / name).is_file(),
+                )
+            finally:
+                # A failed request can still leave a complete file. Publish only
+                # verified files, retaining progress without accepting partials.
+                downloaded = Path(staging) / name
+                if _valid(downloaded, name):
+                    _publish_verified(folder, downloaded, name)
+            if not _valid(folder / name, name):
+                raise RuntimeError(f"Hugging Face 模型文件校验失败：{name}")
 
 
 def windows_model_path(model_cache: Path, *, prepare: bool) -> Path:
@@ -70,25 +143,30 @@ def windows_model_path(model_cache: Path, *, prepare: bool) -> Path:
     if not prepare:
         raise RuntimeError("本地 Qwen3-ASR 模型尚未就绪，请点击「一键配置环境并启动」补齐模型。")
 
-    from huggingface_hub import snapshot_download
-
     folder.mkdir(parents=True, exist_ok=True)
-    try:
-        snapshot_download(
-            HUB_REPO,
-            revision=HUB_REVISION,
-            local_dir=folder,
-            allow_patterns=missing,
-            force_download=any((folder / name).is_file() for name in missing),
+    for index, (source, fetch) in enumerate(
+        (
+            ("ModelScope（国内）", _fetch_original),
+            ("Hugging Face（备用）", _fetch_huggingface),
         )
-    except (OSError, RuntimeError, ValueError) as error:
-        logging.getLogger(__name__).warning(
-            "Hugging Face 模型下载未完成，继续从 ModelScope 获取：%s", type(error).__name__
-        )
-    remaining = [name for name in missing if not _valid(folder / name, name)]
-    if remaining:
-        _fetch_original(folder, remaining)
-    return folder
+    ):
+        if index == 0:
+            print(f"正在从 {source} 下载 Qwen3-ASR 模型。", flush=True)
+        else:
+            print(f"Qwen3-ASR 模型国内源未完成，正在切换至 {source} 下载。", flush=True)
+        try:
+            fetch(folder, missing)
+        except (httpx.HTTPError, OSError, RuntimeError, ValueError) as error:
+            _raise_storage_error(error)
+        missing = [name for name in missing if not _valid(folder / name, name)]
+        if not missing:
+            print(f"Qwen3-ASR 模型下载及校验完成（{source}）。", flush=True)
+            return folder
+    raise RuntimeError(
+        "Qwen3-ASR 模型下载未完成：ModelScope（国内）与 Hugging Face（备用）均未能提供"
+        "完整且校验通过的模型。请检查网络连接后重新点击「一键配置环境并启动」；"
+        "已校验的文件会保留并复用。"
+    ) from None
 
 
 class SherpaQwenEngine:

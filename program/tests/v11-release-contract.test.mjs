@@ -5,7 +5,7 @@ import { runtimeFixture } from "./helpers/runtime-fixture.mjs";
 
 const read = relative => readFileSync(new URL(`../${relative}`, import.meta.url), "utf8");
 const lightTests = [
-  "test_canonical_transcript.py", "test_canonical_review.py", "test_instructor_single_attempt.py", "test_reviewed_analysis.py",
+  "test_qwen_windows.py", "test_whisper_model_download.py", "test_canonical_transcript.py", "test_canonical_review.py", "test_instructor_single_attempt.py", "test_reviewed_analysis.py",
   "test_content_review.py", "test_content_module_protocol.py", "test_unified_analysis.py", "test_vision_batch_runtime.py",
   "test_visual_overlap.py", "test_pipeline_checkpoint_synchronization.py", "test_unified_manual_batching.py",
   "test_cuda_runtime.py", "test_prepare_analyzer_cuda.py", "test_check_analyzer_cuda.py", "test_prepare_analyzer_models.py",
@@ -49,7 +49,7 @@ test("build metadata defaults to v12 while preserving explicitly injected deploy
 test("the candidate full release keeps unified source, readers and resources in the verified package", () => {
   const prepare = read("scripts/prepare-delivery.ps1"), verify = read("scripts/verify-delivery.mjs");
   for (const folder of ["services", "lib", "components", "resources"]) assert.ok(prepare.includes(`"${folder}"`));
-  for (const filename of ["canonical_transcript.py", "canonical_review.py", "reviewed_analysis.py", "content_module_protocol.py", "unified_analysis.py", "cuda_runtime.py", "scripts/prepare_analyzer_cuda.py", "scripts/check_analyzer_cuda.py", "gpu_diagnostics.py", "faster_whisper_asr.py", "pipeline.py", "process_runtime.py", "api_client.py", "artifacts.py", "drizzle/0052_analysis_transcript_review.sql", "unified-report.ts", "analysis-report-view.ts", "analysis-module-retry.ts", "analysis-media.ts", "UnifiedReportContent.tsx",
+  for (const filename of ["canonical_transcript.py", "canonical_review.py", "reviewed_analysis.py", "content_module_protocol.py", "unified_analysis.py", "cuda_runtime.py", "scripts/prepare_analyzer_cuda.py", "scripts/check_analyzer_cuda.py", "gpu_diagnostics.py", "faster_whisper_asr.py", "whisper_model_download.py", "pipeline.py", "process_runtime.py", "api_client.py", "artifacts.py", "drizzle/0052_analysis_transcript_review.sql", "unified-report.ts", "analysis-report-view.ts", "analysis-module-retry.ts", "analysis-media.ts", "UnifiedReportContent.tsx",
     "app/api/dashboard/route.ts", "components/DashboardWorkspace.tsx", "components/dashboard-workspace.css", "lib/dashboard-period.ts", "lib/work-tasks.ts",
     "lib/source-artifact-body.ts", "lib/analysis-collection-mode.ts", "lib/analysis-execution-mode.ts",
     "components/analysis-cleanup.css", "components/AnalysisCollectionModeSelect.tsx", "components/AnalysisExecutionModeSelect.tsx",

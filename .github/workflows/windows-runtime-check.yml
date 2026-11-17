@@ -32,7 +32,7 @@ jobs:
           python -m venv .local/runtime-tests
           $testPython = Join-Path (Get-Location) '.local/runtime-tests/Scripts/python.exe'
           # SDK/schema/image dependencies only; do not install ASR, Torch or Paddle.
-          $requirements = & $testPython -c "import tomllib; data = tomllib.load(open('services/analyzer/uv.lock', 'rb')); print('\n'.join(package['name'] + '==' + package['version'] for package in data['package'] if package['name'] in {'pytest', 'httpx', 'openai', 'instructor', 'pydantic', 'pypinyin', 'pillow', 'setuptools'}))"
+          $requirements = & $testPython -c "import tomllib; data = tomllib.load(open('services/analyzer/uv.lock', 'rb')); print('\n'.join(package['name'] + '==' + package['version'] for package in data['package'] if package['name'] in {'pytest', 'httpx', 'openai', 'instructor', 'pydantic', 'pypinyin', 'pillow', 'setuptools', 'requests', 'urllib3'}))"
           if ($LASTEXITCODE -ne 0) { throw 'Cannot read locked test dependencies.' }
           & $testPython -m pip install --disable-pip-version-check @requirements
           if ($LASTEXITCODE -ne 0) { throw 'Cannot prepare isolated runtime tests.' }
@@ -47,7 +47,7 @@ jobs:
           $testPython = Join-Path (Get-Location) '.local/runtime-tests/Scripts/python.exe'
           $env:PYTHONPATH = Join-Path (Get-Location) 'services/analyzer'
           # GPU checks use offline mocks; real CUDA inference requires the target machine's diagnostic JSON.
-          & $testPython -m pytest services/analyzer/tests/test_cuda_runtime.py services/analyzer/tests/test_prepare_analyzer_cuda.py services/analyzer/tests/test_check_analyzer_cuda.py services/analyzer/tests/test_prepare_analyzer_models.py services/analyzer/tests/test_diagnose_whisper_gpu.py services/analyzer/tests/test_gpu_diagnostics.py services/analyzer/tests/test_faster_whisper_asr.py services/analyzer/tests/test_transcript_checkpoints.py services/analyzer/tests/test_process_runtime.py services/analyzer/tests/test_windows_runtime.py services/analyzer/tests/test_durable_source_http.py services/analyzer/tests/test_reference_overflow_recovery.py services/analyzer/tests/test_transcript_review_mode.py services/analyzer/tests/test_quality_speech.py::test_ct2_auto_recovers_gpu_failures_without_partial_or_duplicate_output -q
+          & $testPython -m pytest services/analyzer/tests/test_cuda_runtime.py services/analyzer/tests/test_prepare_analyzer_cuda.py services/analyzer/tests/test_check_analyzer_cuda.py services/analyzer/tests/test_prepare_analyzer_models.py services/analyzer/tests/test_qwen_windows.py services/analyzer/tests/test_whisper_model_download.py services/analyzer/tests/test_diagnose_whisper_gpu.py services/analyzer/tests/test_gpu_diagnostics.py services/analyzer/tests/test_faster_whisper_asr.py services/analyzer/tests/test_transcript_checkpoints.py services/analyzer/tests/test_process_runtime.py services/analyzer/tests/test_windows_runtime.py services/analyzer/tests/test_durable_source_http.py services/analyzer/tests/test_reference_overflow_recovery.py services/analyzer/tests/test_transcript_review_mode.py services/analyzer/tests/test_quality_speech.py::test_ct2_auto_recovers_gpu_failures_without_partial_or_duplicate_output -q
           if ($LASTEXITCODE -ne 0) { throw 'Offline mocked GPU, durable ASR, stage budget, EOF, reference recovery or raw transcript contract failed.' }
       - name: Verify Windows entry points and transfer fixtures
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}

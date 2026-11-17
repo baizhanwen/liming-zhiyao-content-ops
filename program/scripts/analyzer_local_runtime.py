@@ -12,6 +12,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import venv
 from pathlib import Path
@@ -20,6 +21,67 @@ ROOT = Path(__file__).resolve().parents[1]
 ANALYZER = ROOT / "services/analyzer"
 LOCAL = ROOT / ".local"
 PID_FILE = LOCAL / "analyzer-local.json"
+PYTHON_PACKAGE_SOURCES = (
+    ("Aliyun PyPI mirror", "https://mirrors.aliyun.com/pypi/simple"),
+    ("official PyPI", "https://pypi.org/simple"),
+)
+NPM_PACKAGE_SOURCES = (
+    ("npmmirror", "https://registry.npmmirror.com"),
+    ("official npm", "https://registry.npmjs.org"),
+)
+
+
+def install_from_package_sources(command, *, environment, cwd, sources, index_argument):
+    """Try reviewed registries in order, retaining artifact integrity checks."""
+    for label, url in sources:
+        print(json.dumps({"phase": "package_source", "source": label}), flush=True)
+        completed = subprocess.run([*command, index_argument, url], cwd=cwd,
+                                   env=environment, check=False)
+        if completed.returncode == 0:
+            return 0
+    return completed.returncode
+
+
+def install_locked_python_dependencies(uv, environment):
+    """Keep uv.lock unchanged while allowing an index to serve its exact artifacts."""
+    LOCAL.mkdir(parents=True, exist_ok=True)
+    requirements = LOCAL / "analyzer-requirements.locked.txt"
+    with tempfile.NamedTemporaryFile(dir=LOCAL, prefix="analyzer-requirements-", suffix=".tmp",
+                                     delete=False) as temporary:
+        temporary_path = Path(temporary.name)
+    try:
+        exported = subprocess.run([
+            uv, "export", "--no-config", "--locked", "--offline", "--extra", "media",
+            "--extra", "dev", "--no-emit-project", "--output-file", str(temporary_path),
+        ], cwd=ANALYZER, env=environment, check=False)
+        if exported.returncode:
+            return exported.returncode
+        if "--hash=sha256:" not in temporary_path.read_text(encoding="utf-8"):
+            print(json.dumps({"phase": "locked_dependencies_invalid", "message": "依赖锁定文件导出缺少校验值，未安装依赖。"}, ensure_ascii=False), flush=True)
+            return 1
+        os.replace(temporary_path, requirements)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    if not interpreter().is_file():
+        created = subprocess.run([uv, "venv", "--no-config", "--python", environment["UV_PYTHON"],
+                                  str(interpreter().parent.parent)],
+                                 cwd=ANALYZER, env=environment, check=False)
+        if created.returncode:
+            return created.returncode
+    installed = install_from_package_sources([
+        uv, "pip", "sync", "--no-config", "--python", str(interpreter()), "--require-hashes",
+        "--build-constraints", str(requirements), str(requirements),
+    ], environment=environment, cwd=ANALYZER, sources=PYTHON_PACKAGE_SOURCES,
+        index_argument="--default-index")
+    if installed:
+        return installed
+    # setuptools is included in the hashed lock export. Its bundled wheel builder
+    # builds the local project without an additional unlocked build-environment download.
+    project = subprocess.run([
+        uv, "pip", "install", "--no-config", "--python", str(interpreter()), "--no-deps",
+        "--no-build-isolation", "--no-index", "--editable", str(ANALYZER),
+    ], cwd=ANALYZER, env=environment, check=False)
+    return project.returncode
 
 
 def timing_implementation_fingerprint() -> str:
@@ -260,9 +322,11 @@ def install_media_packages():
     folder.mkdir(parents=True, exist_ok=True)
     for name in ("package.json", "package-lock.json"):
         shutil.copyfile(ROOT / "resources/media-tools" / name, folder / name)
-    installed = subprocess.run([npm, "ci", "--prefix", str(folder), "--omit=dev", "--no-audit", "--no-fund"], cwd=ROOT, env=environment, check=False)
-    if installed.returncode:
-        return installed.returncode
+    installed = install_from_package_sources(
+        [npm, "ci", "--prefix", str(folder), "--omit=dev", "--no-audit", "--no-fund"],
+        environment=environment, cwd=ROOT, sources=NPM_PACKAGE_SOURCES, index_argument="--registry")
+    if installed:
+        return installed
     # These modules expose the binary already included in the npm artifact;
     # package-lock.json pins every platform artifact and registry integrity.
     code = "process.stdout.write(JSON.stringify({ffmpeg:require('@ffmpeg-installer/ffmpeg').path,ffprobe:require('@ffprobe-installer/ffprobe').path}))"
@@ -569,6 +633,10 @@ def setup():
         print(json.dumps({**readiness_snapshot(), "ready": False, "stopRequired": True, "message": "请先停止分析服务，再准备或修复环境。"}, ensure_ascii=False), flush=True)
         return 1
     env = runtime_environment(load_configuration=False)
+    # Package-source choices are local to setup. Retain proxy/NO_PROXY settings
+    # and never redirect the worker's localhost control requests through a mirror.
+    env = {key: value for key, value in env.items() if not key.startswith("PIP_")}
+    env.update({"PIP_CONFIG_FILE": os.devnull, "PIP_CACHE_DIR": str(LOCAL / "pip-cache")})
     uv = shutil.which("uv")
     npm = shutil.which("npm.cmd" if os.name == "nt" else "npm")
     if not npm:
@@ -585,10 +653,13 @@ def setup():
             bootstrap = LOCAL / "installer-venv"
             venv.EnvBuilder(with_pip=True).create(bootstrap)
             bootstrap_python = bootstrap / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-            installed = subprocess.run([str(bootstrap_python), "-m", "pip", "install", "--target", str(tools), "uv==0.12.5"], cwd=ROOT, env=env, check=False)
-            if installed.returncode:
+            installed = install_from_package_sources(
+                [str(bootstrap_python), "-m", "pip", "install", "--disable-pip-version-check",
+                 "--retries", "2", "--timeout", "60", "--target", str(tools), "uv==0.12.5"],
+                environment=env, cwd=ROOT, sources=PYTHON_PACKAGE_SOURCES, index_argument="--index-url")
+            if installed:
                 print(json.dumps({"ready": False, "workerRunning": False, "missing": ["uv"], "checks": [], "message": "本项目安装工具准备失败。"}, ensure_ascii=False), flush=True)
-                return installed.returncode
+                return installed
             uv = next((str(path) for path in tools.rglob(executable_name) if path.is_file() and os.access(path, os.X_OK)), None)
         if not uv:
             print(json.dumps({"ready": False, "workerRunning": False, "missing": ["uv"], "checks": [], "message": "未找到本项目安装工具。"}, ensure_ascii=False), flush=True)
@@ -601,9 +672,11 @@ def setup():
         "UV_PYTHON": str(Path(sys.executable).resolve()),
         "UV_PYTHON_DOWNLOADS": "never",
         "UV_NO_CONFIG": "1",
+        "UV_HTTP_TIMEOUT": "60",
+        "UV_HTTP_RETRIES": "2",
     })
     commands = [
-        ("installing_media_dependencies", [uv, "sync", "--no-config", "--locked", "--python", env["UV_PYTHON"], "--extra", "media", "--extra", "dev"], ANALYZER),
+        ("installing_media_dependencies", None, ANALYZER),
         ("installing_collector_dependencies", [npm, "ci", "--prefix", str(ANALYZER / "liming_analyzer/douyin_collector/node"), "--omit=dev", "--no-audit", "--no-fund"], ROOT),
         ("installing_browser", [npm, "run", "install-browser", "--prefix", str(ANALYZER / "liming_analyzer/douyin_collector/node")], ROOT),
     ]
@@ -620,10 +693,16 @@ def setup():
     commands.append(("preparing_local_models", [str(interpreter()), str(ROOT / "scripts/prepare_analyzer_models.py")], ROOT))
     for phase, command, cwd in commands:
         print(json.dumps({"phase": phase}, ensure_ascii=False), flush=True)
-        completed = subprocess.run(command, cwd=cwd, env=env, check=False)
-        if completed.returncode:
+        if phase == "installing_media_dependencies":
+            code = install_locked_python_dependencies(uv, env)
+        elif phase == "installing_collector_dependencies":
+            code = install_from_package_sources(command, environment=env, cwd=cwd,
+                                                sources=NPM_PACKAGE_SOURCES, index_argument="--registry")
+        else:
+            code = subprocess.run(command, cwd=cwd, env=env, check=False).returncode
+        if code:
             print(json.dumps({**readiness_snapshot(), "ready": False, "failedPhase": phase, "message": "环境准备未完成，请查看当前任务日志。"}, ensure_ascii=False), flush=True)
-            return completed.returncode
+            return code
     result = readiness_snapshot()
     print(json.dumps(result, ensure_ascii=False), flush=True)
     return 0 if result["ready"] else 1

@@ -35,8 +35,12 @@ if not exist ".dev.vars" (
 )
 
 echo [Liming Zhiyao] Installing web dependencies...
-"%NODE_EXE%" "%NPM_CLI%" ci
+"%NODE_EXE%" "%NPM_CLI%" ci --registry=https://registry.npmmirror.com --no-audit --no-fund
+if not errorlevel 1 goto :web_dependencies_ready
+echo [NOTICE] Domestic npm source failed. Retrying with official npm...
+"%NODE_EXE%" "%NPM_CLI%" ci --registry=https://registry.npmjs.org --no-audit --no-fund
 if errorlevel 1 goto :failed
+:web_dependencies_ready
 if not exist "node_modules\wrangler\bin\wrangler.js" goto :dependencies_incomplete
 if not exist "node_modules\vinext\package.json" goto :dependencies_incomplete
 echo [OK] Web dependencies passed completeness verification.

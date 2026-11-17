@@ -42,7 +42,6 @@ class FasterWhisperSpeechRecognizer:
         self.cuda_runtime = {"status": "not_activated"}
         if engine is None:
             import ctranslate2
-            from faster_whisper.utils import download_model
 
             self.model_path.mkdir(parents=True, exist_ok=True)
             required = ("model.bin", "config.json", "tokenizer.json")
@@ -53,7 +52,8 @@ class FasterWhisperSpeechRecognizer:
                        for name in required):
                 if local_files_only:
                     raise FileNotFoundError("The local Whisper timing model is incomplete")
-                download_model(model, output_dir=str(self.model_path))
+                from .whisper_model_download import download_whisper_model
+                download_whisper_model(model, self.model_path)
             actual_device = device
             try:
                 if device == "auto":

@@ -114,6 +114,7 @@ try {
     if (features.videoAnalysis) for (const filename of [
       "services/analyzer/liming_analyzer/qwen_windows.py", "services/analyzer/liming_analyzer/qwen_speech.py",
       "services/analyzer/liming_analyzer/gpu_diagnostics.py", "services/analyzer/liming_analyzer/faster_whisper_asr.py",
+      "services/analyzer/liming_analyzer/whisper_model_download.py",
       "services/analyzer/liming_analyzer/cuda_runtime.py", "scripts/prepare_analyzer_cuda.py", "scripts/check_analyzer_cuda.py",
       "services/analyzer/liming_analyzer/pipeline.py", "services/analyzer/liming_analyzer/process_runtime.py",
       "services/analyzer/liming_analyzer/api_client.py", "services/analyzer/liming_analyzer/artifacts.py",

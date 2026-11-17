@@ -30,7 +30,17 @@ const jobLabels = { running: "正在执行", succeeded: "执行完成", failed: 
 
 function readableLog(line: string) {
   try {
-    const event = JSON.parse(line) as { phase?: string; ready?: boolean; workerRunning?: boolean; message?: string; downloaded_bytes?: number; total_bytes?: number };
+    const event = JSON.parse(line) as { phase?: string; source?: string; ready?: boolean; workerRunning?: boolean; message?: string; downloaded_bytes?: number; total_bytes?: number };
+    if (event.phase === "package_source") {
+      const sources: Record<string, string> = {
+        "Aliyun PyPI mirror": "阿里云 Python 镜像",
+        "official PyPI": "Python 官方源（后备）",
+        npmmirror: "国内 npm 镜像",
+        "official npm": "npm 官方源（后备）",
+      };
+      return `正在尝试${sources[event.source || ""] || "依赖下载源"}…`;
+    }
+    if (event.phase === "locked_dependencies_invalid") return "依赖锁定文件缺少校验值，已停止安装，请重新下载完整安装包。";
     if (event.phase === "cuda_runtime_download" && typeof event.downloaded_bytes === "number" && typeof event.total_bytes === "number") {
       return `正在下载 GPU 运行库：${Math.floor(event.downloaded_bytes / 1048576)} / ${Math.ceil(event.total_bytes / 1048576)} MiB…`;
     }

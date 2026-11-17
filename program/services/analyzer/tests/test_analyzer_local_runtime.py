@@ -22,6 +22,12 @@ def isolate(module, tmp_path, monkeypatch):
     monkeypatch.setattr(module, "PID_FILE", tmp_path / ".local/analyzer-local.json")
 
 
+def write_export_fixture(command):
+    if "export" in command and "--output-file" in command:
+        Path(command[command.index("--output-file") + 1]).write_text(
+            "setuptools==81.0.0 --hash=sha256:" + "a" * 64 + "\n", encoding="utf-8")
+
+
 def test_runtime_does_not_inherit_other_project_configuration(tmp_path, monkeypatch):
     module = runtime_module()
     isolate(module, tmp_path, monkeypatch)
@@ -67,6 +73,7 @@ def test_missing_uv_is_bootstrapped_inside_project(tmp_path, monkeypatch, capsys
     commands = []
     def run(command, **_kwargs):
         commands.append(command)
+        write_export_fixture(command)
         if "--target" in command:
             destination = Path(command[command.index("--target") + 1])
             executable = destination / "bin" / ("uv.exe" if module.os.name == "nt" else "uv")
@@ -117,6 +124,7 @@ def test_missing_media_tools_install_only_from_locked_project_manifest(tmp_path,
     commands = []
     def run(command, **_kwargs):
         commands.append(command)
+        write_export_fixture(command)
         if "ci" in command:
             bin_dir.mkdir(parents=True)
             for path in pair.values():
@@ -127,12 +135,12 @@ def test_missing_media_tools_install_only_from_locked_project_manifest(tmp_path,
         return SimpleNamespace(returncode=0)
     monkeypatch.setattr(module.subprocess, "run", run)
     assert module.install_media_packages() == 0
-    assert commands[0][1:] == ["ci", "--prefix", str(folder), "--omit=dev", "--no-audit", "--no-fund"]
+    assert commands[0][1:] == ["ci", "--prefix", str(folder), "--omit=dev", "--no-audit", "--no-fund", "--registry", "https://registry.npmmirror.com"]
     assert (folder / "package-lock.json").read_text() == (resources / "package-lock.json").read_text()
     assert json.loads((module.LOCAL / "media-tools.json").read_text())["ffmpeg"] == pair["ffmpeg"]
     assert (module.LOCAL / "ffmpeg.path").read_text().strip() == str(bin_dir)
     assert all(Path(path).is_relative_to(tmp_path) for path in pair.values())
-    assert json.loads(capsys.readouterr().out)["ready"]
+    assert json.loads(capsys.readouterr().out.splitlines()[-1])["ready"]
 
 
 def test_setup_pins_uv_to_own_environment_and_selected_python(tmp_path, monkeypatch, capsys):
@@ -158,19 +166,27 @@ def test_setup_pins_uv_to_own_environment_and_selected_python(tmp_path, monkeypa
     calls = []
     def run(command, *, env, cwd, **_kwargs):
         calls.append((command, env.copy(), cwd))
+        write_export_fixture(command)
         return SimpleNamespace(returncode=0)
     monkeypatch.setattr(module.subprocess, "run", run)
     assert module.setup() == 0
     command, env, cwd = calls[0]
     assert cwd == module.ANALYZER
-    assert command[:4] == ["/fixture/uv", "sync", "--no-config", "--locked"]
-    assert command[command.index("--python") + 1] == str(Path(module.sys.executable).resolve())
+    assert command[:5] == ["/fixture/uv", "export", "--no-config", "--locked", "--offline"]
+    create_command = calls[1][0]
+    assert create_command[:3] == ["/fixture/uv", "venv", "--no-config"]
+    assert create_command[create_command.index("--python") + 1] == str(Path(module.sys.executable).resolve())
+    sync_command = calls[2][0]
+    assert sync_command[sync_command.index("--python") + 1] == str(module.interpreter())
+    assert "--require-hashes" in sync_command
     assert {key: value for key, value in env.items() if key.startswith("UV_")} == {
         "UV_CACHE_DIR": str(module.LOCAL / "uv-cache"),
         "UV_PROJECT_ENVIRONMENT": str(module.ANALYZER / ".venv"),
         "UV_PYTHON": str(Path(module.sys.executable).resolve()),
         "UV_PYTHON_DOWNLOADS": "never",
         "UV_NO_CONFIG": "1",
+        "UV_HTTP_TIMEOUT": "60",
+        "UV_HTTP_RETRIES": "2",
     }
     for _command, subprocess_env, _cwd in calls:
         assert subprocess_env["PYTHONIOENCODING"] == "utf-8"
@@ -355,6 +371,7 @@ def test_explicit_setup_can_upgrade_a_legacy_ready_cache_instead_of_early_return
     calls = []
     def run(command, **_kwargs):
         calls.append(command)
+        write_export_fixture(command)
         return SimpleNamespace(returncode=0)
     monkeypatch.setattr(module.subprocess, "run", run)
     assert module.setup() == 0
@@ -570,3 +587,183 @@ def test_strict_cuda_current_probe_failure_remains_required_and_does_not_offer_s
     assert check["name"] in result["missing"] and check["status"] == "error"
     assert "CUDA_LIBRARY_UNAVAILABLE" in check["message"] and "当前明确指定 CUDA" in check["message"]
     assert "CPU 基础环境检查结果见上方" not in check["message"]
+
+
+def test_locked_install_uses_hashed_export_and_preserves_proxy_and_lock(tmp_path, monkeypatch):
+    module = runtime_module()
+    isolate(module, tmp_path, monkeypatch)
+    module.ANALYZER.mkdir(parents=True)
+    lock = module.ANALYZER / "uv.lock"
+    lock.write_bytes(b"unchanged reviewed lock fixture\n")
+    module.interpreter().parent.mkdir(parents=True)
+    module.interpreter().write_bytes(b"existing interpreter")
+    environment = {"UV_PYTHON": "/selected/python311", "HTTPS_PROXY": "http://fixture-proxy:8080",
+                   "NO_PROXY": "127.0.0.1,localhost", "UV_CACHE_DIR": str(module.LOCAL / "uv-cache")}
+    original_environment = environment.copy()
+    commands = []
+    def run(command, *, env, **_kwargs):
+        assert env == original_environment
+        commands.append(command)
+        write_export_fixture(command)
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(module.subprocess, "run", run)
+    assert module.install_locked_python_dependencies("fixture-uv", environment) == 0
+    assert commands[0][1:5] == ["export", "--no-config", "--locked", "--offline"]
+    assert commands[1][1:3] == ["pip", "sync"]
+    assert "--require-hashes" in commands[1]
+    assert commands[1][-2:] == ["--default-index", "https://mirrors.aliyun.com/pypi/simple"]
+    assert commands[2][1:3] == ["pip", "install"]
+    assert all(flag in commands[2] for flag in ["--no-deps", "--no-build-isolation", "--no-index", "--editable"])
+    assert lock.read_bytes() == b"unchanged reviewed lock fixture\n"
+    assert module.interpreter().read_bytes() == b"existing interpreter"
+    assert environment == original_environment
+    assert not list(module.LOCAL.glob("*.tmp"))
+
+
+def test_locked_install_falls_back_without_dropping_hashes_and_stops_if_both_fail(tmp_path, monkeypatch):
+    module = runtime_module()
+    isolate(module, tmp_path, monkeypatch)
+    for codes, expected in [([3, 0], 0), ([3, 7], 7)]:
+        commands, outcomes = [], iter(codes)
+        def run(command, _commands=commands, _outcomes=outcomes, **_kwargs):
+            _commands.append(command)
+            write_export_fixture(command)
+            return SimpleNamespace(returncode=next(_outcomes) if command[1:3] == ["pip", "sync"] else 0)
+        monkeypatch.setattr(module.subprocess, "run", run)
+        assert module.install_locked_python_dependencies("fixture-uv", {"UV_PYTHON": "/selected/python311"}) == expected
+        syncs = [command for command in commands if command[1:3] == ["pip", "sync"]]
+        assert [command[-1] for command in syncs] == ["https://mirrors.aliyun.com/pypi/simple", "https://pypi.org/simple"]
+        assert all("--require-hashes" in command for command in syncs)
+        projects = [command for command in commands if "--editable" in command]
+        assert len(projects) == (0 if expected else 1)
+
+
+def test_bad_export_preserves_previous_requirements_and_never_installs(tmp_path, monkeypatch):
+    module = runtime_module()
+    isolate(module, tmp_path, monkeypatch)
+    module.LOCAL.mkdir()
+    requirements = module.LOCAL / "analyzer-requirements.locked.txt"
+    requirements.write_text("previous reviewed export\n")
+    for export_code in [0, 5]:
+        commands = []
+        def run(command, _commands=commands, _export_code=export_code, **_kwargs):
+            _commands.append(command)
+            return SimpleNamespace(returncode=_export_code)
+        monkeypatch.setattr(module.subprocess, "run", run)
+        assert module.install_locked_python_dependencies("fixture-uv", {"UV_PYTHON": "/selected/python311"}) != 0
+        assert len(commands) == 1 and commands[0][1] == "export"
+        assert requirements.read_text() == "previous reviewed export\n"
+        assert not list(module.LOCAL.glob("*.tmp"))
+
+
+def test_npm_registry_fallback_keeps_ci_and_proxy_environment(tmp_path, monkeypatch):
+    module = runtime_module()
+    commands = []
+    environment = {"HTTPS_PROXY": "http://fixture-proxy:8080", "NO_PROXY": "127.0.0.1,localhost"}
+    def run(command, *, env, **_kwargs):
+        commands.append(command)
+        assert env == environment
+        return SimpleNamespace(returncode=1 if len(commands) == 1 else 0)
+    monkeypatch.setattr(module.subprocess, "run", run)
+    command = ["fixture-npm", "ci", "--prefix", str(tmp_path), "--omit=dev"]
+    assert module.install_from_package_sources(command, environment=environment, cwd=tmp_path,
+        sources=module.NPM_PACKAGE_SOURCES, index_argument="--registry") == 0
+    assert commands == [command + ["--registry", source[1]] for source in module.NPM_PACKAGE_SOURCES]
+    assert command == ["fixture-npm", "ci", "--prefix", str(tmp_path), "--omit=dev"]
+
+
+def test_runtime_preserves_network_proxy_without_install_sources(tmp_path, monkeypatch):
+    monkeypatch.delenv("PIP_INDEX_URL", raising=False)
+    module = runtime_module()
+    isolate(module, tmp_path, monkeypatch)
+    for key, value in {"HTTP_PROXY": "http://fixture-proxy:8080", "HTTPS_PROXY": "http://fixture-proxy:8080",
+                       "ALL_PROXY": "socks5://fixture-proxy:1080", "NO_PROXY": "127.0.0.1,localhost"}.items():
+        monkeypatch.setenv(key, value)
+    environment = module.runtime_environment(load_configuration=False)
+    assert environment["NO_PROXY"] == "127.0.0.1,localhost"
+    assert environment["HTTP_PROXY"] == environment["HTTPS_PROXY"] == "http://fixture-proxy:8080"
+    assert environment["ALL_PROXY"] == "socks5://fixture-proxy:1080"
+    assert not any(key.startswith("UV_") for key in environment)
+    assert "PIP_INDEX_URL" not in environment or environment["PIP_INDEX_URL"] != module.PYTHON_PACKAGE_SOURCES[0][1]
+
+
+def test_real_uv_hash_failure_switches_source_and_primary_success_stays_primary(tmp_path):
+    import base64
+    import csv
+    import hashlib
+    import io
+    import shutil
+    import threading
+    import venv
+    import zipfile
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    import pytest
+
+    uv = shutil.which("uv")
+    if not uv:
+        pytest.skip("Native uv executable is not installed in this test environment")
+    module = runtime_module()
+    def wheel(value):
+        files = {"source_fixture/__init__.py": f"VALUE = {value}\n".encode(),
+                 "source_fixture-1.0.dist-info/METADATA": b"Metadata-Version: 2.1\nName: source-fixture\nVersion: 1.0\n",
+                 "source_fixture-1.0.dist-info/WHEEL": b"Wheel-Version: 1.0\nGenerator: fixture\nRoot-Is-Purelib: true\nTag: py3-none-any\n"}
+        records = io.StringIO()
+        writer = csv.writer(records, lineterminator="\n")
+        for name, data in files.items():
+            writer.writerow([name, "sha256=" + base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode(), len(data)])
+        writer.writerow(["source_fixture-1.0.dist-info/RECORD", "", ""])
+        files["source_fixture-1.0.dist-info/RECORD"] = records.getvalue().encode()
+        result = io.BytesIO()
+        with zipfile.ZipFile(result, "w") as archive:
+            for name, data in files.items():
+                archive.writestr(name, data)
+        return result.getvalue()
+    good, bad = wheel(1), wheel(2)
+    digest = hashlib.sha256(good).hexdigest()
+    for primary_bad in [False, True]:
+        work = tmp_path / str(primary_bad)
+        work.mkdir()
+        target = work / "venv"
+        venv.EnvBuilder(with_pip=False).create(target)
+        python = target / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        requirements = work / "requirements.txt"
+        requirements.write_text(f"source-fixture==1.0 --hash=sha256:{digest}\n")
+        requests = []
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self, _requests=requests, _primary_bad=primary_bad):
+                _requests.append(self.path)
+                if self.path.endswith("/source-fixture/"):
+                    prefix = self.path.split("/")[1]
+                    body = f'<a href="/{prefix}/source_fixture-1.0-py3-none-any.whl#sha256={digest}">wheel</a>'.encode()
+                elif self.path.endswith(".whl"):
+                    body = bad if _primary_bad and self.path.startswith("/primary/") else good
+                else:
+                    self.send_error(404)
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream" if self.path.endswith(".whl") else "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            def log_message(self, *_args):
+                pass
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            environment = {"PATH": os.defpath, "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
+                           "UV_CACHE_DIR": str(work / "cache"), "UV_HTTP_RETRIES": "0",
+                           "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"}
+            assert module.install_from_package_sources(
+                [uv, "pip", "sync", "--no-config", "--require-hashes", "--python", str(python), str(requirements)],
+                environment=environment, cwd=work, sources=(("primary fixture", base + "/primary/simple"),
+                ("fallback fixture", base + "/fallback/simple")), index_argument="--default-index") == 0
+            assert any(path.startswith("/fallback/") for path in requests) is primary_bad
+            result = subprocess.run([str(python), "-c", "from source_fixture import VALUE; assert VALUE == 1"], check=False)
+            assert result.returncode == 0
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)

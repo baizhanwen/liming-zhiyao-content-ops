@@ -76,8 +76,18 @@ async function install(browser, organizationId) {
   assert.equal(marker.asrBackend, "sherpa-onnx");
   assert.equal(marker.asrModel, "Qwen3-ASR-1.7B");
   assert.equal(marker.asrVerified, true);
+  const verifyTimingCache = [
+    "import sys",
+    "from pathlib import Path",
+    "from liming_analyzer.whisper_model_download import whisper_model_is_complete",
+    "assert whisper_model_is_complete('large-v3-turbo', Path(sys.argv[1]) / 'faster-whisper-large-v3-turbo'), 'Whisper timing model cache is incomplete or invalid'",
+    "print('verified')",
+  ].join("\n");
+  const timingCache = execFileSync(path.join(root, "services/analyzer/.venv/Scripts/python.exe"),
+    ["-c", verifyTimingCache, marker.modelCache], { encoding: "utf8", timeout: 120_000 }).trim();
+  assert.equal(timingCache.split(/\r?\n/).at(-1), "verified");
   report.after = { ready: status.ready, workerRunning: status.workerRunning, checks: status.checks.map(({ id, label, status }) => ({ id, label, status })),
-    model: marker.asrModel, backend: marker.asrBackend, verified: marker.asrVerified, freeGiB: freeGiB(), at: new Date().toISOString() };
+    model: marker.asrModel, backend: marker.asrBackend, verified: marker.asrVerified, timingModelCacheVerified: true, freeGiB: freeGiB(), at: new Date().toISOString() };
   console.log("Windows one-click setup ready:", report.after.model, report.after.backend);
   record();
 }

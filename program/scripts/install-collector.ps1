@@ -12,8 +12,14 @@ if ($LASTEXITCODE -ne 0) { throw "Node.js installation for the video collector f
 $runtime = Import-AnalyzerCollectorRuntime -ProjectRoot $ProjectRoot -SkipDependencyCheck
 
 Write-Host "[Liming Zhiyao] Installing the locked anonymous video collector..."
-& $runtime.Npm ci --prefix $runtime.Directory --omit=dev --no-audit --no-fund
-if ($LASTEXITCODE -ne 0) { throw "Video collector Node dependencies could not be installed." }
+$dependencyExitCode = 1
+foreach ($registry in @("https://registry.npmmirror.com", "https://registry.npmjs.org")) {
+    Write-Host "[Liming Zhiyao] Collector package source: $registry"
+    & $runtime.Npm ci --prefix $runtime.Directory --omit=dev --no-audit --no-fund --registry $registry
+    $dependencyExitCode = $LASTEXITCODE
+    if ($dependencyExitCode -eq 0) { break }
+}
+if ($dependencyExitCode -ne 0) { throw "Video collector Node dependencies could not be installed from either source." }
 
 Write-Host "[Liming Zhiyao] Installing this project's Chromium browser..."
 & $runtime.Npm run install-browser --prefix $runtime.Directory
