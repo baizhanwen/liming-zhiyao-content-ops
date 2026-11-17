@@ -107,6 +107,8 @@ try {
     if (!features.videoAnalysis) assert.equal(Object.keys(initialHashes).some(file => /^services\/analyzer\/.*\.py$/.test(file)), false, "Starter must only retain taxonomy data");
     for (const filename of ["build/analyzer-environment-plugin.ts", "scripts/start-web-with-environment.mjs", "scripts/prepare-runtime-configuration.mjs", "scripts/analyzer-environment-bridge.mjs"])
       assert.ok(existsSync(path.join(packageRoot, filename)), `Missing settings runtime: ${filename}`);
+    for (const filename of ["app/api/dashboard/route.ts", "components/DashboardWorkspace.tsx", "components/dashboard-workspace.css", "lib/dashboard-period.ts", "lib/work-tasks.ts"])
+      assert.ok(existsSync(path.join(packageRoot, filename)), `Missing dashboard runtime: ${filename}`);
     if (features.videoAnalysis) for (const filename of ["scripts/analyzer_local_runtime.py", "scripts/prepare_analyzer_models.py", "services/analyzer/uv.lock", "services/analyzer/liming_analyzer/douyin_collector/node/package-lock.json"])
       assert.ok(existsSync(path.join(packageRoot, filename)), `Missing video environment dependency: ${filename}`);
     if (features.videoAnalysis) for (const filename of [
@@ -118,7 +120,10 @@ try {
       "services/analyzer/liming_analyzer/visual_mode.py",
       "services/analyzer/liming_analyzer/processing_health.py",
       "services/analyzer/liming_analyzer/visual_sampling.py",
+      "services/analyzer/liming_analyzer/collection_mode.py", "services/analyzer/liming_analyzer/execution_mode.py",
+      "services/analyzer/liming_analyzer/douyin_collector/python/limits.py",
       "drizzle/0052_analysis_transcript_review.sql", "drizzle/0053_analysis_visual_mode.sql", "drizzle/0054_analysis_visual_sampling.sql",
+      "drizzle/0055_analysis_execution_mode.sql", "drizzle/0056_analysis_collection_mode.sql",
       "resources/media-tools/asr-check-zh.wav", "docs/releases/windows-qwen-v20261112.1.md",
       "services/analyzer/liming_analyzer/canonical_transcript.py", "services/analyzer/liming_analyzer/content_module_protocol.py",
       "services/analyzer/liming_analyzer/unified_analysis.py", "services/analyzer/liming_analyzer/content_analysis.py",
@@ -126,7 +131,9 @@ try {
       "services/analyzer/liming_analyzer/content_metrics.py", "lib/unified-report.ts", "lib/analysis-report-view.ts",
       "lib/analysis-recovery-view.ts",
       "lib/analysis-quality.ts", "lib/video-content-analysis.ts", "lib/analysis-module-retry.ts", "lib/analysis-media.ts",
-      "components/UnifiedReportContent.tsx",
+      "lib/source-artifact-body.ts", "lib/analysis-collection-mode.ts", "lib/analysis-execution-mode.ts",
+      "components/UnifiedReportContent.tsx", "components/analysis-cleanup.css",
+      "components/AnalysisCollectionModeSelect.tsx", "components/AnalysisExecutionModeSelect.tsx",
     ]) assert.ok(existsSync(path.join(packageRoot, filename)), `Missing unified analysis dependency: ${filename}`);
     if (githubDistribution) {
       assert.equal(manifest.activationRequired, false);

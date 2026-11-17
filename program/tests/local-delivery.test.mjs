@@ -197,7 +197,8 @@ test("team launch scripts install, migrate, start analysis automatically, stop s
   assert.match(ffmpegInstaller, /SendMessageTimeout/);
   assert.match(ffmpegInstaller, /Text\.Encoding\]::Default/);
   assert.match(deliveryGuide, /Node\.js 22\.23\.2/);
-  assert.match(deliveryGuide, /Windows Package Manager（winget）/);
+  assert.match(deliveryGuide, /设置页会在本项目中准备 FFmpeg\/ffprobe，无需另外安装 winget/);
+  assert.match(deliveryGuide, /系统设置 → 模型配置/);
   assert.match(deliveryGuide, /一键配置环境并启动/);
   assert.match(deliveryGuide, /显示进度与实际结果/);
   assert.match(deliveryScript, /\.Extension -in @\("\.bat", "\.cmd"\)/);

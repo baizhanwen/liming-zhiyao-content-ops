@@ -6,14 +6,14 @@ on:
       release_tag:
         description: "New full-v release tag (must have matching release notes)"
         required: true
-        default: "full-v20261111.8"
+        default: "full-v20261117.1"
         type: string
   push:
     tags:
       - "full-v*"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: full-windows-release
@@ -34,6 +34,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Validate release version and notes
+        env:
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
+        run: |
+          $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { $env:RELEASE_TAG_INPUT }
+          if ($tag -notmatch '^full-v[0-9]{8}\.[0-9]+$') { throw 'A versioned full-v release tag is required.' }
+          $notesFile = Join-Path (Get-Location) ("program/docs/releases/" + $tag + '.md')
+          if (-not (Test-Path -LiteralPath $notesFile -PathType Leaf)) { throw 'Versioned release notes are missing.' }
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -103,7 +111,97 @@ jobs:
           path: ${{ runner.temp }}/release-assets/*
           if-no-files-found: error
           retention-days: 14
-      - name: Publish GitHub download
+      - name: Retain synthetic acceptance diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-acceptance-diagnostics
+          path: program/.local/dv/**/verification.log
+          if-no-files-found: ignore
+          retention-days: 3
+  cold-install-and-transcribe:
+    needs: release
+    runs-on: windows-2022
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      WRANGLER_SEND_METRICS: "false"
+      PYTHONUTF8: "1"
+      UV_LINK_MODE: hardlink
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.23.2"
+      - uses: actions/download-artifact@v4
+        with:
+          name: LimingZhiyao-Windows-Full
+          path: ${{ runner.temp }}/release-assets
+      - name: Unpack the exact distribution into an empty directory
+        run: |
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, BuildNumber
+          Get-PSDrive -PSProvider FileSystem | Select-Object Name, Free, Used
+          $archive = Join-Path $env:RUNNER_TEMP release-assets/LimingZhiyao-Windows-Full.zip
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne ((Get-Content "$archive.sha256") -split ' ')[0]) { throw 'ZIP hash mismatch.' }
+          "ACCEPTANCE_ZIP_SHA256=$hash" >> $env:GITHUB_ENV
+          New-Item D:\qw -ItemType Directory -ErrorAction Stop | Out-Null
+          [IO.Compression.ZipFile]::ExtractToDirectory($archive, 'D:\qw', [Text.Encoding]::UTF8)
+          Set-Location D:\qw\LimingZhiyao
+          foreach ($document in @('docs/产品使用手册.html', 'docs/产品使用手册.md', 'docs/operations/备份恢复与升级操作.md', 'docs/电商素材使用说明.md', 'docs/releases/full-v20261117.1.md')) {
+            if (-not (Test-Path -LiteralPath $document -PathType Leaf)) { throw "Packaged document missing: $document" }
+          }
+          foreach ($item in @('.local', '.wrangler', 'services/analyzer/.venv', 'node_modules', 'scripts/verify-windows-qwen.mjs')) {
+            if (Test-Path $item) { throw "Unexpected bundled file or prior installation: $item" }
+          }
+      - name: Run the shipped first-install entry and prepare a separate browser driver
+        working-directory: D:\qw\LimingZhiyao
+        run: |
+          cmd.exe /d /c "setup-local.bat < nul"
+          if ($LASTEXITCODE) { throw 'Packaged web setup failed.' }
+          $driver = Join-Path $env:RUNNER_TEMP acceptance-driver
+          New-Item $driver -ItemType Directory | Out-Null
+          Copy-Item services/analyzer/liming_analyzer/douyin_collector/node/package*.json $driver
+          npm ci --prefix $driver --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE) { throw 'Browser driver installation failed.' }
+          "ACCEPTANCE_PLAYWRIGHT=$driver/node_modules/playwright/index.mjs" >> $env:GITHUB_ENV
+      - name: Click one-click setup and extract fresh manuscripts
+        working-directory: D:\qw\LimingZhiyao
+        run: node "$env:GITHUB_WORKSPACE/program/scripts/verify-windows-qwen.mjs"
+      - name: Retain exact-package Windows acceptance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-qwen-acceptance
+          path: D:/qw/LimingZhiyao/.local/verification/windows-qwen/result.json
+          retention-days: 14
+          if-no-files-found: ignore
+  publish:
+    needs: [release, cold-install-and-transcribe]
+    runs-on: windows-2022
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: LimingZhiyao-Windows-Full
+          path: ${{ runner.temp }}/release-assets
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-qwen-acceptance
+          path: ${{ runner.temp }}/windows-acceptance
+      - name: Verify exact accepted package and publish GitHub download
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -113,14 +211,20 @@ jobs:
           if ($tag -notmatch '^full-v[0-9]{8}\.[0-9]+$') { throw 'A versioned full-v release tag is required.' }
           $notesFile = Join-Path (Get-Location) ("program/docs/releases/" + $tag + '.md')
           if (-not (Test-Path -LiteralPath $notesFile -PathType Leaf)) { throw 'Versioned release notes are missing.' }
-          $assets = @(Get-ChildItem "$env:RUNNER_TEMP/release-assets" -File | ForEach-Object FullName)
+          $assetRoot = Join-Path $env:RUNNER_TEMP release-assets
+          $zip = Join-Path $assetRoot LimingZhiyao-Windows-Full.zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne ((Get-Content "$zip.sha256") -split ' ')[0]) { throw 'ZIP hash mismatch.' }
+          $validation = Get-Content -Raw -LiteralPath (Join-Path $assetRoot delivery-validation.json) | ConvertFrom-Json
+          if ($validation.passed -ne $true) { throw 'Isolated package validation did not pass.' }
+          $reportPath = Join-Path $env:RUNNER_TEMP windows-acceptance/result.json
+          $report = Get-Content -Raw -LiteralPath $reportPath | ConvertFrom-Json
+          if ($report.passed -ne $true -or $report.revision -ne $env:GITHUB_SHA -or $report.zipSha256 -ne $hash) { throw 'Windows acceptance does not match this revision and ZIP.' }
+          foreach ($name in @('single', 'multi')) {
+            $extractions = @($report.extractions | Where-Object { $_.name -eq $name -and $_.status -eq 'completed' })
+            if ($extractions.Count -ne 1) { throw "Windows transcription acceptance missing: $name" }
+          }
+          Copy-Item -LiteralPath $reportPath -Destination (Join-Path $assetRoot windows-qwen-acceptance.json)
+          $assets = @(Get-ChildItem -LiteralPath $assetRoot -File | ForEach-Object FullName)
           gh release create $tag @assets --target $env:GITHUB_SHA --title '利明智耀工作台 · 完整开发版' --notes-file $notesFile --latest
           if ($LASTEXITCODE -ne 0) { throw 'GitHub Release publication failed.' }
-      - name: Retain synthetic acceptance diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: package-acceptance-diagnostics
-          path: program/.local/dv/**/verification.log
-          if-no-files-found: ignore
-          retention-days: 3

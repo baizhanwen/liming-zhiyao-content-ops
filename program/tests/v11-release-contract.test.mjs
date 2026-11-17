@@ -49,9 +49,41 @@ test("build metadata defaults to v12 while preserving explicitly injected deploy
 test("the candidate full release keeps unified source, readers and resources in the verified package", () => {
   const prepare = read("scripts/prepare-delivery.ps1"), verify = read("scripts/verify-delivery.mjs");
   for (const folder of ["services", "lib", "components", "resources"]) assert.ok(prepare.includes(`"${folder}"`));
-  for (const filename of ["canonical_transcript.py", "canonical_review.py", "reviewed_analysis.py", "content_module_protocol.py", "unified_analysis.py", "cuda_runtime.py", "scripts/prepare_analyzer_cuda.py", "scripts/check_analyzer_cuda.py", "gpu_diagnostics.py", "faster_whisper_asr.py", "pipeline.py", "process_runtime.py", "api_client.py", "artifacts.py", "drizzle/0052_analysis_transcript_review.sql", "unified-report.ts", "analysis-report-view.ts", "analysis-module-retry.ts", "analysis-media.ts", "UnifiedReportContent.tsx"])
+  for (const filename of ["canonical_transcript.py", "canonical_review.py", "reviewed_analysis.py", "content_module_protocol.py", "unified_analysis.py", "cuda_runtime.py", "scripts/prepare_analyzer_cuda.py", "scripts/check_analyzer_cuda.py", "gpu_diagnostics.py", "faster_whisper_asr.py", "pipeline.py", "process_runtime.py", "api_client.py", "artifacts.py", "drizzle/0052_analysis_transcript_review.sql", "unified-report.ts", "analysis-report-view.ts", "analysis-module-retry.ts", "analysis-media.ts", "UnifiedReportContent.tsx",
+    "app/api/dashboard/route.ts", "components/DashboardWorkspace.tsx", "components/dashboard-workspace.css", "lib/dashboard-period.ts", "lib/work-tasks.ts",
+    "lib/source-artifact-body.ts", "lib/analysis-collection-mode.ts", "lib/analysis-execution-mode.ts",
+    "components/analysis-cleanup.css", "components/AnalysisCollectionModeSelect.tsx", "components/AnalysisExecutionModeSelect.tsx",
+    "services/analyzer/liming_analyzer/collection_mode.py", "services/analyzer/liming_analyzer/execution_mode.py",
+    "services/analyzer/liming_analyzer/douyin_collector/python/limits.py", "drizzle/0055_analysis_execution_mode.sql", "drizzle/0056_analysis_collection_mode.sql"])
     assert.ok(verify.includes(filename), `Missing package dependency assertion: ${filename}`);
   assert.match(verify, /video-taxonomy\.v1\.json/);
-  assert.match(prepare, /docs\\releases\\full-v20261111\.8\.md/);
-  assert.match(read("../.github/workflows/release-full.yml"), /default: "full-v20261111\.8"/);
+  const workflow = read("../.github/workflows/release-full.yml");
+  const releaseTag = workflow.match(/default:\s*"(full-v\d{8}\.\d+)"/)?.[1];
+  assert.ok(releaseTag, "Release workflow needs a versioned default tag");
+  assert.ok(existsSync(new URL(`../docs/releases/${releaseTag}.md`, import.meta.url)), "The default release needs matching release notes");
+  assert.ok(prepare.includes(`docs\\releases\\${releaseTag}.md`), "The customer package must include its current release notes");
+});
+
+function workflowJob(source, name) {
+  const lines = source.split(/\r?\n/), start = lines.findIndex(line => line === `  ${name}:`);
+  assert.ok(start >= 0, `Missing release job: ${name}`);
+  const next = lines.findIndex((line, index) => index > start && /^ {2}[a-zA-Z0-9_-]+:$/.test(line));
+  return lines.slice(start, next < 0 ? undefined : next).join("\n");
+}
+
+test("public release waits for cold installation and two actual transcriptions of the exact uploaded ZIP", () => {
+  const workflow = read("../.github/workflows/release-full.yml");
+  const build = workflowJob(workflow, "release"), cold = workflowJob(workflow, "cold-install-and-transcribe"), publish = workflowJob(workflow, "publish");
+  assert.match(build, /actions\/upload-artifact@/); assert.match(build, /LimingZhiyao-Windows-Full/);
+  assert.match(cold, /needs:\s*(?:release|\[\s*release\s*\])/);
+  assert.match(cold, /actions\/download-artifact@/); assert.match(cold, /LimingZhiyao-Windows-Full/);
+  assert.match(cold, /setup-local\.bat/); assert.match(cold, /verify-windows-qwen\.mjs/);
+  assert.match(cold, /ACCEPTANCE_ZIP_SHA256/); assert.match(cold, /actions\/upload-artifact@/);
+  const dependencies = publish.match(/needs:\s*\[([^\]]+)\]/)?.[1].split(",").map(value => value.trim()).sort();
+  assert.deepEqual(dependencies, ["cold-install-and-transcribe", "release"]);
+  assert.doesNotMatch(publish, /if:\s*(?:\$\{\{\s*)?always\(\)/);
+  for (const field of ["passed", "revision", "zipSha256", "extractions"]) assert.match(publish, new RegExp(`\\.${field}\\b`));
+  assert.match(publish, /GITHUB_SHA/); assert.match(publish, /Get-FileHash/); assert.match(publish, /SHA256/);
+  for (const value of ["single", "multi", "completed"]) assert.match(publish, new RegExp(`["']${value}["']`));
+  assert.match(publish, /gh release create/); assert.doesNotMatch(build, /gh release create/); assert.doesNotMatch(cold, /gh release create/);
 });
