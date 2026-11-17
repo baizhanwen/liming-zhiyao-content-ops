@@ -171,7 +171,11 @@ def test_mcp_tool_calls_record_unknown_cap_and_usage_without_blocking_async_loop
 
         return await asyncio.gather(runner._recorded_call(success), runner._recorded_call(failure))
 
-    results = asyncio.run(run())
+    # Windows scheduler/clock resolution can make a real 10ms sleep measure
+    # below 5ms. Replace only this module's clock, preserving asyncio's clock.
+    clock = SimpleNamespace(monotonic=iter([100.0, 100.0, 100.01, 100.01]).__next__)
+    with patch("liming_analyzer.minimax_vision.time", clock):
+        results = asyncio.run(run())
     assert all(result.elapsed_ms >= 5 and result.started_at and result.completed_at for result in results)
     assert len({row["id"] for row in receipts}) == 2
     assert all(row["outputBudget"] == 0 and row["task"] == "vision_batch" for row in receipts)
