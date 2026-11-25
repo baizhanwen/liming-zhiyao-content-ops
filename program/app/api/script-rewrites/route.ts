@@ -83,6 +83,7 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const organizationId = clean(url.searchParams.get("organizationId"), 100);
   const projectId = clean(url.searchParams.get("projectId"), 100);
+  const rewriteId = clean(url.searchParams.get("rewriteId"), 100);
   if (!organizationId || !projectId) return apiError("PROJECT_SCOPE_REQUIRED", "缺少公司或项目范围。", 400);
   try {
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
@@ -96,8 +97,8 @@ export async function GET(request: Request) {
           (SELECT status FROM script_rewrite_runs r WHERE r.workspace_id = w.id ORDER BY created_at DESC LIMIT 1) AS latest_run_status
         FROM script_rewrite_workspaces w
         WHERE w.organization_id = ? AND w.project_id = ? AND w.status = 'active'
-        ORDER BY w.updated_at DESC LIMIT 100
-      `).bind(organizationId, projectId).all(),
+        ORDER BY (w.id = ?) DESC, w.updated_at DESC LIMIT 100
+      `).bind(organizationId, projectId, rewriteId).all(),
       db.prepare(`${VIDEO_SOURCE_SELECT} ORDER BY v.created_at DESC LIMIT 100`).bind(organizationId, projectId).all<VideoSourceRow>(),
     ]);
     return Response.json({

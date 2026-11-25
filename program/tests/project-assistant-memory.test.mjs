@@ -289,12 +289,16 @@ test("project memory workspace uses only adopt or reject decisions", () => {
   assert.ok(memory.includes("finally {"));
   assert.ok(memory.includes("setSyncing(false);"));
   assert.equal(memory.includes("disabled={!canWrite || syncing || !configuration?.configured}"), false);
-  assert.match(inspiration, /生成的建议可手动保存为灵感卡片/);
+  assert.match(inspiration, /onClick=\{\(\) => void saveSuggestion\(message.id, index\)\}/);
   assert.doesNotMatch(inspiration, /已加入选题中心|suggestion\.topicId/);
   assert.doesNotMatch(inspiration, /已读取 .*当前项目记忆/);
-  assert.match(inspiration, /可连续追问 · 刷新后保留/);
+  assert.match(inspiration, /onSubmit=\{sendMessage\}/);
   assert.match(inspiration, /保存为灵感卡/);
-  assert.match(inspiration, /让项目助理给出建议后，可一键把建议保存到这里/);
+  const composer = inspiration.indexOf('aria-label="灵感对话内容"');
+  assert.ok(composer > 0 && composer < inspiration.indexOf("<StudioIdeaLibrary"));
+  assert.doesNotMatch(inspiration, /chatOpen\s*&&/);
+  const library = readFileSync(new URL("../components/StudioIdeaLibrary.tsx", import.meta.url), "utf8");
+  assert.match(library, /也可以从对话中保存/);
 });
 test("confirming an edited memory immediately replaces every active revision", async () => {
   const { sqlite, db } = createD1TestDatabase();

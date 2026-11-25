@@ -11,7 +11,7 @@ export function InteractionFeedback() {
     function onClick(event: Event) {
       if (!(event.target instanceof Element)) return;
       const control = event.target.closest("button, a[href], [role='button']");
-      if (!control || control instanceof HTMLButtonElement && control.disabled) return;
+      if (!control || control.hasAttribute("data-no-feedback") || control instanceof HTMLButtonElement && control.disabled) return;
       const name = label(control);
       show(control.matches("a[href]") ? `正在打开${name ? `“${name}”` : "页面"}…` : `${name || "操作"}：已响应`);
     }

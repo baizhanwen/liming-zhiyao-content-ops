@@ -18,16 +18,18 @@ test("personal memos are isolated to the signed-in employee and excluded from pr
 });
 
 test("report recommendations can be selected into the employee memo and managed on the dashboard", async () => {
-  const [route, reports, dashboard] = await Promise.all([
+  const [route, reports, dashboard, memoDialog] = await Promise.all([
     readFile(new URL("../app/api/personal-memos/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../components/InsightsWorkspace.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/DashboardWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../components/PersonalMemoDialog.tsx", import.meta.url), "utf8"),
   ]);
   assert.match(route, /sourceContent !== content/);
   assert.match(route, /INSERT OR IGNORE INTO personal_memos/);
   assert.match(reports, /记到我的备忘/);
   assert.match(reports, /sourceType: "performance_report"/);
-  assert.match(dashboard, /仅自己可见/);
-  assert.match(dashboard, /action: "complete" \| "reopen"/);
-  assert.match(dashboard, /method: "DELETE"/);
+  assert.match(dashboard, /<PersonalMemoDialog/);
+  assert.match(memoDialog, /仅自己可见/);
+  assert.match(memoDialog, /"complete" \| "reopen"/);
+  assert.match(memoDialog, /method: "DELETE"/);
 });

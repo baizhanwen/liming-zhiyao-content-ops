@@ -15,6 +15,8 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const organizationId = url.searchParams.get("organizationId")?.trim() ?? "";
   const projectId = url.searchParams.get("projectId")?.trim() ?? "";
+  const contentId = url.searchParams.get("contentId")?.trim() ?? "";
+  const topicId = url.searchParams.get("topicId")?.trim() ?? "";
   if (!organizationId || !projectId) return apiError("PROJECT_SCOPE_REQUIRED", "缺少公司或项目范围。", 400);
   try {
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
@@ -25,18 +27,21 @@ export async function GET(request: Request) {
         SELECT c.id, c.topic_id, c.title, c.status, c.current_version, c.assignee_user_id, c.due_at, c.updated_at,
           v.id AS version_id, v.generation_mode, v.pack_json, v.full_script, v.short_script, v.change_summary, v.prompt_version, v.model_call_id, v.created_at AS version_created_at,
           t.source_type AS topic_source_type, t.source_ref AS topic_source_ref, t.selected_knowledge_ids_json,
+          rewrite.workspace_id AS rewrite_workspace_id, rewrite.version AS rewrite_version,
           generation.status AS latest_generation_status, generation.error_message AS latest_generation_error,
           (SELECT COUNT(*) FROM content_citations cc WHERE cc.organization_id = c.organization_id AND cc.project_id = c.project_id AND cc.content_item_id = c.id AND cc.content_version_id = v.id) AS citation_count
         FROM content_items c
         INNER JOIN content_versions v ON v.content_item_id = c.id AND v.version = c.current_version AND v.organization_id = c.organization_id AND v.project_id = c.project_id
         INNER JOIN topic_ideas t ON t.id = c.topic_id AND t.organization_id = c.organization_id AND t.project_id = c.project_id
+        LEFT JOIN script_rewrite_versions rewrite ON t.source_type = 'script_rewrite'
+          AND rewrite.id = t.source_ref AND rewrite.organization_id = c.organization_id AND rewrite.project_id = c.project_id
         LEFT JOIN model_calls generation ON generation.id = (
           SELECT m.id FROM model_calls m WHERE m.organization_id = c.organization_id AND m.project_id = c.project_id
             AND m.topic_id = c.topic_id AND m.task_type = 'content_draft' ORDER BY m.created_at DESC, m.id DESC LIMIT 1
         )
         WHERE c.organization_id = ? AND c.project_id = ? AND c.deleted_at IS NULL
-        ORDER BY c.updated_at DESC LIMIT 200
-      `).bind(organizationId, projectId).all(),
+        ORDER BY (c.id = ?) DESC, (c.topic_id = ?) DESC, c.updated_at DESC LIMIT 200
+      `).bind(organizationId, projectId, contentId, topicId).all(),
       db.prepare("SELECT id, content_item_id, content_version_id, citation_type, citation_id, quote FROM content_citations WHERE organization_id = ? AND project_id = ? ORDER BY created_at DESC LIMIT 1000").bind(organizationId, projectId).all(),
       readCoreContentStrategy(db, { organizationId, projectId }),
     ]);

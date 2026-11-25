@@ -1,3 +1,5 @@
+import { waitUntil } from "cloudflare:workers";
+import { collectVideoMetadata } from "../../../../lib/video-metadata-runtime";
 import { isAnalysisCollectionMode, normalizeAnalysisCollectionMode } from "../../../../lib/analysis-collection-mode";
 import { isAnalysisExecutionMode, normalizeNewAnalysisExecutionMode } from "../../../../lib/analysis-execution-mode";
 import { resolveVideoSubmission, newVideoSubmissionStatements } from "../../../../lib/video-submission";
@@ -50,6 +52,9 @@ export async function POST(request: Request) {
     await assertAccess();
     const results = await db.batch(newVideoSubmissionStatements(db, { ...submission, videoId, jobId, title: payload.title?.trim() || null, analysisProfile, auditMetadata: { sourceUrl, analysisProfile, transcriptReviewEnabled, visualAnalysisMode, visualSamplingLevel, executionMode, collectionMode } }));
     if (!results[0].meta.changes) throw new ProjectWriteAccessChangedError();
+    waitUntil(collectVideoMetadata({ organizationId, projectId, userId: user.id, videoId }).catch(() => {
+      console.warn("video_metadata_collection_interrupted", { videoId });
+    }));
     return Response.json({ video: { id: videoId, platform: "douyin", source_type: "url", source_url: sourceUrl, title: payload.title?.trim() || null, status: "pending", created_at: now }, job: { id: jobId, video_id: videoId, status: "pending", analysis_profile: analysisProfile, visual_analysis_mode: visualAnalysisMode, visual_sampling_level: visualSamplingLevel, execution_mode: executionMode, collection_mode: collectionMode, transcript_review_enabled: transcriptReviewEnabled, progress: 0, current_stage: "等待进入分析队列", retry_count: 0, created_at: now, updated_at: now } }, { status: 202 });
   } catch (error) {
     if (error instanceof RequestBodyError) return apiError(error.code, error.message, error.status);

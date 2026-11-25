@@ -2,7 +2,7 @@ import { z } from "zod";
 import { readUnifiedReport } from "./unified-report.ts";
 
 const text = (max: number) => z.string().trim().min(1).max(max);
-export const BENCHMARK_REWRITE_VERSION = "content-draft.v18-benchmark-revision";
+export const BENCHMARK_REWRITE_VERSION = "content-draft.v23-benchmark-storyboard";
 export const benchmarkRewritePlanSchema = z.object({
   hookTechnique: text(400),
   ctaTechnique: text(400),
@@ -82,7 +82,7 @@ export function benchmarkRewriteBudget(sourceScript: string, plan: BenchmarkRewr
   };
 }
 
-export function benchmarkRewriteRevision(sourceScript: string, plan: BenchmarkRewritePlan, draft: { fullScript: string; benchmarkRewriteSegments?: z.infer<typeof benchmarkRewriteSegmentsSchema> }, issue: string) {
+export function benchmarkRewriteRevision<T extends { fullScript: string; benchmarkRewriteSegments?: z.infer<typeof benchmarkRewriteSegmentsSchema> }>(sourceScript: string, plan: BenchmarkRewritePlan, draft: T, issue: string) {
   const budget = benchmarkRewriteBudget(sourceScript, plan);
   return {
     instruction: "编辑这份已有生产包，不另起一篇。先修复反馈，再按每段 targetCharacters 调整；总篇幅瞄准参考稿字数而不是上限。保留有效引用，同步短稿、分镜及逐段应用说明。",
@@ -143,10 +143,10 @@ singleBenchmarkTemplate.plan 是已核对原文的结构与新题映射。完整
 singleBenchmarkTemplate.budget 给出了系统计算的逐段字数目标。写作瞄准 targetCharacters，不以各段最大值为目标，避免全篇累积超长。
 若输入包含 rewriteRevision，必须编辑 previousDraft；依照 segmentChanges 调整原段，去掉重复解释、冗余限定和例子细节，不删掉功能段，也不改变钩子与 CTA 类型。返回修订后的完整生产包，不要仅输出修改建议。
 与新选题无关的原稿观点不必借用；依据映射重新组织具体信息，不做实体替换式搬运。不能把参考里的第一人称经历、成绩、承诺变成用户事实；资料不足时用明确的情境例子承接，不留下 XX 待填文案。
-原稿预告下一条就保持下一条预告，不自动加评论、关注或私信 CTA；原稿没有某动作就不额外添加。commentPrompt 只是发布辅助，不得拼入正文改变结尾。
+原稿预告下一条就保持下一条预告，不自动加评论、关注或私信 CTA；原稿没有某动作就不额外添加。
 在完整生产包 JSON 中额外输出 benchmarkRewriteSegments：[{"index":1,"text":"本段完整新稿","application":"具体保留的结构/衔接及替换的新题内容"}]。
 fullScript 必须等于各段 text 用两个换行连接的结果；所有功能段逐一对应，不能额外添加段落。
-hooks、shortScript、storyboard 与 fullScript 的事实和 CTA 保持一致。qualityReview.benchmarkMethods 说明本条模板的实际应用，不能仅写规避反例。
+shortScript、storyboard 与 fullScript 的事实和 CTA 保持一致。benchmarkMethods 说明本条模板的实际应用，不能仅写规避反例。
 不要输出 benchmarkRewrite，该报告由服务端检查与写入。`;
 
 export const BENCHMARK_REVIEW_SYSTEM = `你是单条对标仿写的校对编辑。只输出 JSON {"passed":true,"issues":[]}。

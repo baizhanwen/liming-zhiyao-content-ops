@@ -18,6 +18,7 @@ type RequestContext = {
   taskType?: string;
   modelProfile?: string;
   rewriteWorkspaceId?: string;
+  rewriteEvidenceGuard?: { sql: string; bindings: string[] };
   enforceProjectWriteAccess?: boolean;
   assertWriteAccess?: () => Promise<void>;
   memoryEventId?: string;
@@ -36,6 +37,7 @@ export async function invokeRecordedContentRequest(input: Parameters<typeof invo
   const month = now.slice(0, 7) + "-01T00:00:00.000Z";
   const isRoot = context.id === context.rootCallId;
   const rewriteScope = context.rewriteWorkspaceId ? { organizationId: context.organizationId, projectId: context.projectId, userId: context.userId, workspaceId: context.rewriteWorkspaceId } : null;
+  const evidence = context.rewriteEvidenceGuard;
   const memoryScope = context.memoryEventId && context.memoryAttemptCount !== undefined ? { organizationId: context.organizationId, projectId: context.projectId, eventId: context.memoryEventId, attemptCount: context.memoryAttemptCount } : null;
   const generation = context.contentGeneration;
   const generationSource = `EXISTS(SELECT 1 FROM content_items c WHERE c.id=? AND c.organization_id=? AND c.project_id=?
@@ -52,6 +54,7 @@ export async function invokeRecordedContentRequest(input: Parameters<typeof invo
     WHERE (SELECT COUNT(*) FROM model_calls WHERE organization_id = ? AND created_at >= ?) <
       MIN(?, COALESCE((SELECT monthly_model_call_quota FROM organization_settings WHERE organization_id = ?), ?))
       ${rewriteScope ? `AND ${rewriteWriteAccessCondition}` : ""}
+      ${evidence ? `AND (${evidence.sql})` : ""}
       ${context.enforceProjectWriteAccess ? `AND ${projectWriteAccessCondition}` : ""}
       ${memoryScope ? `AND ${memoryAttemptCondition}` : ""}
       ${context.assistantReply ? `AND ${assistantReplyCondition}` : ""}
@@ -60,7 +63,7 @@ export async function invokeRecordedContentRequest(input: Parameters<typeof invo
       isRoot ? (context.taskType ?? "content_draft") : (context.taskType ?? "content_draft") + ".request", context.provider, context.model, context.modelProfile ?? input.profile, context.promptVersion,
       context.inputHash, isRoot ? context.inputJson : JSON.stringify({ ...JSON.parse(context.inputJson), parentModelCallId: context.rootCallId, step: context.step }),
       context.userId, now, context.organizationId, month, context.monthlyLimit, context.organizationId, context.monthlyLimit,
-      ...(rewriteScope ? rewriteWriteAccessBindings(rewriteScope) : []),
+      ...(rewriteScope ? rewriteWriteAccessBindings(rewriteScope) : []), ...(evidence?.bindings ?? []),
       ...(context.enforceProjectWriteAccess ? projectWriteAccessBindings(context) : []), ...(memoryScope ? memoryAttemptBindings(memoryScope) : []), ...(context.assistantReply ? assistantReplyBindings(context.assistantReply) : []),
       ...(generation ? [...generationSourceBindings,...generationOwnerBindings] : [])).run();
   if (!reserved.meta.changes) {
@@ -68,6 +71,7 @@ export async function invokeRecordedContentRequest(input: Parameters<typeof invo
     if (memoryScope) await assertMemoryAttempt(db, memoryScope);
     if (context.assistantReply) await assertAssistantReplyActive(db, context.assistantReply);
     if (rewriteScope && !await canContinueRewriteWrite(db, rewriteScope)) throw new ModelRequestError("项目权限或改写工作区状态已改变，本次未发起新的模型请求。", "REWRITE_ACCESS_CHANGED");
+    if (evidence && !await db.prepare(`SELECT 1 WHERE ${evidence.sql}`).bind(...evidence.bindings).first()) throw new ModelRequestError("当前品牌资料已变化，本次模型请求未发出。", "REWRITE_BRAND_CHANGED");
     if (generation) {
       if (!await db.prepare(`SELECT 1 WHERE ${generationSource}`).bind(...generationSourceBindings).first()) throw new ModelRequestError("稿件版本或状态已改变，本次未发起新的模型请求。请刷新后核对。", "CONTENT_VERSION_CONFLICT");
       if (!await db.prepare(`SELECT 1 WHERE ${generationOwner}`).bind(...generationOwnerBindings).first()) throw new ModelRequestError(isRoot

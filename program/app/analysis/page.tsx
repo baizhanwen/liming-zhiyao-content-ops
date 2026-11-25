@@ -1,18 +1,20 @@
 import { AppShell } from "../../components/AppShell";
 import { AnalysisWorkspace } from "../../components/AnalysisWorkspace";
+import { ModuleHeader } from "../../components/ModuleHeader";
 
 type AnalysisView = "videos" | "benchmark" | "assets";
+type Query = { view?: string; organizationId?: string; projectId?: string };
 
-export default async function AnalysisPage({ searchParams }: { searchParams: Promise<{ view?: string }> }) {
-  const query = await searchParams;
-  const view: AnalysisView = query.view === "benchmark" || query.view === "assets" ? query.view : "videos";
-  const headings = {
-    videos: ["视频研究", "视频分析", "提交视频，查看转写和内容分析结果。"],
-    benchmark: ["参考内容", "对标内容库", "按企业空间管理已选对标素材，复用公司历史分析结果。"],
-    assets: ["素材管理", "素材中心", "集中检索历来分析过的视频，并选择性导入不同企业空间。"],
-  } as const;
-  const [kicker, title, description] = headings[view];
-  const activePath = view === "videos" ? "/analysis" : `/analysis?view=${view}`;
+export default async function AnalysisPage({ searchParams }: { searchParams: Promise<Query> }) {
+  const { view: requestedView, organizationId, projectId } = await searchParams;
+  const view: AnalysisView = requestedView === "benchmark" || requestedView === "assets" ? requestedView : "videos";
 
-  return <AppShell activePath={activePath}><section className="page-heading management-heading"><div><p>{kicker}</p><h1>{title}</h1><span>{description}</span></div><a className="secondary-link" href="/projects">切换企业空间 →</a></section><AnalysisWorkspace initialView={view} /></AppShell>;
+  return <AppShell activePath="/analysis">
+    <ModuleHeader title="素材中心" tabs={[
+      { href: "/analysis?view=videos", label: "视频分析", active: view === "videos" },
+      { href: "/analysis?view=benchmark", label: "空间对标", active: view === "benchmark" },
+      { href: "/analysis?view=assets", label: "公司素材", active: view === "assets" },
+    ]} />
+    <AnalysisWorkspace key={`${view}:${organizationId ?? ""}:${projectId ?? ""}`} initialView={view} initialOrganizationId={organizationId} initialProjectId={projectId} />
+  </AppShell>;
 }

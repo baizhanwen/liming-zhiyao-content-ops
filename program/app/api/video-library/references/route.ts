@@ -1,3 +1,4 @@
+import { libraryCoverFields, videoCoverColumns, videoCoverJoin } from "../../../../lib/video-cover";
 import { libraryContentColumns, libraryContentFilterOptions, libraryContentSqlFilters, libraryContentSearchSql, matchesLibraryContentFilters, readLibraryContentFilters, serializeLibraryContent } from "../../../../lib/library-content-metadata";
 import { materialAnalysisColumns } from "../../../../lib/material-analysis-state";
 import { canManageOrganizationVideoLibrary, canWriteProjectAccess, ensureUser, getD1, getOrganizationAccess, getProjectAccess } from "../../../../db/runtime";
@@ -31,15 +32,16 @@ export async function GET(request: Request) {
     clauses.push(...contentConditions.clauses); bindings.push(...contentConditions.bindings);
     const rows = await getD1().prepare(`
       SELECT refs.id AS reference_id, refs.created_at AS imported_at, library.id, library.category, library.tags_json, library.notes, library.updated_at,
-        v.id AS video_id, v.platform, v.source_type, v.source_url, v.title, v.author_name, v.duration_sec, v.status,
+        v.id AS video_id, v.platform, v.source_type, v.source_url, v.title, v.platform_title, v.platform_description, v.published_at_source, v.metadata_collected_at, v.author_name, v.published_at, v.duration_sec, v.status,
         p.id AS source_project_id, p.name AS source_project_name, account.display_name AS account_name,
         j.status AS job_status, j.progress AS job_progress, j.current_stage,
         ${materialAnalysisColumns}, ${libraryContentColumns},
-        (SELECT frame.id FROM media_assets frame WHERE frame.organization_id = v.organization_id AND frame.project_id = v.project_id AND frame.video_id = v.id AND frame.kind = 'keyframe' AND frame.status = 'active' ORDER BY frame.is_cover DESC, COALESCE(frame.quality_score, 0) DESC, frame.created_at ASC LIMIT 1) AS cover_asset_id
+        ${videoCoverColumns}
       FROM project_video_references refs
       INNER JOIN video_library_entries library ON library.id = refs.library_entry_id AND library.organization_id = refs.organization_id
       INNER JOIN videos v ON v.id = library.source_video_id AND v.organization_id = library.organization_id
       INNER JOIN projects p ON p.id = v.project_id
+      ${videoCoverJoin}
       LEFT JOIN video_analyses latest_analysis ON latest_analysis.id=(SELECT id FROM video_analyses WHERE organization_id=v.organization_id AND video_id=v.id ORDER BY created_at DESC LIMIT 1)
       LEFT JOIN social_accounts account ON account.id = v.social_account_id
       LEFT JOIN analysis_jobs j ON j.id = (SELECT latest.id FROM analysis_jobs latest WHERE latest.organization_id = v.organization_id AND latest.video_id = v.id ORDER BY latest.created_at DESC LIMIT 1)
@@ -52,7 +54,7 @@ export async function GET(request: Request) {
     return Response.json({
       entries: entries.map((row) => ({
         ...row,
-        cover_url: row.cover_asset_id ? `/api/video-library/${row.id}/cover?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}` : null,
+        ...libraryCoverFields(row, row.id, organizationId, projectId),
       })),
       filterOptions: libraryContentFilterOptions(entries),
       canManage,

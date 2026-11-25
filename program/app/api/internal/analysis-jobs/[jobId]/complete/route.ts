@@ -170,22 +170,23 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
       const source = payload.sourceMetadata;
       statements.push(db.prepare(`
         UPDATE videos SET
-          platform_work_id = COALESCE(?, platform_work_id),
+          platform_work_id = COALESCE(platform_work_id, ?),
           title = COALESCE(title, ?),
           author_name = COALESCE(?, author_name),
-          published_at = COALESCE(?, published_at),
+          published_at = CASE WHEN published_at_source = 'tikhub' THEN published_at ELSE COALESCE(?, published_at) END,
           duration_sec = COALESCE(?, duration_sec),
           updated_by = ?, updated_at = ?
         WHERE id = ? AND organization_id = ? AND project_id = ?
+          AND (? IS NULL OR platform_work_id IS NULL OR platform_work_id = ?)
           AND EXISTS (SELECT 1 FROM analysis_jobs j WHERE j.id = ? AND j.video_id = videos.id AND j.status IN ('completed', 'partial') AND j.result_key = ? AND j.version = ?)
-      `).bind(source.platformWorkId, source.title, source.authorName, source.publishedAt, source.durationSec, actor, nowIso, job.video_id, job.organization_id, job.project_id, jobId, payload.resultKey, finalVersion));
+      `).bind(source.platformWorkId, source.title, source.authorName, source.publishedAt, source.durationSec, actor, nowIso, job.video_id, job.organization_id, job.project_id, source.platformWorkId, source.platformWorkId, jobId, payload.resultKey, finalVersion));
       if (Object.values(source.metrics).some((value) => value !== null)) {
         statements.push(db.prepare(`
           INSERT INTO video_metric_snapshots (id, organization_id, project_id, video_id, source, plays, likes, comments, favorites, shares, followers_gained, collected_at, created_by, created_at)
           SELECT ?, j.organization_id, j.project_id, j.video_id, 'public', ?, ?, ?, ?, ?, NULL, ?, ?, ?
-          FROM analysis_jobs j
+          FROM analysis_jobs j JOIN videos v ON v.id=j.video_id AND (? IS NULL OR v.platform_work_id IS NULL OR v.platform_work_id=?)
           WHERE j.id = ? AND j.status IN ('completed', 'partial') AND j.result_key = ? AND j.version = ?
-        `).bind(crypto.randomUUID(), source.metrics.plays, source.metrics.likes, source.metrics.comments, source.metrics.favorites, source.metrics.shares, nowIso, actor, nowIso, jobId, payload.resultKey, finalVersion));
+        `).bind(crypto.randomUUID(), source.metrics.plays, source.metrics.likes, source.metrics.comments, source.metrics.favorites, source.metrics.shares, nowIso, actor, nowIso, source.platformWorkId, source.platformWorkId, jobId, payload.resultKey, finalVersion));
       }
     }
     statements.push(

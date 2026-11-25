@@ -1,13 +1,10 @@
 "use client";
-import { runScopedAction } from "../lib/client-scope";
-import { loadClientProjects } from "../lib/client-scope";
 import { readApiError as readError } from "../lib/client-format";
-
-
 import { ChangeEvent, FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { ArrowRight, ChevronDown, CloudUpload, FileVideo, Link2, SlidersHorizontal } from "lucide-react";
 import { materialCardState } from "../lib/material-analysis-state";
-import { preferredOrganizationId, rememberCurrentScope, scopedFetch } from "../lib/client-scope";
+import { loadClientProjects, rememberCurrentScope, runScopedAction, scopedFetch } from "../lib/client-scope";
 import { estimateAnalysisMaximumTokens, estimateUnifiedAnalysisBudget, estimateUnifiedSourceTokens, type AnalysisProfile } from "../lib/analysis-profile";
 import { VideoLibraryWorkspace } from "./VideoLibraryWorkspace";
 import { useAnalysisProfile } from "./useAnalysisProfile";
@@ -23,12 +20,14 @@ import TaskProgress, { initialTaskRefresh, type TaskRefreshState } from "./TaskP
 import type { TaskProgressSnapshot } from "../lib/task-progress-view";
 import { createTaskSnapshotReader } from "../lib/task-snapshot-reader";
 import { mediaErrorPresentation } from "../lib/media-error-view";
+import { useWorkspaceInitialization } from "./useWorkspaceInitialization";
+import { VideoListCover, type VideoPlatformInfo } from "./VideoPlatformMetadata";
 import "./analysis-cleanup.css";
 
 type Organization = { id: string; name: string };
 type Project = { id: string; name: string };
 type UploadEstimate = { name: string; durationSeconds: number | null };
-type Video = { analysis_id?: string | null; id: string; platform: string; source_type: string; source_url: string | null; title: string | null; status: string; error_message: string | null; created_at: string; filename?: string | null; size_bytes?: number | null; is_reference?: number | boolean };
+type Video = VideoPlatformInfo & { analysis_id?: string | null; id: string; platform: string; source_type: string; source_url: string | null; title: string | null; status: string; error_message: string | null; created_at: string; filename?: string | null; size_bytes?: number | null; is_reference?: number | boolean };
 type Job = Partial<Parameters<typeof materialCardState>[0]> & { model_call_count?: number; model_unknown_usage_count?: number; enqueued_at?: string; id: string; video_id: string; status: string; analysis_profile: string; visual_analysis_mode?: VisualAnalysisMode; visual_sampling_level?: VisualSamplingLevel | null; execution_mode?: AnalysisExecutionMode; collection_mode?: AnalysisCollectionMode; progress: number; current_stage: string | null; error_code: string | null; error_message: string | null; retry_count: number; lease_expires_at: string | null; checkpoint_stage: string | null; checkpoint_updated_at: string | null; resume_count: number; taskProgress?: TaskProgressSnapshot; segment_progress?: { total: number; completed: number; failed: number; inProgress: number; remaining: number; segments: Array<{ windowKey: string; index: number; startMs: number; endMs: number; status: "pending" | "in_progress" | "completed" | "failed"; attempts: number; error: string | null }> } | null; created_at: string; updated_at: string };
 type ServiceStatus = { checkedAt: string; credentialConfigured: boolean; modelConfigured: boolean; publicLinkCookieConfigured: boolean; uploadedCookieConfigured: boolean; publicLinkAuthenticationMode: "anonymous" | "browser" | "cookie_file" | "none"; browserLoginStatus: "logged_in" | "not_logged_in" | "unavailable" | "disabled" | "checking" | "unknown"; browserLoginDetected: boolean; browserLoginBrowser: string | null; browserLoginCheckedAt: string | null; browserLoginMessage: string | null; cookieUpdatedAt: string | null; canManageCookies: boolean; analyzerOnline: boolean; lastWorkerHeartbeat: string | null };
 type QueueStatus = { sampleCount: number; averageSeconds: number | null; waitingCount: number; runningCount: number; stoppingCount: number; ownCount: number; outstandingCount: number; userLimit: number; hostLimit: number };
@@ -172,11 +171,14 @@ function AnalysisModeControls({ visualAnalysisMode, onVisualMode, visualSampling
   </div>;
 }
 
-function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "videos" | "benchmark" | "assets" }) {
+type InitialScope = { initialOrganizationId?: string; initialProjectId?: string };
+function VideoAnalysisWorkspace({ initialOrganizationId = "", initialProjectId = "" }: InitialScope) {
   const [organizations, setOrganizations] = useState<Organization[]>([]); const [organizationId, setOrganizationId] = useState("");
   const [projects, setProjects] = useState<Project[]>([]); const [projectId, setProjectId] = useState("");
   const [videos, setVideos] = useState<Video[]>([]); const [jobs, setJobs] = useState<Job[]>([]); const [canWrite, setCanWrite] = useState(false);
-  const [loading, setLoading] = useState(true); const [submitting, setSubmitting] = useState(false); const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true); const [error, setError] = useState("");
+  const [submissionKind, setSubmissionKind] = useState<"link" | "upload" | null>(null);
+  const submitting = submissionKind !== null;
   const [service, setService] = useState<ServiceStatus | null>(null); const [uploadProgress, setUploadProgress] = useState(""); const [submitMessage, setSubmitMessage] = useState("");
   const [queue, setQueue] = useState<QueueStatus | null>(null);
   const [cookieUpdating, setCookieUpdating] = useState(false); const [cookieDeleting, setCookieDeleting] = useState(false); const [cookieMessage, setCookieMessage] = useState(""); const cookieFileRef = useRef<HTMLInputElement>(null);
@@ -192,6 +194,7 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
   const [transcriptReviewEnabled, setTranscriptReviewEnabled] = useState(false);
   const [uploadEstimates, setUploadEstimates] = useState<UploadEstimate[]>([]);
   const [inspectingFiles, setInspectingFiles] = useState(false);
+  const uploadSelectionVersion = useRef(0);
   const [taskConnection, setTaskConnection] = useState<TaskRefreshState>({ ...initialTaskRefresh });
   const [taskSnapshotTimes, setTaskSnapshotTimes] = useState<Record<string, number>>({});
   const taskReader = useRef<{ key: string; reader: ReturnType<typeof createTaskSnapshotReader<VideoListResponse>> } | null>(null);
@@ -200,6 +203,8 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
 
   const clearTaskScope = useCallback(() => {
     taskReader.current?.reader.dispose(); taskReader.current = null;
+    uploadSelectionVersion.current += 1;
+    setUploadEstimates([]); setInspectingFiles(false); setUploadProgress(""); setSubmitMessage("");
     setVideos([]); setJobs([]); setService(null); setQueue(null); setCanWrite(false);
     setJobFeedback({}); setRetryCollectionModes({}); setCookieMessage(""); setCookieUpdating(false); setCookieDeleting(false);
     setTaskConnection({ ...initialTaskRefresh }); setTaskSnapshotTimes({});
@@ -228,16 +233,16 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
     await taskReader.current.reader.refresh();
   }, [clearTaskScope]);
 
-  const loadProjects = useCallback(async (orgId: string) => {
+  const loadProjects = useCallback(async (orgId: string, preferred = "") => {
     const sequence = ++projectLoadSequence.current;
     requestedTaskScope.current = { organizationId: orgId, projectId: "" };
     clearTaskScope(); setProjectId("");
-    const body = await loadClientProjects<Project>(orgId, "");
+    const body = await loadClientProjects<Project>(orgId, preferred);
     if (sequence !== projectLoadSequence.current) return;
     setProjects(body.projects); const first = body.selected; setProjectId(first); requestedTaskScope.current = { organizationId: orgId, projectId: first }; rememberCurrentScope(orgId, first); await loadVideos(orgId, first);
   }, [loadVideos, clearTaskScope]);
 
-  useEffect(() => { let active = true; (async () => { try { const response = await fetch("/api/organizations"); if (!response.ok) throw new Error(await readError(response)); const body = await response.json() as { organizations: Organization[] }; if (!active) return; setOrganizations(body.organizations); const first = preferredOrganizationId(body.organizations); setOrganizationId(first); if (first) await loadProjects(first); } catch (reason) { if (active) setError(reason instanceof Error ? reason.message : "加载失败"); } finally { if (active) setLoading(false); } })(); return () => { active = false; }; }, [loadProjects]);
+  useWorkspaceInitialization({ initialOrganizationId, initialProjectId, setOrganizations, setOrganizationId, loadProjects, setError, setLoading });
   useEffect(() => {
     if (!organizationId || !projectId) return;
     const timer = window.setInterval(() => { void loadVideos(organizationId, projectId).catch(() => undefined); }, 4_000);
@@ -248,7 +253,9 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
   function appendCreated(body: { video: Video; job: Job }) { setVideos((current) => [body.video, ...current.filter((video) => video.id !== body.video.id)]); setJobs((current) => [body.job, ...current.filter((job) => job.id !== body.job.id)]); setTaskSnapshotTimes((current) => ({ ...current, [body.job.id]: Date.now() })); }
 
   async function submitUrl(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setSubmitting(true); setError(""); setSubmitMessage(""); const formElement = event.currentTarget; const form = new FormData(formElement);
+    event.preventDefault();
+    if (submitting) return;
+    setSubmissionKind("link"); setError(""); setSubmitMessage(""); const formElement = event.currentTarget; const form = new FormData(formElement);
     const requestedScope = taskReader.current;
     try {
       const response = await scopedFetch("/api/videos/from-url", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, url: form.get("url"), title: form.get("title"), analysisProfile, transcriptReviewEnabled, visualAnalysisMode, visualSamplingLevel, executionMode, collectionMode }) });
@@ -260,7 +267,7 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
       void loadVideos(organizationId, projectId).catch(() => undefined);
       setSubmitMessage(body.reused ? "该视频已有分析记录，已直接复用到当前项目。" : "已加入主机共享队列，将逐条处理。页面会自动更新进度，完成后可直接查看结果。");
     } catch (reason) { if (taskReader.current === requestedScope) setError(reason instanceof Error ? reason.message : "链接入库失败，请稍后重试。"); }
-    finally { setSubmitting(false); }
+    finally { setSubmissionKind(null); }
   }
 
   async function updateDouyinCookies(event: ChangeEvent<HTMLInputElement>) {
@@ -282,12 +289,26 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
   }
 
   async function inspectUploadFiles(event: ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(event.currentTarget.files ?? []);
-    setUploadEstimates([]);
+    const version = ++uploadSelectionVersion.current;
+    const input = event.currentTarget;
+    const files = Array.from(input.files ?? []);
+    setUploadProgress("");
+    if (files.length > 10) {
+      input.value = "";
+      setError("每批最多选择 10 个文件，请分批提交。主机会逐条处理。");
+      setUploadEstimates([]);
+      setInspectingFiles(false);
+      return;
+    }
+    setError("");
+    setUploadEstimates(files.map(file => ({ name: file.name, durationSeconds: null })));
+    setInspectingFiles(files.length > 0);
     if (!files.length) return;
-    if (files.length > 10) { event.currentTarget.value = ""; setError("每批最多选择 10 个文件，请分批提交。主机会逐条处理。"); return; }
-    setInspectingFiles(true);
-    const estimates = await Promise.all(files.map(async (file) => ({ name: file.name, durationSeconds: await readMediaDuration(file) })));
+    const estimates = await Promise.all(files.map(async file => ({
+      name: file.name,
+      durationSeconds: await readMediaDuration(file).catch(() => null),
+    })));
+    if (version !== uploadSelectionVersion.current) return;
     setUploadEstimates(estimates);
     setInspectingFiles(false);
   }
@@ -307,9 +328,12 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
   }
 
   async function uploadFile(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setSubmitting(true); setError(""); setUploadProgress(""); const formElement = event.currentTarget; const fileInput = formElement.elements.namedItem("file") as HTMLInputElement | null; const files = Array.from(fileInput?.files ?? []);
-    if (!files.length) { setError("请选择至少一个视频或音频文件。"); setSubmitting(false); return; }
-    if (files.length > 10) { setError("每批最多提交 10 个文件，请重新选择。"); setSubmitting(false); return; }
+    event.preventDefault();
+    if (submitting) return;
+    setError(""); setUploadProgress(""); const formElement = event.currentTarget; const fileInput = formElement.elements.namedItem("file") as HTMLInputElement | null; const files = Array.from(fileInput?.files ?? []);
+    if (!files.length) { setError("请选择至少一个视频或音频文件。"); return; }
+    if (files.length > 10) { setError("每批最多提交 10 个文件，请重新选择。"); return; }
+    setSubmissionKind("upload");
     let completed = 0, uncertain = 0, notAttempted = 0, rejected = 0; const failures: string[] = [];
     const requestedScope = taskReader.current;
     for (const [index, file] of files.entries()) {
@@ -337,10 +361,16 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
         break;
       }
     }
-    if (taskReader.current !== requestedScope) { setSubmitting(false); return; }
-    if (completed === files.length) { formElement.reset(); setUploadEstimates([]); }
+    if (taskReader.current !== requestedScope) { setSubmissionKind(null); return; }
+    if (completed === files.length) {
+      formElement.reset();
+      uploadSelectionVersion.current += 1;
+      setUploadEstimates([]);
+      setInspectingFiles(false);
+    }
     setUploadProgress(`批量上传结束：已提交 ${completed} 个，未提交 ${rejected} 个，待核对 ${uncertain} 个，未尝试 ${notAttempted} 个。`);
-    if (failures.length) setError(failures.join("；")); setSubmitting(false);
+    if (failures.length) setError(failures.join("；"));
+    setSubmissionKind(null);
   }
 
   async function retry(jobId: string, segmentKey?: string, collectionMode?: AnalysisCollectionMode) {
@@ -395,13 +425,12 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
 
   if (loading) return <div className="management-state" role="status">正在载入视频分析空间…</div>;
   if (error && organizations.length === 0) return <div className="management-state error-state"><strong>暂时无法进入视频分析</strong><p>{error}</p><small>请确认本地身份已启用，并先创建公司与企业空间。</small></div>;
-  if (!organizationId || !projectId) return <div className="empty-panel"><h2>请先创建企业空间</h2><p>视频、媒体文件和分析结果必须归属于明确的企业空间。</p><a className="primary-button link-button" href="/projects">前往企业空间</a></div>;
-  const visibleVideos = videos.filter((video) => initialView !== "assets" || jobs.some((job) => job.video_id === video.id && (job.status === "completed" || job.status === "partial")));
+  if (!organizationId) return <div className="empty-panel"><h2>请先创建公司和企业空间</h2><p>视频和分析记录按企业空间管理。</p><Link className="primary-button link-button" href="/projects">管理企业空间</Link></div>;
   const baseServiceReady = Boolean(service?.analyzerOnline && service.credentialConfigured && service.modelConfigured);
   const anonymousCollection = collectionMode === "anonymous";
   const uploadedCookieReady = service?.uploadedCookieConfigured === true;
   const linkAnalysisReady = Boolean(baseServiceReady && (anonymousCollection || uploadedCookieReady && !cookieUpdating && !cookieDeleting));
-  const linkButtonLabel = submitting ? "正在启动分析…" : !service?.credentialConfigured ? "分析服务凭据未配置" : !service?.modelConfigured ? "请先配置分析模型" : !service?.analyzerOnline ? "分析服务未连接" : !anonymousCollection && !uploadedCookieReady ? "请先上传 Cookie" : "一键开始分析";
+  const linkButtonLabel = submissionKind === "link" ? "正在启动分析…" : !service?.credentialConfigured ? "分析服务凭据未配置" : !service?.modelConfigured ? "请先配置分析模型" : !service?.analyzerOnline ? "分析服务未连接" : !anonymousCollection && !uploadedCookieReady ? "请先上传 Cookie" : "一键开始分析";
   const profileDescription = analysisProfile === "standard"
     ? "适合日常分析：先校正主稿，再从四个方面生成一份带依据的报告。"
     : "适合重点样本：文字分析预算更充足，仍从四个方面生成一份带依据的报告。";
@@ -418,28 +447,113 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
 
   return <div className="analysis-layout single-view">
     <section className="analysis-main">
-      <div className="management-toolbar analysis-toolbar"><label>公司<select value={organizationId} onChange={(event) => runScopedAction(async () => { const id = event.target.value; setOrganizationId(id); await loadProjects(id); }, setError)}>{organizations.map((organization) => <option key={organization.id} value={organization.id}>{organization.name}</option>)}</select></label><label>企业空间<select value={projectId} onChange={(event) => runScopedAction(async () => { const id = event.target.value; setProjectId(id); requestedTaskScope.current = { organizationId, projectId: id }; rememberCurrentScope(organizationId, id); await loadVideos(organizationId, id); }, setError)}>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><button type="button" disabled={taskConnection.pending} onClick={() => { void loadVideos(organizationId, projectId).catch(() => undefined); }}>{taskConnection.pending ? "正在刷新状态…" : "刷新状态"}</button></div>
+      <div className="management-toolbar analysis-toolbar">
+        <label>公司<select aria-label="公司" value={organizationId} onChange={(event) => runScopedAction(async () => { const id = event.target.value; setOrganizationId(id); setProjects([]); setError(""); await loadProjects(id); }, setError)}>
+          {organizations.map((organization) => <option key={organization.id} value={organization.id}>{organization.name}</option>)}
+        </select></label>
+        <label>企业空间<select aria-label="企业空间" value={projectId} disabled={!projects.length} onChange={(event) => runScopedAction(async () => { const id = event.target.value; setProjectId(id); requestedTaskScope.current = { organizationId, projectId: id }; rememberCurrentScope(organizationId, id); await loadVideos(organizationId, id); }, setError)}>
+          {!projects.length && <option value="">暂无企业空间</option>}
+          {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+        </select></label>
+        <button type="button" disabled={taskConnection.pending || !projectId} onClick={() => { void loadVideos(organizationId, projectId).catch(() => undefined); }}>{taskConnection.pending ? "正在刷新状态…" : "刷新状态"}</button>
+      </div>
       {taskConnection.error && jobs.length === 0 && <div className="inline-alert" role="alert">任务状态读取失败：{taskConnection.error}。正在自动重连。</div>}
       {error && <div className="inline-alert" role="alert">{error}</div>}{submitMessage && <div className="analysis-submit-notice" role="status">{submitMessage}</div>}
       {cookieMessage && <div className="analysis-submit-notice" role="status">{cookieMessage}</div>}
-      {initialView === "videos" && <article hidden style={{ display: "none" }} className="panel pipeline-panel"><div className="panel-heading"><div><p className="section-kicker">异步分析流水线</p><h2>网页请求只负责入库，计算任务分阶段执行</h2></div><span className="status neutral">可重试 · 可追溯</span></div><ol>{stages.map((stage, index) => <li key={stage}><span>{index + 1}</span><strong>{stage}</strong>{index < stages.length - 1 && <i aria-hidden="true" />}</li>)}</ol></article>}
-    {canWrite && initialView === "videos" && <aside className="analysis-ingest analysis-ingest-top"><article hidden style={{ display: "none" }} className="create-panel" aria-live="polite"><h2>主机共享分析队列</h2><p>多人可以同时提交，主机每次分析 1 条。每批最多 10 条，个人未结束任务最多 10 条，主机最多 50 条。</p>{queue && <p>你的任务 {queue.ownCount} / {queue.userLimit} · 主机任务 {queue.outstandingCount} / {queue.hostLimit}<br />等待 {queue.waitingCount} 条 · 处理中 {queue.runningCount} 条 · 释放资源中 {queue.stoppingCount} 条</p>}<p>已成功提交的文件会继续处理。等待时间受视频时长、主机配置和模型响应影响。</p></article><article hidden style={{ display: "none" }} className="analysis-profile-panel"><label>分析档位<select value={analysisProfile} onChange={(event) => updateAnalysisProfile(event.target.value as AnalysisProfile)}><option value="standard">标准模式 · 推荐</option><option value="max">最高能力模式</option></select></label><p>{profileDescription}</p><div className="analysis-preflight-budget" aria-live="polite"><span>首次文字预算参考 <strong>{shortVideoBudget.initialTextTokensEstimate.toLocaleString()} Token</strong></span><span>短视频文字预算参考（含可能重试） <strong>{shortVideoBudget.retryTextTokensEstimate.toLocaleString()} Token</strong></span><span>报告流程 <strong>主稿校正与四方面分析</strong></span><span>画面采样 <strong>{visualSamplingLevelLabels[visualSamplingLevel]}</strong></span><span>图像理解用量 <strong>另计，以实际回执为准</strong></span></div></article><article className="create-panel link-panel"><p className="section-kicker">一键链接分析</p><h2>粘贴分享文案即可开始</h2><p className="analysis-input-hint">粘贴抖音分享链接，自动提取口播并生成分析报告。</p><details className="analysis-input-help"><summary>格式与分析说明</summary><p>可选择匿名采集或当前公司的 Cookie 采集，匿名采集不会自动切换到 Cookie。原片上限 60 分钟、1 GiB；浏览器采集最多等待 15 分钟。受限或超限视频可上传符合本地上传限制的文件。报告保留实际时长、调用次数和用量。</p></details><form className="stack-form" onSubmit={submitUrl}><div className="analysis-collection-row"><AnalysisCollectionModeSelect compact value={collectionMode} onChange={setCollectionMode} disabled={loading || submitting} /><details className="analysis-cookie-settings" open={collectionMode === "cookie"}><summary>{uploadedCookieReady ? "管理 Cookie · 已上传" : "上传 Cookie"}</summary><div className="analysis-cookie-content"><p>{uploadedCookieReady ? "当前公司已保存抖音 Cookie。登录失效时请更新。" : "在已登录抖音的浏览器导出 Netscape 格式 cookies.txt，再上传到当前公司。"}</p>{service?.canManageCookies ? <><input ref={cookieFileRef} className="sr-only" type="file" accept=".txt,text/plain" onChange={updateDouyinCookies} disabled={cookieUpdating || cookieDeleting} aria-label="选择抖音 cookies.txt" /><div className="analysis-cookie-actions"><button type="button" disabled={cookieUpdating || cookieDeleting} onClick={() => cookieFileRef.current?.click()}>{cookieUpdating ? "正在上传…" : uploadedCookieReady ? "更新 Cookie" : "上传 Cookie 文件"}</button>{uploadedCookieReady && <button type="button" disabled={cookieUpdating || cookieDeleting} onClick={deleteDouyinCookies}>{cookieDeleting ? "正在清除…" : "清除 Cookie"}</button>}<a href="https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc" target="_blank" rel="noreferrer">获取导出扩展</a></div></> : <p>请联系当前公司的管理员或有权限的成员上传 Cookie。</p>}</div></details></div>{collectionMode === "cookie" && !uploadedCookieReady && <p className="analysis-cookie-required" role="status">请先上传当前公司的 Cookie，再提交链接。</p>}<label>抖音分享文案或链接<textarea name="url" required rows={4} maxLength={2000} placeholder="粘贴完整分享文案，或 https://v.douyin.com/..." /></label><div className="analysis-url-note">
-          <div className="analysis-url-note-heading">
-            <label htmlFor="analysis-url-note">内部备注（可选）</label>
-            <div className="analysis-url-note-controls">
+      {!projectId ? <div className="empty-panel"><h2>请选择企业空间</h2><p>分析任务和报告归属于所选空间。</p><Link className="primary-button link-button" href="/projects">管理企业空间</Link></div> : <>
+      <article hidden style={{ display: "none" }} className="panel pipeline-panel"><div className="panel-heading"><div><p className="section-kicker">异步分析流水线</p><h2>网页请求只负责入库，计算任务分阶段执行</h2></div><span className="status neutral">可重试 · 可追溯</span></div><ol>{stages.map((stage, index) => <li key={stage}><span>{index + 1}</span><strong>{stage}</strong>{index < stages.length - 1 && <i aria-hidden="true" />}</li>)}</ol></article>
+    {canWrite && <aside className="analysis-ingest analysis-ingest-top"><article hidden style={{ display: "none" }} className="create-panel" aria-live="polite"><h2>主机共享分析队列</h2><p>多人可以同时提交，主机每次分析 1 条。每批最多 10 条，个人未结束任务最多 10 条，主机最多 50 条。</p>{queue && <p>你的任务 {queue.ownCount} / {queue.userLimit} · 主机任务 {queue.outstandingCount} / {queue.hostLimit}<br />等待 {queue.waitingCount} 条 · 处理中 {queue.runningCount} 条 · 释放资源中 {queue.stoppingCount} 条</p>}<p>已成功提交的文件会继续处理。等待时间受视频时长、主机配置和模型响应影响。</p></article><article hidden style={{ display: "none" }} className="analysis-profile-panel"><label>分析档位<select value={analysisProfile} onChange={(event) => updateAnalysisProfile(event.target.value as AnalysisProfile)}><option value="standard">标准模式 · 推荐</option><option value="max">最高能力模式</option></select></label><p>{profileDescription}</p><div className="analysis-preflight-budget" aria-live="polite"><span>首次文字预算参考 <strong>{shortVideoBudget.initialTextTokensEstimate.toLocaleString()} Token</strong></span><span>短视频文字预算参考（含可能重试） <strong>{shortVideoBudget.retryTextTokensEstimate.toLocaleString()} Token</strong></span><span>报告流程 <strong>主稿校正与四方面分析</strong></span><span>画面采样 <strong>{visualSamplingLevelLabels[visualSamplingLevel]}</strong></span><span>图像理解用量 <strong>另计，以实际回执为准</strong></span></div></article>
+      <div className="analysis-intake-methods">
+        <form id="analysis-link-intake" className="analysis-intake-form" onSubmit={submitUrl} aria-labelledby="analysis-link-title">
+          <header className="analysis-intake-heading">
+            <span className="analysis-intake-icon"><Link2 aria-hidden="true" /></span>
+            <h2 id="analysis-link-title">粘贴抖音链接</h2>
+          </header>
+          <textarea name="url" className="analysis-intake-url" required rows={3} maxLength={2000}
+            aria-label="抖音分享文案或链接" placeholder="粘贴抖音分享短链，或直接粘贴完整分享文案…" />
+          <button type="submit" className="primary-button intake-submit" disabled={submitting || !linkAnalysisReady}>
+            {linkButtonLabel}<ArrowRight size={15} aria-hidden="true" />
+          </button>
+        </form>
+        <form className="analysis-intake-form" onSubmit={uploadFile} aria-labelledby="analysis-upload-title">
+          <header className="analysis-intake-heading">
+            <span className="analysis-intake-icon"><FileVideo aria-hidden="true" /></span>
+            <h2 id="analysis-upload-title">上传本地文件</h2>
+          </header>
+          <label className="analysis-upload-zone">
+            <input name="file" type="file" multiple required disabled={submitting}
+              accept="video/mp4,video/quicktime,video/webm,audio/mpeg,audio/mp4,audio/wav"
+              aria-label="选择视频或音频文件" aria-describedby="analysis-upload-formats analysis-upload-limits" onChange={inspectUploadFiles} />
+            <CloudUpload size={24} aria-hidden="true" />
+            <strong>{uploadEstimates.length ? uploadEstimates.length === 1 ? uploadEstimates[0].name : `已选择 ${uploadEstimates.length} 个文件` : "选择或拖入视频、音频"}</strong>
+            <span id="analysis-upload-formats">MP4、MOV、WebM、MP3、M4A、WAV</span>
+          </label>
+          {uploadEstimates.length > 1 && <ul className="analysis-selected-files" aria-label="已选文件">
+            {uploadEstimates.map((file, index) => <li key={`${index}-${file.name}`}>{file.name}</li>)}
+          </ul>}
+          {(inspectingFiles || uploadEstimates.length > 0) && <div className="upload-cost-estimate" role="status">
+            <strong>{inspectingFiles ? "正在读取媒体时长…" : `${uploadEstimates.length} 个文件 · ${knownUploadDuration > 0 ? durationLabel(knownUploadDuration) : "时长暂不可读"}`}</strong>
+            {!inspectingFiles && <span>{estimatedUploadTokens !== null ? `${uploadEstimateScope}来源预计约 ${estimatedUploadTokens.toLocaleString()} Token` : `将按${profileLabels[analysisProfile]}策略逐个任务保护`}{maximumUploadTokens !== null ? ` · 文字预算参考约 ${maximumUploadTokens.toLocaleString()}（含可能重试）` : ""}{` · 画面采样：${visualSamplingLevelLabels[visualSamplingLevel]}，保留画面分析与关键取证`}{unknownUploadDurations ? ` · ${unknownUploadDurations} 个文件将在后台确认时长` : ""}。图像理解用量另计。</span>}
+          </div>}
+          <div className="analysis-upload-actions">
+            <button type="submit" className="secondary-button intake-submit" disabled={submitting || inspectingFiles || !baseServiceReady}>
+              {submissionKind === "upload" ? "正在批量上传…" : inspectingFiles ? "正在估算…" : baseServiceReady ? "上传并自动分析" : "分析服务准备中…"}
+            </button>
+            <span id="analysis-upload-limits">每批最多 10 个，单个 ≤ 50 MB</span>
+          </div>
+          {uploadProgress && <p className="upload-progress" role="status">{uploadProgress}</p>}
+        </form>
+      </div>
+      <details className="analysis-intake-settings">
+        <summary>
+          <span className="analysis-settings-label"><SlidersHorizontal size={16} aria-hidden="true" />分析设置</span>
+          <span className="analysis-settings-values">{visualAnalysisModeLabels[visualAnalysisMode]} · {visualSamplingLevelLabels[visualSamplingLevel]} · {analysisExecutionModeLabels[executionMode]}{collectionMode === "cookie" && !uploadedCookieReady ? " · 需上传 Cookie" : ""}</span>
+          <ChevronDown className="analysis-settings-chevron" size={16} aria-hidden="true" />
+        </summary>
+        <div className="analysis-settings-body">
+          <section>
+            <h3>通用设置</h3>
+            <AnalysisModeControls visualAnalysisMode={visualAnalysisMode} onVisualMode={setVisualAnalysisMode} visualSamplingLevel={visualSamplingLevel} onSamplingLevel={setVisualSamplingLevel} executionMode={executionMode} onExecutionMode={setExecutionMode} disabled={loading || submitting} />
+            <p>{visualAnalysisMode === "vision_only" && "纯视觉跳过本地 OCR，口播照常转写。"}三档均保留画面分析，省时档减少采样密度。{executionMode === "controlled_parallel" ? "受控并行会增加瞬时资源占用，电脑卡顿时可切换到串行。" : "串行先完成口播准备，再处理画面。"}</p>
+          </section>
+          <section>
+            <h3>链接采集设置</h3>
+            <div className="analysis-collection-row">
+              <AnalysisCollectionModeSelect compact value={collectionMode} onChange={setCollectionMode} disabled={loading || submitting} />
+              <details className="analysis-cookie-settings" open={collectionMode === "cookie"}>
+                <summary>{uploadedCookieReady ? "管理 Cookie · 已上传" : "上传 Cookie"}</summary>
+                <div className="analysis-cookie-content">
+                  <p>{uploadedCookieReady ? "当前公司已保存抖音 Cookie。登录失效时请更新。" : "在已登录抖音的浏览器导出 Netscape 格式 cookies.txt，再上传到当前公司。"}</p>
+                  {service?.canManageCookies ? <>
+                    <input ref={cookieFileRef} className="sr-only" type="file" accept=".txt,text/plain" onChange={updateDouyinCookies} disabled={cookieUpdating || cookieDeleting} aria-label="选择抖音 cookies.txt" />
+                    <div className="analysis-cookie-actions">
+                      <button type="button" disabled={cookieUpdating || cookieDeleting} onClick={() => cookieFileRef.current?.click()}>{cookieUpdating ? "正在上传…" : uploadedCookieReady ? "更新 Cookie" : "上传 Cookie 文件"}</button>
+                      {uploadedCookieReady && <button type="button" disabled={cookieUpdating || cookieDeleting} onClick={deleteDouyinCookies}>{cookieDeleting ? "正在清除…" : "清除 Cookie"}</button>}
+                      <a href="https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc" target="_blank" rel="noreferrer">获取导出扩展</a>
+                    </div>
+                  </> : <p>请联系当前公司的管理员或有权限的成员上传 Cookie。</p>}
+                </div>
+              </details>
+            </div>
+            {collectionMode === "cookie" && !uploadedCookieReady && <p className="analysis-cookie-required" role="status">请先上传当前公司的 Cookie，再提交链接。</p>}
+            <div>
               <label className="analysis-transcript-review-toggle">
-                <input type="checkbox" name="transcriptReviewEnabled" checked={transcriptReviewEnabled} onChange={(event) => setTranscriptReviewEnabled(event.target.checked)} disabled={loading || submitting} aria-describedby="analysis-transcript-review-help" />
+                <input type="checkbox" form="analysis-link-intake" name="transcriptReviewEnabled" checked={transcriptReviewEnabled} onChange={(event) => setTranscriptReviewEnabled(event.target.checked)} disabled={loading || submitting} aria-describedby="analysis-transcript-review-help" />
                 <span>提出口播纠错候选</span>
               </label>
-              <AnalysisModeControls visualAnalysisMode={visualAnalysisMode} onVisualMode={setVisualAnalysisMode} visualSamplingLevel={visualSamplingLevel} onSamplingLevel={setVisualSamplingLevel} executionMode={executionMode} onExecutionMode={setExecutionMode} disabled={loading || submitting} />
+              <p id="analysis-transcript-review-help">未勾选时直接使用原始转写。</p>
             </div>
-          </div>
-          <input id="analysis-url-note" name="title" maxLength={120} placeholder="例如：管理者选题参考" />
-          <p id="analysis-transcript-review-help" className="analysis-transcript-review-help">未勾选时直接使用原始转写{visualAnalysisMode === "vision_only" ? "；纯视觉跳过本地 OCR，口播照常转写" : ""}；三档均保留画面分析，省时仅减少采样密度。{executionMode === "controlled_parallel" ? "受控并行会增加瞬时资源占用，电脑卡顿时可切串行。" : "串行先完成口播准备，再处理画面。"}</p>
-        </div><button className="primary-button" disabled={submitting || !linkAnalysisReady}>{linkButtonLabel}</button></form></article><article className="create-panel upload-panel"><p className="section-kicker">批量本地上传</p><h2>上传视频或音频</h2><p className="analysis-input-hint">每批最多 10 个视频或音频，单文件不超过 50 MB。</p><details className="analysis-input-help"><summary>上传与用量说明</summary><p>选中文件后预估时长与用量，点击上传后依次进入共享队列；图像理解用量另计。</p></details><form className="stack-form" onSubmit={uploadFile}><AnalysisModeControls visualAnalysisMode={visualAnalysisMode} onVisualMode={setVisualAnalysisMode} visualSamplingLevel={visualSamplingLevel} onSamplingLevel={setVisualSamplingLevel} executionMode={executionMode} onExecutionMode={setExecutionMode} disabled={loading || submitting} /><label className="file-drop">选择一个或多个媒体文件<input name="file" type="file" multiple required accept="video/mp4,video/quicktime,video/webm,audio/mpeg,audio/mp4,audio/wav" onChange={inspectUploadFiles} /><span>MP4、MOV、WebM、MP3、M4A、WAV</span></label>{(inspectingFiles || uploadEstimates.length > 0) && <div className="upload-cost-estimate" role="status"><strong>{inspectingFiles ? "正在读取媒体时长…" : `${uploadEstimates.length} 个文件 · ${knownUploadDuration > 0 ? durationLabel(knownUploadDuration) : "时长暂不可读"}`}</strong>{!inspectingFiles && <span>{estimatedUploadTokens !== null ? `${uploadEstimateScope}来源预计约 ${estimatedUploadTokens.toLocaleString()} Token` : `将按${profileLabels[analysisProfile]}策略逐个任务保护`}{maximumUploadTokens !== null ? ` · 文字预算参考约 ${maximumUploadTokens.toLocaleString()}（含可能重试）` : ""}{` · 画面采样：${visualSamplingLevelLabels[visualSamplingLevel]}，保留画面分析与关键取证`}{unknownUploadDurations ? ` · ${unknownUploadDurations} 个文件将在后台确认时长` : ""}</span>}</div>}<button className="secondary-button" disabled={submitting || inspectingFiles || !baseServiceReady}>{submitting ? "正在批量上传…" : inspectingFiles ? "正在估算…" : baseServiceReady ? "上传并自动分析" : "分析服务准备中…"}</button>{uploadProgress && <p className="upload-progress" role="status">{uploadProgress}</p>}</form></article></aside>}
+            <label className="analysis-intake-note" htmlFor="analysis-url-note">内部备注（可选）
+              <input id="analysis-url-note" form="analysis-link-intake" name="title" maxLength={120} placeholder="例如：管理者选题参考" />
+            </label>
+            <p>原片最长 60 分钟、最大 1 GiB，浏览器采集最多等待 15 分钟。</p>
+          </section>
+        </div>
+      </details>
+    </aside>}
       <article className="panel video-list-panel">
-        <div className="panel-heading"><div><p className="section-kicker">{initialView === "benchmark" ? "对标样本" : initialView === "assets" ? "分析资产" : "视频与任务"}</p><h2>{initialView === "assets" ? `${visibleVideos.length} 条内容已生成可用资产` : `${videos.length} 条内容已进入当前项目`}</h2></div>{initialView === "videos" && queue && <span className="queue-baseline">{queue.sampleCount ? `参考最近 ${queue.sampleCount} 次耗时` : "完成首个任务后显示预计时间"}</span>}</div>
-        {visibleVideos.length === 0 ? <div className="list-empty">{initialView === "assets" ? "当前项目还没有已完成分析的可用资产。" : "提交一条抖音链接或上传本地媒体，开始建立分析样本。"}</div> : <div className="analysis-list">{visibleVideos.map((video) => {
+        <div className="panel-heading"><div><h2>分析记录</h2><span>当前空间共 {videos.length} 条</span></div>{queue && <span className="queue-baseline">{queue.sampleCount ? `参考最近 ${queue.sampleCount} 次耗时` : "完成首个任务后显示预计时间"}</span>}</div>
+        {videos.length === 0 ? <div className="list-empty">{canWrite ? "提交一条抖音链接或上传本地媒体，开始分析。" : "当前空间暂无分析任务。"}</div> : <div className="analysis-list">{videos.map((video) => {
           const job = jobs.find((item) => item.video_id === video.id);
           const missingReport = video.analysis_id === null && (!job || Boolean(job.is_imported_job));
           const importState = job?.is_imported_job ? materialCardState({ ...job, analysis_id: video.analysis_id, job_status: job.status, current_stage: job.current_stage }) : null;
@@ -455,7 +569,7 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
               {timing && !stale && <p className="job-timing">{timing}</p>}
             </TaskProgress> : !missingReport && !importState && <p className="analysis-task-progress job-timing">等待任务创建</p>;
           return <article className="analysis-row" key={video.id}>
-            <span className={`media-kind ${video.source_type}`}>{video.source_type === "url" ? "链" : "媒"}</span>
+            <VideoListCover video={video} />
             <div className="analysis-copy">
               <strong>{video.title || "待提取视频标题"}</strong>
               <small>{video.is_reference ? "复用公司素材库分析" : video.source_type === "url" ? "抖音公开链接" : `${video.filename || "本地媒体"} · ${video.size_bytes ? `${(video.size_bytes / 1024 / 1024).toFixed(1)} MB` : ""}`}</small>
@@ -470,7 +584,8 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
               {job && <small className="job-profile">{video.source_type === "url" && `${ANALYSIS_COLLECTION_MODE_LABELS[normalizeAnalysisCollectionMode(job.collection_mode)]} · `}{profileLabels[job.analysis_profile || "standard"] || "历史模式"} · {visualAnalysisModeLabels[job.visual_analysis_mode === "vision_only" ? "vision_only" : "hybrid"]} · {readVisualSamplingLevel(job.visual_sampling_level) ? visualSamplingLevelLabels[job.visual_sampling_level!] : "历史采样"} · {analysisExecutionModeLabels[normalizeAnalysisExecutionMode(job.execution_mode)]}</small>}
               {(job?.resume_count ?? 0) > 0 && <small>已续跑 {job?.resume_count} 次</small>}
               {missingReport && <Link href={`/analysis/${video.id}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`}>{canWrite && !video.is_reference ? "查看素材并分析" : "查看素材"}</Link>}
-              {!missingReport && (job?.status === "completed" || job?.status === "partial") && <Link href={`/analysis/${video.id}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`}>{initialView === "assets" ? "查看资产" : "查看结果"}</Link>}
+              {!missingReport && (job?.status === "completed" || job?.status === "partial") && <Link href={`/analysis/${video.id}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`}>查看结果</Link>}
+              {!missingReport && video.source_type === "url" && job?.status !== "completed" && job?.status !== "partial" && <Link href={`/analysis/${video.id}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}#report-platform-data`}>查看作品数据</Link>}
               {canChangeCollection && job && <div className="analysis-retry-collection"><AnalysisCollectionModeSelect compact value={retryCollectionMode} onChange={value => setRetryCollectionModes(current => ({ ...current, [job.id]: value }))} disabled={jobActionId === job.id} />{retryNeedsCookie && <p>请先在上方上传当前公司的 Cookie。{service?.canManageCookies && <button type="button" onClick={() => cookieFileRef.current?.click()} disabled={cookieUpdating || cookieDeleting}>上传 Cookie</button>}</p>}</div>}
               {Boolean(job?.is_imported_job) && partial && canWrite && !video.is_reference && <Link href={`/analysis/${video.id}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`}>重新分析</Link>}
               {stale && job && !job.is_imported_job && canWrite && !video.is_reference && <button type="button" disabled={jobActionId === job.id} onClick={() => retry(job.id)}>{jobActionId === job.id ? "正在提交恢复…" : resumableCheckpointStages.has(job.checkpoint_stage ?? "") ? job.checkpoint_stage === "transcript_ready" ? "复用口播继续" : "从检查点继续" : "恢复"}</button>}
@@ -483,11 +598,12 @@ function VideoAnalysisWorkspace({ initialView = "videos" }: { initialView?: "vid
           </article>;
         })}</div>}
       </article>
+      </>}
     </section>
 
   </div>;
 }
 
-export function AnalysisWorkspace({ initialView = "videos" }: { initialView?: "videos" | "benchmark" | "assets" }) {
-  return initialView === "videos" ? <VideoAnalysisWorkspace initialView="videos" /> : <VideoLibraryWorkspace mode={initialView} />;
+export function AnalysisWorkspace({ initialView = "videos", ...initialScope }: InitialScope & { initialView?: "videos" | "benchmark" | "assets" }) {
+  return initialView === "videos" ? <VideoAnalysisWorkspace {...initialScope} /> : <VideoLibraryWorkspace mode={initialView} {...initialScope} />;
 }

@@ -16,7 +16,7 @@ for(const collectionMode of ['anonymous','cookie'])test('URL submission explicit
  const requests=[];const scope={reader:{invalidate(){}}};
  const submit=handler('components/AnalysisWorkspace.tsx','submitUrl',{
   organizationId:'org',projectId:'project',analysisProfile:'max',transcriptReviewEnabled:false,visualAnalysisMode:'vision_only',visualSamplingLevel:'quick',executionMode:'controlled_parallel',collectionMode,
-  setSubmitting(){},setError(){},setSubmitMessage(){},setTranscriptReviewEnabled(){},taskReader:{current:scope},appendCreated(){},loadVideos:async()=>{},
+  submitting:false,setSubmissionKind(){},setError(){},setSubmitMessage(){},setTranscriptReviewEnabled(){},taskReader:{current:scope},appendCreated(){},loadVideos:async()=>{},
   FormData:class{get(name){return name==='url'?'https://v.douyin.com/synthetic/':''}},readError:async()=>'',
   scopedFetch:async(url,init)=>{requests.push({url,body:JSON.parse(init.body)});return Response.json({video:{id:'v'},job:{id:'j'}})}
  });await submit({preventDefault(){},currentTarget:{reset(){}}});assert.equal(requests[0].body.collectionMode,collectionMode);

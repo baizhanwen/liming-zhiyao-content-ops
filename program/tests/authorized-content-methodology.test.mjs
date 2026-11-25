@@ -12,38 +12,39 @@ test("authorized Liming Zhiyao methodology is versioned and used by topic and co
 
   assert.equal(methodology.AUTHORIZED_METHODOLOGY_SOURCE.name, "利明智耀授权方法库");
   assert.equal(methodology.AUTHORIZED_METHODOLOGY_SOURCE.revision.length, 40);
-  assert.match(production.CONTENT_SYSTEM_PROMPT, /单一核心机制/);
+  assert.match(production.CONTENT_SYSTEM_PROMPT, /一个核心主张/);
   assert.match(production.CONTENT_SYSTEM_PROMPT, /选题、已启用策略/);
-  assert.match(production.CONTENT_PROMPT_VERSION, /v17-writing-intent$/);
+  assert.equal(production.CONTENT_PROMPT_VERSION, "content-draft.v23-script-storyboard");
   assert.match(production.CONTENT_SYSTEM_PROMPT, /方法论、对标样本、历史文案和灵感均不能支撑客户事实/);
   assert.match(topics, /TOPIC_CREATION_METHODOLOGY/);
   assert.match(topics, /topic-fields\.v6-core-strategy/);
   assert.match(analyzer, /video-analysis\.v10-content-v1/);
 });
 
-test("new production packs expose a visible structured quality review", async () => {
+test("new draft contracts request the scripts and storyboard, and earlier structured quality reviews remain readable", async () => {
   const production = await import("../lib/content-production.ts");
   const scaffold = production.createProductionScaffold({ id: "topic-licensed", title: "老板必须懂的 AI 概念" });
 
   assert.equal(production.productionPackSchema.safeParse(scaffold).success, true);
-  assert.equal(scaffold.qualityReview.publishReadiness, "revise");
-  assert.equal(production.CONTENT_OUTPUT_SCHEMA.required.includes("qualityReview"), true);
-
-  const invalidMethod = {
-    ...scaffold,
-    qualityReview: {
-      ...scaffold.qualityReview,
-      benchmarkMethods: [{ sourceId: "", method: "学习悬念", application: "调整开头" }],
-    },
+  assert.equal(scaffold.qualityReview, undefined);
+  const fields = ["citations", "fullScript", "shortScript", "storyboard", "writingIntent"];
+  assert.deepEqual(Object.keys(production.CONTENT_OUTPUT_SCHEMA.properties).sort(), fields);
+  assert.deepEqual([...production.CONTENT_OUTPUT_SCHEMA.required].sort(), fields);
+  const oldReview = {
+    coreMechanism: "比较两种复习方法",
+    hookDiagnosis: { topic: "复习资料", hook: "提问", credibility: "课件", suspense: "哪份先看", verdict: "revise" },
+    resonance: { silentRelease: "资料太多", motivation: "复习", stance: "同学视角", firstSharer: "学生", beliefShift: "按题型选择" },
+    flowRisks: [], benchmarkMethods: [], publishReadiness: "revise", blockers: [],
   };
-  assert.equal(production.productionPackSchema.safeParse(invalidMethod).success, false);
+  assert.deepEqual(production.productionPackSchema.parse({ ...scaffold, qualityReview: oldReview }).qualityReview, oldReview);
+  const invalidMethod = { sourceId: "", method: "学习悬念", application: "调整开头" };
+  assert.equal(production.productionPackSchema.safeParse({ ...scaffold, qualityReview: { ...oldReview, benchmarkMethods: [invalidMethod] } }).success, false);
 });
 
-test("content production UI renders readiness, resonance, flow and benchmark method evidence", async () => {
+test("drafts display their reference result without a separate creative assistance panel", async () => {
   const workspace = await readFile(new URL("../components/ContentProductionWorkspace.tsx", import.meta.url), "utf8");
-  for (const label of ["内容方法诊断", "五维共鸣", "参考素材借鉴说明", "逻辑与口播风险", "审核前阻塞项"]) {
-    assert.match(workspace, new RegExp(label));
-  }
+  assert.match(workspace, /<ReferenceDraftResult\b/);
+  assert.doesNotMatch(workspace, /创作辅助|内容方法诊断|开头与发布/);
 });
 
 test("all authorized atoms are bundled, branded, migrated into D1, and retrieved per task", async () => {

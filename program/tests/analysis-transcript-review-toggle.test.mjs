@@ -22,7 +22,7 @@ function urlForm(enabled, ok = true) {
     organizationId: "test-company", projectId: "test-project", analysisProfile: "standard",
     visualAnalysisMode: "vision_only", visualSamplingLevel: "quick", executionMode: "controlled_parallel",
     transcriptReviewEnabled: enabled, collectionMode: "anonymous",
-    setSubmitting: value => submitting.push(value), setError: value => errors.push(value), setSubmitMessage() {},
+    submitting: false, setSubmissionKind: value => submitting.push(value), setError: value => errors.push(value), setSubmitMessage() {},
     setTranscriptReviewEnabled: value => reviewSelections.push(value),
     taskReader: { current: { reader: { invalidate() {} } } },
     FormData: class { get(name) { return name === "url" ? "https://v.douyin.com/synthetic/" : "合成测试备注"; } },
@@ -47,7 +47,7 @@ for (const enabled of [false, true]) test(`URL submission explicitly sends trans
   assert.equal(form.requests[0].body.title, "合成测试备注");
   assert.deepEqual(form.reviewSelections, [false], "A new submission starts with correction candidates off");
   assert.deepEqual(form.resets, [true]);
-  assert.deepEqual(form.submitting, [true, false]);
+  assert.deepEqual(form.submitting, ["link", null]);
 });
 
 test("rejected URL submission preserves the user's correction choice for retry", async () => {
@@ -56,5 +56,5 @@ test("rejected URL submission preserves the user's correction choice for retry",
   assert.deepEqual(form.reviewSelections, []);
   assert.deepEqual(form.resets, []);
   assert.deepEqual(form.errors, ["", "暂时无法提交"]);
-  assert.deepEqual(form.submitting, [true, false]);
+  assert.deepEqual(form.submitting, ["link", null]);
 });

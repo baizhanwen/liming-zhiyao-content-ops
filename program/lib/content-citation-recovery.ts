@@ -90,7 +90,7 @@ ${CORE_STRATEGY_GUIDANCE}
 ${BENCHMARK_CONTENT_GUIDANCE}
 本次仅核对现有稿件中已经存在的写法或内容借鉴，不为补引用添加观点、案例或改写正文；保留现有 application 中仍有依据的内容取舍说明。`;
 
-export function applyCitationRepair(draft: ProductionPack, value: unknown, sources: CitationSource[], selectedBenchmarks: string[]) {
+export function applyCitationRepair(draft: ProductionPack, value: unknown, sources: CitationSource[], selectedBenchmarks: string[], allowRepeatedSources = false) {
   const repair = repairSchema.parse(value);
   const sourceMap = new Map(sources.map((source) => [key(source), source.text]));
   const draftTexts = [draft.fullScript, draft.shortScript, ...draft.storyboard.map((shot) => shot.script)].map(canonicalCitationText);
@@ -115,11 +115,11 @@ export function applyCitationRepair(draft: ProductionPack, value: unknown, sourc
   for (const item of resolvedCitations) {
     const { sourceType, sourceId, quote } = item;
     const citation = { sourceType, sourceId, quote };
-    if (repairedKeys.has(key(citation))) throw new Error("引用补全仍包含重复来源。");
-    repairedKeys.add(key(citation));
     const source = sourceMap.get(key(citation));
     if (!source || !citationQuoteMatchesSource(source, citation.quote)) throw new Error("引用补全包含未知来源或无法核实的原文。");
     item.draftQuote = resolveAnchor(item, sourceId);
+    if (!allowRepeatedSources && repairedKeys.has(key(citation))) throw new Error("引用补全仍包含重复来源。");
+    repairedKeys.add(key(citation));
     // Keep already validated excerpts; a repair must not discard existing evidence.
     const existing = citations.get(key(citation));
     if (!existing || !citationQuoteMatchesSource(source, existing.quote)) citations.set(key(citation), citation);
@@ -128,7 +128,7 @@ export function applyCitationRepair(draft: ProductionPack, value: unknown, sourc
     const source = sourceMap.get(key(citation));
     if (!source || !citationQuoteMatchesSource(source, citation.quote)) throw new Error("仍有无法核实的原始引用，补全结果未被保存。");
   }
-  const methods = new Map((draft.qualityReview?.benchmarkMethods ?? []).map((method) => [method.sourceId, method]));
+  const methods = new Map((draft.benchmarkMethods ?? draft.qualityReview?.benchmarkMethods ?? []).map((method) => [method.sourceId, method]));
   for (const item of repair.benchmarkMethods) {
     const { sourceId, method: description, application } = item;
     const method = { sourceId, method: description, application };
@@ -139,7 +139,7 @@ export function applyCitationRepair(draft: ProductionPack, value: unknown, sourc
   const pack = productionPackSchema.parse({
     ...draft,
     citations: [...citations.values()],
-    ...(draft.qualityReview ? { qualityReview: { ...draft.qualityReview, benchmarkMethods: [...methods.values()] } } : {}),
+    ...(methods.size ? { benchmarkMethods: [...methods.values()] } : {}),
   });
   return { pack, applications: { ...repair, citations: resolvedCitations } };
 }
@@ -150,4 +150,69 @@ export function isCitationRepairError(code: string) {
     "SELECTED_KNOWLEDGE_CITATION_REQUIRED", "BRAND_KNOWLEDGE_CITATION_REQUIRED", "VIDEO_ANALYSIS_CITATION_REQUIRED",
     "BENCHMARK_CITATION_REQUIRED", "BENCHMARK_METHOD_REQUIRED", "HISTORICAL_COPY_CITATION_REQUIRED",
   ]).has(code);
+}
+
+/** Offer compact, verified excerpts at drafting time. Structure and strategy only document composition. */
+export function referenceCitationOptions(sources: CitationSource[], strategyWording: string[], planId: string) {
+  return sources.flatMap((source, index) => {
+    if (source.sourceType === "method_knowledge" && source.sourceId !== planId) return [];
+    const lines = source.text.split("\n");
+    let preferred: string[] = [];
+    if (source.sourceType === "strategy") preferred = strategyWording;
+    if (source.sourceType === "method_knowledge") preferred = lines.filter(line => line.startsWith("执行："));
+    if (source.sourceType === "knowledge") {
+      const facts = lines.filter(line => !/^(材料类型|公开范围|允许用途|资料性质|来源类型|复核日期|长期公开边界)[：:]/u.test(line));
+      preferred = facts.flatMap(line => [line.replace(/^[^：]*：/u, ""), line]);
+    }
+    const choices = [...preferred, ...source.text.split(/[\n。！？]/u), source.text];
+    const quotes = new Set<string>();
+    for (const choice of choices) {
+      const quote = choice.trim().slice(0, 60).trim();
+      if (citationQuoteMatchesSource(source.text, quote)) quotes.add(quote);
+      if (quotes.size === 2) break;
+    }
+    return [...quotes].map((quote, choice) => ({ sourceAnchorId: `reference:${index}:${choice}`, sourceType: source.sourceType, sourceId: source.sourceId, quote }));
+  });
+}
+
+export function resolveReferenceCitationOptions(output: unknown, options: ReturnType<typeof referenceCitationOptions>) {
+  if (!output || typeof output !== "object" || Array.isArray(output)) return output;
+  const fields = output as Record<string, unknown>;
+  if (!Array.isArray(fields.citations)) return output;
+  const byId = new Map(options.map(choice => [choice.sourceAnchorId, choice]));
+  return { ...fields, citations: fields.citations.map(raw => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw) || !("sourceAnchorId" in raw)) return raw;
+    const choice = byId.get(raw.sourceAnchorId);
+    if (!choice || Object.keys(raw).length !== 1) throw new Error("引用编号无效，请从 referenceCitationOptions 只复制一个 sourceAnchorId。");
+    return { sourceType: choice.sourceType, sourceId: choice.sourceId, quote: choice.quote };
+  }) };
+}
+
+const productionPurposes = {
+  strategy: "用于约束账号的受众与表达方式",
+  method_knowledge: "用于组织本条内容的写作步骤",
+  video_analysis: "用于确认原片各段功能和顺序",
+} as const;
+
+export function referenceProductionBasis(options: ReturnType<typeof referenceCitationOptions>) {
+  return (Object.keys(productionPurposes) as (keyof typeof productionPurposes)[]).map(sourceType => {
+    const choice = options.find(item => item.sourceType === sourceType);
+    if (!choice) throw new Error("制作依据缺少可定位的连续原文：" + sourceType);
+    return { sourceType, sourceId: choice.sourceId, quote: choice.quote, purpose: productionPurposes[sourceType] };
+  });
+}
+
+/** These three sources are used by the pipeline itself. Only adopted brand facts need model-supplied evidence. */
+export function attachReferenceProductionBasis(output: unknown, basis: ReturnType<typeof referenceProductionBasis>, topicId: string) {
+  if (!output || typeof output !== "object" || Array.isArray(output)) return output;
+  const fields = output as Record<string, unknown>;
+  if (!Array.isArray(fields.citations)) return output;
+  const facts = fields.citations.filter(citation => {
+    if (!citation || typeof citation !== "object") return true;
+    if (citation.sourceType === "knowledge") return true;
+    if (citation.sourceType === "topic" && citation.sourceId === topicId) return false;
+    if (basis.some(source => source.sourceType === citation.sourceType && source.sourceId === citation.sourceId)) return false;
+    throw new Error("结构创作的事实引用须属于本条已确认的资料，请从 referenceCitationOptions 选用材料编号。");
+  });
+  return { ...fields, citations: [...facts, ...basis.map(({ sourceType, sourceId, quote }) => ({ sourceType, sourceId, quote }))] };
 }

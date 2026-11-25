@@ -1,7 +1,11 @@
-import { AppShell } from "../../../components/AppShell";
-import { EcommerceWorkspace } from "../../../components/ecommerce/EcommerceWorkspace";
+import { redirect } from "next/navigation";
 
-export default async function EcommercePage({ searchParams }: { searchParams: Promise<{ organizationId?: string; projectId?: string }> }) {
-  const query = await searchParams;
-  return <AppShell activePath="/content/ecommerce"><section className="page-heading management-heading"><div><p>电商创作 · 商品与文案</p><h1>电商中心</h1><span>管理商品资料，创作、修改和审核带货文案。</span></div></section><EcommerceWorkspace initialOrganizationId={query.organizationId} initialProjectId={query.projectId} /></AppShell>;
+export default async function LegacyEcommercePage({ searchParams }: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const params = new URLSearchParams();
+  for (const [name, value] of Object.entries(await searchParams)) {
+    for (const item of typeof value === "string" ? [value] : value ?? []) params.append(name, item);
+  }
+  redirect(params.size ? `/ecommerce?${params}` : "/ecommerce");
 }

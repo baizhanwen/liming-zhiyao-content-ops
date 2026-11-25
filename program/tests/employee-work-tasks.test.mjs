@@ -19,7 +19,7 @@ test("only administrators assign work and active employees with project access c
   assert.match(route, /access\.organizationRole !== "admin"/);
   assert.match(route, /member\.role = 'member'/);
   assert.match(route, /TASK_PROJECT_ACCESS_REQUIRED/);
-  assert.match(route, /ACTIVE_TASK_ALREADY_EXISTS/);
+  assert.doesNotMatch(route, /ACTIVE_TASK_ALREADY_EXISTS/);
   assert.match(route, /work_task\.created/);
 });
 
@@ -40,11 +40,9 @@ test("automatic task progress comes from real work records while custom tasks st
 
 test("administrator and employee dashboards expose their respective task controls", async () => {
   const dashboard = await readFile(new URL("../components/DashboardWorkspace.tsx", import.meta.url), "utf8");
-  assert.match(dashboard, /给员工布置任务/);
-  assert.match(dashboard, /我的工作任务/);
-  assert.match(dashboard, /下达任务/);
-  assert.match(dashboard, /管理员下达/);
-  assert.match(dashboard, /renderWorkTaskRows\(true\)/);
-  assert.match(dashboard, /renderWorkTaskRows\(false\)/);
+  assert.match(dashboard, /isAdmin && <button[^>]*[\s\S]*?新建任务/);
+  assert.match(dashboard, /isAdmin \? "团队任务" : "我的任务"/);
+  assert.match(dashboard, /canReport = task.assignee_user_id === board.currentUserId/);
+  assert.match(dashboard, /canReport && <button/);
   assert.match(dashboard, /\/api\/work-tasks/);
 });

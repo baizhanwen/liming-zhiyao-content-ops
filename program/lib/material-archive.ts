@@ -11,21 +11,7 @@ function validName(name: string) {
   return name === "manifest.json" || name === "media/" || /^media\/[^/\\\x00-\x1f]{1,200}$/.test(name) && !["media/.", "media/.."].includes(name);
 }
 
-export async function readMaterialResponse(response: Response, maximum: number, message: string) {
-  const declared = response.headers.get("content-length");
-  if (declared && Number(declared) > maximum) { await response.body?.cancel().catch(() => {}); return invalid(message); }
-  if (!response.body) return new Uint8Array();
-  const reader = response.body.getReader(), parts: BlobPart[] = []; let size = 0;
-  try {
-    while (true) {
-      const { value, done } = await reader.read(); if (done) break;
-      size += value.length; if (size > maximum) return invalid(message);
-      parts.push(Uint8Array.from(value).buffer);
-    }
-    return new Uint8Array(await new Blob(parts).arrayBuffer());
-  } catch (error) { await reader.cancel().catch(() => {}); throw error; }
-  finally { reader.releaseLock(); }
-}
+export { readBoundedResponseBytes as readMaterialResponse } from "./bounded-response";
 
 export function materialManifestFiles(value: unknown) {
   if (!value || typeof value !== "object") return invalid("迁移包清单格式不正确。");

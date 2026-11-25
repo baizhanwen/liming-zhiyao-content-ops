@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { InteractionFeedback } from "../components/InteractionFeedback";
 import "./globals.css";
+import "./form-controls.css";
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
@@ -10,6 +11,7 @@ export async function generateMetadata(): Promise<Metadata> {
   const image = `${protocol}://${host}/og.png`;
   return {
     title: "利明智耀 · 内容运营工作台",
+    icons: { icon: { url: "/favicon.svg", type: "image/svg+xml" } },
     description: "面向新媒体团队的 AI 内容运营协作平台。",
     openGraph: { title: "利明智耀", description: "AI 内容运营协作平台", images: [image] },
     twitter: { card: "summary_large_image", title: "利明智耀", description: "AI 内容运营协作平台", images: [image] },

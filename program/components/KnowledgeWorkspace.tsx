@@ -1,22 +1,22 @@
 "use client";
-import { runScopedAction } from "../lib/client-scope";
 import { isScopeCancellation } from "../lib/client-scope-request";
-import { useWorkspaceInitialization } from "./useWorkspaceInitialization";
 import { readApiError as readError, formatClientDate } from "../lib/client-format";
 
 
-import { ChangeEvent, FormEvent, useCallback, useState } from "react";
+import { ChangeEvent, FormEvent, useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { AlertTriangle, Archive, Check, Database, Download, FileSearch, FileSpreadsheet, History, Lightbulb, PencilLine, Save, Search, UploadCloud, Video, Workflow } from "lucide-react";
-import { preferredProjectId, rememberCurrentScope, scopedFetch } from "../lib/client-scope";
+import { scopedFetch } from "../lib/client-scope";
+import { AUTHORIZED_METHOD_LIBRARY_VISIBLE, spaceProjectStatus, type SpaceTab } from "../lib/space-navigation";
 import { validateKnowledgeImportRows, type KnowledgeImportIssue } from "../lib/knowledge-import";
 import { useImportPreview } from "./useImportPreview";
 import "./creation-cleanup.css";
+import { answersFromForm, KnowledgeIntake, KnowledgeQuestions, StrategyQuestionnaire, type ExistingStrategy } from "./AccountQuestionnaire";
+import { canConfirmKnowledgeForm, type KnowledgeForm } from "../lib/account-questionnaire";
 import { readFirstWorksheet } from "../lib/xlsx-table";
 
-type Organization = { id: string; name: string };
-type Project = { id: string; name: string; status?: string };
-type KnowledgeItem = { id: string; category: string; title: string; status: string; current_version: number; body: string; source_type: string; source_ref: string | null; confirmed_at: string | null; updated_at: string }; type KnowledgeVersion = { version: number; body: string; source_type: string; source_ref: string | null; change_summary: string | null; created_at: string };
-type Strategy = { id: string; version: number; name: string; status: string; positioning: string; target_audience: string; pain_points: string[]; pillars: string[]; objectives: string[]; cadence: string | null; conversion_path: string | null; effective_from: string | null; updated_at: string };
+type KnowledgeItem = { form?: KnowledgeForm; id: string; category: string; title: string; status: string; current_version: number; body: string; source_type: string; source_ref: string | null; confirmed_at: string | null; updated_at: string }; type KnowledgeVersion = { version: number; body: string; source_type: string; source_ref: string | null; change_summary: string | null; created_at: string };
+type Strategy = ExistingStrategy & { id: string; version: number; name: string; status: string; positioning: string; target_audience: string; pain_points: string[]; pillars: string[]; objectives: string[]; cadence: string | null; conversion_path: string | null; effective_from: string | null; updated_at: string };
 type StrategySpace = { id: string; name: string; status: string; strategies: Strategy[] };
 type KnowledgeImportPreview = { filename: string; rawRows: Record<string, unknown>[]; validCount: number; issues: KnowledgeImportIssue[] };
 type MethodSource = { id: string; name: string; revision: string; item_count: number; synced_at: string };
@@ -45,7 +45,6 @@ type MethodologyCatalogResponse = {
 
 const categoryLabels: Record<string, string> = { brand_story: "品牌故事", founder: "创始人/出镜人", case_study: "成功案例", customer_question: "客户问题", sales_script: "销售话术", high_performing_copy: "历史优质文案", industry_term: "行业术语", compliance: "禁用词与合规", brand_voice: "品牌语气", client_preference: "客户修改偏好", other: "其他" };
 const sourceLabels: Record<string, string> = { manual: "人工录入", document: "客户资料", url: "网页来源", client_feedback: "客户反馈", analysis: "分析沉淀" };
-const AUTHORIZED_METHOD_LIBRARY_VISIBLE = false;
 
 function splitList(value: FormDataEntryValue | null) { return String(value || "").split(/[，,\n]/).map((item) => item.trim()).filter(Boolean); }
 function equalTopicMix(pillars: string[]) { const base = pillars.length ? Math.floor(100 / pillars.length) : 0; const remainder = 100 - base * pillars.length; return pillars.map((pillar, index) => ({ pillar, ratio: base + (index < remainder ? 1 : 0) })); }
@@ -87,37 +86,71 @@ function MethodologyTrack({ group }: { group: MethodologyGroup }) {
 
 function KnowledgeCard({ item, canManage, saving, action, onConfirm, onEdit, onArchive, onHistory }: {
   item: KnowledgeItem; canManage: boolean; saving: boolean; action: string;
-  onConfirm: () => void; onEdit: (event: FormEvent<HTMLFormElement>) => void; onArchive: () => void; onHistory: () => void;
+  onConfirm: () => void; onEdit: () => void; onArchive: () => void; onHistory: () => void;
 }) {
   const busy = Boolean(action) || saving;
-  const [editSnapshot, setEditSnapshot] = useState<KnowledgeItem | null>(null);
-  const edited = editSnapshot || item;
   return <article className="knowledge-card">
     <div className="knowledge-card-head"><span>{categoryLabels[item.category] || item.category}</span><em className={`status ${item.status === "confirmed" ? "success" : "neutral"}`}>{item.status === "confirmed" ? "已确认" : item.status === "draft" ? "待确认" : "已归档"}</em></div>
     <h3>{item.title}</h3><p>{item.body}</p>
     <footer className="knowledge-card-footer"><span>{sourceLabels[item.source_type] || item.source_type} · v{item.current_version} · {dateLabel(item.updated_at)}</span><div className="knowledge-card-actions">
-      {item.status === "draft" && canManage && <button className="knowledge-action-button confirm" type="button" disabled={busy} onClick={onConfirm}><Check aria-hidden="true" />{action.startsWith("confirm:") ? "确认中…" : "确认沉淀"}</button>}
+      {item.status === "draft" && canManage && canConfirmKnowledgeForm(item.form) && <button className="knowledge-action-button confirm" type="button" disabled={busy} onClick={onConfirm}><Check aria-hidden="true" />{action.startsWith("confirm:") ? "确认中…" : "确认沉淀"}</button>}
       <button className="knowledge-action-button" type="button" disabled={busy} onClick={onHistory}><History aria-hidden="true" />{action.startsWith("history:") ? "读取中…" : "历史"}</button>
-      {canManage && item.status !== "archived" && <><details className="knowledge-edit-menu" onToggle={(event) => setEditSnapshot(event.currentTarget.open ? item : null)}><summary className="knowledge-action-button" onClick={(event) => { if (busy) event.preventDefault(); }}><PencilLine aria-hidden="true" />编辑</summary><form key={`${edited.current_version}:${edited.updated_at}`} className="stack-form knowledge-edit-form" onSubmit={onEdit}><input type="hidden" name="expectedVersion" value={edited.current_version} /><input type="hidden" name="expectedUpdatedAt" value={edited.updated_at} />{editSnapshot && (edited.current_version !== item.current_version || edited.updated_at !== item.updated_at) && <p role="status">资料已改变，请先复制修改内容，再刷新并重新打开编辑。</p>}<div className="knowledge-edit-heading"><strong>编辑新版本</strong><span>原版本会继续保留</span></div><label>标题<input disabled={busy} name="title" defaultValue={edited.title} required minLength={2} maxLength={120} /></label><label>分类<select disabled={busy} name="category" defaultValue={edited.category}>{Object.entries(categoryLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label>正文<textarea disabled={busy} name="body" defaultValue={edited.body} required minLength={10} maxLength={20000} rows={5} /></label><label>来源<select disabled={busy} name="sourceType" defaultValue={edited.source_type}>{Object.entries(sourceLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label>来源说明<input disabled={busy} name="sourceRef" defaultValue={edited.source_ref || ""} maxLength={1000} /></label><label>变更说明<input disabled={busy} name="changeSummary" defaultValue="编辑产生新版本" maxLength={500} /></label><button className="knowledge-editor-save" disabled={busy}><Save aria-hidden="true" />{saving ? "保存中…" : "保存新版本"}</button></form></details><button className="knowledge-action-button danger" type="button" disabled={busy} onClick={onArchive}><Archive aria-hidden="true" />{action.startsWith("archive:") ? "归档中…" : "归档"}</button></>}
+      {canManage && item.status !== "archived" && <><button type="button" id={`knowledge-edit-${item.id}`} className="knowledge-action-button" disabled={busy} onClick={onEdit}><PencilLine aria-hidden="true" />编辑</button><button className="knowledge-action-button danger" type="button" disabled={busy} onClick={onArchive}><Archive aria-hidden="true" />{action.startsWith("archive:") ? "归档中…" : "归档"}</button></>}
     </div></footer>
   </article>;
 }
 
-function StrategyCard({ strategy, canManage = false, onActivate, busy = false, activating = false }: { strategy: Strategy; canManage?: boolean; onActivate?: () => void; busy?: boolean; activating?: boolean }) {
+function KnowledgeRecordForm({ edited, changed, busy, onEdit, onCancel }: {
+  edited: KnowledgeItem; changed: boolean; busy: boolean;
+  onEdit: (event: FormEvent<HTMLFormElement>) => void; onCancel: () => void;
+}) {
+  return <form className="stack-form knowledge-record-form" onSubmit={onEdit}>
+    <input type="hidden" name="expectedVersion" value={edited.current_version} />
+    <input type="hidden" name="expectedUpdatedAt" value={edited.updated_at} />
+    {changed && <p role="status">资料已改变，请先复制修改内容，再刷新并重新打开编辑。</p>}
+    {edited.form
+      ? <fieldset className="guided-fields" disabled={busy}><KnowledgeQuestions kind={edited.form.kind} initial={edited.form.answers} /></fieldset>
+      : <>
+        <div className="form-row">
+          <label>标题<input disabled={busy} name="title" defaultValue={edited.title} required minLength={2} maxLength={120} /></label>
+          <label>分类<select disabled={busy} name="category" defaultValue={edited.category}>{Object.entries(categoryLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        </div>
+        <label>正文<textarea disabled={busy} name="body" defaultValue={edited.body} required minLength={10} maxLength={20000} rows={6} /></label>
+        <div className="form-row">
+          <label>来源<select disabled={busy} name="sourceType" defaultValue={edited.source_type}>{Object.entries(sourceLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+          <label>来源说明<input disabled={busy} name="sourceRef" defaultValue={edited.source_ref || ""} maxLength={1000} /></label>
+        </div>
+      </>}
+    <label>变更说明<input disabled={busy} name="changeSummary" defaultValue="编辑产生新版本" maxLength={500} /></label>
+    <div className="record-form-actions">
+      <button className="primary-button" disabled={busy}><Save aria-hidden="true" />{busy ? "保存中…" : "保存新版本"}</button>
+      <button type="button" className="secondary-button" disabled={busy} onClick={onCancel}>取消编辑</button>
+    </div>
+  </form>;
+}
+
+function StrategyCard({ strategy, canManage = false, onActivate, onRevise, busy = false, activating = false }: { strategy: Strategy; canManage?: boolean; onActivate?: () => void; onRevise?: () => void; busy?: boolean; activating?: boolean }) {
   return <article className={`panel strategy-card ${strategy.status}`}>
     <div className="panel-heading"><div><p className="section-kicker">策略 v{strategy.version}</p><h2>{strategy.name}</h2></div><span className={`status ${strategy.status === "active" ? "success" : "neutral"}`}>{strategy.status === "active" ? "当前启用" : strategy.status === "draft" ? "草稿" : "历史版本"}</span></div>
     <div className="strategy-body"><section><h3>账号定位</h3><p>{strategy.positioning}</p></section><section><h3>目标人群</h3><p>{strategy.target_audience}</p></section><section><h3>内容支柱</h3><div className="plain-chips">{strategy.pillars?.map((pillar) => <span key={pillar}>{pillar}</span>)}</div></section><section><h3>阶段目标</h3><ul>{strategy.objectives?.map((objective) => <li key={objective}>{objective}</li>)}</ul></section></div>
-    <footer><span>{strategy.status === "active" ? `启用于 ${dateLabel(strategy.effective_from)}` : `更新于 ${dateLabel(strategy.updated_at)}`}</span>{strategy.status !== "active" && canManage && onActivate && <button type="button" disabled={busy} onClick={onActivate}>{activating ? "启用中…" : "启用此版本"}</button>}</footer>
+    <footer><span>{strategy.status === "active" ? `启用于 ${dateLabel(strategy.effective_from)}` : `更新于 ${dateLabel(strategy.updated_at)}`}</span>{onRevise && <button type="button" disabled={busy} onClick={onRevise}>以此版修改</button>}{strategy.status !== "active" && canManage && onActivate && <button type="button" disabled={busy} onClick={onActivate}>{activating ? "启用中…" : "启用此版本"}</button>}</footer>
   </article>;
 }
 
-export function KnowledgeWorkspace({ initialOrganizationId = "", initialProjectId = "", initialTab = "knowledge" }: { initialOrganizationId?: string; initialProjectId?: string; initialTab?: "knowledge" | "strategy" }) {
-  const [organizations, setOrganizations] = useState<Organization[]>([]); const [organizationId, setOrganizationId] = useState("");
-  const [projects, setProjects] = useState<Project[]>([]); const [projectId, setProjectId] = useState(""); const [tab, setTab] = useState<"knowledge" | "strategy" | "method">(initialTab);
+export function KnowledgeWorkspace({ organizationId, projectId, projectName = "", tab }: {
+  organizationId: string;
+  projectId: string;
+  projectName?: string;
+  tab: Extract<SpaceTab, "knowledge" | "strategy" | "method">;
+}) {
   const [items, setItems] = useState<KnowledgeItem[]>([]); const [strategies, setStrategies] = useState<Strategy[]>([]); const [canWrite, setCanWrite] = useState(false); const [canManage, setCanManage] = useState(false); const [knowledgeHistory, setKnowledgeHistory] = useState<KnowledgeVersion[] | null>(null);
-  const [organizationRole, setOrganizationRole] = useState<"admin" | "member">("member"); const [strategyScope, setStrategyScope] = useState<"organization" | "project">("project"); const [strategySpaces, setStrategySpaces] = useState<StrategySpace[]>([]); const [strategyOverviewLoading, setStrategyOverviewLoading] = useState(false);
   const [knowledgeAction, setKnowledgeAction] = useState("");
-  const [knowledgeEntryMode, setKnowledgeEntryMode] = useState<"manual" | "import">("manual");
+  const [knowledgeView, setKnowledgeView] = useState<"manual" | "import" | "list" | "edit" | null>(null);
+  const [editingItem, setEditingItem] = useState<KnowledgeItem | null>(null);
+  const [strategyView, setStrategyView] = useState<"form" | "list" | null>(null);
+  const [strategyBase, setStrategyBase] = useState<Strategy | undefined>();
+  const [notice, setNotice] = useState("");
+  const [strategyGeneration, setStrategyGeneration] = useState(0);
   const [activatingStrategyId, setActivatingStrategyId] = useState("");
   const importPreview = useImportPreview<KnowledgeImportPreview>(`${organizationId}:${projectId}`);
   const knowledgeImportPreview = importPreview.preview.data, knowledgeImportMessage = importPreview.preview.message;
@@ -127,55 +160,56 @@ export function KnowledgeWorkspace({ initialOrganizationId = "", initialProjectI
   const [loading, setLoading] = useState(true); const [saving, setSaving] = useState(false); const [error, setError] = useState("");
   const writeBusy = saving || Boolean(knowledgeAction) || Boolean(activatingStrategyId) || knowledgeImportBusy === "importing" || methodTransferring;
 
-  const loadWorkspace = useCallback(async (orgId: string, projId: string) => {
-    if (!orgId || !projId) { setItems([]); setStrategies([]); setMethodSource(null); setMethodAtoms([]); setMethodologyCatalog(null); return; }
+  const loadWorkspace = useCallback(async (orgId: string, projId: string, signal?: AbortSignal) => {
     const query = `organizationId=${encodeURIComponent(orgId)}&projectId=${encodeURIComponent(projId)}`;
-    const [knowledgeResponse, strategyResponse, methodResponse, methodologyResponse] = await Promise.all([
-      scopedFetch(`/api/knowledge?${query}`),
-      scopedFetch(`/api/strategies?${query}`),
-      AUTHORIZED_METHOD_LIBRARY_VISIBLE ? scopedFetch(`/api/authorized-knowledge?${query}&metadataOnly=1`) : Promise.resolve(null),
-      AUTHORIZED_METHOD_LIBRARY_VISIBLE ? scopedFetch(`/api/authorized-methodology?${query}`) : Promise.resolve(null),
-    ]);
-    if (!knowledgeResponse.ok) throw new Error(await readError(knowledgeResponse)); if (!strategyResponse.ok) throw new Error(await readError(strategyResponse));
-    if (methodResponse && !methodResponse.ok) throw new Error(await readError(methodResponse)); if (methodologyResponse && !methodologyResponse.ok) throw new Error(await readError(methodologyResponse));
-    const knowledge = await knowledgeResponse.json() as { items: KnowledgeItem[]; canWrite: boolean; canManage: boolean }; const strategy = await strategyResponse.json() as { strategies: Strategy[]; canWrite: boolean; canManage: boolean };
-    setItems(knowledge.items); setStrategies(strategy.strategies); setCanWrite(knowledge.canWrite && strategy.canWrite); setCanManage(knowledge.canManage && strategy.canManage);
-    if (methodResponse && methodologyResponse) {
-      const method = await methodResponse.json() as { source: MethodSource | null; atoms: MethodAtom[]; canTransfer: boolean }; const methodology = await methodologyResponse.json() as MethodologyCatalogResponse;
-      setMethodSource(method.source); setMethodAtoms(method.atoms); setCanTransferMethods(Boolean(method.canTransfer)); setMethodologyCatalog(methodology);
-    } else {
-      setMethodSource(null); setMethodAtoms([]); setCanTransferMethods(false); setMethodologyCatalog(null);
-    }
-  }, []);
-
-  const loadStrategyOverview = useCallback(async (orgId: string) => {
-    if (!orgId) { setStrategySpaces([]); return; }
-    setStrategyOverviewLoading(true);
-    try {
-      const response = await scopedFetch(`/api/strategies?organizationId=${encodeURIComponent(orgId)}&scope=organization`);
+    if (tab === "knowledge") {
+      const response = await scopedFetch(`/api/knowledge?${query}&questionnaire=1`, { signal });
       if (!response.ok) throw new Error(await readError(response));
-      const body = await response.json() as { spaces: StrategySpace[] }; setStrategySpaces(body.spaces);
-    } finally { setStrategyOverviewLoading(false); }
-  }, []);
+      const body = await response.json() as { items: KnowledgeItem[]; canWrite: boolean; canManage: boolean };
+      if (!signal?.aborted) { setItems(body.items); setCanWrite(body.canWrite); setCanManage(body.canManage); }
+      return;
+    }
+    if (tab === "strategy") {
+      const response = await scopedFetch(`/api/strategies?${query}`, { signal });
+      if (!response.ok) throw new Error(await readError(response));
+      const body = await response.json() as { strategies: Strategy[]; canWrite: boolean; canManage: boolean };
+      if (!signal?.aborted) { setStrategies(body.strategies); setCanWrite(body.canWrite); setCanManage(body.canManage); }
+      return;
+    }
+    if (!AUTHORIZED_METHOD_LIBRARY_VISIBLE) return;
+    const [methodResponse, methodologyResponse] = await Promise.all([
+      scopedFetch(`/api/authorized-knowledge?${query}&metadataOnly=1`, { signal }),
+      scopedFetch(`/api/authorized-methodology?${query}`, { signal }),
+    ]);
+    if (!methodResponse.ok) throw new Error(await readError(methodResponse));
+    if (!methodologyResponse.ok) throw new Error(await readError(methodologyResponse));
+    const method = await methodResponse.json() as { source: MethodSource | null; atoms: MethodAtom[]; canTransfer: boolean };
+    const methodology = await methodologyResponse.json() as MethodologyCatalogResponse;
+    if (!signal?.aborted) { setMethodSource(method.source); setMethodAtoms(method.atoms); setCanTransferMethods(Boolean(method.canTransfer)); setMethodologyCatalog(methodology); }
+  }, [tab]);
 
-  const loadProjects = useCallback(async (orgId: string, preferred = "") => {
-    rememberCurrentScope(orgId, "");
-    const response = await scopedFetch(`/api/projects?organizationId=${encodeURIComponent(orgId)}`); if (!response.ok) throw new Error(await readError(response));
-    const body = await response.json() as { projects: Project[]; organizationRole: "admin" | "member" }; setProjects(body.projects); setOrganizationRole(body.organizationRole); setStrategyScope(body.organizationRole === "admin" ? "organization" : "project");
-    if (body.organizationRole !== "admin") setStrategySpaces([]);
-    const selected = preferredProjectId(body.projects, preferred); setProjectId(selected); rememberCurrentScope(orgId, selected);
-    await Promise.all([loadWorkspace(orgId, selected), body.organizationRole === "admin" ? loadStrategyOverview(orgId) : Promise.resolve()]);
-  }, [loadStrategyOverview, loadWorkspace]);
-
-  useWorkspaceInitialization({ initialOrganizationId, initialProjectId, setOrganizations, setOrganizationId, loadProjects, setError, setLoading, failureMessage: "加载失败" });
+  useEffect(() => {
+    const controller = new AbortController();
+    const { signal } = controller;
+    async function initialize() {
+      try { await loadWorkspace(organizationId, projectId, signal); }
+      catch (error) {
+        if (!signal.aborted && !isScopeCancellation(error)) setError(error instanceof Error ? error.message : "资料加载失败。");
+      } finally {
+        if (!signal.aborted) setLoading(false);
+      }
+    }
+    void initialize();
+    return () => controller.abort();
+  }, [loadWorkspace, organizationId, projectId]);
 
   async function createKnowledge(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); if (writeBusy) return; setSaving(true); setError(""); const formElement = event.currentTarget; const form = new FormData(formElement);
+    event.preventDefault(); if (writeBusy) return; setSaving(true); setError(""); setNotice(""); const formElement = event.currentTarget; const form = new FormData(formElement);
     try {
-    const response = await scopedFetch("/api/knowledge", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, title: form.get("title"), category: form.get("category"), body: form.get("body"), sourceType: form.get("sourceType"), sourceRef: form.get("sourceRef") }) });
+    const response = await scopedFetch("/api/knowledge", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, ...(form.has("guidedKind") ? { form: { kind: form.get("guidedKind"), answers: answersFromForm(form) } } : {}), title: form.get("title"), category: form.get("category"), body: form.get("body"), sourceType: form.get("sourceType"), sourceRef: form.get("sourceRef") }) });
     if (!response.ok) { setError(await readError(response)); return; } const body = await response.json() as { item?: KnowledgeItem };
     if (!body.item?.id || !body.item.updated_at || !Number.isSafeInteger(body.item.current_version)) throw new Error("Invalid acknowledgement");
-    const item = body.item; setItems((current) => [item, ...current]); formElement.reset();
+    const item = body.item; setKnowledgeView("manual"); setItems((current) => [item, ...current]); formElement.reset(); setNotice("已保存为待确认资料。");
     } catch (reason) { if (!isScopeCancellation(reason)) setError("暂时无法确认知识是否已保存。请先复制填写内容、恢复连接后刷新列表核对，勿连续重复提交。"); }
     finally { setSaving(false); }
   }
@@ -191,17 +225,31 @@ export function KnowledgeWorkspace({ initialOrganizationId = "", initialProjectI
   }
 
   async function editKnowledge(itemId: string, event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); if (writeBusy) return; setSaving(true); setError(""); const formElement = event.currentTarget; const form = new FormData(formElement); let acknowledged = false;
+    event.preventDefault(); if (writeBusy) return; setSaving(true); setError(""); setNotice(""); const formElement = event.currentTarget; const form = new FormData(formElement); let acknowledged = false;
     try {
-      const response = await scopedFetch(`/api/knowledge/${itemId}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, title: form.get("title"), category: form.get("category"), body: form.get("body"), sourceType: form.get("sourceType"), sourceRef: form.get("sourceRef"), changeSummary: form.get("changeSummary"), expectedVersion: Number(form.get("expectedVersion")), expectedUpdatedAt: form.get("expectedUpdatedAt") }) });
+      const response = await scopedFetch(`/api/knowledge/${itemId}?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, ...(form.has("guidedKind") ? { form: { kind: form.get("guidedKind"), answers: answersFromForm(form) } } : {}), title: form.get("title"), category: form.get("category"), body: form.get("body"), sourceType: form.get("sourceType"), sourceRef: form.get("sourceRef"), changeSummary: form.get("changeSummary"), expectedVersion: Number(form.get("expectedVersion")), expectedUpdatedAt: form.get("expectedUpdatedAt") }) });
       if (!response.ok) { setError(await readError(response)); return; }
       const body = await response.json() as { item?: KnowledgeItem };
       if (body.item?.id !== itemId || !body.item.updated_at || body.item.current_version !== Number(form.get("expectedVersion")) + 1) throw new Error("Invalid acknowledgement");
       acknowledged = true;
       await loadWorkspace(organizationId, projectId);
-      const editor = formElement.closest("details"); if (editor) editor.open = false;
+      setNotice("已保存新版本，资料需重新确认。");
+      closeEditor(itemId);
     } catch (reason) { if (!isScopeCancellation(reason)) setError(acknowledged ? "知识已保存为新版本，但列表刷新失败。请先复制填写内容、刷新页面核对，勿重复保存。" : "暂时无法确认新版本是否已保存。请先复制填写内容、恢复连接后刷新列表核对，勿连续重复提交。"); }
     finally { setSaving(false); }
+  }
+
+  function openEditor(item: KnowledgeItem) {
+    if (editingItem?.id !== item.id) setEditingItem(item);
+    setKnowledgeHistory(null);
+    setKnowledgeView("edit");
+    requestAnimationFrame(() => document.getElementById("knowledge-editor-heading")?.focus());
+  }
+
+  function closeEditor(itemId: string) {
+    setEditingItem(null);
+    setKnowledgeView("list");
+    requestAnimationFrame(() => document.getElementById(`knowledge-edit-${itemId}`)?.focus());
   }
 
   async function showKnowledgeHistory(itemId: string) {
@@ -262,15 +310,14 @@ export function KnowledgeWorkspace({ initialOrganizationId = "", initialProjectI
     }
   }
   async function createStrategy(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); if (writeBusy) return; setSaving(true); setError(""); const formElement = event.currentTarget; const form = new FormData(formElement); let acknowledged = false;
+    event.preventDefault(); if (writeBusy) return; setSaving(true); setError(""); setNotice(""); const formElement = event.currentTarget; const form = new FormData(formElement);
     const pillars = splitList(form.get("pillars"));
     try {
-    const response = await scopedFetch("/api/strategies", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, name: form.get("name"), positioning: form.get("positioning"), persona: form.get("persona"), targetAudience: form.get("targetAudience"), painPoints: splitList(form.get("painPoints")), pillars, objectives: splitList(form.get("objectives")), cadence: form.get("cadence"), conversionPath: form.get("conversionPath"), styleNotes: form.get("styleNotes"), topicMix: equalTopicMix(pillars) }) });
+    const response = await scopedFetch("/api/strategies", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, ...(form.has("guidedStrategy") ? { form: answersFromForm(form) } : {}), name: form.get("name"), positioning: form.get("positioning"), persona: form.get("persona"), targetAudience: form.get("targetAudience"), painPoints: splitList(form.get("painPoints")), pillars, objectives: splitList(form.get("objectives")), cadence: form.get("cadence"), conversionPath: form.get("conversionPath"), styleNotes: form.get("styleNotes"), topicMix: equalTopicMix(pillars) }) });
     if (!response.ok) { setError(await readError(response)); return; } const body = await response.json() as { strategy?: Strategy };
     if (!body.strategy?.id || !body.strategy.updated_at || !Number.isSafeInteger(body.strategy.version)) throw new Error("Invalid acknowledgement");
-    const strategy = body.strategy; acknowledged = true; setStrategies((current) => [strategy, ...current]); formElement.reset();
-    if (organizationRole === "admin") await loadStrategyOverview(organizationId);
-    } catch (reason) { if (!isScopeCancellation(reason)) setError(acknowledged ? "策略已保存，但总览刷新失败。请刷新页面核对，勿重复创建。" : "暂时无法确认策略是否已保存。请先复制填写内容、恢复连接后刷新列表核对，勿连续重复提交。"); }
+    const strategy = body.strategy; setStrategies((current) => [strategy, ...current]); formElement.reset(); setStrategyBase(undefined); setStrategyGeneration(current => current + 1); setStrategyView("list"); setNotice("策略草稿已保存，启用后用于写稿。");
+    } catch (reason) { if (!isScopeCancellation(reason)) setError("暂时无法确认策略是否已保存。请先复制填写内容、恢复连接后刷新列表核对，勿连续重复提交。"); }
     finally { setSaving(false); }
   }
 
@@ -282,13 +329,8 @@ export function KnowledgeWorkspace({ initialOrganizationId = "", initialProjectI
       if (!response.ok) { setError(await readError(response)); return; } const body = await response.json() as { strategy?: Partial<Strategy> };
       if (body.strategy?.id !== selected.id || body.strategy.status !== "active" || !body.strategy.updated_at) throw new Error("Invalid acknowledgement");
       acknowledged = true; await loadWorkspace(organizationId, projectId);
-      if (organizationRole === "admin") await loadStrategyOverview(organizationId);
     } catch (reason) { if (!isScopeCancellation(reason)) setError(acknowledged ? "策略已启用，但列表刷新失败。请刷新页面核对，勿重复提交。" : "暂时无法确认策略启用结果。请恢复连接后刷新列表核对，勿连续重复提交。"); }
     finally { setActivatingStrategyId(""); }
-  }
-
-  async function enterStrategySpace(spaceId: string) {
-    setProjectId(spaceId); setStrategyScope("project"); rememberCurrentScope(organizationId, spaceId); await loadWorkspace(organizationId, spaceId);
   }
 
   async function searchMethodKnowledge(event: FormEvent<HTMLFormElement>) {
@@ -323,20 +365,17 @@ export function KnowledgeWorkspace({ initialOrganizationId = "", initialProjectI
     finally { setMethodTransferring(false); }
   }
 
-  if (loading) return <div className="management-state" role="status">正在载入品牌知识空间…</div>;
-  if (error && organizations.length === 0) return <div className="management-state error-state"><strong>暂时无法进入知识库</strong><p>{error}</p><small>请确认本地身份已启用，并先创建公司与企业空间。</small></div>;
-  if (!organizationId || !projectId) return <div className="empty-panel"><h2>请先创建企业空间</h2><p>品牌知识和内容策略必须归属于明确的企业空间。</p></div>;
+  if (loading) return <div className="management-state" role="status">正在载入资料…</div>;
   const normalizedMethodologyQuery = methodologyQuery.trim().toLocaleLowerCase("zh-CN");
   const visibleMethodologyGroups = (methodologyCatalog?.groups ?? []).filter((group) => methodologyTask === "all" || group.task === methodologyTask).map((group) => ({
     ...group,
     entries: normalizedMethodologyQuery ? group.entries.filter((entry) => [entry.title, entry.instruction, entry.id, ...entry.keywords, ...entry.requiredEvidence].join(" ").toLocaleLowerCase("zh-CN").includes(normalizedMethodologyQuery)) : group.entries,
   })).filter((group) => group.entries.length > 0);
-  const isOrganizationAdmin = organizationRole === "admin";
-  const overviewStrategyCount = strategySpaces.reduce((total, space) => total + space.strategies.length, 0);
-  const activeStrategySpaceCount = strategySpaces.filter((space) => space.strategies.some((strategy) => strategy.status === "active")).length;
-
+  const knowledgeMode = canWrite ? knowledgeView ?? (items.length ? "list" : "manual") : "list";
+  const strategyMode = canWrite ? strategyView ?? (strategies.length ? "list" : "form") : "list";
+  const currentEditedItem = editingItem && items.find(item => item.id === editingItem.id);
   return <div className="knowledge-workspace creation-cleanup">
-    <div className="management-toolbar knowledge-toolbar"><label>公司<select value={organizationId} disabled={writeBusy} onChange={(event) => runScopedAction(async () => { const id = event.target.value; setOrganizationId(id); await loadProjects(id); }, setError)}>{organizations.map((organization) => <option key={organization.id} value={organization.id}>{organization.name}</option>)}</select></label><label>企业空间<select value={projectId} disabled={writeBusy} onChange={(event) => runScopedAction(async () => { const id = event.target.value; setProjectId(id); rememberCurrentScope(organizationId, id); await loadWorkspace(organizationId, id); if (tab === "strategy") setStrategyScope("project"); }, setError)}>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><div className="segmented-control" aria-label="知识库视图"><button className={tab === "knowledge" ? "active" : ""} type="button" disabled={writeBusy} onClick={() => setTab("knowledge")}>品牌知识</button><button className={tab === "strategy" ? "active" : ""} type="button" disabled={writeBusy} onClick={() => { setTab("strategy"); if (isOrganizationAdmin) setStrategyScope("organization"); }}>内容策略</button>{AUTHORIZED_METHOD_LIBRARY_VISIBLE && <button className={tab === "method" ? "active" : ""} type="button" disabled={writeBusy} onClick={() => setTab("method")}>授权方法论</button>}</div></div>
+    {notice && !error && <p className="knowledge-import-message" role="status">{notice}</p>}
     {error && <div className="inline-alert" role="alert">{error}</div>}
     {AUTHORIZED_METHOD_LIBRARY_VISIBLE && tab === "method" && methodologyCatalog && <section className="methodology-view">
       <header className="panel methodology-hero">
@@ -344,7 +383,7 @@ export function KnowledgeWorkspace({ initialOrganizationId = "", initialProjectI
         <dl><div><dt>业务方法链</dt><dd>3</dd><small>选题 · 生成 · 分析</small></div><div><dt>核心流程</dt><dd>{methodologyCatalog.catalog.kindCounts.core_playbook}</dd><small>每次任务选择一套</small></div><div><dt>方法模块</dt><dd>{methodologyCatalog.catalog.kindCounts.module}</dd><small>按场景组合调用</small></div><div><dt>质量门禁</dt><dd>{methodologyCatalog.catalog.kindCounts.rule}</dd><small>事实与证据不可跳过</small></div></dl>
       </header>
 
-      <section className="panel methodology-command-bar"><div><p className="section-kicker">查看系统实际会调用的方法</p><div className="methodology-task-tabs" role="tablist" aria-label="方法论业务环节"><button className={methodologyTask === "all" ? "active" : ""} type="button" onClick={() => setMethodologyTask("all")}>全部方法 <span>{methodologyCatalog.catalog.entryCount}</span></button>{(["topic", "content", "analysis"] as const).map((task) => <button className={methodologyTask === task ? "active" : ""} type="button" key={task} onClick={() => setMethodologyTask(task)}>{methodologyTaskLabels[task].title} <span>{methodologyCatalog.catalog.taskCounts[task]}</span></button>)}</div></div><label><Search aria-hidden="true" /><input value={methodologyQuery} onChange={(event) => setMethodologyQuery(event.target.value)} maxLength={200} placeholder="搜索方法、执行规则或证据要求" /></label></section>
+      <section className="panel methodology-command-bar"><div><p className="section-kicker">查看系统实际会调用的方法</p><div className="methodology-task-tabs" role="tablist" aria-label="方法论业务环节"><button className={methodologyTask === "all" ? "active" : ""} type="button" onClick={() => setMethodologyTask("all")}>全部方法 <span>{methodologyCatalog.catalog.entryCount}</span></button>{(["topic", "content", "analysis"] as const).map((task) => <button className={methodologyTask === task ? "active" : ""} type="button" key={task} onClick={() => setMethodologyTask(task)}>{methodologyTaskLabels[task].title} <span>{methodologyCatalog.catalog.taskCounts[task]}</span></button>)}</div></div><label className="field-affix field-compact"><Search aria-hidden="true" /><input aria-label="搜索方法论" value={methodologyQuery} onChange={(event) => setMethodologyQuery(event.target.value)} maxLength={200} placeholder="搜索方法、执行规则或证据要求" /></label></section>
 
       {visibleMethodologyGroups.length ? <div className="methodology-tracks">{visibleMethodologyGroups.map((group) => <MethodologyTrack key={group.task} group={group} />)}</div> : <div className="empty-panel"><FileSearch aria-hidden="true" /><h2>没有匹配的方法论</h2><p>换一个更具体的关键词，或切换到全部方法。</p></div>}
 
@@ -354,36 +393,95 @@ export function KnowledgeWorkspace({ initialOrganizationId = "", initialProjectI
         <article><header><Video aria-hidden="true" /><div><strong>{methodologyCatalog.catalog.frameworks.analysisRubricDimensionCount} 维分析量表</strong><span>每个判断都对应证据类型</span></div></header><ul className="rubric-dimension-list">{methodologyCatalog.catalog.frameworks.analysisRubricDimensions.map((item) => <li key={item.id}><strong>{item.name}</strong><span>{item.evidence}</span></li>)}</ul></article>
       </div></section>
 
-      <details className="panel methodology-source-vault"><summary><span><Database aria-hidden="true" /><span><strong>来源追溯与底层授权方法库</strong><small>{methodSource ? `${methodSource.item_count.toLocaleString()} 条原子 · 修订 ${methodSource.revision.slice(0, 7)} · ${dateLabel(methodSource.synced_at)} 同步` : "尚未同步底层授权来源"}</small></span></span><em>展开管理</em></summary><div className="methodology-source-body"><header><div><p>原子库用于补充方法出处和检索，不再作为这个页面的主体，也不会被整库直接送入模型。</p>{methodSource && <small>{methodSource.name} · 完整版本 {methodSource.revision}</small>}</div>{canTransferMethods && <div className="method-transfer-actions"><button type="button" disabled={methodTransferring || !methodSource} onClick={() => void exportMethodLibrary()}>导出方法库</button><label className={methodTransferring ? "disabled" : ""}>导入方法库<input type="file" accept="application/json,.json" disabled={methodTransferring} onChange={(event) => void importMethodLibrary(event)} /></label></div>}</header><form className="method-source-search" onSubmit={searchMethodKnowledge}><label><Search aria-hidden="true" /><input aria-label="搜索底层授权来源" value={methodQuery} onChange={(event) => setMethodQuery(event.target.value)} maxLength={500} placeholder="按业务问题检索底层来源" /></label><button disabled={methodSearching}>{methodSearching ? "检索中…" : "检索来源"}</button></form>{methodAtoms.length ? <div className="method-knowledge-results compact">{methodAtoms.map((atom) => <article key={atom.id}><div><span>{atom.type} · {atom.confidence === "high" ? "高置信度" : atom.confidence === "medium" ? "中置信度" : "低置信度"}</span><em>{atom.id}</em></div><h3>{atom.knowledge}</h3><details><summary>查看授权原文与来源</summary><p>{atom.original}</p>{atom.url && <a href={atom.url} target="_blank" rel="noreferrer">打开来源 ↗</a>}</details><footer>{atom.topics.map((topic) => <span key={topic}>{topic}</span>)}</footer></article>)}</div> : <div className="list-empty">{methodQuery.trim() ? "没有匹配的底层来源。" : "输入具体业务问题后检索对应的授权来源。"}</div>}</div></details>
+      <details className="panel methodology-source-vault"><summary><span><Database aria-hidden="true" /><span><strong>来源追溯与底层授权方法库</strong><small>{methodSource ? `${methodSource.item_count.toLocaleString()} 条原子 · 修订 ${methodSource.revision.slice(0, 7)} · ${dateLabel(methodSource.synced_at)} 同步` : "尚未同步底层授权来源"}</small></span></span><em>展开管理</em></summary><div className="methodology-source-body"><header><div><p>原子库用于补充方法出处和检索，不再作为这个页面的主体，也不会被整库直接送入模型。</p>{methodSource && <small>{methodSource.name} · 完整版本 {methodSource.revision}</small>}</div>{canTransferMethods && <div className="method-transfer-actions"><button type="button" disabled={methodTransferring || !methodSource} onClick={() => void exportMethodLibrary()}>导出方法库</button><label className={methodTransferring ? "disabled" : ""}>导入方法库<input type="file" accept="application/json,.json" disabled={methodTransferring} onChange={(event) => void importMethodLibrary(event)} /></label></div>}</header><form className="method-source-search" onSubmit={searchMethodKnowledge}><label className="field-affix field-compact"><Search aria-hidden="true" /><input aria-label="搜索底层授权来源" value={methodQuery} onChange={(event) => setMethodQuery(event.target.value)} maxLength={500} placeholder="按业务问题检索底层来源" /></label><button disabled={methodSearching}>{methodSearching ? "检索中…" : "检索来源"}</button></form>{methodAtoms.length ? <div className="method-knowledge-results compact">{methodAtoms.map((atom) => <article key={atom.id}><div><span>{atom.type} · {atom.confidence === "high" ? "高置信度" : atom.confidence === "medium" ? "中置信度" : "低置信度"}</span><em>{atom.id}</em></div><h3>{atom.knowledge}</h3><details><summary>查看授权原文与来源</summary><p>{atom.original}</p>{atom.url && <a href={atom.url} target="_blank" rel="noreferrer">打开来源 ↗</a>}</details><footer>{atom.topics.map((topic) => <span key={topic}>{topic}</span>)}</footer></article>)}</div> : <div className="list-empty">{methodQuery.trim() ? "没有匹配的底层来源。" : "输入具体业务问题后检索对应的授权来源。"}</div>}</div></details>
     </section>}
-    <div style={{ display: tab === "knowledge" || tab === "strategy" ? "contents" : "none" }}>
-    {knowledgeHistory && <aside className="panel knowledge-history-panel" role="dialog" aria-label="知识版本历史"><div className="panel-heading"><div><p className="section-kicker">只读版本记录</p><h2>知识版本历史</h2></div><button type="button" onClick={() => setKnowledgeHistory(null)}>关闭</button></div>{knowledgeHistory.length ? <ol className="knowledge-history-list">{knowledgeHistory.map((version) => <li key={version.version}><div><strong>v{version.version}</strong><span>{dateLabel(version.created_at)} · {sourceLabels[version.source_type] || version.source_type}</span></div><p>{version.body}</p>{version.change_summary && <small>{version.change_summary}</small>}</li>)}</ol> : <div className="list-empty">暂无历史版本。</div>}</aside>}
+    {knowledgeMode === "list" && knowledgeHistory && <aside className="panel knowledge-history-panel" role="dialog" aria-label="知识版本历史"><div className="panel-heading"><div><p className="section-kicker">只读版本记录</p><h2>知识版本历史</h2></div><button type="button" onClick={() => setKnowledgeHistory(null)}>关闭</button></div>{knowledgeHistory.length ? <ol className="knowledge-history-list">{knowledgeHistory.map((version) => <li key={version.version}><div><strong>v{version.version}</strong><span>{dateLabel(version.created_at)} · {sourceLabels[version.source_type] || version.source_type}</span></div><p>{version.body}</p>{version.change_summary && <small>{version.change_summary}</small>}</li>)}</ol> : <div className="list-empty">暂无历史版本。</div>}</aside>}
     {tab === "knowledge" ? <div className="knowledge-layout">
-      <section className="panel knowledge-list-panel"><div className="panel-heading"><div><p className="section-kicker">已确认知识才参与生成</p><h2>{items.filter((item) => item.status === "confirmed").length} 条正式知识 · {items.filter((item) => item.status === "draft").length} 条待确认</h2></div></div>{items.length ? <div className="knowledge-list">{items.map((item) => <KnowledgeCard key={item.id} item={item} canManage={canManage} saving={writeBusy} action={knowledgeAction.endsWith(item.id) ? knowledgeAction : ""} onConfirm={() => void confirmKnowledge(item)} onEdit={(event) => void editKnowledge(item.id, event)} onArchive={() => void archiveKnowledge(item)} onHistory={() => void showKnowledgeHistory(item.id)} />)}</div> : <div className="list-empty">先录入品牌故事、案例、客户问题、语气或合规要求。</div>}</section>
-      {canWrite && <aside className="create-panel knowledge-create creation-knowledge-entry">
-        <div className="creation-entry-switch" role="group" aria-label="品牌知识录入方式">
-          <button type="button" aria-pressed={knowledgeEntryMode === "manual"} aria-controls="knowledge-entry-manual" onClick={() => setKnowledgeEntryMode("manual")}>逐条录入</button>
-          <button type="button" aria-pressed={knowledgeEntryMode === "import"} aria-controls="knowledge-entry-import" onClick={() => setKnowledgeEntryMode("import")}>批量导入</button>
-        </div>
-        <section id="knowledge-entry-import" className="knowledge-bulk-import creation-entry-panel" hidden={knowledgeEntryMode !== "import"}><header><div><p className="section-kicker">Excel 批量导入</p><h2>一次录入多条品牌知识</h2></div><a href="/templates/品牌知识库导入模板.xlsx" download><Download aria-hidden="true" />下载模板</a></header>
+      {canWrite && <div className="creation-view-switch" role="group" aria-label="品牌知识工作区">
+        <button type="button" aria-pressed={knowledgeMode === "manual"} aria-controls="knowledge-entry-manual" onClick={() => setKnowledgeView("manual")}>填写品牌知识</button>
+        <button type="button" aria-pressed={knowledgeMode === "list"} aria-controls="knowledge-records" onClick={() => setKnowledgeView("list")}>已有知识 <span>{items.length}</span></button>
+        <button type="button" aria-pressed={knowledgeMode === "import"} aria-controls="knowledge-entry-import" onClick={() => setKnowledgeView("import")}>批量导入</button>
+        {editingItem && <button type="button" aria-pressed={knowledgeMode === "edit"} aria-controls="knowledge-editor" onClick={() => setKnowledgeView("edit")}>继续编辑</button>}
+      </div>}
+      <section id="knowledge-records" className="panel knowledge-list-panel" hidden={knowledgeMode !== "list"}><div className="panel-heading"><div><p className="section-kicker">已确认知识才参与生成</p><h2>{items.filter((item) => item.status === "confirmed").length} 条正式知识 · {items.filter((item) => item.status === "draft").length} 条待确认</h2></div></div>{items.length ? <div className="knowledge-list">{items.map((item) => <KnowledgeCard key={item.id} item={item} canManage={canManage} saving={writeBusy} action={knowledgeAction.endsWith(item.id) ? knowledgeAction : ""} onConfirm={() => void confirmKnowledge(item)} onEdit={() => openEditor(item)} onArchive={() => void archiveKnowledge(item)} onHistory={() => void showKnowledgeHistory(item.id)} />)}</div> : <div className="list-empty">当前空间暂无品牌知识。</div>}</section>
+      {canWrite && <section className="create-panel knowledge-create creation-knowledge-entry" hidden={knowledgeMode !== "manual" && knowledgeMode !== "import"}>
+        <section id="knowledge-entry-import" className="knowledge-bulk-import creation-entry-panel" hidden={knowledgeMode !== "import"}><header><div><p className="section-kicker">Excel 批量导入</p><h2>一次录入多条品牌知识</h2></div><a href="/templates/品牌知识库导入模板.xlsx" download><Download aria-hidden="true" />下载模板</a></header>
           <label className={`knowledge-import-drop${knowledgeImportPreview ? " has-file" : ""}`}><input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" disabled={writeBusy} onChange={(event) => void selectKnowledgeImport(event)} />{knowledgeImportPreview ? <FileSpreadsheet aria-hidden="true" /> : <UploadCloud aria-hidden="true" />}<span><strong>{knowledgeImportBusy === "reading" ? "正在读取 Excel…" : knowledgeImportPreview?.filename || "选择填写好的 Excel"}</strong><small>{knowledgeImportPreview ? `${knowledgeImportPreview.validCount} 条有效 · ${knowledgeImportPreview.issues.length} 条需修改` : "Excel 最多 5 MiB、100 条，导入后统一进入待确认"}</small></span></label>
           {knowledgeImportPreview?.issues.length ? <details className="knowledge-import-issues"><summary><AlertTriangle aria-hidden="true" />查看 {knowledgeImportPreview.issues.length} 个问题</summary><ul>{knowledgeImportPreview.issues.slice(0, 8).map((issue, index) => <li key={`${issue.rowNumber}-${index}`}>{issue.rowNumber ? `第 ${issue.rowNumber} 行：` : ""}{issue.message}</li>)}</ul>{knowledgeImportPreview.issues.length > 8 && <small>其余问题请修改后重新上传预检。</small>}</details> : null}
           {knowledgeImportMessage && <p className="knowledge-import-message" role="status">{knowledgeImportMessage}</p>}
           {knowledgeImportPreview && <button className="knowledge-import-submit" type="button" disabled={writeBusy || !knowledgeImportPreview.validCount || Boolean(knowledgeImportBusy)} onClick={() => void importKnowledgeWorkbook()}><UploadCloud aria-hidden="true" />{knowledgeImportBusy === "importing" ? "正在导入…" : `导入 ${knowledgeImportPreview.validCount} 条有效知识`}</button>}
         </section>
-        <section id="knowledge-entry-manual" className="creation-entry-panel" hidden={knowledgeEntryMode !== "manual"}>
-          <h2>新增品牌知识</h2><p className="creation-hint">保存为待确认草稿，负责人确认后参与内容生成。</p><form className="stack-form" onSubmit={createKnowledge}><label>标题<input disabled={writeBusy} name="title" required minLength={2} maxLength={120} /></label><div className="form-row"><label>分类<select disabled={writeBusy} name="category" defaultValue="brand_story">{Object.entries(categoryLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label>来源<select disabled={writeBusy} name="sourceType" defaultValue="manual">{Object.entries(sourceLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label></div><label>知识正文<textarea disabled={writeBusy} name="body" required minLength={10} maxLength={20000} rows={7} /></label><label>来源说明或链接<input disabled={writeBusy} name="sourceRef" maxLength={1000} placeholder="文件名、网页链接或反馈记录" /></label><button className="primary-button" disabled={writeBusy}>{saving ? "正在保存…" : "保存为待确认知识"}</button></form>
+        <section id="knowledge-entry-manual" className="creation-entry-panel" hidden={knowledgeMode !== "manual"}>
+          <KnowledgeIntake profile={items.find(item => item.form?.kind === "profile" && item.status !== "archived")?.title} projectName={projectName} busy={writeBusy} onSubmit={createKnowledge} />
+          <details className="guided-extra"><summary>直接填写已有知识正文</summary><form className="stack-form" onSubmit={createKnowledge}><label>标题<input disabled={writeBusy} name="title" required minLength={2} maxLength={120} /></label><div className="form-row"><label>分类<select disabled={writeBusy} name="category" defaultValue="brand_story">{Object.entries(categoryLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label>来源<select disabled={writeBusy} name="sourceType" defaultValue="manual">{Object.entries(sourceLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label></div><label>知识正文<textarea disabled={writeBusy} name="body" required minLength={10} maxLength={20000} rows={7} /></label><label>来源说明或链接<input disabled={writeBusy} name="sourceRef" maxLength={1000} placeholder="文件名、网页链接或反馈记录" /></label><button className="primary-button" disabled={writeBusy}>{saving ? "正在保存…" : "保存为待确认知识"}</button></form></details>
         </section>
-      </aside>}
-    </div> : <>
-      {isOrganizationAdmin && <section className="panel strategy-scope-bar"><div><p className="section-kicker">管理员策略视图</p><strong>{activeStrategySpaceCount} / {strategySpaces.length} 个企业空间已启用策略</strong><span>共 {overviewStrategyCount} 个策略版本，可集中检查各空间的定位与阶段目标。</span></div><div className="segmented-control" aria-label="内容策略查看范围"><button className={strategyScope === "organization" ? "active" : ""} type="button" disabled={writeBusy} onClick={() => setStrategyScope("organization")}>全部企业空间</button><button className={strategyScope === "project" ? "active" : ""} type="button" disabled={writeBusy} onClick={() => setStrategyScope("project")}>当前企业空间</button></div></section>}
-      {isOrganizationAdmin && strategyScope === "organization" ? <section className="strategy-overview" aria-label="全部企业空间内容策略">
-        {strategyOverviewLoading ? <div className="management-state" role="status">正在汇总全部企业空间的内容策略…</div> : strategySpaces.length ? strategySpaces.map((space) => {
-          const activeStrategy = space.strategies.find((strategy) => strategy.status === "active");
-          return <section className="strategy-space-group" key={space.id}><header><div><p className="section-kicker">企业空间 · {space.status === "active" ? "运行中" : space.status === "paused" ? "已暂停" : space.status === "archived" ? "已归档" : "筹备中"}</p><h2>{space.name}</h2><span>{activeStrategy ? `当前启用：${activeStrategy.name}` : space.strategies.length ? "已有策略版本，但尚未启用" : "尚未建立内容策略"}</span></div>{space.status !== "archived" && <button type="button" disabled={writeBusy} onClick={() => void enterStrategySpace(space.id)}>进入空间管理</button>}</header>{space.strategies.length ? <div className="strategy-list">{space.strategies.map((strategy) => <StrategyCard key={strategy.id} strategy={strategy} />)}</div> : <div className="strategy-space-empty"><strong>暂无策略</strong><span>{space.status === "archived" ? "该空间已归档，仅保留历史策略供管理员查阅。" : "进入该企业空间后创建第一版账号定位、目标人群和内容支柱。"}</span></div>}</section>;
-        }) : <div className="empty-panel"><h2>还没有企业空间</h2><p>创建企业空间后，管理员可以在这里集中查看全部内容策略。</p></div>}
-      </section> : <div className="strategy-layout"><section className="strategy-list">{strategies.length ? strategies.map((strategy) => <StrategyCard key={strategy.id} strategy={strategy} canManage={canManage} busy={writeBusy} activating={activatingStrategyId === strategy.id} onActivate={() => void activateStrategy(strategy)} />) : <div className="empty-panel"><span aria-hidden="true">⌁</span><h2>还没有内容策略</h2><p>建立第一版账号定位、目标人群、内容支柱和阶段目标。</p></div>}</section>{canWrite && <aside className="create-panel strategy-create"><p className="section-kicker">新策略版本</p><h2>创建后先保存为草稿</h2><form className="stack-form" onSubmit={createStrategy}><label>版本名称<input disabled={writeBusy} name="name" required minLength={2} maxLength={100} placeholder="例如：专业管理顾问增长策略" /></label><label>账号定位<textarea disabled={writeBusy} name="positioning" required minLength={5} rows={3} /></label><label>人设定位<input disabled={writeBusy} name="persona" maxLength={1000} /></label><label>目标人群<textarea disabled={writeBusy} name="targetAudience" required minLength={2} rows={2} /></label><label>用户痛点（逗号分隔）<textarea disabled={writeBusy} name="painPoints" required rows={2} /></label><label>内容支柱（逗号分隔）<input disabled={writeBusy} name="pillars" required /></label><label>阶段目标（逗号分隔）<textarea disabled={writeBusy} name="objectives" required rows={2} /></label><div className="form-row"><label>更新频率<input disabled={writeBusy} name="cadence" placeholder="每周 3 条" /></label><label>转化路径<input disabled={writeBusy} name="conversionPath" /></label></div><label>内容风格<textarea disabled={writeBusy} name="styleNotes" rows={2} /></label><button className="primary-button" disabled={writeBusy}>{saving ? "正在保存…" : "创建策略草稿"}</button></form></aside>}</div>}
-    </>}
-    </div>
+      </section>}
+      {canManage && editingItem && <section id="knowledge-editor" className="create-panel knowledge-create" hidden={knowledgeMode !== "edit"}>
+        <h2 id="knowledge-editor-heading" tabIndex={-1}>编辑知识 · {editingItem.title}</h2>
+        <KnowledgeRecordForm key={editingItem.id} edited={editingItem} changed={!currentEditedItem || editingItem.current_version !== currentEditedItem.current_version || editingItem.updated_at !== currentEditedItem.updated_at}
+          busy={writeBusy} onEdit={event => void editKnowledge(editingItem.id, event)} onCancel={() => closeEditor(editingItem.id)} />
+      </section>}
+    </div> : tab === "strategy" ? <div className="strategy-layout">
+      {canWrite && <div className="creation-view-switch" role="group" aria-label="内容策略工作区">
+        <button type="button" aria-pressed={strategyMode === "form"} aria-controls="strategy-entry" onClick={() => setStrategyView("form")}>{strategyBase ? "修改内容策略" : "填写内容策略"}</button>
+        <button type="button" aria-pressed={strategyMode === "list"} aria-controls="strategy-records" onClick={() => setStrategyView("list")}>策略版本 <span>{strategies.length}</span></button>
+      </div>}
+      <section id="strategy-records" className="strategy-list" hidden={strategyMode !== "list"}>{strategies.length ? strategies.map(strategy =>
+        <StrategyCard key={strategy.id} strategy={strategy} canManage={canManage} busy={writeBusy} activating={activatingStrategyId === strategy.id}
+          onActivate={() => void activateStrategy(strategy)}
+          onRevise={canWrite ? () => { if (strategyBase?.id !== strategy.id) { setStrategyBase(strategy); setStrategyGeneration(current => current + 1); } setStrategyView("form"); setNotice(""); requestAnimationFrame(() => document.getElementById("strategy-form-heading")?.focus()); } : undefined} />)
+        : <div className="empty-panel"><h2>还没有内容策略</h2><p>先填写观众、主题和阶段目标，保存第一版草稿。</p></div>}</section>
+      {canWrite && <section id="strategy-entry" className="create-panel strategy-create" hidden={strategyMode !== "form"}><h2 id="strategy-form-heading" tabIndex={-1}>{strategyBase ? `修改 v${strategyBase.version} 并保存新版` : "创建内容策略"}</h2>
+        <StrategyQuestionnaire key={strategyGeneration} base={strategyBase} busy={writeBusy} onSubmit={createStrategy} onCancel={() => { setStrategyBase(undefined); setStrategyGeneration(current => current + 1); setStrategyView("list"); }} />
+      </section>}
+    </div> : null}
+  </div>;
+}
+
+export function OrganizationStrategyOverview({ organizationId }: { organizationId: string }) {
+  const [spaces, setSpaces] = useState<StrategySpace[] | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const controller = new AbortController();
+    async function loadOverview() {
+      try {
+        const query = new URLSearchParams({ organizationId, scope: "organization" });
+        const response = await scopedFetch(`/api/strategies?${query}`, { signal: controller.signal });
+        if (!response.ok) throw new Error(await readError(response));
+        const body = await response.json() as { spaces: StrategySpace[] };
+        if (!controller.signal.aborted) setSpaces(body.spaces);
+      } catch (error) {
+        if (!isScopeCancellation(error)) setError(error instanceof Error ? error.message : "内容策略总览加载失败。");
+      }
+    }
+    void loadOverview();
+    return () => controller.abort();
+  }, [organizationId]);
+
+  if (error) return <div className="inline-alert" role="alert">{error}</div>;
+  if (!spaces) return <div className="management-state" role="status">正在载入策略总览…</div>;
+  if (!spaces.length) return <div className="empty-panel"><h2>还没有企业空间</h2><p>创建企业空间后，可以在这里查看各空间的内容策略。</p></div>;
+  const activeCount = spaces.filter((space) => space.strategies.some((strategy) => strategy.status === "active")).length;
+
+  return <div className="knowledge-workspace creation-cleanup">
+    <div className="panel strategy-scope-bar"><div><strong>{activeCount} / {spaces.length} 个企业空间已启用策略</strong></div></div>
+    <div className="strategy-overview">{spaces.map((space) => {
+      const activeStrategy = space.strategies.find((strategy) => strategy.status === "active");
+      const query = new URLSearchParams({ organizationId, projectId: space.id, tab: "strategy" });
+      return <section className="strategy-space-group" key={space.id}>
+        <header>
+          <div>
+            <p className="section-kicker">{spaceProjectStatus[space.status] || "状态待确认"}</p>
+            <h2>{space.name}</h2>
+            <span>{activeStrategy ? `当前启用：${activeStrategy.name}` : "尚未启用内容策略"}</span>
+          </div>
+          {space.status !== "archived" && <Link className="secondary-link" href={`/space?${query}`}>管理该空间策略</Link>}
+        </header>
+        {space.strategies.length
+          ? <div className="strategy-list">{space.strategies.map((strategy) => <StrategyCard key={strategy.id} strategy={strategy} />)}</div>
+          : <div className="strategy-space-empty"><strong>暂无策略</strong></div>}
+      </section>;
+    })}</div>
   </div>;
 }

@@ -1,0 +1,114 @@
+.wpd-dialog {
+  width: min(620px, calc(100% - 32px));
+  max-width: none;
+  max-height: none;
+  margin: auto;
+  padding: 0;
+  overflow: visible;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 20px 80px rgb(15 48 39 / 22%);
+}
+.wpd-dialog::backdrop { background: rgb(16 36 31 / 48%); }
+.wpd-dialog-layout { display: flex; flex-direction: column; max-height: min(88dvh, 880px); overflow: hidden; border-radius: inherit; }
+.wpd-dialog-head,
+.wpd-dialog-foot { flex: none; padding: 16px 24px; }
+.wpd-dialog-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; border-bottom: 1px solid var(--line); }
+.wpd-dialog-head h2 { margin: 0; font-size: 20px; font-weight: 680; line-height: 1.4; }
+.wpd-dialog button,
+.wpd-dialog .wpd-route {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  min-height: 38px;
+  padding: 7px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 580;
+  line-height: 1.45;
+}
+.wpd-dialog button:disabled { cursor: not-allowed; }
+.wpd-dialog button:not(:disabled):hover,
+.wpd-dialog .wpd-route:hover { border-color: var(--brand-line); background: var(--surface-soft); }
+.wpd-dialog button.wpd-primary { border-color: var(--brand); background: var(--brand); color: white; }
+.wpd-dialog button.wpd-primary:not(:disabled):hover { border-color: var(--brand-deep); background: var(--brand-deep); }
+.wpd-dialog button.wpd-icon { min-height: 36px; width: 36px; padding: 6px; border-color: transparent; color: var(--muted); }
+.wpd-dialog button.wpd-icon svg { width: 19px; height: 19px; }
+.wpd-dialog button.wpd-cancel { margin-right: auto; color: var(--danger); }
+.wpd-dialog button.wpd-danger { border-color: var(--danger); background: var(--danger); color: white; }
+.wpd-dialog button.wpd-danger:hover { border-color: var(--danger); background: var(--danger); filter: brightness(.94); }
+.wpd-dialog button svg, .wpd-dialog .wpd-route svg, .wpd-dialog .wpd-link svg { width: 15px; height: 15px; flex: none; }
+.wpd-dialog-body { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 20px 24px; scrollbar-gutter: stable; }
+.wpd-dialog-foot { border-top: 1px solid var(--line); }
+.wpd-dialog-foot:has(.wpd-actions:empty):not(:has(p)) { display: none; }
+.wpd-actions { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 8px; }
+.wpd-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px 16px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.wpd-fields label { display: flex; flex-direction: column; gap: 6px; min-width: 0; color: var(--ink); font-size: 13px; font-weight: 600; }
+.wpd-fields .wpd-wide { grid-column: 1 / -1; }
+.wpd-fields input,
+.wpd-fields select,
+.wpd-fields textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background-color: var(--surface);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 400;
+}
+.wpd-fields textarea { min-height: 62px; resize: vertical; }
+.wpd-fields input::placeholder, .wpd-fields textarea::placeholder { color: var(--subtle); }
+.wpd-fields :is(input, select, textarea):focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.wpd-dialog .wpd-error { margin: 0 0 10px; padding: 9px 12px; border-radius: 7px; background: var(--danger-soft); color: var(--danger); overflow-wrap: anywhere; }
+.wpd-dialog .wpd-hint { margin: 0; color: var(--muted); font-size: 13px; }
+.wpd-dialog-foot .wpd-hint { margin-bottom: 10px; }
+.wpd-task-summary h3 { margin: 0; overflow-wrap: anywhere; font-size: 20px; line-height: 1.45; font-weight: 650; }
+.wpd-task-tags { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; }
+.wpd-task-tags span { padding: 2px 8px; border-radius: 5px; background: var(--surface-soft); color: var(--muted); font-size: 12px; }
+.wpd-task-tags span:first-child { background: var(--brand-soft); color: var(--brand-deep); }
+.wpd-task-tags span.wpd-overdue { background: var(--danger-soft); color: var(--danger); }
+.wpd-meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 20px; margin: 18px 0; }
+.wpd-meta div { display: grid; grid-template-columns: 56px minmax(0, 1fr); align-items: baseline; gap: 5px; }
+.wpd-meta dt { font-size: 12px; color: var(--muted); }
+.wpd-meta dd { margin: 0; overflow-wrap: anywhere; font-size: 13px; }
+.wpd-progress { padding: 10px 12px; border-radius: 8px; background: var(--surface-soft); }
+.wpd-progress div { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 13px; }
+.wpd-progress strong { color: var(--brand-deep); }
+.wpd-progress progress { display: block; margin-top: 6px; width: 100%; height: 6px; overflow: hidden; border: 0; border-radius: 4px; background: var(--line); color: var(--brand); }
+.wpd-progress progress::-webkit-progress-bar { background: var(--line); }
+.wpd-progress progress::-webkit-progress-value { border-radius: 4px; background: var(--brand); }
+.wpd-progress progress::-moz-progress-bar { border-radius: 4px; background: var(--brand); }
+.wpd-counter { margin: 6px 0 0; text-align: end; color: var(--muted); font-size: 12px; }
+.wpd-section, .wpd-report-form { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line); }
+.wpd-section h4 { margin: 0 0 8px; font-size: 14px; font-weight: 650; }
+.wpd-section h4:not(:first-child) { margin-top: 15px; }
+.wpd-section p { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.65; }
+.wpd-link { color: var(--brand-deep); overflow-wrap: anywhere; text-decoration: underline; text-underline-offset: 2px; }
+.wpd-link svg { display: inline-block; vertical-align: text-bottom; }
+.wpd-history { margin: 0; padding: 0; list-style: none; }
+.wpd-history li { padding: 10px 0; }
+.wpd-history li + li { border-top: 1px solid var(--line); }
+.wpd-history-head { display: flex; flex-wrap: wrap; gap: 5px 8px; align-items: baseline; font-size: 13px; overflow-wrap: anywhere; }
+.wpd-history-head time { margin-left: auto; }
+.wpd-history-head time, .wpd-history-change { color: var(--muted); font-size: 12px; }
+.wpd-history-change { margin-top: 3px; }
+@media (max-width: 580px) {
+  .wpd-dialog { width: calc(100% - 16px); border-radius: 12px; }
+  .wpd-dialog-layout { max-height: calc(100dvh - 16px); }
+  .wpd-dialog-head, .wpd-dialog-foot { padding: 12px 16px; }
+  .wpd-dialog-body { padding: 16px; scrollbar-gutter: auto; }
+  .wpd-fields { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .wpd-fields :is(input, select, textarea) { font-size: 16px; }
+  .wpd-actions { gap: 6px; }
+  .wpd-meta { grid-template-columns: minmax(0, 1fr); gap: 5px; }
+}

@@ -70,9 +70,10 @@ try {
   const target = "/content/ecommerce?organizationId=ec-org&projectId=ec-project";
   await page.goto(new URL(`/login?returnTo=${encodeURIComponent(target)}`, origin).href);
   await page.locator('input[name="email"]').fill("ecommerce@example.invalid"); await page.locator('input[name="password"]').fill(password);
-  await page.getByRole("button", { name: "登录", exact: true }).click(); await page.waitForURL("**/content/ecommerce?**");
+  await page.getByRole("button", { name: "登录", exact: true }).click(); await page.waitForURL(url => url.pathname === "/ecommerce");
+  assert.equal(new URL(page.url()).searchParams.get("projectId"), "ec-project");
   const fillProductAnswer = async (label, value) => {
-    await page.getByLabel(label, { exact: true }).selectOption({ label: "自行填写具体内容" });
+    await page.getByLabel(label, { exact: true }).selectOption({ label: "自行填写" });
     await page.getByLabel(`${label}具体内容`, { exact: true }).fill(value);
   };
   const fillTaskAnswer = async (label, value) => {
@@ -102,7 +103,7 @@ try {
   await page.getByLabel("保存为", { exact: true }).selectOption("confirmed");
   await page.getByRole("button", { name: "保存商品草稿", exact: true }).click();
   await page.getByRole("button", { name: "保存商品新版本", exact: true }).waitFor();
-  await page.locator(".ec-list-item.selected").getByText("已确认", { exact: true }).waitFor();
+  await page.getByRole("complementary", { name: "商品资料" }).locator('button[aria-current="true"]').getByText("已确认", { exact: true }).waitFor();
   const savedProduct = await db.prepare("SELECT p.*,v.id AS version_id,v.public_json,v.internal_json FROM ecommerce_products p JOIN ecommerce_product_versions v ON v.product_id=p.id AND v.version=p.current_version WHERE p.project_id='ec-project'").first();
   assert.match(savedProduct.sku, /^AUTO-/);
   assert.equal(JSON.parse(savedProduct.public_json).priceCents, 3500);
@@ -245,27 +246,30 @@ try {
 
   await page.getByLabel("企业空间", { exact: true }).selectOption("ec-other");
   await page.getByRole("region", { name: "启用电商文案", exact: true }).waitFor();
-  assert.equal(await page.locator(".ec-list-item").count(), 0); checks.push("切换空间清除商品与方法资料");
+  assert.equal(await page.getByRole("complementary", { name: /商品资料|方法卡|文案任务/ }).locator(".record-sidebar-row").count(), 0); checks.push("切换空间清除商品与方法资料");
   await page.getByLabel("企业空间", { exact: true }).selectOption("ec-project");
   await page.getByLabel("商品名称 *", { exact: true }).waitFor();
   assert.equal(await page.getByLabel("商品名称 *", { exact: true }).isDisabled(), false);
-  await page.getByRole("link", { name: "返回普通内容", exact: true }).click();
   const sidebar = page.getByRole("complementary", { name: "主导航", exact: true });
+  // Client-side Link navigation is covered by test-navigation-browser.mjs using Vite.
+  const studioLink = sidebar.getByRole("link", { name: "创作中心", exact: true });
+  const studioUrl = new URL(await studioLink.getAttribute("href"), page.url());
+  studioUrl.searchParams.set("view", "drafts");
+  await page.goto(studioUrl.href);
   const ecommerceLink = sidebar.getByRole("link", { name: "电商中心", exact: true });
   await ecommerceLink.waitFor();
-  assert.equal(new URL(page.url()).pathname, "/content");
+  assert.equal(new URL(page.url()).pathname, "/studio");
   assert.equal(await page.getByRole("navigation", { name: "内容任务类型", exact: true }).count(), 0);
-  assert.equal(await sidebar.getByRole("link", { name: "内容生产", exact: true }).getAttribute("aria-current"), "page");
-  assert.equal(await ecommerceLink.evaluate(el => el.previousElementSibling?.textContent), "内容生产");
-  // This isolated Worker has no client RSC router; actual Link clicks are covered by test-navigation-browser.mjs.
+  assert.equal(await studioLink.getAttribute("aria-current"), "page");
+  assert.equal(await ecommerceLink.evaluate(el => el.parentElement?.querySelector("p")?.textContent), "专项工具");
   await page.goto(new URL(await ecommerceLink.getAttribute("href"), page.url()).href);
   await page.getByLabel("商品名称 *", { exact: true }).waitFor();
   assert.equal(await page.getByLabel("商品名称 *", { exact: true }).isDisabled(), false);
-  assert.equal(new URL(page.url()).pathname, "/content/ecommerce");
+  assert.equal(new URL(page.url()).pathname, "/ecommerce");
   assert.equal(new URL(page.url()).searchParams.get("projectId"), "ec-project");
   assert.equal(await ecommerceLink.getAttribute("aria-current"), "page");
-  assert.equal(await sidebar.getByRole("link", { name: "内容生产", exact: true }).getAttribute("aria-current"), null);
-  checks.push("电商中心位于内容生产下方，跳转保留空间且独立高亮，页内重复入口已移除");
+  assert.equal(await studioLink.getAttribute("aria-current"), null);
+  checks.push("电商中心在专项工具中独立显示，跳转保留空间与高亮");
   const ledger = async () => (await db.prepare("SELECT id,status,error_code,output_json FROM model_calls WHERE task_type LIKE 'ecommerce.%' ORDER BY rowid").all()).results;
   let rows = await ledger(); assert.equal(rows.length, model.calls.length);
   assert.ok(rows.every(row => JSON.parse(row.output_json).modelRequests[0].totalTokens === 200));

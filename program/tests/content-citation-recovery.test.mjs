@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyCitationRepair, buildCitationDraftAnchors, CITATION_REPAIR_SYSTEM, deduplicateTraceableCitations, isCitationRepairError } from "../lib/content-citation-recovery.ts";
+import { applyCitationRepair, buildCitationDraftAnchors, CITATION_REPAIR_SYSTEM, deduplicateTraceableCitations, isCitationRepairError, referenceCitationOptions, resolveReferenceCitationOptions } from "../lib/content-citation-recovery.ts";
 import { createProductionScaffold, productionPackSchema } from "../lib/content-production.ts";
 
 const sources = [
@@ -102,7 +102,7 @@ test("indexed benchmark applications retain only production method fields", () =
   const anchor = buildCitationDraftAnchors(draft())[0];
   const method = { sourceId: "benchmark-1", method: "真实操作", application: "对倒计时重复点击进行验证，展示实际操作过程。" };
   const repaired = applyCitationRepair(draft(), { citations: [], benchmarkMethods: [{ ...method, draftAnchorId: anchor.id }] }, sources, [method.sourceId]);
-  assert.deepEqual(repaired.pack.qualityReview.benchmarkMethods, [method]);
+  assert.deepEqual(repaired.pack.benchmarkMethods, [method]);
 });
 
 test("citation-only repair preserves existing selective content notes without adding required fields", () => {
@@ -110,8 +110,27 @@ test("citation-only repair preserves existing selective content notes without ad
   assert.match(CITATION_REPAIR_SYSTEM, /不为补引用添加观点、案例或改写正文/);
   const pack = draft();
   const method = { sourceId: "benchmark-1", method: "操作检查", application: "借鉴重复启动的检查方法作为验收例子，保留外部案例归属。" };
-  pack.qualityReview.benchmarkMethods = [method];
+  pack.benchmarkMethods = [method];
   const repaired = applyCitationRepair(pack, patch(), sources, [method.sourceId]);
-  assert.deepEqual(repaired.pack.qualityReview.benchmarkMethods, [method]);
+  assert.deepEqual(repaired.pack.benchmarkMethods, [method]);
   assert.equal(repaired.pack.fullScript, pack.fullScript);
+});
+
+test("同一来源的多个补引均经逐字和落点核对，生产包只保存一条引用", () => {
+  const valid = patch().citations[0];
+  const repaired = applyCitationRepair(draft(), { citations: [valid, valid] }, sources, [], true);
+  assert.equal(repaired.pack.citations.filter(c => c.sourceId === valid.sourceId).length, 1);
+  for (const wrong of [{ ...valid, quote: "这个说法不在任何来源原文中" }, { ...valid, sourceId: "其他项目的来源" }, { ...valid, draftQuote: "这段没有被写入正文" }]) {
+    assert.throws(() => applyCitationRepair(draft(), { citations: [valid, wrong] }, sources, [], true));
+  }
+});
+
+test("生成阶段给出的短引全是已选来源的原文，只接受服务器发出的编号", () => {
+  const options = referenceCitationOptions(sources, [], "plan-1");
+  const chosen = options.find(option => option.sourceId === "plan-1");
+  assert.ok(chosen);
+  assert.deepEqual(resolveReferenceCitationOptions({citations: [{sourceAnchorId: chosen.sourceAnchorId}]}, options).citations,
+    [{ sourceType: chosen.sourceType, sourceId: chosen.sourceId, quote: chosen.quote }]);
+  assert.throws(() => resolveReferenceCitationOptions({citations: [{sourceAnchorId: "其他项目引用"}]}, options));
+  assert.throws(() => resolveReferenceCitationOptions({citations: [{sourceAnchorId: chosen.sourceAnchorId, quote: "自己捏写的引文"}]}, options));
 });

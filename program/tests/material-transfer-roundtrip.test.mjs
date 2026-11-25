@@ -73,9 +73,128 @@ test('roundtrip preserves selected cover and its quality',async t=>{
   const cover=f.sqlite.prepare("SELECT * FROM media_assets WHERE video_id=? AND kind='keyframe'").get(f.imported().id);assert.equal(cover.is_cover,1);assert.equal(cover.quality_score,0.9);
 });
 
+test('roundtrip preserves platform metadata, original cover and metric source independently of selected frames', async t => {
+  const f = await fixture(t);
+  f.sqlite.prepare(`UPDATE videos SET platform_title=?, platform_description=?, metadata_collected_at=?, published_at_source=? WHERE id=?`)
+    .run('Original title', 'Original description', '2026-11-18T00:00:00Z', 'tikhub', f.video);
+  const bytes = f.objects.get('synthetic/frame');
+  f.seed('media_assets', { video_id: f.video, kind: 'platform_cover', r2_key: 'synthetic/cover', filename: 'platform.jpg',
+    content_type: 'image/jpeg', size_bytes: bytes.length, sha256: await f.runtime.sha256Hex(bytes), status: 'active' });
+  f.seed('video_metric_snapshots', { video_id: f.video, source: 'tikhub', plays: null, favorites: 0, collected_at: '2026-11-18T00:00:00Z' });
+  const manifest = await (await f.exportEntries([f.entry])).json();
+  assert.equal((await f.submit(manifest)).status, 200);
+  const restored = f.imported();
+  assert.equal(restored.platform_title, 'Original title');
+  assert.equal(restored.platform_description, 'Original description');
+  assert.equal(restored.published_at_source, 'tikhub');
+  assert.equal(restored.metadata_collected_at, '2026-11-18T00:00:00Z');
+  assert.equal(f.sqlite.prepare("SELECT filename FROM media_assets WHERE video_id=? AND kind='platform_cover'").get(restored.id).filename, 'platform.jpg');
+  const metric = f.sqlite.prepare("SELECT plays,favorites FROM video_metric_snapshots WHERE video_id=? AND source='tikhub'").get(restored.id);
+  assert.equal(metric.plays, null);
+  assert.equal(metric.favorites, 0);
+});
+
 test('missing primary-asset mapping is rejected before importing any entry',async t=>{
   const f=await fixture(t),manifest=await (await f.exportEntries([f.entry])).json();manifest.entries[0].video.sourceMediaBlobName='missing';
   const before=f.objects.size;assert.equal((await f.submit(manifest)).status,400);assert.equal(f.imported(),undefined);assert.equal(f.objects.size,before);
+});
+
+const commentWorkId = '7512756548356492544';
+const authorSecUid = 'MS4wLjABAAAA_fixture_author';
+const authorUid = '9007199254740993123';
+const commentTime = '2026-11-23T03:15:00.000Z';
+const webComments = [
+  { comment_id: '7512756548356492549', text: '第一页的第一条', like_count: 0, reply_count: null, published_at: commentTime, has_image: false },
+  { comment_id: '7512756548356492548', text: '', like_count: 94, reply_count: 0, published_at: null, has_image: true },
+];
+
+test('material packages preserve both, either, or neither Douyin author ID as exact strings', async t => {
+  const f = await fixture(t);
+  for (const [index, [secUid, uid]] of [[authorSecUid, authorUid], [null, authorUid], [authorSecUid, null], [null, null]].entries()) {
+    const workId = String(BigInt(commentWorkId) + BigInt(index));
+    f.sqlite.prepare(`UPDATE videos SET platform='douyin', source_type='url', source_hash=?, source_url=?, platform_work_id=?,
+      platform_author_sec_uid=?, platform_author_uid=? WHERE id=?`).run(
+      'author-' + index, 'https://www.douyin.com/video/' + workId, workId, secUid, uid, f.video,
+    );
+    const manifest = await (await f.exportEntries([f.entry])).json(), video = manifest.entries[0].video;
+    assert.equal(video.platformAuthorSecUid, secUid ?? undefined);
+    assert.equal(video.platformAuthorUid, uid ?? undefined);
+    assert.equal((await f.submit(manifest)).status, 200);
+    const row = f.sqlite.prepare('SELECT platform_author_sec_uid, platform_author_uid FROM videos WHERE project_id=? AND platform_work_id=?').get(f.target, workId);
+    assert.equal(row.platform_author_sec_uid, secUid);
+    assert.equal(row.platform_author_uid, uid);
+  }
+});
+
+test('invalid or unbound author IDs are rejected before media are stored', async t => {
+  const f = await fixture(t), manifest = await (await f.exportEntries([f.entry])).json();
+  const base = { ...manifest.entries[0].video, platform: 'douyin', sourceType: 'url',
+    sourceUrl: 'https://www.douyin.com/video/' + commentWorkId, platformWorkId: commentWorkId, platformAuthorSecUid: authorSecUid };
+  const objects = f.objects.size;
+  for (const fields of [
+    { platformAuthorUid: 12345 }, { platformAuthorUid: '1e10' }, { platformAuthorUid: '0' }, { platformAuthorUid: '1'.repeat(26) },
+    { platformAuthorSecUid: 'undefined' }, { platformAuthorSecUid: 'a/b/invalid' }, { platformAuthorSecUid: 's'.repeat(257) },
+    { platform: 'upload' }, { sourceType: 'upload' }, { platformWorkId: '7196547647351643518' },
+    { platformWorkId: null, sourceUrl: 'https://v.douyin.com/abcdef/' },
+  ]) {
+    manifest.entries[0].video = { ...base, ...fields };
+    assert.equal((await f.submit(manifest)).status, 400);
+  }
+  assert.equal(f.objects.size, objects);
+  assert.equal(f.imported(), undefined);
+});
+
+test('platform comment sample roundtrips in provider order with exact IDs, including last success after a failed refresh', async t => {
+  const f = await fixture(t);
+  f.sqlite.prepare(`UPDATE videos SET platform='douyin', source_type='url', source_url=?, platform_work_id=?,
+    platform_comments_json=?,platform_comments_collected_at=?,platform_comments_error=? WHERE id=?`)
+    .run('https://www.douyin.com/video/' + commentWorkId, commentWorkId, JSON.stringify(webComments), commentTime, '上次采集失败', f.video);
+  const read = f.load('lib/video-platform-comments.ts').readVideoPlatformComments;
+  const sourceSample = await read(f.db, f.owner.organizationId, f.source, f.video);
+  assert.deepEqual(sourceSample, { status: 'failed', error: '上次采集失败', collected_at: commentTime, comments: webComments });
+  assert.equal((await read(f.db, f.owner.organizationId, f.target, f.video)).status, 'not_collected');
+  const manifest = await (await f.exportEntries([f.entry])).json();
+  assert.deepEqual(manifest.entries[0].video.platformComments,
+    { source: 'tikhub_douyin_web', platformWorkId: commentWorkId, comments: webComments, collected_at: commentTime });
+  assert.equal((await f.submit(manifest)).status, 200);
+  const restored = await read(f.db, f.owner.organizationId, f.target, f.imported().id);
+  assert.deepEqual(restored, { status: 'available', error: null, collected_at: commentTime, comments: webComments });
+});
+
+test('legacy packages omit uncollected comments and an observed empty first page survives transfer', async t => {
+  const f = await fixture(t);
+  const manifest = await (await f.exportEntries([f.entry])).json();
+  const video = manifest.entries[0].video;
+  assert.equal('platformComments' in video, false);
+  assert.equal((await f.submit(manifest)).status, 200);
+  assert.equal(f.imported().platform_comments_json, null);
+  Object.assign(video, { platform: 'douyin', sourceType: 'url', sourceHash: 'empty-comments', platformWorkId: commentWorkId,
+    sourceUrl: 'https://www.douyin.com/video/' + commentWorkId, platformComments: {
+      source: 'tikhub_douyin_web', platformWorkId: commentWorkId, collected_at: commentTime, comments: [],
+    } });
+  assert.equal((await f.submit(manifest)).status, 200);
+  const row = f.sqlite.prepare('SELECT id FROM videos WHERE project_id=? AND platform_work_id=?').get(f.target, commentWorkId);
+  const sample = await f.load('lib/video-platform-comments.ts').readVideoPlatformComments(f.db, f.owner.organizationId, f.target, row.id);
+  assert.deepEqual(sample, { status: 'available', error: null, collected_at: commentTime, comments: [] });
+});
+
+test('import rejects unbounded, malformed or mismatched platform comment samples before writing media', async t => {
+  const f = await fixture(t), manifest = await (await f.exportEntries([f.entry])).json();
+  const video = manifest.entries[0].video;
+  Object.assign(video, { platform: 'douyin', sourceType: 'url', platformWorkId: commentWorkId });
+  const good = { source: 'tikhub_douyin_web', platformWorkId: commentWorkId, comments: webComments, collected_at: commentTime };
+  const objects = f.objects.size;
+  for (const bad of [
+    { source: 'unknown' }, { platformWorkId: '7196547647351643518' }, { collected_at: 'not a timestamp' },
+    { comments: Array(11).fill(webComments[0]) }, { comments: [webComments[0], webComments[0]] },
+    { comments: [{ ...webComments[0], user: { email: 'forbidden@example.invalid' } }] },
+    { comments: [{ ...webComments[0], comment_id: 75127 }] }, { comments: [{ ...webComments[0], like_count: -1 }] },
+  ]) {
+    video.platformComments = { ...good, ...bad };
+    assert.equal((await f.submit(manifest)).status, 400);
+  }
+  assert.equal(f.objects.size, objects);
+  assert.equal(f.imported(), undefined);
 });
 
 test('oversized transcript refuses import instead of reporting success after clipping it',async t=>{

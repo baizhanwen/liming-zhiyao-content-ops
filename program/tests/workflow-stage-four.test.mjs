@@ -124,17 +124,20 @@ test("stage four APIs keep tenant scope, client visibility, audit events, and op
   assert.match(publication, /content\.publication\.saved/);
 });
 
-test("review and publishing navigation use one real workflow workspace with calendar hidden", async () => {
+test("review and publishing share a workspace with scheduling inside publishing", async () => {
   const [shell, page, workspace, collection] = await Promise.all([
     readFile(new URL("../components/AppShell.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/workflow/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/WorkflowWorkspace.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/workflow/route.ts", import.meta.url), "utf8"),
   ]);
-  assert.match(shell, /\/workflow\?view=review/);
-  assert.doesNotMatch(shell, /\/workflow\?view=calendar/);
-  assert.match(shell, /\/workflow\?view=publish/);
-  assert.match(page, /WorkflowWorkspace/);
+  assert.match(shell, /label: "审核发布"[^\n]+href: "\/workflow"/);
+  assert.doesNotMatch(shell, /href: "\/workflow\?view=/);
+  assert.match(page, /<ModuleHeader title="审核发布"/);
+  assert.match(page, /\/workflow\?view=review/);
+  assert.match(page, /\/workflow\?view=publish/);
+  assert.match(workspace, /initialView !== "review" && <nav aria-label="发布视图"/);
+  assert.match(workspace, /href=\{workflowHref\("calendar"\)\}>排期/);
   assert.match(workspace, /ReviewBoard/);
   assert.match(workspace, /CalendarView/);
   assert.match(workspace, /PublicationView/);

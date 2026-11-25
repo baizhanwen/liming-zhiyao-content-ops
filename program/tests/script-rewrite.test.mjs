@@ -431,13 +431,14 @@ test("long micro paragraphs are individually length-gated and Chinese year forms
 });
 
 test("rewrite workspace is project-scoped, versioned and uses the confirmed rewrite specifications", async () => {
-  const [listApi, detailApi, generateApi, prompts, component, page, shell, schema, migration, adapter] = await Promise.all([
+  const [listApi, detailApi, generateApi, prompts, component, legacyPage, studioPage, shell, schema, migration, adapter] = await Promise.all([
     readFile(new URL("../app/api/script-rewrites/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/script-rewrites/[rewriteId]/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/script-rewrites/[rewriteId]/generate/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/script-rewrite-prompts.ts", import.meta.url), "utf8"),
     readFile(new URL("../components/ScriptRewriteWorkspace.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/script-rewrite/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/studio/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/AppShell.tsx", import.meta.url), "utf8"),
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0029_script_rewrite_workspace.sql", import.meta.url), "utf8"),
@@ -493,7 +494,7 @@ test("rewrite workspace is project-scoped, versioned and uses the confirmed rewr
   assert.match(component, /未选择 = 0 次调用/);
   assert.doesNotMatch(component, /window\.confirm/);
   assert.match(component, /rewrite-confirm-dialog/);
-  assert.match(component, /原文 \/ 结果并排核对/);
+  assert.match(component, /原稿与改写/);
   assert.match(component, /保存为新版本/);
   assert.match(component, /建议人工复核/);
   assert.doesNotMatch(component, /校验未通过/);
@@ -502,9 +503,13 @@ test("rewrite workspace is project-scoped, versioned and uses the confirmed rewr
   assert.match(component, /maximumCallCount/);
   assert.doesNotMatch(component, /重新安排开场、段落顺序/);
   assert.match(component, /selectedVersion\.variant === "light_rewrite"/);
-  assert.match(page, /按你的目标改写口播稿/);
+  assert.match(legacyPage, /redirect\(studioHref\("rewrite"/);
+  assert.match(studioPage, /ScriptRewriteWorkspace/);
+  assert.match(studioPage, /创作文案/);
+  assert.match(component, /保存为原稿的新版本/);
+  assert.match(component, /当前版本转为稿件/);
   assert.match(component, /内容等价重构/);
-  assert.match(shell, /口播改写/);
+  assert.match(shell, /href: "\/studio"/);
   assert.match(schema, /scriptRewriteWorkspaces/);
   assert.match(schema, /scriptRewriteRuns/);
   assert.match(schema, /scriptRewriteVersions/);

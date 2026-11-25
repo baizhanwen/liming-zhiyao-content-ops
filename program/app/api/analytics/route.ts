@@ -1,4 +1,4 @@
-import { getD1, getProjectAccess } from "../../../db/runtime";
+import { canWriteProjectAccess, getD1, getProjectAccess } from "../../../db/runtime";
 import { apiError, errorResponse } from "../../../lib/api-response";
 import { loadPerformanceAnalytics } from "../../../lib/performance-analytics";
 import { readRequestIdentity } from "../../../lib/request-auth";
@@ -15,7 +15,7 @@ export async function GET(request: Request) {
     if (!access) return apiError("ACCESS_DENIED", "无权访问该项目的数据复盘。", 403);
     const end = new Date(); const start = new Date(end); start.setUTCDate(start.getUTCDate() - days + 1);
     const snapshot = await loadPerformanceAnalytics(getD1(), organizationId, projectId, start.toISOString().slice(0, 10), end.toISOString().slice(0, 10));
-    return Response.json(snapshot);
+    return Response.json({ ...snapshot, canImport: canWriteProjectAccess(access) });
   } catch (error) { return errorResponse(error); }
 }
 

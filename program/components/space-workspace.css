@@ -1,0 +1,127 @@
+.space-overview {
+  display: grid;
+  gap: 16px;
+  max-width: 1440px;
+  margin: 0 auto;
+}
+
+.space-overview-heading {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.space-overview-identity {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  min-width: 0;
+}
+
+.space-overview-identity .project-monogram {
+  flex: none;
+  color: var(--brand-deep);
+  background: var(--brand-soft);
+}
+
+.space-overview-identity h2,
+.space-overview-identity p {
+  overflow-wrap: anywhere;
+}
+
+.space-overview-identity p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.space-overview-details {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(132px, 100%), 1fr));
+  gap: 16px;
+  margin: 0;
+  padding: 18px 20px;
+}
+
+.space-overview-details dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.space-overview-details dd {
+  margin: 5px 0 0;
+  font-weight: 650;
+}
+
+.space-shortcuts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(232px, 100%), 1fr));
+  gap: 12px;
+}
+
+.space-shortcut {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px;
+  color: var(--ink);
+}
+
+.space-shortcut:hover,
+.space-shortcut:focus-visible {
+  border-color: var(--brand);
+}
+
+.space-shortcut-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  color: var(--brand);
+  background: var(--brand-soft);
+}
+
+.space-shortcut-icon svg,
+.space-shortcut-arrow {
+  width: 16px;
+  height: 16px;
+}
+
+.space-shortcut small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+}
+
+.space-shortcut-arrow {
+  flex: none;
+  margin-left: auto;
+  color: var(--brand);
+}
+
+.space-management {
+  max-width: 1440px;
+  margin: 0 auto;
+}
+
+.space-management .project-card-footer,
+.space-management .project-card-footer > div {
+  flex-wrap: wrap;
+}
+
+.space-management .management-layout.read-only {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.space-management-toolbar {
+  flex-wrap: wrap;
+}
+
+.space-management-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}

@@ -1,17 +1,13 @@
 "use client";
-import { runScopedAction } from "../lib/client-scope";
-import { loadClientProjects } from "../lib/client-scope";
-import { useWorkspaceInitialization } from "./useWorkspaceInitialization";
+import { runScopedAction, scopedFetch } from "../lib/client-scope";
+import { isScopeCancellation } from "../lib/client-scope-request";
 import { readApiError as readError, formatClientDate as dateLabel } from "../lib/client-format";
 
 
-import { FormEvent, useCallback, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { Check, CircleX, Clock3, History, PencilLine, Power, RefreshCw, Save, Sparkles, X } from "lucide-react";
-import { rememberCurrentScope, scopedFetch } from "../lib/client-scope";
 import "./creation-cleanup.css";
 
-type Organization = { id: string; name: string };
-type Project = { id: string; name: string };
 type MemoryEvidence = { id: string; sourceType: string; sourceId: string; quote: string | null; relevance: number | null };
 type MemoryMetadata = {
   confidence?: number;
@@ -184,11 +180,7 @@ function memoryEventResult(event: MemoryEvent) {
 
 
 
-export function ProjectMemoryWorkspace({ initialOrganizationId = "", initialProjectId = "" }: { initialOrganizationId?: string; initialProjectId?: string }) {
-  const [organizations, setOrganizations] = useState<Organization[]>([]);
-  const [organizationId, setOrganizationId] = useState("");
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [projectId, setProjectId] = useState("");
+export function ProjectMemoryWorkspace({ organizationId, projectId }: { organizationId: string; projectId: string }) {
   const [items, setItems] = useState<MemoryItem[]>([]);
   const [configuration, setConfiguration] = useState<AssistantConfiguration | null>(null);
   const [events, setEvents] = useState<EventSummary>({ counts: {}, recent: [] });
@@ -218,45 +210,48 @@ export function ProjectMemoryWorkspace({ initialOrganizationId = "", initialProj
     setEditing(null);
   }, []);
 
-  const loadItems = useCallback(async (orgId: string, projId: string, autoSync = true) => {
-    if (!orgId || !projId) {
-      setItems([]);
-      setRepair({ count: 0, operationCount: 0, candidates: [] });
-      setCanWrite(false);
-      return;
-    }
+  const loadItems = useCallback(async (orgId: string, projId: string, autoSync = true, signal?: AbortSignal) => {
     const query = "organizationId=" + encodeURIComponent(orgId) + "&projectId=" + encodeURIComponent(projId);
-    const response = await scopedFetch("/api/project-memory?" + query);
+    const response = await scopedFetch("/api/project-memory?" + query, { signal });
     if (!response.ok) throw new Error(await readError(response));
     let body = await response.json() as MemoryResponse;
-    if (autoSync && body.canWrite && body.configuration.configured && Number(body.events.counts.pending || 0) > 0) {
+    if (!signal?.aborted && autoSync && body.canWrite && body.configuration.configured && Number(body.events.counts.pending || 0) > 0) {
       setSyncing(true);
-      const syncResponse = await scopedFetch("/api/project-memory/sync", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ organizationId: orgId, projectId: projId, limit: 3 }),
-      });
-      if (syncResponse.ok) {
-        const refreshed = await scopedFetch("/api/project-memory?" + query);
-        if (refreshed.ok) body = await refreshed.json() as MemoryResponse;
-      } else {
-        setError(await readError(syncResponse));
+      try {
+        const syncResponse = await scopedFetch("/api/project-memory/sync", {
+          signal,
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ organizationId: orgId, projectId: projId, limit: 3 }),
+        });
+        if (syncResponse.ok) {
+          const refreshed = await scopedFetch("/api/project-memory?" + query, { signal });
+          if (refreshed.ok) body = await refreshed.json() as MemoryResponse;
+        } else {
+          const message = await readError(syncResponse);
+          if (!signal?.aborted) setError(message);
+        }
+      } finally {
+        if (!signal?.aborted) setSyncing(false);
       }
-      setSyncing(false);
     }
-    applyResponse(body);
+    if (!signal?.aborted) applyResponse(body);
   }, [applyResponse]);
 
-  const loadProjects = useCallback(async (orgId: string, preferred = "") => {
-    const body = await loadClientProjects<Project>(orgId, preferred);
-    setProjects(body.projects);
-    const selected = body.selected;
-    setProjectId(selected);
-    rememberCurrentScope(orgId, selected);
-    await loadItems(orgId, selected);
-  }, [loadItems]);
-
-  useWorkspaceInitialization({ initialOrganizationId, initialProjectId, setOrganizations, setOrganizationId, loadProjects, setError, setLoading });
+  useEffect(() => {
+    const controller = new AbortController();
+    const { signal } = controller;
+    async function initialize() {
+      try { await loadItems(organizationId, projectId, true, signal); }
+      catch (error) {
+        if (!signal.aborted && !isScopeCancellation(error)) setError(error instanceof Error ? error.message : "项目记忆加载失败。");
+      } finally {
+        if (!signal.aborted) setLoading(false);
+      }
+    }
+    void initialize();
+    return () => controller.abort();
+  }, [loadItems, organizationId, projectId]);
 
   const currentItems = useMemo(
     () => items.filter((item) => item.status === "confirmed" || item.status === "candidate"),
@@ -444,15 +439,18 @@ export function ProjectMemoryWorkspace({ initialOrganizationId = "", initialProj
     setActionKey("");
   }
 
-  if (loading) return <div className="management-state" role="status">正在载入项目长期档案…</div>;
-  if (!organizationId || !projectId) return <div className="empty-panel"><h2>请先创建企业空间</h2><p>每个项目拥有完全隔离的记忆与事件。</p></div>;
+  if (loading) return <div className="management-state" role="status">正在载入项目记忆…</div>;
 
   return <div className="knowledge-workspace project-memory-workspace automatic-memory-workspace creation-cleanup">
-    <div className="management-toolbar knowledge-toolbar">
-      <label>公司<select value={organizationId} onChange={(event) => runScopedAction(async () => { const id = event.target.value; setOrganizationId(id); await loadProjects(id); }, setError)}>{organizations.map((organization) => <option key={organization.id} value={organization.id}>{organization.name}</option>)}</select></label>
-      <label>企业空间<select value={projectId} onChange={(event) => runScopedAction(async () => { const id = event.target.value; setProjectId(id); rememberCurrentScope(organizationId, id); await loadItems(organizationId, id); }, setError)}>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+    <div className="management-toolbar">
+      <span>{events.counts.pending ?? 0} 个待处理来源</span>
       <div className="memory-toolbar-actions">
-        <button type="button" className="memory-button secondary" disabled={syncing || Boolean(actionKey)} onClick={async () => { setActionKey("workspace:refresh"); await loadItems(organizationId, projectId, false); setActionKey(""); }}><RefreshCw aria-hidden="true" className={actionKey === "workspace:refresh" ? "is-spinning" : ""} />{actionKey === "workspace:refresh" ? "刷新中" : "刷新"}</button>
+        <button type="button" className="memory-button secondary" disabled={syncing || Boolean(actionKey)} onClick={() => void runScopedAction(async () => {
+          setError("");
+          setActionKey("workspace:refresh");
+          try { await loadItems(organizationId, projectId, false); }
+          finally { setActionKey(""); }
+        }, setError)}><RefreshCw aria-hidden="true" className={actionKey === "workspace:refresh" ? "is-spinning" : ""} />{actionKey === "workspace:refresh" ? "刷新中" : "刷新"}</button>
         <button type="button" className="memory-button secondary" disabled={!canWrite || syncing} title={!canWrite ? "当前角色没有项目记忆写入权限" : !configuration?.configured ? "候选提取助手尚未配置，点击查看说明" : "提取内容启发与表达方法，也会按新规则补查旧素材"} onClick={() => void syncMemory()}><Sparkles aria-hidden="true" />{syncing ? "处理中" : "提取候选"}</button>
       </div>
     </div>

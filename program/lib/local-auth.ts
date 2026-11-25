@@ -2,6 +2,7 @@ import { getD1, sha256Hex } from "../db/runtime";
 import type { RequestIdentity } from "./request-auth";
 
 const sessionCookieName = "liming_session";
+const localDevSignOutCookie = "liming_local_signed_out";
 const passwordIterations = 210_000;
 const sessionLifetimeSeconds = 7 * 24 * 60 * 60;
 const loginFailureLimit = 5;
@@ -154,13 +155,24 @@ export async function createLocalSession(userId: string, request: Request) {
   return `${sessionCookieName}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${sessionLifetimeSeconds}${secure}`;
 }
 
-export function readSessionToken(request: Request) {
+function readCookie(request: Request, key: string) {
   const cookie = request.headers.get("cookie") ?? "";
   for (const part of cookie.split(";")) {
     const [name, ...value] = part.trim().split("=");
-    if (name === sessionCookieName) return value.join("=").trim();
+    if (name === key) return value.join("=").trim();
   }
   return "";
+}
+
+export function readSessionToken(request: Request) { return readCookie(request, sessionCookieName); }
+
+export function hasLocalDevSignOut(request: Request) {
+  return readCookie(request, localDevSignOutCookie) === "1";
+}
+
+export function localDevSignOutPreference(request: Request, signedOut: boolean) {
+  const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
+  return `${localDevSignOutCookie}=${signedOut ? "1" : ""}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${signedOut ? 31_536_000 : 0}${secure}`;
 }
 
 export async function readLocalSessionIdentity(request: Request): Promise<RequestIdentity | null> {

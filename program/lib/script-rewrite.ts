@@ -1,4 +1,4 @@
-export const SCRIPT_REWRITE_PROMPT_VERSION = "script-rewrite.v16-spoken-facts-2026-10-10";
+export const SCRIPT_REWRITE_PROMPT_VERSION = "script-rewrite.v18-brand-attribution-2026-11-21";
 export const SCRIPT_REWRITE_MAX_CHARACTERS = 12_000;
 export const SCRIPT_REWRITE_MICRO_BATCH_CHARACTERS = 1_800;
 export const SCRIPT_REWRITE_MICRO_BATCH_UNITS = 4;
@@ -379,11 +379,19 @@ export function mergeMicroRewriteParts(plan: ReturnType<typeof buildMicroRewrite
   return plan.paragraphParts.map((paragraph) => ({ paragraphId: paragraph.paragraphId, text: paragraph.partIds.map((id) => byId.get(id)!).join(" ").trim() }));
 }
 
-export function partitionScriptRewriteFailures<T extends { variant: string; status: string; sourceVersionId: string; createdAt: string; validation?: { passed?: boolean } }>(runs: T[]) {
+type RewriteRunIntent = { mode?: string; goal?: string; audience?: string; scenario?: string; brandStamp?: string };
+
+function sameRewriteIntent(left?: RewriteRunIntent | null, right?: RewriteRunIntent | null) {
+  if (!left || !right) return !left && !right;
+  return left.mode === right.mode && left.goal === right.goal && left.audience === right.audience
+    && left.scenario === right.scenario && left.brandStamp === right.brandStamp;
+}
+
+export function partitionScriptRewriteFailures<T extends { variant: string; status: string; sourceVersionId: string; createdAt: string; validation?: { passed?: boolean }; adaptation?: RewriteRunIntent | null }>(runs: T[]) {
   const failed = runs.filter((run) => run.status === "failed");
   const succeeded = runs.filter((run) => run.status === "completed" && run.validation?.passed === true);
   const historical = failed.filter((run) => succeeded.some((success) => success.variant === run.variant
-    && success.sourceVersionId === run.sourceVersionId && success.createdAt > run.createdAt));
+    && success.sourceVersionId === run.sourceVersionId && sameRewriteIntent(success.adaptation, run.adaptation) && success.createdAt > run.createdAt));
   return { unresolved: failed.filter((run) => !historical.includes(run)), historical };
 }
 

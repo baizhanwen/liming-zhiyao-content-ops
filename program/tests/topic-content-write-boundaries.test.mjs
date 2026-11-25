@@ -67,5 +67,70 @@ test("delete: title changed after exact-title confirmation rejects deletion",asy
 test("delete: old client missing revision must refresh",async t=>{const f=await fixture(t,"delete"),before=f.state();assert.equal((await f.call({expectedUpdatedAt:undefined})).status,400);assert.deepEqual(f.state(),before);});
 
 test("topic: manual topic without sources remains supported",async t=>{const f=await fixture(t,"topic"),response=await f.call({sourceKnowledgeItemIds:[]});assert.equal(response.status,201);const body=await response.json();assert.deepEqual(body.sourcesUsed,[]);assert.deepEqual(body.missingContext,["EXPLICIT_FACT_REFERENCE"]);});
+
+test("converting a saved inspiration card creates one scoped topic under concurrent requests", async (t) => {
+  const f = await fixture(t, "topic");
+  const inspirationCardId = f.seed("project_inspiration_cards", { canonical_key: "synthetic-idea", title: "灵感标题", core_insight: "先展示结果，再介绍推导过程。", source_type: "manual", content_hash: "synthetic-source" });
+  const [first, second] = await Promise.all([f.call({ inspirationCardId }), f.call({ inspirationCardId })]);
+  assert.deepEqual([first.status, second.status].sort(), [200, 201]);
+  const [left, right] = await Promise.all([first.json(), second.json()]);
+  assert.equal(left.topic.id, right.topic.id);
+  assert.equal(left.topic.source_ref, inspirationCardId);
+  const citations = f.sqlite.prepare("SELECT citation_type, citation_id FROM topic_citations WHERE topic_id = ? ORDER BY citation_type").all(left.topic.id);
+  assert.deepEqual(citations.map(({ citation_type, citation_id }) => [citation_type, citation_id]), [["inspiration", inspirationCardId], ["knowledge", f.knowledge]]);
+  assert.equal(f.sqlite.prepare("SELECT status FROM project_inspiration_cards WHERE id = ?").get(inspirationCardId).status, "candidate");
+  const cardsUrl = "http://localhost/fixture?" + new URLSearchParams({ organizationId: f.owner.organizationId, projectId: f.project, cardId: inspirationCardId });
+  const cards = await f.load("app/api/inspiration-cards/route.ts").GET(new Request(cardsUrl));
+  assert.equal(cards.status, 200);
+  assert.equal((await cards.json()).cards[0].topic_id, left.topic.id);
+  const unrelated = f.seed("projects", { name: "Other account", client_name: "Other account" });
+  const response = await f.call({ projectId: unrelated, inspirationCardId, sourceKnowledgeItemIds: [] });
+  assert.equal(response.status, 409);
+});
+
+test("importing a rewrite version is idempotent and the resulting manuscript can be edited and reviewed", async (t) => {
+  const f = await fixture(t, "content");
+  const sourceText = "想把任务交代清楚，先确认目的。说明负责人、交付物和验收要求，再和对方核对一次。";
+  const rewrittenText = "交代任务时，第一句先说清目的。接下来请明确负责人、交付物和验收要求，最后请同事复述关键点。".repeat(295);
+  const rewriteId = f.seed("script_rewrite_workspaces", { title: "任务如何交代清楚", source_type: "pasted", source_label: "直接粘贴文案", source_text: sourceText, source_hash: "synthetic-original", source_character_count: sourceText.length });
+  const originalId = f.seed("script_rewrite_versions", { workspace_id: rewriteId, version: 1, variant: "source", text: sourceText });
+  assert.ok(rewrittenText.length > 12_000);
+  const versionId = f.seed("script_rewrite_versions", { workspace_id: rewriteId, version: 2, variant: "restructured", parent_version_id: originalId, text: rewrittenText });
+  const importRoute = f.load("app/api/script-rewrites/[rewriteId]/draft/route.ts");
+  const scope = { organizationId: f.owner.organizationId, projectId: f.project };
+  const request = (info, method = "POST") => new Request("http://localhost/fixture", { method, body: JSON.stringify({ ...scope, ...info }) });
+  const importDraft = (id) => importRoute.POST(request({ versionId: id }), { params: Promise.resolve({ rewriteId }) });
+  assert.equal((await importDraft(originalId)).status, 404);
+  const [first, second] = await Promise.all([importDraft(versionId), importDraft(versionId)]);
+  assert.deepEqual([first.status, second.status].sort(), [200, 201], await first.clone().text());
+  const { contentId } = await first.json();
+  assert.equal((await second.json()).contentId, contentId);
+
+  const collection = f.load("app/api/content-items/route.ts");
+  const items = await collection.GET(new Request("http://localhost/fixture?" + new URLSearchParams(scope)));
+  assert.equal(items.status, 200);
+  const [draft] = (await items.json()).items;
+  assert.equal(draft.id, contentId);
+  assert.equal(draft.full_script, rewrittenText);
+  assert.equal(draft.rewrite_workspace_id, rewriteId);
+  assert.equal(draft.topic_source_ref, versionId);
+  const topics = await f.load("app/api/topics/route.ts").GET(new Request("http://localhost/fixture?" + new URLSearchParams(scope)));
+  assert.ok((await topics.json()).topics.every((topic) => topic.source_type !== "script_rewrite"));
+
+  const pack = JSON.parse(draft.pack_json);
+  pack.fullScript += "还可以约定下次进度对齐的时间。";
+  const context = { params: Promise.resolve({ contentId }) };
+  const edited = await f.load("app/api/content-items/[contentId]/route.ts").PATCH(request({ pack, expectedVersion: 1 }, "PATCH"), context);
+  assert.equal(edited.status, 200, await edited.clone().text());
+  const submitted = await f.load("app/api/content-items/[contentId]/transition/route.ts").POST(request({ toStatus: "internal_review", expectedVersion: 2 }), context);
+  assert.equal(submitted.status, 200, await submitted.clone().text());
+  const originalDraft = f.sqlite.prepare("SELECT full_script FROM content_versions WHERE content_item_id = ? AND version = 1").get(contentId);
+  assert.equal(originalDraft.full_script, rewrittenText);
+  assert.equal(f.sqlite.prepare("SELECT text FROM script_rewrite_versions WHERE id = ?").get(originalId).text, sourceText);
+  const rewrite = await f.load("app/api/script-rewrites/[rewriteId]/route.ts").GET(new Request("http://localhost/fixture?" + new URLSearchParams(scope)), { params: Promise.resolve({ rewriteId }) });
+  assert.equal(rewrite.status, 200);
+  assert.equal((await rewrite.json()).versions[0].draftId, contentId);
+});
+
 test("topic: twenty explicit knowledge sources save with all citations",async t=>{const f=await fixture(t,"topic"),ids=[f.knowledge];for(let i=1;i<20;i++){const id=f.seed("knowledge_items",{title:`Synthetic source ${i}`,category:"other",status:"confirmed"});f.seed("knowledge_item_versions",{item_id:id,version:1,body:`Synthetic body ${i}`,source_type:"manual"});ids.push(id);}const response=await f.call({sourceKnowledgeItemIds:ids});assert.equal(response.status,201,await response.clone().text());const body=await response.json();assert.equal(body.citations.length,20);assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM topic_citations WHERE topic_id=?").get(body.topic.id).n,20);});
 for(const [kind,table]of [["topic","topic_citations"],["content","content_versions"]])test(`${kind}: related-row failure rolls back the receipt and parent`,async t=>{const f=await fixture(t,kind),before=f.state();f.sqlite.exec(`CREATE TRIGGER synthetic_related_failure BEFORE INSERT ON ${table} BEGIN SELECT RAISE(ABORT,'synthetic related-row failure'); END`);assert.equal((await f.call()).status,500);assert.deepEqual(f.state(),before);});

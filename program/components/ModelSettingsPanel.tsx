@@ -15,6 +15,7 @@ import type {
   PublicModelConfiguration,
 } from "../lib/model-settings-client";
 import styles from "./ModelSettingsPanel.module.css";
+import { TikHubSettingsRow } from "./TikHubSettingsRow";
 
 const roleDetails: Array<{ id: ConfigurableModelRole; label: string; description: string }> = [
   { id: "analysisText", label: "视频分析文本模型", description: "根据转写和画面证据生成结构化视频分析。" },
@@ -163,11 +164,14 @@ export function ModelSettingsPanel({ organizationId, canManage, onSaved }: {
   const editable = canManage && snapshot?.canManage !== false;
   return <article id="model-settings" className="panel operations-panel">
     <div className="panel-heading"><div><h2>模型配置</h2></div><span>{editable ? "管理员可修改" : "仅管理员可修改"}</span></div>
-    <p className={styles.intro} id="model-settings-guidance">展开需要调整的角色。密钥不回显，留空保留原密钥；更换提供方或接口地址时须填写对应密钥。连接测试使用已保存配置，可能产生少量模型用量。</p>
+    <p className={styles.intro} id="model-settings-guidance">密钥留空会保留原配置。更换模型提供方或接口地址时，请填写对应密钥。测试已保存的模型配置可能产生少量用量。</p>
     <datalist id="model-provider-options">{["glm", "deepseek", "openai-compatible", "openai", "minimax", "minimax-token-plan", "qwen", "dashscope"].map(provider => <option key={provider} value={provider} />)}</datalist>
     {error && <p className={`${styles.message} ${styles.error}`} role="alert">{error}</p>}
     {notice && <p className={styles.message} role="status">{notice}</p>}
     {!snapshot && !error && <p className={styles.loading}>正在读取模型配置…</p>}
-    {snapshot && <div className={`${styles.roles} operations-model-roles`}>{roleDetails.map(role => <ModelRoleEditor key={`${organizationId}:${role.id}:${savedEpochs[role.id] ?? 0}`} role={role} saved={snapshot.roles[role.id] ?? emptyConfiguration()} disabled={!editable || Boolean(busy)} busy={busy?.role === role.id ? busy.action : null} onSave={save} onTest={test} />)}</div>}
+    {(snapshot || canManage) && <div className={`${styles.roles} operations-model-roles`}>
+      {snapshot && roleDetails.map(role => <ModelRoleEditor key={`${organizationId}:${role.id}:${savedEpochs[role.id] ?? 0}`} role={role} saved={snapshot.roles[role.id] ?? emptyConfiguration()} disabled={!editable || Boolean(busy)} busy={busy?.role === role.id ? busy.action : null} onSave={save} onTest={test} />)}
+      {canManage && <TikHubSettingsRow key={organizationId} organizationId={organizationId} />}
+    </div>}
   </article>;
 }

@@ -1,4 +1,4 @@
-import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess } from "../../../db/runtime";
+import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess, sha256Hex } from "../../../db/runtime";
 import { apiError, errorResponse } from "../../../lib/api-response";
 import { readRequestIdentity } from "../../../lib/request-auth";
 import { topicBackground } from "../../../lib/topic-reference-policy";
@@ -6,6 +6,9 @@ import { commitContentWorkflowWrite, nextWriteTimestamp } from "../../../lib/con
 import { projectSafeAnalysisReport } from "../../../lib/unified-report";
 
 const MAX_KNOWLEDGE_SOURCES = 20;
+
+const topicListColumns = "id, title, angle, source_type, source_ref, pillar, audience, objective, hook, rationale, priority, status, created_at, updated_at";
+type InspirationSource = { content_hash: string; core_insight: string };
 
 function knowledgeSourceIds(payload: Record<string, unknown>) {
   const legacy = typeof payload.sourceKnowledgeItemId === "string" ? payload.sourceKnowledgeItemId.trim() : "";
@@ -35,8 +38,10 @@ export async function GET(request: Request) {
   if (!organizationId || !projectId) return apiError("PROJECT_SCOPE_REQUIRED", "缺少公司或项目范围。", 400);
   try {
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId); if (!access) return apiError("ACCESS_DENIED", "无权访问该项目的选题。", 403);
-    const db = getD1(); const [topics, citations, strategy] = await Promise.all([
-      db.prepare("SELECT id, title, angle, source_type, source_ref, pillar, audience, objective, hook, rationale, priority, status, created_at, updated_at FROM topic_ideas WHERE organization_id = ? AND project_id = ? AND deleted_at IS NULL ORDER BY CASE status WHEN 'selected' THEN 0 WHEN 'idea' THEN 1 WHEN 'drafting' THEN 2 ELSE 3 END, priority DESC, created_at DESC LIMIT 200").bind(organizationId, projectId).all(),
+    const db = getD1();
+    const topicId = url.searchParams.get("topicId") ?? "";
+    const [topics, citations, strategy] = await Promise.all([
+      db.prepare(`SELECT ${topicListColumns} FROM topic_ideas WHERE organization_id = ? AND project_id = ? AND deleted_at IS NULL AND source_type <> 'script_rewrite' ORDER BY (id = ?) DESC, CASE status WHEN 'selected' THEN 0 WHEN 'idea' THEN 1 WHEN 'drafting' THEN 2 ELSE 3 END, priority DESC, created_at DESC LIMIT 200`).bind(organizationId, projectId, topicId).all(),
       db.prepare("SELECT id, topic_id, citation_type, citation_id, quote, created_at FROM topic_citations WHERE organization_id = ? AND project_id = ? ORDER BY created_at DESC LIMIT 500").bind(organizationId, projectId).all(),
       db.prepare("SELECT id, name, positioning, target_audience, style_notes, objectives_json FROM content_strategies WHERE organization_id = ? AND project_id = ? AND status = 'active' ORDER BY version DESC LIMIT 1").bind(organizationId, projectId).first<Record<string, string | null>>(),
     ]);
@@ -52,9 +57,18 @@ export async function POST(request: Request) {
     if (!organizationId || !projectId) return apiError("PROJECT_SCOPE_REQUIRED", "缺少公司或项目范围。", 400);
     if (title.length < 2 || title.length > 160) return apiError("INVALID_TOPIC_TITLE", "选题标题需要 2 至 160 个字符。", 400);
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId); if (!access || !canWriteProjectAccess(access)) return apiError("WRITE_ACCESS_REQUIRED", "当前角色不能创建选题。", 403);
+    const noteKey = typeof payload.noteKey === "string" ? payload.noteKey : null;
+    if (payload.noteKey !== undefined && (!noteKey || !/^[a-f0-9]{32}$/i.test(noteKey)
+      || Object.keys(payload).some(key => !["organizationId", "projectId", "title", "noteKey"].includes(key))))
+      return apiError("INVALID_QUICK_IDEA", "请填写一句灵感后重试。", 400);
     const user = await ensureUser(identity); const db = getD1(); const sourceVideoId = typeof payload.sourceVideoId === "string" ? payload.sourceVideoId.trim() : ""; const sourceKnowledgeItemIds = knowledgeSourceIds(payload);
     if (sourceKnowledgeItemIds.length > MAX_KNOWLEDGE_SOURCES) return apiError("TOO_MANY_KNOWLEDGE_SOURCES", `一次最多引用 ${MAX_KNOWLEDGE_SOURCES} 条品牌知识。`, 400);
+    const inspirationCardId = typeof payload.inspirationCardId === "string" ? payload.inspirationCardId.trim().slice(0, 100) : "";
+    if (inspirationCardId && sourceVideoId) return apiError("AMBIGUOUS_TOPIC_SOURCE", "请选择灵感卡片或视频作为选题来源。", 400);
+    const existingInspirationTopic = () => db.prepare(`SELECT ${topicListColumns} FROM topic_ideas WHERE organization_id = ? AND project_id = ? AND source_type = 'inspiration_card' AND source_ref = ? AND deleted_at IS NULL LIMIT 1`).bind(organizationId, projectId, inspirationCardId).first();
+    const existingTopicResponse = (topic: unknown) => Response.json({ topic, reused: true });
     let sourceType = "manual"; let sourceRef: string | null = null; const citations: { type: string; id: string; quote: string | null }[] = [];
+    let inspirationCard: InspirationSource | null = null;
     let analysisSnapshot: { id: string; report_json: string } | null = null;
     let knowledgeSnapshots: { id: string; current_version: number; body: string }[] = [];
     if (sourceVideoId) {
@@ -63,21 +77,43 @@ export async function POST(request: Request) {
       analysisSnapshot = analysis;
       sourceType = "video_analysis"; sourceRef = sourceVideoId; citations.push({ type: "video_analysis", id: analysis.id, quote: analysisQuote(analysis.report_json) });
     }
+    if (inspirationCardId) {
+      const existing = await existingInspirationTopic();
+      if (existing) return existingTopicResponse(existing);
+      inspirationCard = await db.prepare(`SELECT content_hash, core_insight FROM project_inspiration_cards WHERE id = ? AND organization_id = ? AND project_id = ? AND status IN ('candidate', 'confirmed') AND (expires_at IS NULL OR julianday(expires_at) > julianday('now'))`).bind(inspirationCardId, organizationId, projectId).first<InspirationSource>();
+      if (!inspirationCard) return apiError("INSPIRATION_NOT_ACTIONABLE", "该灵感卡片已失效或不属于当前企业空间。", 409);
+      sourceType = "inspiration_card";
+      sourceRef = inspirationCardId;
+      citations.push({ type: "inspiration", id: inspirationCardId, quote: inspirationCard.core_insight.slice(0, 500) });
+    }
     if (sourceKnowledgeItemIds.length) {
       const placeholders = sourceKnowledgeItemIds.map(() => "?").join(", ");
       const knowledge = await db.prepare(`SELECT k.id, k.current_version, v.body FROM knowledge_items k INNER JOIN knowledge_item_versions v ON v.item_id = k.id AND v.version = k.current_version AND v.organization_id = k.organization_id AND v.project_id = k.project_id WHERE k.id IN (${placeholders}) AND k.organization_id = ? AND k.project_id = ? AND k.status = 'confirmed' AND k.deleted_at IS NULL`).bind(...sourceKnowledgeItemIds, organizationId, projectId).all<{ id: string; current_version: number; body: string }>();
       if (knowledge.results.length !== sourceKnowledgeItemIds.length) return apiError("CONFIRMED_KNOWLEDGE_REQUIRED", "只能引用当前项目中已确认的品牌知识。", 409);
       knowledgeSnapshots = knowledge.results;
       const byId = new Map(knowledge.results.map((item) => [item.id, item]));
-      if (!sourceVideoId) { sourceType = "knowledge"; sourceRef = sourceKnowledgeItemIds[0]; }
+      if (!sourceRef) { sourceType = "knowledge"; sourceRef = sourceKnowledgeItemIds[0]; }
       citations.push(...sourceKnowledgeItemIds.map((id) => ({ type: "knowledge", id, quote: byId.get(id)!.body.slice(0, 500) })));
     }
     const text = (key: string, max = 1000) => typeof payload[key] === "string" && payload[key].trim() ? payload[key].trim().slice(0, max) : null;
     // Saving a topic preserves explicit citations; it never expands them.
     const sourceManifestSnapshot = citations.map(({ type, id }) => ({ sourceType: type, sourceId: id }));
-    const missingContext = citations.length ? [] : ["EXPLICIT_FACT_REFERENCE"];
-    const riskNotes = citations.length ? [] : ["未选择事实参考；不得将建议或实验计划写成已经发生的个人经历。"];
-    const priority = typeof payload.priority === "number" && Number.isFinite(payload.priority) ? Math.max(0, Math.min(100, Math.trunc(payload.priority))) : 50; const topicId = crypto.randomUUID(); const now = new Date().toISOString();
+    const hasFactReference = Boolean(sourceVideoId || sourceKnowledgeItemIds.length);
+    const missingContext = hasFactReference ? [] : ["EXPLICIT_FACT_REFERENCE"];
+    const riskNotes = hasFactReference ? [] : ["未选择事实参考；不得将建议或实验计划写成已经发生的个人经历。"];
+    const priority = typeof payload.priority === "number" && Number.isFinite(payload.priority) ? Math.max(0, Math.min(100, Math.trunc(payload.priority))) : 50;
+    const topicId = noteKey ? await sha256Hex(new TextEncoder().encode(JSON.stringify(["studio-note", organizationId, projectId, user.id, noteKey]))) : crypto.randomUUID();
+    const previousNote = async () => {
+      const row = await db.prepare("SELECT id, title, updated_at, deleted_at FROM topic_ideas WHERE id=? AND organization_id=? AND project_id=? AND created_by=?")
+        .bind(topicId, organizationId, projectId, user.id).first<{id:string; title:string; updated_at:string; deleted_at:string|null}>();
+      if (!row) return null;
+      return row.title === title && !row.deleted_at ? existingTopicResponse(row) : apiError("QUICK_IDEA_CHANGED", "这次保存对应的灵感已变化，请刷新灵感库。", 409);
+    };
+    if (noteKey) {
+      const previous = await previousNote();
+      if (previous) return previous;
+    }
+    const now = new Date().toISOString();
     const citationRecords = citations.map((citation) => ({ id: crypto.randomUUID(), topic_id: topicId, citation_type: citation.type, citation_id: citation.id, quote: citation.quote }));
     // JSON keeps the entry guard's parameter count bounded for 20 sources.
     const sourceGuard = `NOT EXISTS(SELECT 1 FROM json_each(?) expected WHERE NOT EXISTS(
@@ -86,21 +122,42 @@ export async function POST(request: Request) {
       WHERE k.id=json_extract(expected.value,'$.id') AND k.organization_id=? AND k.project_id=?
         AND k.status='confirmed' AND k.deleted_at IS NULL AND k.current_version=json_extract(expected.value,'$.current_version')
         AND v.body=json_extract(expected.value,'$.body')))`;
-    const guard = analysisSnapshot ? `${sourceGuard} AND EXISTS(SELECT 1 FROM video_analyses a INNER JOIN videos v
-      ON v.id=a.video_id AND v.organization_id=a.organization_id AND v.project_id=a.project_id
-      WHERE a.id=? AND a.organization_id=? AND a.project_id=? AND a.video_id=? AND a.report_json=? AND v.deleted_at IS NULL)` : sourceGuard;
+    const guards = [sourceGuard];
     const bindings: unknown[] = [JSON.stringify(knowledgeSnapshots), organizationId, projectId];
-    if (analysisSnapshot) bindings.push(analysisSnapshot.id, organizationId, projectId, sourceVideoId, analysisSnapshot.report_json);
+    if (noteKey) {
+      guards.push("NOT EXISTS(SELECT 1 FROM topic_ideas WHERE id=?)");
+      bindings.push(topicId);
+    }
+    if (analysisSnapshot) {
+      guards.push(`EXISTS(SELECT 1 FROM video_analyses a INNER JOIN videos v
+        ON v.id=a.video_id AND v.organization_id=a.organization_id AND v.project_id=a.project_id
+        WHERE a.id=? AND a.organization_id=? AND a.project_id=? AND a.video_id=? AND a.report_json=? AND v.deleted_at IS NULL)`);
+      bindings.push(analysisSnapshot.id, organizationId, projectId, sourceVideoId, analysisSnapshot.report_json);
+    }
+    if (inspirationCard) {
+      guards.push(`EXISTS(SELECT 1 FROM project_inspiration_cards WHERE id=? AND organization_id=? AND project_id=? AND content_hash=?
+        AND status IN ('candidate', 'confirmed') AND (expires_at IS NULL OR julianday(expires_at) > julianday('now')))
+        AND NOT EXISTS(SELECT 1 FROM topic_ideas WHERE organization_id=? AND project_id=? AND source_type='inspiration_card' AND source_ref=? AND deleted_at IS NULL)`);
+      bindings.push(inspirationCardId, organizationId, projectId, inspirationCard.content_hash, organizationId, projectId, inspirationCardId);
+    }
     const saved = await commitContentWorkflowWrite(db, {
       request, authSubject: identity.authSubject, scope: { organizationId, projectId, userId: user.id },
       targetId: topicId, version: now, action: "topic.created", targetType: "topic_idea",
-      metadata: { sourceType, sourceRef, sourceVideoId: sourceVideoId || null, sourceKnowledgeItemIds, sourceCount: sourceManifestSnapshot.length, missingContext, riskNotes }, guard, bindings,
+      metadata: { sourceType, sourceRef, sourceVideoId: sourceVideoId || null, sourceKnowledgeItemIds, sourceCount: sourceManifestSnapshot.length, missingContext, riskNotes }, guard: guards.join(" AND "), bindings,
       mutate: (marker, markerId) => [
         db.prepare(`INSERT INTO topic_ideas (id, organization_id, project_id, title, angle, source_type, source_ref, pillar, audience, objective, hook, rationale, priority, selected_knowledge_ids_json, source_manifest_json, missing_context_json, risk_notes_json, context_snapshot_id, status, created_by, updated_by, created_at, updated_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'idea', ?, ?, ?, ? WHERE ${marker}`).bind(topicId, organizationId, projectId, title, angle, sourceType, sourceRef, text("pillar", 200), text("audience"), text("objective"), text("hook", 500), text("rationale", 2000), priority, JSON.stringify(sourceKnowledgeItemIds), JSON.stringify(sourceManifestSnapshot), JSON.stringify(missingContext), JSON.stringify(riskNotes), null, user.id, user.id, now, now, markerId),
         ...citationRecords.map(citation => db.prepare(`INSERT INTO topic_citations (id, organization_id, project_id, topic_id, citation_type, citation_id, quote, created_by, created_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${marker}`).bind(citation.id, organizationId, projectId, topicId, citation.citation_type, citation.citation_id, citation.quote, user.id, now, markerId)),
       ],
     });
-    if (!saved) return apiError("TOPIC_SOURCE_CHANGED", "所选资料或视频分析已改变，本次选题未保存。请刷新资料列表并重新核对引用；已填写内容可保留后再操作。", 409);
+    if (!saved) {
+      if (noteKey) {
+        const previous = await previousNote();
+        if (previous) return previous;
+      }
+      const existing = inspirationCardId ? await existingInspirationTopic() : null;
+      if (existing) return existingTopicResponse(existing);
+      return apiError("TOPIC_SOURCE_CHANGED", "选题来源已改变，请刷新后重新核对引用。", 409);
+    }
     return Response.json({ topic: { id: topicId, title, angle, source_type: sourceType, source_ref: sourceRef, pillar: text("pillar", 200), audience: text("audience"), objective: text("objective"), hook: text("hook", 500), rationale: text("rationale", 2000), priority, status: "idea", created_at: now, updated_at: now }, citation: citationRecords[0] ?? null, citations: citationRecords, sourcesUsed: sourceManifestSnapshot, missingContext, riskNotes }, { status: 201 });
   } catch (error) { return errorResponse(error); }
 }

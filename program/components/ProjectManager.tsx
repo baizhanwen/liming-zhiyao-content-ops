@@ -1,18 +1,24 @@
 "use client";
-import { runScopedAction } from "../lib/client-scope";
 
+import { SplitWorkspace } from "./SplitWorkspace";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { FormEvent, useCallback, useEffect, useState } from "react";
+import { readApiError as messageFrom } from "../lib/client-format";
 import { preferredOrganizationId, preferredProjectId, rememberCurrentScope, scopedFetch } from "../lib/client-scope";
+import { spaceProjectStatus } from "../lib/space-navigation";
+import { OrganizationStrategyOverview } from "./KnowledgeWorkspace";
+import "./space-workspace.css";
 
 type Organization = { id: string; name: string; role: string };
 type Project = { id: string; name: string; status: string; service_starts_at: string | null; service_ends_at: string | null; content_target: number; member_count: number };
 
-async function messageFrom(response: Response) {
-  const body = await response.json().catch(() => null) as { error?: { message?: string } } | null;
-  return body?.error?.message ?? "请求没有完成，请稍后重试。";
-}
-
-export function ProjectManager() {
+export function ProjectManager({ requestedOrganizationId, requestedProjectId, strategyOverview }: {
+  requestedOrganizationId: string;
+  requestedProjectId: string;
+  strategyOverview: boolean;
+}) {
+  const router = useRouter();
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [organizationId, setOrganizationId] = useState("");
   const [projects, setProjects] = useState<Project[]>([]);
@@ -23,34 +29,48 @@ export function ProjectManager() {
   const [updatingId, setUpdatingId] = useState("");
   const [currentProjectId, setCurrentProjectId] = useState("");
 
-  const loadProjects = useCallback(async (id: string) => {
-    rememberCurrentScope(id, "");
-    if (!id) return;
-    const response = await scopedFetch(`/api/projects?organizationId=${encodeURIComponent(id)}`);
+  const loadProjects = useCallback(async (id: string, requested = "", signal?: AbortSignal) => {
+    const response = await scopedFetch(`/api/projects?organizationId=${encodeURIComponent(id)}`, { signal });
     if (!response.ok) throw new Error(await messageFrom(response));
     const body = await response.json() as { projects: Project[]; organizationRole: string };
-    const nextProjectId = preferredProjectId(body.projects);
-    setProjects(body.projects); setCurrentProjectId(nextProjectId); rememberCurrentScope(id, nextProjectId);
+    if (signal?.aborted) return;
+    const nextProjectId = preferredProjectId(body.projects.filter((project) => project.status !== "archived"), requested);
+    setOrganizationId(id); setProjects(body.projects); setCurrentProjectId(nextProjectId);
     setOrganizationRole(body.organizationRole);
+    rememberCurrentScope(id, nextProjectId);
+    return nextProjectId;
   }, []);
 
   useEffect(() => {
-    let active = true;
+    const controller = new AbortController();
+    const { signal } = controller;
     (async () => {
       try {
-        const response = await fetch("/api/organizations");
+        const response = await fetch("/api/organizations", { signal });
         if (!response.ok) throw new Error(await messageFrom(response));
         const body = await response.json() as { organizations: Organization[] };
-        if (!active) return;
+        if (signal.aborted) return;
         setOrganizations(body.organizations);
-        const first = preferredOrganizationId(body.organizations);
-        setOrganizationId(first);
-        if (first) await loadProjects(first);
-      } catch (reason) { if (active) setError(reason instanceof Error ? reason.message : "加载失败"); }
-      finally { if (active) setLoading(false); }
+        const first = preferredOrganizationId(body.organizations, requestedOrganizationId);
+        if (first) await loadProjects(first, requestedProjectId, signal);
+      } catch (reason) { if (!signal.aborted) setError(reason instanceof Error ? reason.message : "加载失败"); }
+      finally { if (!signal.aborted) setLoading(false); }
     })();
-    return () => { active = false; };
-  }, [loadProjects]);
+    return () => controller.abort();
+  }, [loadProjects, requestedOrganizationId, requestedProjectId]);
+
+  async function switchOrganization(id: string) {
+    setError("");
+    setLoading(true);
+    try {
+      const projectId = await loadProjects(id);
+      const scope = new URLSearchParams({ organizationId: id });
+      if (projectId) scope.set("projectId", projectId);
+      if (strategyOverview) scope.set("view", "strategies");
+      router.replace(`/projects?${scope}`, { scroll: false });
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "加载失败"); }
+    finally { setLoading(false); }
+  }
 
   async function createOrganization(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setSaving(true); setError("");
@@ -77,22 +97,82 @@ export function ProjectManager() {
   }
 
   async function updateProjectStatus(project: Project, status: string) {
-    setUpdatingId(project.id); setError(""); const response = await scopedFetch("/api/projects", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId: project.id, status }) });
-    if (!response.ok) setError(await messageFrom(response)); else setProjects((items) => items.map((item) => item.id === project.id ? { ...item, status } : item)); setUpdatingId("");
+    setUpdatingId(project.id);
+    setError("");
+    try {
+      const response = await scopedFetch("/api/projects", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId: project.id, status }) });
+      if (!response.ok) { setError(await messageFrom(response)); return; }
+      const updated = projects.map((item) => item.id === project.id ? { ...item, status } : item);
+      setProjects(updated);
+      if (!currentProjectId || (project.id === currentProjectId && status === "archived")) {
+        const nextId = preferredProjectId(updated.filter((item) => item.status !== "archived"));
+        setCurrentProjectId(nextId);
+        rememberCurrentScope(organizationId, nextId);
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "更新状态失败。");
+    } finally { setUpdatingId(""); }
   }
 
   if (loading) return <div className="management-state" role="status">正在载入企业空间…</div>;
-  if (error && organizations.length === 0) return <div className="management-state error-state"><strong>暂时无法进入企业空间</strong><p>{error}</p><small>请确认本地身份配置和数据库迁移已经完成。</small></div>;
+  if (error && !organizationId) return <div className="management-state error-state"><strong>企业空间加载失败</strong><p role="alert">{error}</p></div>;
   if (organizations.length === 0) return <section className="setup-card"><span className="setup-step">第一步</span><h2>创建你的公司空间</h2><p>公司空间负责隔离企业空间、成员、媒体和审计记录。创建者将成为公司管理员。</p><form className="stack-form" onSubmit={createOrganization}><label>公司名称<input name="name" required minLength={2} maxLength={80} placeholder="例如：利明智耀新媒体" /></label><button className="primary-button" disabled={saving}>{saving ? "正在创建…" : "创建公司空间"}</button></form></section>;
 
+  const isAdmin = organizationRole === "admin";
+  const scope = new URLSearchParams({ organizationId });
+  if (currentProjectId) scope.set("projectId", currentProjectId);
+
   return (
-    <div className="management-layout">
-      <section className="management-main">
-        <div className="management-toolbar"><label>公司<select value={organizationId} onChange={(event) => runScopedAction(async () => { const id = event.target.value; setOrganizationId(id); setLoading(true); try { await loadProjects(id); } catch (reason) { setError(reason instanceof Error ? reason.message : "加载失败"); } finally { setLoading(false); } }, setError)}>{organizations.map((organization) => <option value={organization.id} key={organization.id}>{organization.name}</option>)}</select></label><span>{projects.length} 个企业空间</span></div>
-        {error && <div className="inline-alert" role="alert">{error}</div>}
-        {projects.length === 0 ? <div className="empty-panel"><h2>还没有企业空间</h2><p>创建第一个企业空间后，就能分配成员并建立独立的内容协作环境。</p></div> : <div className="project-card-grid">{projects.map((project) => { const isCurrent = project.id === currentProjectId; return <article className={`project-card${isCurrent ? " current" : ""}`} key={project.id}><div className="project-card-top"><span className="project-monogram">{project.name.slice(0, 1)}</span>{organizationRole === "admin" ? <select className="inline-select" value={project.status} disabled={updatingId === project.id} onChange={(event) => updateProjectStatus(project, event.target.value)}><option value="draft">筹备中</option><option value="active">运行中</option><option value="paused">已暂停</option><option value="archived">已归档</option></select> : <span className={`status ${project.status === "active" ? "success" : "warning"}`}>{project.status === "active" ? "运行中" : project.status === "paused" ? "已暂停" : project.status === "archived" ? "已归档" : "筹备中"}</span>}</div><h2>{project.name}</h2><dl><div><dt>内容目标</dt><dd>{project.content_target || "未设置"}{project.content_target ? " 条/月" : ""}</dd></div><div><dt>空间成员</dt><dd>{project.member_count} 人</dd></div></dl><div className="project-card-footer"><span>{project.service_starts_at || "待确认开始时间"}</span><div><a href={`/members?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(project.id)}`}>分配成员</a><button type="button" className="project-enter-button" disabled={isCurrent} onClick={() => enterProject(project.id)}>{isCurrent ? "当前空间" : "进入空间 →"}</button></div></div></article>; })}</div>}
-      </section>
-      {organizationRole === "admin" && <aside className="create-panel"><p className="section-kicker">新企业空间</p><h2>建立独立协作空间</h2><p>创建后管理员可直接访问，后续在“成员与权限”页勾选需要参与的公司员工。</p><form className="stack-form" onSubmit={createProject}><label>空间名称<input name="name" required minLength={2} maxLength={80} placeholder="例如：短视频内容运营空间" /></label><div className="form-row"><label>开始日期<input name="serviceStartsAt" type="date" /></label><label>结束日期<input name="serviceEndsAt" type="date" /></label></div><label>月内容目标<input name="contentTarget" type="number" min="0" max="999" defaultValue="12" /></label><button className="primary-button" disabled={saving}>{saving ? "正在创建…" : "创建企业空间"}</button></form></aside>}
+    <div className="space-management">
+      <div className="management-toolbar space-management-toolbar">
+        <label>公司<select value={organizationId} disabled={saving || Boolean(updatingId)} onChange={(event) => void switchOrganization(event.target.value)}>
+          {organizations.map((organization) => <option value={organization.id} key={organization.id}>{organization.name}</option>)}
+        </select></label>
+        <div className="space-management-actions">
+          {strategyOverview
+            ? <Link className="secondary-link" href={`/projects?${scope}`}>返回空间列表</Link>
+            : <>
+              {currentProjectId && <Link className="secondary-link" href={`/space?${scope}`}>查看当前空间资料</Link>}
+              {isAdmin && <Link className="secondary-link" href={`/projects?${scope}&view=strategies`}>策略总览</Link>}
+            </>}
+        </div>
+      </div>
+      {error && <div className="inline-alert" role="alert">{error}</div>}
+      {strategyOverview ? (isAdmin
+        ? <OrganizationStrategyOverview key={organizationId} organizationId={organizationId} />
+        : <div className="empty-panel"><h2>策略总览仅向公司管理员开放</h2><p>企业空间成员可以在空间资料中查看当前空间的内容策略。</p></div>
+      ) : <SplitWorkspace className={`management-layout${isAdmin ? "" : " read-only"}`}>
+        <section className="management-main">
+          {projects.length === 0 ? <div className="empty-panel">
+            <h2>没有可访问的企业空间</h2>
+            <p>{isAdmin ? "创建企业空间后，即可分配成员并开始协作。" : "请联系公司管理员分配企业空间。"}</p>
+          </div> : <div className="project-card-grid">{projects.map((project) => {
+            const isCurrent = project.id === currentProjectId;
+            const projectScope = new URLSearchParams({ organizationId, projectId: project.id });
+            return <article className={`project-card${isCurrent ? " current" : ""}`} key={project.id}>
+              <div className="project-card-top">
+                <span className="project-monogram" aria-hidden="true">{project.name.slice(0, 1)}</span>
+                {isAdmin ? <select className="inline-select" aria-label={`${project.name}的空间状态`} value={project.status} disabled={saving || Boolean(updatingId)} onChange={(event) => void updateProjectStatus(project, event.target.value)}>
+                  {Object.entries(spaceProjectStatus).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                </select> : <span className={`status ${project.status === "active" ? "success" : "neutral"}`}>{spaceProjectStatus[project.status] || "状态待确认"}</span>}
+              </div>
+              <h2>{project.name}</h2>
+              <dl>
+                <div><dt>月内容目标</dt><dd>{project.content_target ? `${project.content_target} 条` : "未设置"}</dd></div>
+                <div><dt>已分配成员</dt><dd>{project.member_count} 人</dd></div>
+              </dl>
+              <div className="project-card-footer">
+                <span>{project.service_starts_at || "待确认开始时间"}</span>
+                <div>
+                  <Link href={`/members?${projectScope}`}>{isAdmin ? "分配成员" : "查看成员"}</Link>
+                  {project.status !== "archived" && <button type="button" className="project-enter-button" disabled={isCurrent || saving || Boolean(updatingId)} onClick={() => enterProject(project.id)}>{isCurrent ? "当前空间" : "进入空间 →"}</button>}
+                </div>
+              </div>
+            </article>;
+          })}</div>}
+        </section>
+        {isAdmin && <aside className="create-panel"><h2>创建企业空间</h2><form className="stack-form" onSubmit={createProject}><label>空间名称<input name="name" required minLength={2} maxLength={80} placeholder="例如：短视频内容运营空间" /></label><div className="form-row"><label>开始日期<input name="serviceStartsAt" type="date" /></label><label>结束日期<input name="serviceEndsAt" type="date" /></label></div><label>月内容目标<input name="contentTarget" type="number" min="0" max="999" defaultValue="12" /></label><button className="primary-button" disabled={saving || Boolean(updatingId)}>{saving ? "正在创建…" : "创建企业空间"}</button></form></aside>}
+      </SplitWorkspace>}
     </div>
   );
 }

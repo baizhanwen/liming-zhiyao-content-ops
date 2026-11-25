@@ -72,10 +72,42 @@
 .creation-cleanup .assistant-quick-prompts button,
 .creation-cleanup .assistant-composer > div > small { font-size: 12px; line-height: 1.6; }
 
-.creation-cleanup .creation-knowledge-entry { position: static; max-height: none; overflow: visible; }
-.creation-cleanup .creation-entry-switch { display: flex; gap: 4px; margin-bottom: 18px; padding: 4px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-soft); }
-.creation-cleanup .creation-entry-switch button { flex: 1; min-height: var(--control-height, 38px); padding: 6px 10px; border: 1px solid transparent; border-radius: 6px; color: var(--muted); background: transparent; font: inherit; font-size: var(--control-font-size, 12px); cursor: pointer; }
-.creation-cleanup .creation-entry-switch button[aria-pressed="true"] { border-color: var(--line); color: var(--brand-deep); background: var(--surface); font-weight: 650; }
+.creation-view-switch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  align-items: center;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+.creation-view-switch button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 38px;
+  padding: 7px 14px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+.creation-view-switch button[aria-pressed="true"] {
+  background: var(--brand-soft);
+  color: var(--brand-deep);
+  font-weight: 650;
+}
+.creation-view-switch button:hover, .creation-view-switch button:focus-visible { border-color: var(--line); }
+.creation-view-switch button > span { font-size: 12px; font-variant-numeric: tabular-nums; }
+.creation-cleanup :is(.knowledge-layout, .strategy-layout, .topic-layout) > [hidden] { display: none; }
+.creation-cleanup :is(.knowledge-create, .strategy-create, .topic-create) { padding: clamp(16px, 2.4vw, 32px); }
+.record-form-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.record-form-actions > button { width: auto; min-height: var(--field-height); }
+.record-form-actions svg { width: 16px; height: 16px; }
+.topic-form-field { display: grid; align-content: start; min-width: 0; gap: 6px; }
+.topic-form-field .topic-field-heading > label { min-width: 0; }
 .creation-cleanup .creation-entry-panel[hidden] { display: none; }
 .creation-cleanup #knowledge-entry-manual > h2 { margin-top: 0; }
 .creation-cleanup #knowledge-entry-manual > .creation-hint { margin-bottom: 18px; }
@@ -89,10 +121,42 @@
 .creation-cleanup .creation-memory-events :is(strong, small, p, em) { font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .creation-cleanup .creation-memory-events .list-empty { padding: 16px; font-size: 12px; }
 
+.creation-cleanup :is(.topic-list, .inspiration-card-grid) > .studio-selected-record {
+  outline: 2px solid var(--brand);
+  outline-offset: -2px;
+}
+.creation-cleanup .studio-card-link { width: fit-content; text-decoration: none; }
+.production-workspace .studio-origin-links { margin-top: 6px; font-size: 12px; }
+.production-workspace .studio-origin-links:empty { display: none; }
+.production-workspace .studio-origin-links a { color: var(--brand-deep); }
+.production-script-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-bottom: 8px;
+}
+.production-script-heading > label { margin: 0; }
+.production-form textarea[name="fullScript"] { display: block; margin-bottom: 18px; }
+.production-script-heading .production-polish-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 40px;
+  padding-inline: 14px;
+  font-size: 14px;
+}
+.production-polish-button:focus-visible { outline: 2px solid var(--brand-deep); outline-offset: 3px; }
+
 @media (max-width: 560px) {
+  .production-script-heading .production-polish-button { min-height: 44px; }
   .creation-cleanup :is(.creation-reference-options, .creation-context-summary, .creation-memory-events) > summary { gap: 4px 8px; padding: 10px 12px; }
   .creation-cleanup .creation-reference-body,
   .creation-cleanup .creation-context-body { padding: 12px; }
   .creation-cleanup .creation-knowledge-entry .form-row { grid-template-columns: 1fr; }
   .creation-cleanup .knowledge-bulk-import > header { align-items: flex-start; flex-wrap: wrap; }
 }
+
+.production-workspace .benchmark-generation-context > summary { cursor: pointer; font-weight: 600; }

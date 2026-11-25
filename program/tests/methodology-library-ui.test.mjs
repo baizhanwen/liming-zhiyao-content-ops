@@ -2,14 +2,18 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("knowledge workspace hides the authorized methodology UI without removing its internal implementation", async () => {
-  const workspace = await readFile(new URL("../components/KnowledgeWorkspace.tsx", import.meta.url), "utf8");
+test("space navigation hides the authorized methodology tab while keeping the underlying workspace", async () => {
+  const [workspace, page, navigation] = await Promise.all([
+    readFile(new URL("../components/KnowledgeWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/space/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../lib/space-navigation.ts", import.meta.url), "utf8"),
+  ]);
 
-  assert.match(workspace, /const AUTHORIZED_METHOD_LIBRARY_VISIBLE = false/);
-  assert.match(workspace, /AUTHORIZED_METHOD_LIBRARY_VISIBLE && <button[^>]*>[\s\S]*?授权方法论<\/button>/);
+  assert.match(navigation, /const AUTHORIZED_METHOD_LIBRARY_VISIBLE = false/);
+  assert.match(page, /AUTHORIZED_METHOD_LIBRARY_VISIBLE\s*\? \[\{ id: "method" as const, label: "授权方法论"/);
+  assert.match(page, /views\.find\(\(view\) => view\.id === params\.get\("tab"\)\) \?\? views\[0\]/);
   assert.match(workspace, /AUTHORIZED_METHOD_LIBRARY_VISIBLE && tab === "method"/);
-  assert.match(workspace, /AUTHORIZED_METHOD_LIBRARY_VISIBLE \? scopedFetch\(`\/api\/authorized-knowledge/);
-  assert.match(workspace, /AUTHORIZED_METHOD_LIBRARY_VISIBLE \? scopedFetch\(`\/api\/authorized-methodology/);
+  assert.match(workspace, /if \(!AUTHORIZED_METHOD_LIBRARY_VISIBLE\) return;[\s\S]*?scopedFetch\(`\/api\/authorized-knowledge[\s\S]*?scopedFetch\(`\/api\/authorized-methodology/);
   assert.match(workspace, /\/api\/authorized-methodology\?/);
   assert.match(workspace, /metadataOnly=1/);
   assert.match(workspace, /授权方法论/);

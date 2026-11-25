@@ -1,10 +1,13 @@
 import { z } from "zod";
+import { referenceCreationInputSchema, referenceCreationReportSchema } from "./structure-creation.ts";
 import { benchmarkRewriteReportSchema, benchmarkRewriteSegmentsSchema } from "./single-benchmark-rewrite.ts";
 import { BENCHMARK_CONTENT_GUIDANCE } from "./benchmark-content-policy.ts";
 import { CORE_STRATEGY_GUIDANCE } from "./content-strategy-policy.ts";
 import { CONTENT_WRITING_GUIDANCE, resolvedWritingIntentSchema, writingIntentSchema } from "./content-writing-intent.ts";
 
 const shortText = (maximum: number) => z.string().trim().min(1).max(maximum);
+
+export const PRODUCTION_FULL_SCRIPT_MAX_LENGTH = 12_000;
 
 export const productionCitationSchema = z.object({
   sourceType: z.enum(["topic", "memory", "knowledge", "video_atom", "inspiration", "video_analysis", "strategy", "benchmark", "method_knowledge", "historical_copy"]),
@@ -86,33 +89,35 @@ export const historicalStyleApplicationSchema = z.object({
   originality: z.object({ passed: z.boolean(), longestSharedCharacters: z.number().int().min(0), sourceId: z.string().nullable(), phrase: z.string().nullable() }).strict(),
 }).strict();
 
-export const productionPackSchema = z.object({
+const productionPackFields = z.object({
   writingIntent: resolvedWritingIntentSchema.optional(),
-  hooks: z.array(shortText(200)).min(2).max(5),
-  fullScript: shortText(12_000).refine((value) => value.length >= 20),
-  shortScript: shortText(6_000).refine((value) => value.length >= 10),
+  hooks: z.array(shortText(200)).max(5).default([]),
+  fullScript: shortText(PRODUCTION_FULL_SCRIPT_MAX_LENGTH),
+  shortScript: shortText(6_000),
   storyboard: z.array(z.object({
+    segmentId: shortText(150).optional(),
     shot: shortText(120),
     visual: shortText(500),
-    script: shortText(2_000),
+    script: z.string().trim().max(2_000),
     performance: shortText(500),
     durationSec: z.number().int().min(1).max(300),
   }).strict()).min(1).max(30),
-  performanceNotes: z.array(shortText(500)).max(20),
-  brollSuggestions: z.array(shortText(500)).max(20),
-  subtitleHighlights: z.array(shortText(200)).max(20),
-  coverCopy: z.array(shortText(120)).min(1).max(10),
-  publishTitles: z.array(shortText(160)).min(1).max(10),
-  hashtags: z.array(shortText(80)).max(20),
-  commentPrompt: shortText(500),
-  adaptations: z.array(z.object({ platform: shortText(80), copy: shortText(4_000) }).strict()).max(10),
+  performanceNotes: z.array(shortText(500)).max(20).default([]),
+  brollSuggestions: z.array(shortText(500)).max(20).default([]),
+  subtitleHighlights: z.array(shortText(200)).max(20).default([]),
+  coverCopy: z.array(shortText(120)).max(10).default([]),
+  publishTitles: z.array(shortText(160)).max(10).default([]),
+  hashtags: z.array(shortText(80)).max(20).default([]),
+  commentPrompt: z.string().trim().max(500).default(""),
+  adaptations: z.array(z.object({ platform: shortText(80), copy: shortText(4_000) }).strict()).max(10).default([]),
   citations: z.array(productionCitationSchema).min(1).max(30).refine(
     (items) => new Set(items.map((item) => `${item.sourceType}:${item.sourceId}`)).size === items.length,
     "引用来源不能重复",
   ),
-  riskNotes: z.array(shortText(500)).max(20),
-  // Optional only for compatibility with production packs created before v3.
-  // The v3 model output schema below requires this field for all new generations.
+  riskNotes: z.array(shortText(500)).max(20).default([]),
+  methodologyApplication: contentQualityReviewSchema.shape.methodologyApplication,
+  benchmarkMethods: contentQualityReviewSchema.shape.benchmarkMethods.optional(),
+  // Older saved versions may still carry the original editorial review.
   qualityReview: contentQualityReviewSchema.optional(),
   // Computed by the server after generation. Older production packs do not contain it.
   historicalStyleApplication: historicalStyleApplicationSchema.optional(),
@@ -120,9 +125,24 @@ export const productionPackSchema = z.object({
   sourceUsageReport: sourceUsageReportSchema.optional(),
   benchmarkRewriteSegments: benchmarkRewriteSegmentsSchema.optional(),
   benchmarkRewrite: benchmarkRewriteReportSchema.optional(),
+  referenceCreation: z.union([referenceCreationReportSchema, referenceCreationInputSchema]).optional(),
 }).strict();
 
+function checkScriptLength(pack: z.infer<typeof productionPackFields>, ctx: z.RefinementCtx) {
+  if (pack.referenceCreation && "topic" in pack.referenceCreation) return;
+  pack.storyboard.forEach((shot, index) => {
+    if (!shot.script) ctx.addIssue({ code: "custom", path: ["storyboard", index, "script"], message: "分镜台词不能为空" });
+  });
+  if (pack.fullScript.length < 20) ctx.addIssue({ code: "custom", path: ["fullScript"], message: "完整稿至少需要 20 字" });
+  if (pack.shortScript.length < 10) ctx.addIssue({ code: "custom", path: ["shortScript"], message: "短稿至少需要 10 字" });
+}
+export const productionPackSchema = productionPackFields.superRefine(checkScriptLength);
 export type ProductionPack = z.infer<typeof productionPackSchema>;
+
+// A rewrite can grow beyond its 12,000-character source as it is restructured.
+export const rewriteDraftPackSchema = productionPackFields.extend({
+  fullScript: shortText(20_000),
+}).superRefine(checkScriptLength);
 
 function boundedGeneratedText(value: unknown, maximum: number) {
   if (typeof value !== "string") return value;
@@ -247,7 +267,8 @@ export const saveContentVersionSchema = z.object({
   organizationId: shortText(100),
   projectId: shortText(100),
   expectedVersion: z.number().int().min(1).optional(),
-  pack: productionPackSchema,
+  polishVersionId: shortText(100).optional(),
+  pack: rewriteDraftPackSchema,
   changeSummary: z.string().trim().max(500).optional(),
 }).strict();
 
@@ -255,6 +276,7 @@ export const generateContentSchema = z.object({
   organizationId: shortText(100),
   projectId: shortText(100),
   expectedVersion: z.number().int().min(1).optional(),
+  generationRequestId: z.string().regex(/^[0-9a-f]{32}$/).optional(),
   // Accepted only for backwards compatibility with older clients. The API
   // deliberately ignores it and always runs new generation at max capability.
   modelProfile: z.string().trim().max(40).optional(),
@@ -262,6 +284,7 @@ export const generateContentSchema = z.object({
   writingIntent: writingIntentSchema.default("auto"),
   benchmarkEntryIds: z.array(shortText(100)).max(5).default([]),
   recommendedBenchmarkIds: z.array(shortText(100)).max(5).default([]),
+  referenceCreation: referenceCreationInputSchema.optional(),
 }).strict();
 
 export type ContentPromptSource = {
@@ -289,10 +312,10 @@ export function partitionContentPromptSources<T extends ContentPromptSource>(sou
   };
 }
 
-export const CONTENT_PROMPT_VERSION = "content-draft.v17-writing-intent";
-export const CONTENT_PROMPT_NAME = "分层事实、确定性方法计划与可恢复生产包";
-export const CONTENT_JSON_EXAMPLE = `JSON 顶层结构示例（实际输出必须填写完整内容并保留全部字段）：
-{"writingIntent":{"kind":"explain","reason":"选题需要通俗解释其发展脉络"},"hooks":["开头一","开头二"],"fullScript":"完整口播稿","shortScript":"短版口播稿","storyboard":[{"shot":"镜头一","visual":"画面","script":"台词","performance":"表演提示","durationSec":5}],"performanceNotes":[],"brollSuggestions":[],"subtitleHighlights":[],"coverCopy":["封面文案"],"publishTitles":["发布标题"],"hashtags":[],"commentPrompt":"评论引导","adaptations":[],"citations":[{"sourceType":"topic","sourceId":"输入中的真实来源 ID","quote":"从该来源逐字引用的原文"}],"riskNotes":[],"qualityReview":{"coreMechanism":"唯一核心机制","hookDiagnosis":{"topic":"话题","hook":"抓手","credibility":"可信度","suspense":"悬念","verdict":"strong"},"resonance":{"silentRelease":"沉默解除","motivation":"满足动机","stance":"有效立场","firstSharer":"首批传播者","beliefShift":"信念与行动"},"flowRisks":[],"benchmarkMethods":[],"publishReadiness":"ready","blockers":[]}}`;
+export const CONTENT_PROMPT_VERSION = "content-draft.v23-script-storyboard";
+export const CONTENT_PROMPT_NAME = "口播稿与分镜";
+export const CONTENT_JSON_EXAMPLE = `JSON 顶层结构示例（实际字段以本次 outputSchema 为准）：
+{"writingIntent":{"kind":"explain","reason":"选题需要通俗解释其发展脉络"},"fullScript":"完整口播稿","shortScript":"短版口播稿","storyboard":[{"shot":"镜头一","visual":"画面","script":"台词","performance":"表演提示","durationSec":5}],"citations":[{"sourceType":"topic","sourceId":"输入中的真实来源 ID","quote":"从该来源逐字引用的原文"}]}`;
 export const CONTENT_SYSTEM_PROMPT = `你是新媒体服务公司的资深内容策划。系统会把选题、已启用策略、选题主动指定的品牌知识及明确关联的参考资料，按“本次任务、项目事实、方法计划、参考案例”分层提供。你要依据项目事实写内容，依据方法计划决定写法，参考案例用于结构启发，其中已选 benchmark 还可选择性借鉴有依据的内容，生成可直接进入审核的原创短视频生产包。
 
 输入分层与边界：
@@ -308,74 +331,43 @@ ${CONTENT_WRITING_GUIDANCE}
 执行要求：
 ${CORE_STRATEGY_GUIDANCE}
 1. 客户事实只能来自 projectFacts，不补造客户案例、数据、资质、成绩、身份或承诺；方法论、对标样本、历史文案和灵感均不能支撑客户事实。已选 benchmark 只能支持有来源归属的外部内容，不能把来源中的说法自动当作已核实事实；video_analysis 和 video_atom 只能证明对应视频中存在的内容，不能自动升级为当前客户事实或普遍因果；
-2. 完整口播稿要围绕 qualityReview.coreMechanism 这一单一核心机制展开，开头承诺必须由正文兑现；
+2. 完整口播稿要围绕 一个核心主张展开，开头承诺必须由正文兑现；
 3. 对标样本沿用现有写法借鉴逻辑，并允许选择性借鉴内容；吸收内容后围绕本题独立组织表达，不能近义改写、拼接、搬运或洗稿来源原文；
 4. 每个客户事实必须在 citations 中引用 projectFacts 提供的来源 ID 和逐字原文；借鉴外部内容时引用对应已选 benchmark。quote 只复制来源 text 中 8–80 字的连续短原文，不要改写、概括、补全或添加引号。必须至少引用 methodologyPlan.planId 对应的 method_knowledge 来源，证明采用了本次确定的方法计划；每条输入 benchmark 都必须在 citations 中逐条引用，证明已逐条处理所选参考素材。method_knowledge 引用只证明写法，benchmark 引用用于追溯参考写法或所借鉴的外部内容，historical_copy 和 inspiration 引用只证明参考结构，它们都不能证明客户事实；
-5. qualityReview.benchmarkMethods 必须与输入中的 benchmark 逐条对应且不得遗漏：实际采用时说明采用的方法与落地方式；不采用其正向方法时，也必须把它作为反例并说明规避方式。sourceId 必须对应各自的 benchmark 来源；
+5. 输入有已选 benchmark 时，benchmarkMethods 与所选来源逐条对应：实际采用时说明采用的方法与落地方式；不采用其正向方法时，也必须把它作为反例并说明规避方式。sourceId 必须对应各自的 benchmark 来源；
 ${BENCHMARK_CONTENT_GUIDANCE}
-6. 风险、不确定信息和需要客户确认的内容写入 riskNotes；事实不足或内容价值不足时在 qualityReview 中如实标记 revise 或 blocked；
+6. 素材不足以证明的说法应删除，或清楚限定其适用范围；需要真实经历支持的细节不能用假设补齐；
 7. 输入含 historical_copy 时，必须至少引用一条实际采用的历史文案；只学习其字数区间、段落节奏、开场结构、行动引导和变现方式，不得拼接、洗稿或连续复用历史正文超过 12 个字（citations.quote 中用于追溯的原文不受此限制）；
 8. 输入含 historicalStyleProfile 时，优先遵循 suggestedMinCharacters–suggestedMaxCharacters、suggestedMinParagraphs–suggestedMaxParagraphs、bestHookType、bestCtaType、toneTags 和 bestMonetizationType；confidence 为 low 时仅作弱参考，不能为迎合画像而虚构事实或强行加入转化动作；
 9. 系统会在生成后客观检测完整口播稿的字数、段落、开场、行动引导、语气、变现方式和与历史原文的连续重复片段；检测不通过时会把具体差异返回给你重写；
 10. 当前内容策略必须形成至少一条 strategy 引用；实际使用品牌知识时必须引用对应的指定 knowledge，未采用时不强制引用或植入；未指定时不得引用品牌知识，也不得编造 knowledge 来源；可以依据当前内容策略组织方向与表达，但不能把方向建议写成已经发生的个人经历；选题来自视频分析时，必须引用对应 video_analysis；
 11. 输入中的 benchmarkFeedback 是系统根据历史审核、人工修订和发布指标汇总的反馈信号。优先采用主题匹配且历史通过率、真实表现更好的方法；退回和人工修订较多的样本只用于规避问题。不得把相关性信号说成因果结论，也不得在成稿中披露内部评分；
 12. 严格执行 methodologyPlan 中选定的方法，不自行把未选方法升级为强制规则；如果方法与项目事实冲突，以项目事实和合规边界为准；
-13. citations.quote 必须是 8–80 字连续原文；hashtags 中每一项和 adaptations.platform 均不得超过 80 字，平台名只写简短名称；
-14. 不要输出 methodologyApplication、historicalStyleApplication 或 sourceUsageReport，这些字段由系统检测后写入；仅输出 JSON，不要输出 Markdown、解释或代码围栏。
+13. citations.quote 必须是 8–80 字连续原文；
+14. 只返回本次 outputSchema 指定的稿件、分镜和来源字段；仅输出 JSON，不要输出 Markdown、解释或代码围栏。
 
 ${CONTENT_JSON_EXAMPLE}`;
 
+export const benchmarkMethodsOutputSchema = z.toJSONSchema(contentQualityReviewSchema.shape.benchmarkMethods);
 export const CONTENT_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["writingIntent", "hooks", "fullScript", "shortScript", "storyboard", "performanceNotes", "brollSuggestions", "subtitleHighlights", "coverCopy", "publishTitles", "hashtags", "commentPrompt", "adaptations", "citations", "riskNotes", "qualityReview"],
+  required: ["writingIntent", "fullScript", "shortScript", "storyboard", "citations"],
   properties: {
     writingIntent: { type: "object", additionalProperties: false, required: ["kind", "reason"], properties: { kind: { enum: ["explain", "tutorial", "opinion", "brand"] }, reason: { type: "string", minLength: 1, maxLength: 200 } } },
-    hooks: { type: "array", minItems: 2, maxItems: 5, items: { type: "string", minLength: 1, maxLength: 200 } },
     fullScript: { type: "string", minLength: 20, maxLength: 12_000 }, shortScript: { type: "string", minLength: 10, maxLength: 6_000 },
     storyboard: { type: "array", minItems: 1, maxItems: 30, items: { type: "object", additionalProperties: false, required: ["shot", "visual", "script", "performance", "durationSec"], properties: { shot: { type: "string", minLength: 1, maxLength: 120 }, visual: { type: "string", minLength: 1, maxLength: 500 }, script: { type: "string", minLength: 1, maxLength: 2_000 }, performance: { type: "string", minLength: 1, maxLength: 500 }, durationSec: { type: "integer", minimum: 1, maximum: 300 } } } },
-    performanceNotes: { type: "array", maxItems: 20, items: { type: "string", minLength: 1, maxLength: 500 } }, brollSuggestions: { type: "array", maxItems: 20, items: { type: "string", minLength: 1, maxLength: 500 } }, subtitleHighlights: { type: "array", maxItems: 20, items: { type: "string", minLength: 1, maxLength: 200 } },
-    coverCopy: { type: "array", minItems: 1, maxItems: 10, items: { type: "string", minLength: 1, maxLength: 120 } }, publishTitles: { type: "array", minItems: 1, maxItems: 10, items: { type: "string", minLength: 1, maxLength: 160 } }, hashtags: { type: "array", maxItems: 20, items: { type: "string", minLength: 1, maxLength: 80 } }, commentPrompt: { type: "string", minLength: 1, maxLength: 500 },
-    adaptations: { type: "array", maxItems: 10, items: { type: "object", additionalProperties: false, required: ["platform", "copy"], properties: { platform: { type: "string", minLength: 1, maxLength: 80 }, copy: { type: "string", minLength: 1, maxLength: 4_000 } } } },
     citations: { type: "array", minItems: 1, maxItems: 30, items: { type: "object", additionalProperties: false, required: ["sourceType", "sourceId", "quote"], properties: { sourceType: { enum: ["topic", "memory", "knowledge", "video_atom", "inspiration", "video_analysis", "strategy", "benchmark", "method_knowledge", "historical_copy"] }, sourceId: { type: "string", minLength: 1, maxLength: 200 }, quote: { type: "string", minLength: 8, maxLength: 80 } } } },
-    riskNotes: { type: "array", maxItems: 20, items: { type: "string", minLength: 1, maxLength: 500 } },
-    qualityReview: {
-      type: "object", additionalProperties: false,
-      required: ["coreMechanism", "hookDiagnosis", "resonance", "flowRisks", "benchmarkMethods", "publishReadiness", "blockers"],
-      properties: {
-        coreMechanism: { type: "string", minLength: 1, maxLength: 500 },
-        hookDiagnosis: { type: "object", additionalProperties: false, required: ["topic", "hook", "credibility", "suspense", "verdict"], properties: { topic: { type: "string", minLength: 1, maxLength: 300 }, hook: { type: "string", minLength: 1, maxLength: 300 }, credibility: { type: "string", minLength: 1, maxLength: 300 }, suspense: { type: "string", minLength: 1, maxLength: 300 }, verdict: { enum: ["strong", "revise", "blocked"] } } },
-        resonance: { type: "object", additionalProperties: false, required: ["silentRelease", "motivation", "stance", "firstSharer", "beliefShift"], properties: { silentRelease: { type: "string", minLength: 1, maxLength: 500 }, motivation: { type: "string", minLength: 1, maxLength: 500 }, stance: { type: "string", minLength: 1, maxLength: 500 }, firstSharer: { type: "string", minLength: 1, maxLength: 500 }, beliefShift: { type: "string", minLength: 1, maxLength: 500 } } },
-        flowRisks: { type: "array", maxItems: 12, items: { type: "object", additionalProperties: false, required: ["level", "location", "issue", "fix"], properties: { level: { enum: ["high", "medium", "low"] }, location: { type: "string", minLength: 1, maxLength: 160 }, issue: { type: "string", minLength: 1, maxLength: 500 }, fix: { type: "string", minLength: 1, maxLength: 500 } } } },
-        benchmarkMethods: { type: "array", maxItems: 5, items: { type: "object", additionalProperties: false, required: ["sourceId", "method", "application"], properties: { sourceId: { type: "string", minLength: 1, maxLength: 200 }, method: { type: "string", minLength: 1, maxLength: 500 }, application: { type: "string", minLength: 1, maxLength: 500 } } } },
-        publishReadiness: { enum: ["ready", "revise", "blocked"] },
-        blockers: { type: "array", maxItems: 12, items: { type: "string", minLength: 1, maxLength: 500 } },
-      },
-    },
   },
 } as const;
 
 export function createProductionScaffold(topic: { id: string; title: string; angle?: string | null; hook?: string | null; objective?: string | null }) {
   const hook = topic.hook?.trim() || `为什么很多人知道“${topic.title}”，却一直做不到？`;
-  const angle = topic.angle?.trim() || `围绕“${topic.title}”说明问题、方法和下一步行动。`;
-  const objective = topic.objective?.trim() || "帮助目标用户建立清晰认知并愿意继续交流";
   return productionPackSchema.parse({
-    hooks: [hook, `别急着下结论，先看清“${topic.title}”背后的关键问题。`],
     fullScript: "这份内容尚未生成口播稿。请点击生成，完成后将在这里显示完整台词。",
     shortScript: "精简版尚未生成，请先完成口播稿生成。",
     storyboard: [{ shot: "开场近景", visual: "人物正面出镜，字幕突出核心问题", script: hook, performance: "直接、克制，首句后停顿半秒", durationSec: 5 }],
-    performanceNotes: ["事实和案例补齐前不要使用绝对化表达", "重要结论前短暂停顿，突出关键词"],
-    brollSuggestions: ["与选题相关的工作场景或产品细节", "方法步骤对应的简洁图卡"],
-    subtitleHighlights: [topic.title], coverCopy: [topic.title], publishTitles: [topic.title], hashtags: [],
-    commentPrompt: "你在这个问题上最想解决的具体困难是什么？",
-    adaptations: [], citations: [{ sourceType: "topic", sourceId: topic.id, quote: `本次创作选题标题：${topic.title}`.slice(0, 80) }],
-    riskNotes: ["当前尚未生成稿件，请完成生成或手动写稿后再审核。"],
-    qualityReview: {
-      coreMechanism: angle,
-      hookDiagnosis: { topic: topic.title, hook, credibility: "待从品牌知识或真实案例中补充", suspense: "以问题保留认知缺口", verdict: "revise" },
-      resonance: { silentRelease: "待结合目标人群补充", motivation: objective, stance: "站在目标用户的实际处境一侧", firstSharer: "待结合具体受众补充", beliefShift: objective },
-      flowRisks: [], benchmarkMethods: [], publishReadiness: "revise", blockers: ["尚未完成事实核对和对标方法选择"],
-    },
+    citations: [{ sourceType: "topic", sourceId: topic.id, quote: `本次创作选题标题：${topic.title}`.slice(0, 80) }],
   });
 }
 

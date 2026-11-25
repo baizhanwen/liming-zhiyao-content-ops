@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { readLocalSessionIdentity } from "./local-auth";
+import { hasLocalDevSignOut, readLocalSessionIdentity } from "./local-auth";
 
 export type RequestIdentity = {
   authSubject: string;
@@ -42,10 +42,19 @@ function readForwardedIdentity(request: Request): RequestIdentity | null {
   return { authSubject, email, displayName: fullName?.trim() || email };
 }
 
+export function localDevelopmentIdentity(request: Request): RequestIdentity | null {
+  const runtime = env as LocalAuthEnv;
+  if (runtime.LAN_MODE?.trim() === "1" || runtime.LAN_ACCESS_ORIGIN?.trim() || runtime.DELIVERY_MODE?.trim() === "1") return null;
+  if (runtime.LOCAL_DEV_AUTH?.trim() !== "1" || !isLoopbackRequest(request)) return null;
+  const authSubject = runtime.LOCAL_DEV_USER_ID?.trim() || "local-owner";
+  const email = runtime.LOCAL_DEV_USER_EMAIL?.trim().toLowerCase() || "local-owner@localhost";
+  const displayName = runtime.LOCAL_DEV_USER_NAME?.trim() || "本地管理员";
+  return { authSubject, email, displayName };
+}
+
 export async function readRequestIdentity(request: Request): Promise<RequestIdentity | null> {
   const localSession = await readLocalSessionIdentity(request);
   if (localSession) return localSession;
-
   const runtime = env as LocalAuthEnv;
   // A client controls the URL/Host; a loopback hostname does not prove that a
   // request reached a LAN listener from the host machine. LAN always requires
@@ -59,11 +68,5 @@ export async function readRequestIdentity(request: Request): Promise<RequestIden
     if (forwarded) return forwarded;
   }
 
-  if (runtime.DELIVERY_MODE?.trim() === "1") return null;
-  if (runtime.LOCAL_DEV_AUTH?.trim() !== "1" || !isLoopbackRequest(request)) return null;
-
-  const authSubject = runtime.LOCAL_DEV_USER_ID?.trim() || "local-owner";
-  const email = runtime.LOCAL_DEV_USER_EMAIL?.trim().toLowerCase() || "local-owner@localhost";
-  const displayName = runtime.LOCAL_DEV_USER_NAME?.trim() || "本地管理员";
-  return { authSubject, email, displayName };
+  return hasLocalDevSignOut(request) ? null : localDevelopmentIdentity(request);
 }

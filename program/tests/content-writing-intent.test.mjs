@@ -25,7 +25,10 @@ test("no-source AI history uses automatic intent, saves a real script and never 
     assert.deepEqual(prompt.materialSelection.selectedIds, []);
     assert.equal(prompt.contextLayers.projectFacts, "");
     assert.match(input.system, /没有用户素材仍须完成可直接念出的口播稿/);
-    return scienceOutput(input, base);
+    const output = scienceOutput(input, base);
+    // Some providers still return fields from the old contract.
+    return { ...output, hooks: ["旧版开头一", "旧版开头二"], coverCopy: ["旧版封面"],
+      publishTitles: ["旧版发布标题"], commentPrompt: "旧版评论引导", qualityReview: { coreMechanism: "旧版诊断" } };
   });
   f.sqlite.prepare("UPDATE topic_ideas SET title = ? WHERE id = ?").run("AI发展史", f.topicId);
   const response = await f.complete();
@@ -35,6 +38,9 @@ test("no-source AI history uses automatic intent, saves a real script and never 
   assert.equal(item.current_version, 2);
   const pack = JSON.parse(item.pack_json);
   assert.deepEqual(pack.writingIntent, scienceIntent);
+  assert.equal(pack.qualityReview, undefined);
+  for (const name of ["hooks", "coverCopy", "publishTitles"]) assert.deepEqual(pack[name], []);
+  assert.equal(pack.commentPrompt, "");
   assert.ok(pack.citations.every(c => c.sourceType !== "knowledge"));
   assert.equal(f.calls.length, 1);
 });

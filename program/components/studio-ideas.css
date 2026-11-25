@@ -1,0 +1,147 @@
+.studio-idea-library { --idea-gutter: clamp(12px, 1.4vw, 18px); margin-block: 16px; }
+.studio-idea-controls { container-type: inline-size; }
+.studio-idea-heading {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px 16px;
+  padding: 12px var(--idea-gutter);
+}
+.studio-idea-heading h2 { margin: 0; color: var(--ink); font-size: 18px; line-height: 1.35; }
+.studio-idea-heading .inspiration-library-tabs { width: auto; border-color: var(--line); background: var(--surface-soft); }
+.studio-idea-heading .inspiration-library-tabs button { min-height: 30px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.studio-idea-heading .inspiration-library-tabs button.active { color: var(--brand-deep); }
+.studio-idea-search { justify-self: end; width: min(100%, 17rem); cursor: text; }
+.studio-idea-search svg { width: 16px; height: 16px; color: var(--muted); }
+.studio-quick-idea {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 0 var(--idea-gutter) 12px;
+}
+.studio-quick-idea .inspiration-button { min-height: var(--field-height); padding-inline: 16px; font-size: 13px; }
+.studio-idea-library .inspiration-card-grid { padding: var(--idea-gutter); background: var(--surface-soft); }
+.studio-idea-library .inspiration-card-grid > article { min-width: 0; overflow-wrap: anywhere; }
+.studio-idea-library .inspiration-card-grid > article > small { margin: 0; padding: 0; border: 0; font-size: 12px; }
+.studio-idea-notice { padding-inline: var(--idea-gutter); color: var(--idea-accent-deep); }
+.studio-idea-pagination { display: flex; justify-content: flex-end; gap: 8px; padding: 12px var(--idea-gutter); }
+.studio-idea-library article > .studio-card-link { align-self: flex-start; }
+.studio-idea-details { margin-top: 8px; color: var(--subtle); }
+.studio-idea-details summary { cursor: pointer; }
+.studio-idea-details > div { display: grid; justify-items: start; gap: 8px; margin-top: 10px; }
+.studio-related-draft { overflow-wrap: anywhere; }
+.studio-idea-library, .studio-idea-library article[id], .studio-inspiration-chat { scroll-margin-top: 5rem; }
+
+@container (max-width: 36rem) {
+  .studio-idea-heading { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+  .studio-idea-search { grid-column: 1 / -1; width: 100%; }
+  .studio-quick-idea .inspiration-button { padding-inline: 12px; }
+}
+
+.assistant-inspiration-workspace .knowledge-toolbar { min-height: 0; gap: 12px; margin-bottom: 4px; padding: 8px 12px; }
+.assistant-inspiration-workspace .knowledge-toolbar > label { grid-template-columns: auto minmax(0, 1fr); }
+.assistant-inspiration-workspace .inspiration-scope-toggle { display: none; }
+.assistant-inspiration-workspace .creation-context-summary { margin-bottom: 10px; border-color: transparent; }
+.assistant-inspiration-workspace .creation-context-summary[open] { border-color: var(--line); }
+.assistant-inspiration-workspace .creation-context-summary > summary { padding: 6px 12px; }
+
+.studio-inspiration-chat { --chat-height: clamp(25rem, calc(100dvh - 19rem), 54rem); }
+.studio-inspiration-chat .assistant-chat-layout {
+  grid-template-columns: clamp(176px, 16vw, 216px) minmax(0, 1fr);
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.studio-inspiration-chat .conversation-sidebar {
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  border-right: 1px solid var(--line);
+  background: var(--surface-soft);
+  contain: size;
+}
+.conversation-history-heading { display: flex; align-items: center; min-height: 56px; padding: 0 16px; }
+.conversation-history-heading h2, .history-toggle { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 14px; font-weight: 650; }
+.conversation-history-heading svg { width: 16px; height: 16px; color: var(--muted); }
+.conversation-history-heading .history-toggle { display: none; }
+.conversation-history-body { display: grid; min-height: 0; grid-template-rows: minmax(0, 1fr) auto; }
+.studio-inspiration-chat .conversation-list { min-height: 0; max-height: none; border: 0; }
+.studio-inspiration-chat .conversation-list button { min-width: 0; background: transparent; }
+.studio-inspiration-chat .conversation-list button:is(:hover, .active) { background: var(--brand-soft); }
+.studio-inspiration-chat .conversation-list strong { font-size: 13px; }
+.studio-inspiration-chat .conversation-list :is(span, small) { font-size: 12px; }
+.conversation-history-empty { margin: 0; padding: 8px 16px; color: var(--muted); font-size: 13px; line-height: 1.65; }
+.conversation-model { display: grid; gap: 2px; margin: 0 16px; padding: 12px 0; border-top: 1px solid var(--line); font-size: 12px; overflow-wrap: anywhere; }
+.conversation-model span { color: var(--muted); }
+
+.studio-inspiration-chat .assistant-thread-panel { min-height: 0; height: var(--chat-height); }
+.studio-inspiration-chat .assistant-thread-panel > .panel-heading { min-height: 56px; gap: 10px; padding: 8px 18px; }
+.studio-inspiration-chat .panel-heading h2 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 17px; }
+.studio-inspiration-chat .panel-heading button { flex: none; font-size: 12px; }
+.studio-inspiration-chat .assistant-thread { min-height: 0; max-height: none; overscroll-behavior-y: contain; background: var(--surface); }
+.studio-inspiration-chat .assistant-message { min-width: 0; overflow-wrap: anywhere; }
+.studio-inspiration-chat .assistant-message > p { font-size: 14px; }
+.studio-inspiration-chat .assistant-thread-panel:has(.assistant-thread-empty) {
+  height: auto;
+  min-height: var(--chat-height);
+  grid-template-rows: auto minmax(min-content, 1fr) auto;
+}
+.studio-inspiration-chat .assistant-thread:has(.assistant-thread-empty) { align-content: center; overflow: visible; }
+@media screen {
+  .studio-inspiration-chat .assistant-chat-layout[data-independent-scroll] > :is(.assistant-thread-panel, .conversation-sidebar) {
+    height: var(--split-available-height);
+    min-height: 0;
+    overflow: hidden;
+  }
+  .studio-inspiration-chat .assistant-chat-layout[data-independent-scroll] .assistant-thread-panel {
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+  .studio-inspiration-chat .assistant-chat-layout[data-independent-scroll] .assistant-thread {
+    overflow-y: auto;
+  }
+  .studio-inspiration-chat .assistant-chat-layout[data-independent-scroll] .assistant-thread:has(.assistant-thread-empty) { align-content: safe center; }
+  .studio-inspiration-chat .assistant-chat-layout[data-independent-scroll] .conversation-list { overscroll-behavior-y: contain; }
+}
+.studio-inspiration-chat .assistant-thread-empty { width: min(100%, 392px); gap: 6px; padding: 4px; }
+.studio-inspiration-chat .assistant-thread-empty strong { color: var(--ink); font-size: 20px; }
+.studio-inspiration-chat .assistant-thread-empty p { font-size: 13px; }
+.studio-inspiration-chat .assistant-thread-empty > div { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+.studio-inspiration-chat .assistant-thread-empty button { min-height: 40px; gap: 4px; padding: 7px 12px; border-color: var(--line); color: var(--ink); font-size: 13px; }
+.studio-inspiration-chat .assistant-thread-empty button:hover { border-color: var(--brand); background: var(--brand-soft); }
+.studio-inspiration-chat .assistant-composer { gap: 8px; padding: 12px 16px; }
+.studio-inspiration-chat .assistant-composer .assistant-input-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; }
+.studio-inspiration-chat .assistant-composer textarea { min-width: 0; min-height: 48px; max-height: 112px; padding: 8px 12px; font-size: 14px; line-height: 1.5; }
+.studio-inspiration-chat .assistant-composer .send-button { min-width: 0; min-height: 40px; padding-inline: 14px; font-size: 13px; }
+
+@media screen and (max-width: 620px) and (max-height: 700px) {
+  .studio-inspiration-chat .assistant-thread-panel:has(.assistant-thread-empty) { min-height: 0; }
+  .studio-inspiration-chat .assistant-thread-empty > :is(.assistant-empty-icon, p) { display: none; }
+  .studio-inspiration-chat .assistant-thread-empty > div { margin-top: 2px; }
+}
+
+@media (max-width: 760px) {
+  .assistant-inspiration-workspace .knowledge-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding: 6px 8px; }
+  .assistant-inspiration-workspace .inspiration-scope-toggle { display: flex; align-items: center; gap: 6px; padding: 0 4px; border: 0; color: var(--ink); background: transparent; font: inherit; font-weight: 650; cursor: pointer; }
+  .inspiration-scope-toggle span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .inspiration-scope-toggle svg { flex: none; width: 15px; height: 15px; }
+  .inspiration-scope-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
+  .assistant-inspiration-workspace .knowledge-toolbar > label { grid-template-columns: auto minmax(0, 1fr); grid-column: 1 / -1; }
+  .assistant-inspiration-workspace .knowledge-toolbar[data-scope-expanded="false"] > label { display: none; }
+  .assistant-inspiration-workspace .inspiration-toolbar-actions { grid-area: 1 / 2; width: auto; }
+  .assistant-inspiration-workspace .inspiration-toolbar-actions .inspiration-button { flex: none; }
+  .studio-inspiration-chat { --chat-height: clamp(22rem, calc(100dvh - 24rem), 36rem); }
+  .studio-inspiration-chat .assistant-chat-layout { grid-template-columns: minmax(0, 1fr); }
+  .studio-inspiration-chat .conversation-sidebar { grid-template-rows: auto auto; border: 0; border-bottom: 1px solid var(--line); contain: none; }
+  .conversation-history-heading { min-height: 0; padding: 0; }
+  .conversation-history-heading h2, .conversation-history-body[data-expanded="false"] { display: none; }
+  .conversation-history-heading .history-toggle { display: flex; width: 100%; min-height: 40px; padding: 0 12px; border: 0; color: var(--ink); background: transparent; cursor: pointer; }
+  .history-toggle svg:last-child { margin-left: auto; }
+  .history-toggle[aria-expanded="true"] svg:last-child { transform: rotate(180deg); }
+  .studio-inspiration-chat .conversation-list { max-height: 14rem; }
+  .studio-inspiration-chat .assistant-thread-panel > .panel-heading { min-height: 48px; padding: 6px 12px; }
+  .studio-inspiration-chat .assistant-thread { padding: 12px; }
+  .studio-inspiration-chat .assistant-composer { padding: 10px; }
+  .studio-inspiration-chat .assistant-composer .assistant-input-row { gap: 6px; }
+  .studio-inspiration-chat .assistant-composer .send-button { padding-inline: 10px; }
+}

@@ -397,7 +397,7 @@ async function loadContentEvidence(db: ReturnType<typeof getD1>, organizationId:
 
 export function buildReportNarrative(snapshot: AnalyticsSnapshot) {
   const { summary, topContent } = snapshot;
-  if (!summary.contentCount) return { summary: "本报告周期内尚未导入已发布内容的数据快照。", highlights: ["当前没有可计算的内容表现数据。"], recommendations: ["从发布管理下载模板并导入至少一条作品快照。", "统一在固定时间记录累计播放和互动数据，保证周期可比。"] };
+  if (!summary.contentCount) return { summary: "本报告周期内尚未导入已发布内容的数据快照。", highlights: ["当前没有可计算的内容表现数据。"], recommendations: ["在「周期报告」中打开「导入创作者后台数据」，导入至少一条作品快照。", "统一在固定时间记录累计播放和互动数据，保证周期可比。"] };
   const best = topContent[0]; const engagement = (summary.engagementRate * 100).toFixed(2); const qualifier = summary.baselineCoverage.partial ? "可确认" : "";
   const triggeredRules = snapshot.diagnostics.rules.filter((item) => item.status === "triggered").slice(0, 3);
   const coverageNote = (summary.baselineCoverage.partial ? `其中 ${summary.baselineCoverage.partial} 条历史作品缺少期初快照，增量从本期首条快照起计算。` : "全部纳入作品均有期初快照，或为本期新发布作品。") + (summary.timestampAliases ? `发现 ${summary.timestampAliases} 条同一时刻的历史重复快照，其中 ${summary.timestampConflicts} 条指标不一致；仅使用首个已保存值，原记录未改，请人工核对。` : "");

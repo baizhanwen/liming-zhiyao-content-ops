@@ -25,20 +25,22 @@ export function rewriteVersionInsert(db: D1Database, input: RewriteWriteScope & 
   id: string; variant: string; parentVersionId: string | null; runId?: string | null;
   text: string; paragraphs: string[]; sourceMapping: string[]; outline?: unknown; validation?: unknown;
   modelProvider?: string | null; modelName?: string | null; promptVersion?: string | null; modelCallId?: string | null;
-  changeSummary: string; now: string;
+  changeSummary: string; now: string; adaptation?: unknown; evidenceGuard?: { sql: string; bindings: string[] };
 }) {
   return db.prepare(`INSERT INTO script_rewrite_versions
     (id, organization_id, project_id, workspace_id, version, variant, parent_version_id, run_id, text,
      paragraphs_json, source_mapping_json, outline_json, validation_json, model_provider, model_name,
-     prompt_version, model_call_id, change_summary, created_by, created_at)
+     prompt_version, model_call_id, change_summary, created_by, created_at, adaptation_json)
     SELECT ?, w.organization_id, w.project_id, w.id,
       (SELECT COALESCE(MAX(v.version), 0) + 1 FROM script_rewrite_versions v WHERE v.workspace_id = w.id),
-      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? ${writableWorkspaceSql}
-      ${input.runId ? "AND EXISTS (SELECT 1 FROM script_rewrite_runs r WHERE r.id = ? AND r.workspace_id = w.id AND r.status = 'started')" : ""}`)
+      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? ${writableWorkspaceSql}
+      ${input.runId ? "AND EXISTS (SELECT 1 FROM script_rewrite_runs r WHERE r.id = ? AND r.workspace_id = w.id AND r.status = 'started')" : ""}
+      ${input.evidenceGuard ? `AND (${input.evidenceGuard.sql})` : ""}`)
     .bind(input.id, input.variant, input.parentVersionId, input.runId ?? null, input.text,
       JSON.stringify(input.paragraphs), JSON.stringify(input.sourceMapping), JSON.stringify(input.outline ?? []), JSON.stringify(input.validation ?? {}),
       input.modelProvider ?? null, input.modelName ?? null, input.promptVersion ?? null, input.modelCallId ?? null,
-      input.changeSummary, input.userId, input.now, ...bindings(input), ...(input.runId ? [input.runId] : []));
+      input.changeSummary, input.userId, input.now, input.adaptation ? JSON.stringify(input.adaptation) : null,
+      ...bindings(input), ...(input.runId ? [input.runId] : []), ...(input.evidenceGuard?.bindings ?? []));
 }
 
 export function rewriteVersionAudit(db: D1Database, input: RewriteWriteScope & {

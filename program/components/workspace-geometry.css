@@ -1,0 +1,29 @@
+/* Standalone screens share the workspace title origin without rendering its navigation. */
+.workbench-shell, .standalone-page {
+  --shell-width: 1570px;
+  --shell-gutter: clamp(12px, 2.1vw, 36px);
+  --shell-pad: clamp(24px, 2.75vw, 44px);
+  --sidebar-width: clamp(194px, 16.2vw, 249px);
+  --shell-nav-space: var(--sidebar-width);
+  --shell-frame-padding: 4px;
+  --shell-topbar-height: 74px;
+  --shell-content-top: clamp(20px, 2vw, 31px);
+}
+@media (max-width: 1100px) {
+  .workbench-shell, .standalone-page { --shell-gutter: 14px; --sidebar-width: 178px; --shell-pad: 23px; }
+}
+@media (min-width: 621px) and (max-width: 820px) {
+  .workbench-shell, .standalone-page {
+    --shell-gutter: 9px; --sidebar-width: 60px; --shell-pad: 19px;
+    --shell-frame-padding: 3px; --shell-topbar-height: 56px;
+  }
+}
+@media (max-width: 620px) {
+  .workbench-shell, .standalone-page {
+    --shell-gutter: 0px; --shell-pad: 16px; --shell-nav-space: 0px;
+    --shell-frame-padding: 0px; --shell-topbar-height: 60px; --shell-content-top: 21px;
+  }
+}
+@media (min-width: 821px) and (max-height: 799px) {
+  .workbench-shell, .standalone-page { --shell-gutter: 14px; --shell-topbar-height: 58px; --shell-content-top: 19px; }
+}

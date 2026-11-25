@@ -1,5 +1,6 @@
 "use client";
 
+import { SplitWorkspace } from "./SplitWorkspace";
 import { scopedFetch, rememberCurrentScope } from "../lib/client-scope";
 
 import { FormEvent, useEffect, useRef, useState } from "react";
@@ -163,7 +164,7 @@ export function MemberManager() {
   const activeEmployees = activeMembers.filter((member) => member.role === "member");
   const assignedCount = projectMemberships.filter((membership) => membership.project_id === selectedProjectId && activeEmployees.some((member) => member.id === membership.member_id)).length;
 
-  return <div className="management-layout members-layout">
+  return <><SplitWorkspace className="management-layout members-layout">
     <section className="management-main">
       <div className="management-toolbar"><label>公司<select value={organizationId} onChange={async (event) => { const id = event.target.value; setOrganizationId(id); await loadScope(id); }}>{organizations.map((organization) => <option value={organization.id} key={organization.id}>{organization.name}</option>)}</select></label><span>{members.filter((member) => member.status === "active").length} 位有效成员</span></div>
       {error && <div className="inline-alert" role="alert">{error}</div>}
@@ -189,8 +190,8 @@ export function MemberManager() {
         <form className="stack-form" onSubmit={invite}><label>邮箱<input name="email" type="email" required placeholder="name@company.com" /></label><label>公司身份<input value="公司员工" readOnly /></label><label>分配企业空间<select name="projectId" value={inviteProjectId} onChange={(event) => setInviteProjectId(event.target.value)}><option value="">暂不分配</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><button className="primary-button" disabled={inviting}>{inviting ? "正在生成…" : "生成邀请链接"}</button></form>
         {inviteUrl && <div className="invite-result" role="status"><strong>邀请已创建</strong><input readOnly value={inviteUrl} aria-label="邀请链接" /><button type="button" onClick={copyInvite}>{copyMessage || "复制链接"}</button></div>}
       </section>
-    </aside>}
+    </aside>}</SplitWorkspace>
 
     {pendingMemberStatus && <div className="confirmation-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeMemberStatusConfirmation(); }} onKeyDown={(event) => { if (event.key === "Escape") closeMemberStatusConfirmation(); }}><section className="confirmation-dialog" role="dialog" aria-modal="true" aria-labelledby="member-status-confirmation-title" aria-describedby="member-status-confirmation-description"><p className="section-kicker">管理员确认</p><h2 id="member-status-confirmation-title">{pendingMemberStatus.status === "removed" ? "移除成员" : "暂停成员"}</h2><p id="member-status-confirmation-description">{pendingMemberStatus.status === "removed" ? "移除后，该成员会失去公司及全部企业空间权限；如需恢复，必须重新发送邀请。" : "暂停后，该成员将立即无法访问当前公司和所属企业空间，管理员可以随时恢复。"}</p><div className="confirmation-topic-name">{pendingMemberStatus.member.display_name || pendingMemberStatus.member.email}</div><div className="confirmation-actions"><button type="button" onClick={closeMemberStatusConfirmation} disabled={savingId === pendingMemberStatus.member.id}>取消</button><button ref={confirmationButtonRef} className="confirmation-danger" type="button" onClick={() => void confirmMemberStatus()} disabled={savingId === pendingMemberStatus.member.id}>{savingId === pendingMemberStatus.member.id ? "正在处理…" : pendingMemberStatus.status === "removed" ? "确认移除" : "确认暂停"}</button></div></section></div>}
-  </div>;
+  </>;
 }

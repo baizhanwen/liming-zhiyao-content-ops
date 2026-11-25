@@ -36,11 +36,12 @@ test("strategy activation retires the prior version and records effective time",
   assert.match(activate, /canManageProjectKnowledge/);
 });
 
-test("company administrators can review every enterprise-space strategy from one view", async () => {
-  const [strategies, projects, workspace, styles] = await Promise.all([
+test("company administrators can review every enterprise-space strategy from space management", async () => {
+  const [strategies, projects, workspace, manager, styles] = await Promise.all([
     readFile(new URL("../app/api/strategies/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/projects/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../components/KnowledgeWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../components/ProjectManager.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
   assert.match(strategies, /scope === "organization"/);
@@ -49,10 +50,10 @@ test("company administrators can review every enterprise-space strategy from one
   assert.match(strategies, /LEFT JOIN content_strategies/);
   assert.match(strategies, /p\.organization_id = \?/);
   assert.match(projects, /organizationRole: access\.organizationRole/);
-  assert.match(workspace, /strategyScope/);
-  assert.match(workspace, /全部企业空间/);
-  assert.match(workspace, /进入空间管理/);
-  assert.match(workspace, /organizationRole === "admin"/);
+  assert.match(workspace, /OrganizationStrategyOverview/);
+  assert.match(workspace, /scope: "organization"/);
+  assert.match(manager, /view=strategies/);
+  assert.match(manager, /organizationRole === "admin"/);
   assert.match(styles, /strategy-overview/);
   assert.match(styles, /strategy-space-group/);
 });
@@ -83,12 +84,13 @@ test("brand knowledge supports a validated tenant-scoped XLSX bulk import into d
   assert.equal(template.subarray(0, 2).toString("utf8"), "PK");
 });
 
-test("topic citations only use tenant-owned analyses or confirmed knowledge", async () => {
+test("topic citations use tenant-owned analyses, confirmed knowledge, or a selected inspiration card", async () => {
   const topics = await readFile(new URL("../app/api/topics/route.ts", import.meta.url), "utf8");
   assert.match(topics, /getProjectAccess/);
   assert.match(topics, /v\.organization_id = a\.organization_id AND v\.project_id = a\.project_id/);
   assert.match(topics, /k\.status = 'confirmed'/);
   assert.match(topics, /CONFIRMED_KNOWLEDGE_REQUIRED/);
+  assert.match(topics, /INSPIRATION_NOT_ACTIONABLE/);
   assert.match(topics, /topic_citations/);
 });
 
@@ -114,17 +116,22 @@ test("new topics can cite multiple confirmed brand knowledge items", async () =>
 });
 
 test("analysis results and navigation expose the knowledge-to-topic workflow", async () => {
-  const [detail, shell, knowledgePage, topicsPage] = await Promise.all([
+  const [detail, shell, spacePage, spaceWorkspace, studioPage] = await Promise.all([
     readFile(new URL("../components/AnalysisDetail.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/AppShell.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../app/knowledge/page.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../app/topics/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/space/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../components/SpaceWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/studio/page.tsx", import.meta.url), "utf8"),
   ]);
-  assert.match(detail, /从此分析创建选题/);
-  assert.match(shell, /href: "\/knowledge"/);
-  assert.match(shell, /href: "\/topics"/);
-  assert.match(knowledgePage, /KnowledgeWorkspace/);
-  assert.match(topicsPage, /TopicWorkspace/);
+  assert.match(detail, /用这个结构写文案/);
+  assert.doesNotMatch(detail, /从此分析创建选题/);
+  assert.match(shell, /href: "\/space"/);
+  assert.match(shell, /href: "\/studio"/);
+  assert.match(spacePage, /SpaceWorkspace/);
+  assert.match(spaceWorkspace, /KnowledgeWorkspace/);
+  assert.match(studioPage, /InspirationWorkspace/);
+  assert.match(studioPage, /ReferenceVideoPicker/);
+  assert.doesNotMatch(studioPage, /<TopicWorkspace/);
 });
 
 test("content input helpers reject malformed lists and allow assigned employees", async () => {
@@ -153,13 +160,13 @@ test("content lineage flows from analysis through production, publishing, and pe
   assert.match(contentApi, /inheritedCitations/);
   assert.match(contentApi, /topic_source_type/);
   assert.match(workflowApi, /citation_count/);
-  assert.match(detail, /素材中心/);
-  assert.match(detail, /对标内容库/);
+  assert.match(detail, /公司素材/);
+  assert.match(detail, /空间对标/);
   assert.match(topics, /moveTopicToProduction/);
   assert.match(production, /submitForReview/);
   assert.match(production, /提交审核/);
   assert.match(workflow, /workflow-lineage/);
-  assert.match(workflow, /进入数据复盘/);
+  assert.match(workflow, /导入作品数据/);
   assert.match(styles, /production-lineage/);
   assert.match(styles, /publication-next-step/);
 });

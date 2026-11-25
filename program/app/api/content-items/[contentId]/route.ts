@@ -1,15 +1,20 @@
 import { canWriteProjectAccess, ensureUser, getD1, getProjectAccess } from "../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../lib/api-response";
-import { analysisReportSourceText, citationQuoteMatchesSource, saveContentVersionSchema } from "../../../../lib/content-production";
+import { analysisReportSourceText, citationQuoteMatchesSource, PRODUCTION_FULL_SCRIPT_MAX_LENGTH, saveContentVersionSchema } from "../../../../lib/content-production";
 import { AUTHORIZED_KNOWLEDGE_SOURCE_ID } from "../../../../lib/authorized-knowledge";
 import { authorizedMethodologyApplicationPromptSource } from "../../../../lib/authorized-methodology-router";
 import { buildPublishedCopyProfile, publishedCopyPromptSource, validateHistoricalStyleApplication, type PublishedCopyRecord } from "../../../../lib/published-copy";
 import { readRequestIdentity } from "../../../../lib/request-auth";
 import { benchmarkRewriteReportSchema, rewriteCharacterCount } from "../../../../lib/single-benchmark-rewrite";
+import { referenceCreationInputSchema, referenceCreationReportSchema, referenceManuscript } from "../../../../lib/structure-creation";
+import { structureFromAnalysis, structureVideoScopeSql } from "../../../../lib/structure-draft";
 import { incompleteScriptReason } from "../../../../lib/content-writing-intent";
 import type { ContentStatus } from "../../../../lib/content-workflow";
 import { contentVersionSourceSql, contentVersionSourceBindings, contentVersionWrittenSql, contentVersionWrittenBindings, contentVersionFollowupStatements, statusAfterContentRevision } from "../../../../lib/content-version-write";
 import { createProjectWriteAssertion } from "../../../../lib/project-write-access";
+
+import { rewriteBrandGuard } from "../../../../lib/script-rewrite-brand";
+import { parseRewriteSnapshot } from "../../../../lib/script-rewrite-options";
 
 export const dynamic = "force-dynamic";
 
@@ -19,20 +24,45 @@ export async function PATCH(request: Request, context: { params: Promise<{ conte
   try {
     const parsed = saveContentVersionSchema.safeParse(await request.json());
     if (!parsed.success) return apiError("INVALID_CONTENT_VERSION", "生产包结构不完整或字段过长。", 400);
-    const { organizationId, projectId, pack, changeSummary, expectedVersion } = parsed.data;
+    const { organizationId, projectId, pack, changeSummary, expectedVersion, polishVersionId } = parsed.data;
     const incomplete = incompleteScriptReason(pack);
     if (incomplete) return apiError("INCOMPLETE_CONTENT_SCRIPT", incomplete, 400);
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId);
     if (!access || !canWriteProjectAccess(access)) return apiError("WRITE_ACCESS_REQUIRED", "当前角色不能修改内容。", 403);
     const { contentId } = await context.params; const db = getD1();
-    const item = await db.prepare("SELECT id, topic_id, current_version, status FROM content_items WHERE id = ? AND organization_id = ? AND project_id = ? AND deleted_at IS NULL AND status NOT IN ('published', 'reviewed', 'archived')").bind(contentId, organizationId, projectId).first<{ id: string; topic_id: string; current_version: number; status: ContentStatus }>();
+    const item = await db.prepare(`SELECT c.id, c.topic_id, c.current_version, c.status, t.source_type
+      FROM content_items c INNER JOIN topic_ideas t ON t.id = c.topic_id AND t.organization_id = c.organization_id AND t.project_id = c.project_id
+      WHERE c.id = ? AND c.organization_id = ? AND c.project_id = ? AND c.deleted_at IS NULL AND c.status NOT IN ('published', 'reviewed', 'archived')`).bind(contentId, organizationId, projectId).first<{ id: string; topic_id: string; current_version: number; status: ContentStatus; source_type: string }>();
     if (!item) return apiError("CONTENT_NOT_EDITABLE", "内容不存在、已归档或当前状态不可编辑。", 409);
+    if (item.source_type !== "script_rewrite" && pack.fullScript.length > PRODUCTION_FULL_SCRIPT_MAX_LENGTH) return apiError("INVALID_CONTENT_VERSION", "完整口播稿超过 12,000 字符。", 400);
     if (expectedVersion !== undefined && expectedVersion !== item.current_version) return apiError("CONTENT_VERSION_CONFLICT", "内容已被其他成员更新，请刷新后重试。", 409);
-    const previousVersion = await db.prepare("SELECT pack_json FROM content_versions WHERE content_item_id = ? AND organization_id = ? AND project_id = ? AND version = ?")
-      .bind(contentId, organizationId, projectId, item.current_version).first<{ pack_json: string }>();
+    const previousVersion = await db.prepare("SELECT pack_json, full_script FROM content_versions WHERE content_item_id = ? AND organization_id = ? AND project_id = ? AND version = ?")
+      .bind(contentId, organizationId, projectId, item.current_version).first<{ pack_json: string; full_script: string }>();
+    let polishGuard = { sql: "1", bindings: [] as (string | null)[] };
+    if (polishVersionId) {
+      if (!expectedVersion || !previousVersion) return apiError("CONTENT_VERSION_CONFLICT", "请重新打开要润色的稿件版本。", 409);
+      const source = `FROM script_rewrite_versions v JOIN script_rewrite_workspaces w
+        ON w.id=v.workspace_id AND w.organization_id=v.organization_id AND w.project_id=v.project_id
+        WHERE v.id=? AND v.organization_id=? AND v.project_id=? AND w.status='active' AND v.variant<>'source'
+        AND v.text=? AND w.source_text=? AND COALESCE(json_extract(v.validation_json,'$.passed'),1)=1`;
+      const bindings = [polishVersionId, organizationId, projectId, pack.fullScript, previousVersion.full_script.trim()];
+      const rewrite = await db.prepare(`SELECT v.adaptation_json ${source}`).bind(...bindings).first<{ adaptation_json: string | null }>();
+      if (!rewrite) return apiError("POLISH_SOURCE_MISMATCH", "润色结果与这版原稿不匹配，请返回稿件重新选择。", 409);
+      const adaptation = parseRewriteSnapshot(rewrite.adaptation_json);
+      const brand = adaptation?.mode === "current_brand" ? rewriteBrandGuard({ organizationId, projectId }, adaptation.brandStamp || "") : null;
+      polishGuard = { sql: `EXISTS(SELECT 1 ${source} AND v.adaptation_json IS ?) AND (${brand?.sql || "1"})`,
+        bindings: [...bindings, rewrite.adaptation_json, ...(brand?.bindings || [])] };
+      if (brand && !await db.prepare(`SELECT 1 WHERE ${brand.sql}`).bind(...brand.bindings).first())
+        return apiError("REWRITE_BRAND_CHANGED", "本次润色使用的品牌资料已更新，请核对后重新生成。", 409);
+    }
+    let previousReference: typeof pack.referenceCreation;
     let previousRewrite: ReturnType<typeof benchmarkRewriteReportSchema.parse> | undefined;
     try {
-      const parsedReport = benchmarkRewriteReportSchema.safeParse(JSON.parse(previousVersion?.pack_json || "{}").benchmarkRewrite);
+      const previousPack = JSON.parse(previousVersion?.pack_json || "{}");
+      const reference = referenceCreationReportSchema.safeParse(previousPack.referenceCreation);
+      const scaffold = referenceCreationInputSchema.safeParse(previousPack.referenceCreation);
+      previousReference = reference.success ? { ...reference.data, scriptEdited: pack.fullScript !== referenceManuscript(reference.data) } : scaffold.data;
+      const parsedReport = benchmarkRewriteReportSchema.safeParse(previousPack.benchmarkRewrite);
       if (parsedReport.success) previousRewrite = parsedReport.data;
     } catch { /* Legacy packs have no template snapshot. */ }
     const allowed = new Map<string, string>();
@@ -91,10 +121,26 @@ export async function PATCH(request: Request, context: { params: Promise<{ conte
       const methodRows = await db.prepare(`SELECT id, knowledge, original FROM authorized_knowledge_atoms WHERE source_id = ? AND id IN (${placeholders})`).bind(AUTHORIZED_KNOWLEDGE_SOURCE_ID, ...atomicMethodKnowledgeIds).all<{ id: string; knowledge: string; original: string }>();
       for (const row of methodRows.results) allowed.set(`method_knowledge:${row.id}`, `${row.knowledge}\n${row.original}`);
     }
-    const methodologyApplication = pack.qualityReview?.methodologyApplication;
+    const methodologyApplication = pack.methodologyApplication ?? pack.qualityReview?.methodologyApplication;
     if (methodologyApplication && methodKnowledgeIds.includes(methodologyApplication.planId)) {
       const methodologySource = authorizedMethodologyApplicationPromptSource(methodologyApplication);
       if (methodologySource) allowed.set(`method_knowledge:${methodologyApplication.planId}`, methodologySource);
+    }
+    if (previousReference && "topic" in previousReference) {
+      const reference = previousReference;
+      const analysis = await db.prepare(`SELECT a.report_json, (SELECT t.full_text FROM video_transcripts t WHERE t.video_id=v.id AND t.project_id=v.project_id AND t.organization_id=v.organization_id AND t.updated_at<=a.created_at ORDER BY t.version DESC LIMIT 1) AS transcript
+        FROM video_analyses a JOIN videos v ON v.id=a.video_id AND v.organization_id=a.organization_id AND v.project_id=a.project_id
+        WHERE v.organization_id=? AND v.id=? AND a.id=? AND v.deleted_at IS NULL AND ${structureVideoScopeSql}`)
+        .bind(organizationId, reference.videoId, reference.analysisId, projectId, projectId).first<{ report_json: string; transcript: string | null }>();
+      if (analysis) {
+        const source = structureFromAnalysis(analysis.report_json, reference.topic, analysis.transcript);
+        allowed.set(`video_analysis:${reference.analysisId}`, source.segments.map(row => row.excerpt || row.role).join("\n"));
+      }
+      allowed.set(`topic:${item.topic_id}`, `本次创作选题标题：${reference.topic}`);
+      const materialIds = new Set(reference.segments.flatMap(row => row.materialIds));
+      if (pack.citations.some(c => c.sourceType === "knowledge" && !materialIds.has(c.sourceId) || c.sourceType === "video_analysis" && (!analysis || c.sourceId !== reference.analysisId))) {
+        return apiError("INVALID_CONTENT_CITATION", "引用必须来自该版本已确认的参考片和所选材料。", 409);
+      }
     }
     const invalidCitation = pack.citations.some((citation) => {
       const source = allowed.get(`${citation.sourceType}:${citation.sourceId}`);
@@ -104,6 +150,9 @@ export async function PATCH(request: Request, context: { params: Promise<{ conte
     const validatedPack = historicalCopyIds.length
       ? { ...pack, historicalStyleApplication: validateHistoricalStyleApplication(pack.fullScript, buildPublishedCopyProfile(historicalRowsForValidation), historicalRowsForValidation.filter((row) => historicalCopyIds.includes(row.id)), historicalCopyIds) }
       : { ...pack, historicalStyleApplication: undefined };
+    validatedPack.referenceCreation = previousReference;
+    if (!previousReference && (pack.fullScript.length < 20 || pack.shortScript.length < 10 || pack.storyboard.some(shot => !shot.script)))
+      return apiError("INVALID_CONTENT_VERSION", "请填写完整稿和精简稿。", 400);
     validatedPack.benchmarkRewriteSegments = undefined;
     // Preserve only server-saved evidence; never accept a client-authored alignment report.
     validatedPack.benchmarkRewrite = previousRewrite ? { ...previousRewrite,
@@ -113,10 +162,10 @@ export async function PATCH(request: Request, context: { params: Promise<{ conte
     const user = await ensureUser(identity); const now = new Date().toISOString(); const nextVersion = item.current_version + 1; const versionId = crypto.randomUUID(); const packJson = JSON.stringify(validatedPack);
     const write = { contentId, organizationId, projectId, previousVersion: item.current_version, previousStatus: item.status, versionId, userId: user.id, now };
     const statements = [
-      db.prepare(`INSERT INTO content_versions (id, organization_id, project_id, content_item_id, version, generation_mode, pack_json, full_script, short_script, change_summary, created_by, created_at) SELECT ?, organization_id, project_id, id, ?, 'manual', ?, ?, ?, ?, ?, ? ${contentVersionSourceSql}`).bind(versionId, nextVersion, packJson, validatedPack.fullScript, validatedPack.shortScript, changeSummary || "手动编辑生产包", user.id, now, ...contentVersionSourceBindings(write)),
+      db.prepare(`INSERT INTO content_versions (id, organization_id, project_id, content_item_id, version, generation_mode, pack_json, full_script, short_script, change_summary, created_by, created_at) SELECT ?, organization_id, project_id, id, ?, 'manual', ?, ?, ?, ?, ?, ? ${contentVersionSourceSql} AND (${polishGuard.sql})`).bind(versionId, nextVersion, packJson, validatedPack.fullScript, validatedPack.shortScript, changeSummary || "手动编辑生产包", user.id, now, ...contentVersionSourceBindings(write), ...polishGuard.bindings),
       ...contentVersionFollowupStatements(db, write),
       ...pack.citations.map((citation) => db.prepare(`INSERT INTO content_citations (id, organization_id, project_id, content_item_id, content_version_id, citation_type, citation_id, quote, created_by, created_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${contentVersionWrittenSql}`).bind(crypto.randomUUID(), organizationId, projectId, contentId, versionId, citation.sourceType, citation.sourceId, citation.quote, user.id, now, ...contentVersionWrittenBindings(write))),
-      db.prepare(`INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) SELECT ?, ?, ?, ?, 'content.version.created', 'content_item', ?, ?, ? WHERE ${contentVersionWrittenSql}`).bind(crypto.randomUUID(), organizationId, projectId, user.id, contentId, JSON.stringify({ version: nextVersion, mode: "manual", fromStatus: item.status, toStatus: statusAfterContentRevision(item.status) }), now, ...contentVersionWrittenBindings(write)),
+      db.prepare(`INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) SELECT ?, ?, ?, ?, 'content.version.created', 'content_item', ?, ?, ? WHERE ${contentVersionWrittenSql}`).bind(crypto.randomUUID(), organizationId, projectId, user.id, contentId, JSON.stringify({ version: nextVersion, mode: "manual", ...(polishVersionId ? { polishVersionId } : {}), fromStatus: item.status, toStatus: statusAfterContentRevision(item.status) }), now, ...contentVersionWrittenBindings(write)),
     ];
     const assertWriteAccess = createProjectWriteAssertion(db, { organizationId, projectId, userId: user.id }, async () => (await readRequestIdentity(request))?.authSubject === identity.authSubject);
     await assertWriteAccess();

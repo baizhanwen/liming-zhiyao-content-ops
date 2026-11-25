@@ -64,8 +64,8 @@ export async function fixture(t, options = {}) {
     readContentModelConfig: () => ({ provider: 'fixture', model: 'fixture' }),
     invokeContentModel: async input => {
       calls.push(input); if (options.invoke) return options.invoke(input); let output;
-      if (input.system === rewrite.BENCHMARK_PLAN_SYSTEM) output = options.invalidPlan ? { ...plan, segments: plan.segments.slice(1) } : plan;
-      else if (input.system === rewrite.BENCHMARK_REVIEW_SYSTEM) {
+      if (input.system.startsWith(rewrite.BENCHMARK_PLAN_SYSTEM)) output = options.invalidPlan ? { ...plan, segments: plan.segments.slice(1) } : plan;
+      else if (input.system.startsWith(rewrite.BENCHMARK_REVIEW_SYSTEM)) {
         reviews++;
         output = options.rejectReview && (options.rejectReview === 'always' || reviews === 1) ? { passed: false, issues: ['末段改成了评论 CTA，需要保留下一条预告。'] } : { passed: true, issues: [] };
       } else {
@@ -86,7 +86,7 @@ export async function fixture(t, options = {}) {
           outputSegments = segments.map((s, index) => index === 4 ? { ...s, text: s.text + extra } : s);
         }
         output = { ...base, fullScript: outputSegments.map(s => s.text).join('\n\n'), benchmarkRewriteSegments: outputSegments,
-          qualityReview: { ...base.qualityReview, benchmarkMethods: [{ sourceId: 'benchmark', method: '逐段同构', application: '保留错误开口、三项准备、示范话术和下一条预告' }] },
+          benchmarkMethods: [{ sourceId: 'benchmark', method: '逐段同构', application: '保留错误开口、三项准备、示范话术和下一条预告' }],
           citations: [{ sourceType: 'strategy', sourceId: 'strategy', quote: '内容策略继续指导创作方向与表达方式' }, { sourceType: 'method_knowledge', sourceId: prompt.methodologyPlan.planId, quote: '一条内容只保留一个核心主张' }, { sourceType: 'benchmark', sourceId: 'benchmark', quote: reference[0] }],
         };
       }

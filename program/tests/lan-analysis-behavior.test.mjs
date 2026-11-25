@@ -26,7 +26,8 @@ function internalAction(f, action, jobId, body) {
 // host bindings, login and paid/external services. No production data is opened.
 function fixture(t) {
   const sqlite = new DatabaseSync(":memory:");
-  t.after(() => sqlite.close());
+  const backgroundTasks = [];
+  t.after(() => Promise.all(backgroundTasks).finally(() => sqlite.close()));
   for (const name of readdirSync(path.join(root, "drizzle")).filter((name) => name.endsWith(".sql")).sort()) {
     sqlite.exec(readFileSync(path.join(root, "drizzle", name), "utf8"));
   }
@@ -88,7 +89,7 @@ function fixture(t) {
   };
   const mocks = new Map([
     ["zod", zod],
-    ["cloudflare:workers", { env: { ANALYZER_SERVICE_TOKEN: "test-service-token" } }],
+    ["cloudflare:workers", { env: { ANALYZER_SERVICE_TOKEN: "test-service-token" }, waitUntil: task => { backgroundTasks.push(task); } }],
     [path.join(root, "db/runtime.ts"), runtime],
     [path.join(root, "lib/request-auth.ts"), { readRequestIdentity: async (request) => ({ authSubject: request.headers.get("x-test-user") || "user-1" }) }],
     [path.join(root, "lib/analyzer-readiness.ts"), { readAnalyzerReadiness: async () => readiness, analyzerReadinessError: () => null }],

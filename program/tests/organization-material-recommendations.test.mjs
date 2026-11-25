@@ -30,7 +30,7 @@ test("content workspace explains the current enterprise-space benchmark scope", 
   const workspace = await read("../components/ContentProductionWorkspace.tsx");
 
   assert.match(workspace, /系统检索当前企业空间已分析对标/);
-  assert.match(workspace, /保留每条素材的引用与应用说明/);
+  assert.match(workspace, /生成依据中查看本稿的引用数量/);
   assert.doesNotMatch(workspace, /entry\.source_project_name/);
   assert.match(workspace, /本空间历史反馈/);
   assert.match(workspace, /href="\/analysis\?view=benchmark"/);

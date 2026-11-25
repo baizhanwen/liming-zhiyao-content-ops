@@ -1,0 +1,30 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { contentGenerationFixture } from "./helpers/content-generation-fixture.mjs";
+
+test("draft polishing writes to the original item and checks the source version, result text and brand snapshot", async t => {
+  const f = await contentGenerationFixture(t);
+  const route = f.load("app/api/content-items/[contentId]/route.ts");
+  const original = JSON.parse(f.sqlite.prepare("SELECT pack_json FROM content_versions WHERE content_item_id=? AND version=1").get(f.contentId).pack_json);
+  original.storyboard = original.storyboard.map(row => ({ ...row, script: "先把背景讲清楚，再交代会议纪要的交付要求。" }));
+  original.citations = [{ sourceType: "topic", sourceId: f.topicId, quote: "如何清楚地交代一项任务" }];
+  f.sqlite.prepare("UPDATE content_versions SET pack_json=?,generation_mode='ai' WHERE content_item_id=? AND version=1").run(JSON.stringify(original), f.contentId);
+  const polished = original.fullScript.replace("先说明背景", "先把背景讲清楚");
+  const workspaceId = f.seed("script_rewrite_workspaces", {title: "润色这一版", source_type: "pasted", source_label: "来源稿件", source_text: original.fullScript, source_hash: "source", source_character_count: original.fullScript.length});
+  const polishVersionId = f.seed("script_rewrite_versions", {workspace_id: workspaceId, version: 2, variant: "light_rewrite", text: polished, validation_json: '{"passed":true}'});
+  const pack = { ...original, fullScript: polished };
+  const save = (changes = {}) => route.PATCH(f.request({pack, expectedVersion: 1, polishVersionId, ...changes}), {params: Promise.resolve({contentId:f.contentId})});
+  const wrong = await save({pack:{...pack, fullScript:polished+"未保存的改动。"}});
+  assert.equal((await wrong.json()).error.code, "POLISH_SOURCE_MISMATCH");
+  f.sqlite.prepare("UPDATE script_rewrite_versions SET adaptation_json=? WHERE id=?").run(JSON.stringify({ mode:"current_brand", brandStamp:"invalid", goal:"", audience:"", scenario:"", sources:[], mappings:[] }), polishVersionId);
+  const stale = await save();
+  assert.equal((await stale.json()).error.code,"REWRITE_BRAND_CHANGED");
+  f.sqlite.prepare("UPDATE script_rewrite_versions SET adaptation_json=NULL WHERE id=?").run(polishVersionId);
+  const res = await save();
+  const result = await res.json();
+  assert.equal(res.status,200,JSON.stringify(result));
+  assert.equal(result.item.id, f.contentId);
+  assert.equal(result.item.current_version,2);
+  assert.equal(result.item.full_script,polished);
+  assert.equal((await (await save()).json()).error.code,"CONTENT_VERSION_CONFLICT");
+});

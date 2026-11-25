@@ -1,5 +1,7 @@
 "use client";
 
+import { RecordSidebar, RecordSidebarItem } from "../RecordSidebar";
+import { SplitWorkspace } from "../SplitWorkspace";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { taskReferenceMode, type TaskBrief } from "../../lib/ecommerce/contracts";
 import { isScopeCancellation } from "../../lib/client-scope-request";
@@ -7,6 +9,10 @@ import { displayTime, ecommerceApi, EcommerceApiError, Field, Notices, platforms
 import { TaskForm } from "./TaskForm";
 import { Assembly } from "./Assembly";
 import { taskStates, type BenchmarkReference, type Recommendation, type TaskCaseOption, type TaskDetail, type TaskOptions, type TaskRow } from "./task-types";
+
+function formatTaskDate(value: string) {
+  return new Date(value).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
 
 export function Tasks({ scope, enabled, canManage, dirty, discard, guided = false, initialProductVersionId = "", initialTaskId = "", onTaskSaved, onProgressChange, onEditProduct }: { scope: Scope; enabled: boolean; canManage: boolean; dirty: (value: boolean) => void; discard: () => boolean; guided?: boolean; initialProductVersionId?: string; initialTaskId?: string; onTaskSaved?: (id: string) => void; onProgressChange?: () => void; onPrepareMethods?: () => void; onEditProduct?: (id: string) => void }) {
   const [tasks, setTasks] = useState<(TaskRow & { created_at?: string; updated_at?: string })[]>([]), [editor, setEditor] = useState({ id: "" }), [options, setOptions] = useState<TaskOptions | null>(null);
@@ -56,9 +62,35 @@ export function Tasks({ scope, enabled, canManage, dirty, discard, guided = fals
     pendingInitialTask.current = initialTaskId;
     if (initialTaskId) void act(refreshList);
   }, [initialTaskId, act, refreshList]);
-  return <><Notices error={action.error} />{!guided && <div className="ec-mobile-task-switch"><Field label="切换文案任务"><select value={selectedId} onChange={event => { const id = event.target.value; if (discard()) { appliedInitialTask.current = pendingInitialTask.current; markDirty(false); selectTask(id); } }}><option value="">＋ 新建任务</option>{tasks.map(task => <option key={task.id} value={task.id}>{task.title} · v{task.current_version} · {taskStates[task.status]}{task.created_at ? ` · ${new Date(task.created_at).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}` : ""}</option>)}</select></Field></div>}<div className={guided ? "ec-task-guided" : "ec-split ec-writing-layout"}>{!guided && <aside className="ec-panel ec-list ec-task-list"><div className="ec-panel-head"><h2>文案任务</h2><button type="button" disabled={!enabled} onClick={() => { if (discard()) { appliedInitialTask.current = pendingInitialTask.current; markDirty(false); selectTask(""); } }}>新建任务</button></div><p className="ec-list-caption">{tasks.length ? `${tasks.length} 个创作任务` : "你的文案会保存在这里"}</p>{tasks.map(task => { const brief = JSON.parse(task.brief_json) as TaskBrief; return <button type="button" className={`ec-list-item ${selectedId === task.id ? "selected" : ""}`} key={task.id} aria-current={selectedId === task.id ? "true" : undefined} onClick={() => { if (task.id !== selectedId && discard()) { appliedInitialTask.current = pendingInitialTask.current; markDirty(false); selectTask(task.id); } }}><span className="ec-task-item-state">{taskStates[task.status]}<span>v{task.current_version}</span></span><strong>{task.title}</strong><small>{brief.durationSec} 秒 · {taskReferenceMode(brief) === "benchmark" ? "参考创作" : "方法论创作"}</small>{task.created_at && <time dateTime={task.created_at}>{new Date(task.created_at).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</time>}</button>; })}{!tasks.length && <p className="ec-muted">先选择一个商品，写下这篇文案要解决的问题。</p>}</aside>}
+  const pickTask = (id: string) => {
+    if (!discard()) return;
+    appliedInitialTask.current = pendingInitialTask.current;
+    markDirty(false);
+    selectTask(id);
+  };
+  return <><Notices error={action.error} />
+    {!guided && <div className="ec-mobile-task-switch"><Field label="切换文案任务">
+      <select value={selectedId} onChange={event => pickTask(event.target.value)}>
+        <option value="">＋ 新建任务</option>
+        {tasks.map(task => <option key={task.id} value={task.id}>{task.title} · v{task.current_version} · {taskStates[task.status]}{task.created_at ? ` · ${formatTaskDate(task.created_at)}` : ""}</option>)}
+      </select>
+    </Field></div>}
+    <SplitWorkspace className={guided ? "ec-task-guided" : "ec-split ec-writing-layout record-sidebar-layout"}>
+      {!guided && <RecordSidebar className="ec-writing-sidebar" title="文案任务" count={tasks.length}
+        action={<button type="button" disabled={!enabled} onClick={() => pickTask("")}>新建任务</button>}>
+        {tasks.map(task => {
+          const brief = JSON.parse(task.brief_json) as TaskBrief;
+          return <RecordSidebarItem key={task.id} title={task.title} version={task.current_version}
+            status={taskStates[task.status]} selected={selectedId === task.id} onSelect={() => { if (task.id !== selectedId) pickTask(task.id); }}
+            meta={<>
+              <span>{brief.durationSec} 秒 · {taskReferenceMode(brief) === "benchmark" ? "参考创作" : "方法论创作"}</span>
+              {task.created_at && <time dateTime={task.created_at}>{formatTaskDate(task.created_at)}</time>}
+            </>} />;
+        })}
+        {!tasks.length && <p className="ec-muted">先选择一个商品，写下这篇文案要解决的问题。</p>}
+      </RecordSidebar>}
     {!options ? <section className="ec-panel" role="status">正在读取可用商品与资料…</section> : selectedId ? <TaskSession key={selectedId} scope={scope} taskId={selectedId} options={options} methods={methods} cases={cases} references={references} enabled={enabled} canManage={canManage} guided={guided} dirty={markDirty} discard={discard} listChanged={taskChanged} onEditProduct={onEditProduct} /> : <TaskForm scope={scope} options={options} methods={methods} cases={cases} references={references} discard={discard} enabled={enabled} guided={guided} initialProductVersionId={initialProductVersionId} dirty={markDirty} saved={taskSaved} />}
-  </div></>;
+  </SplitWorkspace></>;
 }
 
 function hasBenchmarkReference(brief: TaskBrief) {

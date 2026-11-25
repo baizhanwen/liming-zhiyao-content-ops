@@ -194,3 +194,39 @@ test("diagnostics retain historical report collection separately from the later 
   input.analysis.report = {}; assert.equal(buildAnalysisDiagnosticExport(input).diagnostics.collectionMode, "anonymous");
   input.analysis = null; input.job.collection_mode = "cookie"; assert.equal(buildAnalysisDiagnosticExport(input).diagnostics.collectionMode, "cookie");
 });
+
+test("a submitted share message schedules a single TikHub enrichment for the newly stored video", async t => {
+  const f = await fixture(t);
+  const pending = [], calls = [];
+  f.mockModule("cloudflare:workers", { env: { ANALYZER_SERVICE_TOKEN: "synthetic" }, waitUntil: task => pending.push(task) });
+  f.mock("lib/video-metadata-runtime.ts", {
+    async collectVideoMetadata(scope) {
+      const video = f.sqlite.prepare("SELECT source_url FROM videos WHERE id=? AND project_id=? AND organization_id=?")
+        .get(scope.videoId, scope.projectId, scope.organizationId);
+      calls.push({ url: video.source_url, userId: scope.userId });
+    },
+  });
+  const options = { url: "复制打开抖音看看 https://v.douyin.com/test123/ 视频" };
+  const first = await f.submit(options);
+  assert.equal(first.status, 202);
+  await Promise.all(pending);
+  assert.deepEqual(calls, [{ url: "https://v.douyin.com/test123/", userId: f.owner.userId }]);
+  await f.submit(options);
+  assert.equal(pending.length, 1);
+});
+
+test("a metadata collection failure leaves the accepted video and analysis job intact", async t => {
+  const f = await fixture(t);
+  const pending = [];
+  f.mockModule("cloudflare:workers", { env: { ANALYZER_SERVICE_TOKEN: "synthetic" }, waitUntil: task => pending.push(task) });
+  f.mock("lib/video-metadata-runtime.ts", {
+    async collectVideoMetadata() { throw new Error("synthetic settings failure"); },
+  });
+  const submission = await f.submit({ url: "https://v.douyin.com/test123/" });
+  assert.equal(submission.status, 202);
+  const { video, job } = await submission.json();
+  assert.equal(pending.length, 1);
+  await Promise.all(pending);
+  assert.equal(f.sqlite.prepare("SELECT id FROM videos WHERE id=?").get(video.id).id, video.id);
+  assert.equal(f.sqlite.prepare("SELECT video_id FROM analysis_jobs WHERE id=?").get(job.id).video_id, video.id);
+});

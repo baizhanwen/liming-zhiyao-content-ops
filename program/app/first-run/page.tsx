@@ -1,5 +1,5 @@
 import { FirstRunSetup } from "../../components/FirstRunSetup";
 
 export default function FirstRunPage() {
-  return <main className="login-page"><FirstRunSetup /></main>;
+  return <main className="standalone-page login-page"><FirstRunSetup /></main>;
 }

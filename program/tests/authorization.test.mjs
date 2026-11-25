@@ -8,9 +8,8 @@ test("dashboard replaces the disposable starter", async () => {
   const layout = await readFile(new URL("../app/layout.tsx", import.meta.url), "utf8");
   const packageJson = await readFile(new URL("../package.json", import.meta.url), "utf8");
   assert.match(page, /DashboardWorkspace/);
-  assert.match(dashboard, /运营工作台/);
-  assert.match(dashboard, /待审核内容/);
-  assert.match(dashboard, /真实业务记录/);
+  assert.match(dashboard, /工作进度台/);
+  assert.match(dashboard, /scopedFetch\("\/api\/work-tasks/);
   assert.doesNotMatch(dashboard, /数据为演示样例/);
   assert.match(layout, /lang="zh-CN"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);

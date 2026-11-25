@@ -1,0 +1,37 @@
+.periodic-report-content { min-width: 0; }
+.report-brief .report-import-link { align-self: center; color: var(--brand-deep); font-size: 13px; font-weight: 600; white-space: nowrap; }
+.periodic-report-create { padding: clamp(16px, 3vw, 28px); }
+.periodic-report-create h2 { margin: 0 0 16px; font-size: 18px; }
+.periodic-report-create form { display: grid; gap: 15px; max-width: 540px; }
+.periodic-report-create label, .periodic-report-person {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.periodic-report-person select, .periodic-report-create :is(input, select) { width: 100%; min-width: 0; }
+.periodic-report-dates { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.periodic-report-submit { display: flex; gap: 8px; align-items: center; }
+.periodic-report-submit button { min-height: 40px; padding: 6px 14px; font-size: 13px; }
+.periodic-report-cancel { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); cursor: pointer; }
+.periodic-report-layout .report-empty, .periodic-report-content .report-document:has(> .report-empty) { min-height: 160px; }
+.periodic-report-layout .report-document > header > div:first-child { min-width: 0; overflow-wrap: anywhere; }
+.periodic-report-layout .report-document > header > div:last-child { flex: none; }
+.periodic-report-layout .report-narrative-grid > :only-child { grid-column: 1 / -1; }
+.employee-work-details { margin-block: 18px; border-block-start: 1px solid var(--line); }
+.employee-work-details > summary { padding: 12px 0; color: var(--brand-deep); font-size: 14px; font-weight: 600; cursor: pointer; }
+.report-diagnostic-disclosure summary > svg { flex: none; color: var(--brand); }
+.report-diagnostic-disclosure[open] summary > svg { transform: rotate(180deg); }
+
+@media (max-width: 480px) {
+  .periodic-report-dates { grid-template-columns: minmax(0, 1fr); }
+}
+@media print {
+  .periodic-report-layout { display: block; }
+  .report-import-link { display: none; }
+  .periodic-report-layout > .record-sidebar, .periodic-report-create { display: none !important; }
+  .employee-work-details::details-content { content-visibility: visible; }
+  .employee-work-details > summary { display: none; }
+  .employee-work-details .employee-work-grid section > div { max-height: none; overflow: visible; }
+}

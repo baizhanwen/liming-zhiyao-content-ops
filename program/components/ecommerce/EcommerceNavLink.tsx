@@ -1,8 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import Link from "next/link";
-import { ShoppingBag } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
 
 type Access = { enabled: boolean; canManage: boolean };
 // Presentation cache only. Every mount revalidates; API authorization remains authoritative.
@@ -10,7 +8,7 @@ const accessCache = new Map<string, Access>();
 export function clearEcommerceNavigationCache() { accessCache.clear(); }
 
 /** Mounted by user and scope; same-space navigation retains the last confirmed visibility. */
-export function EcommerceNavLink({ userId, organizationId, projectId, active, pagePath }: { userId: string; organizationId: string; projectId: string; active: boolean; pagePath: string }) {
+export function EcommerceNavLink({ userId, organizationId, projectId, pagePath, children }: { userId: string; organizationId: string; projectId: string; pagePath: string; children: ReactNode }) {
   const cacheKey = JSON.stringify([userId, organizationId, projectId]);
   const [access, setAccess] = useState<Access | null>(() => accessCache.get(cacheKey) ?? null);
   useEffect(() => {
@@ -35,5 +33,5 @@ export function EcommerceNavLink({ userId, organizationId, projectId, active, pa
     return () => { active = false; controller.abort(); };
   }, [userId, organizationId, projectId, cacheKey, pagePath]);
   if (!access || !access.enabled && !access.canManage) return null;
-  return <Link className={active ? "nav-item active" : "nav-item"} href={`/content/ecommerce?${new URLSearchParams({ organizationId, projectId })}`} aria-current={active ? "page" : undefined}><ShoppingBag className="nav-icon" aria-hidden="true" /><strong>电商中心</strong></Link>;
+  return children;
 }

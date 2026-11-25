@@ -30,8 +30,15 @@ export async function GET(request: Request) {
   try {
     const access = await getProjectAccess(identity.authSubject, organizationId, projectId); if (!access) return apiError("ACCESS_DENIED", "无权访问该项目灵感。", 403);
     const bindings: unknown[] = [organizationId, projectId]; const clauses = ["organization_id = ?", "project_id = ?"]; if (["candidate", "confirmed", "rejected", "superseded", "archived"].includes(status)) { clauses.push("status = ?"); bindings.push(status); }
-    const rows = await getD1().prepare("SELECT project_inspiration_cards.*, (SELECT json_group_array(json_object('conversationId', s.conversation_id, 'messageId', s.message_id, 'memoryItemId', s.memory_item_id)) FROM project_inspiration_card_sources s WHERE s.card_id = project_inspiration_cards.id) AS source_trace_json FROM project_inspiration_cards WHERE " + clauses.join(" AND ") + " ORDER BY CASE status WHEN 'candidate' THEN 0 WHEN 'confirmed' THEN 1 WHEN 'rejected' THEN 2 WHEN 'archived' THEN 3 ELSE 4 END, updated_at DESC LIMIT 300").bind(...bindings).all<Record<string, unknown>>();
-    return Response.json({ cards: rows.results.map(serializeInspirationCard), canWrite: canWriteProjectAccess(access), canManage: canManageProjectKnowledge(access) });
+    const cardId = text(url.searchParams.get("cardId"), 100);
+    const rows = await getD1().prepare(`SELECT project_inspiration_cards.*,
+      (SELECT json_group_array(json_object('conversationId', s.conversation_id, 'messageId', s.message_id, 'memoryItemId', s.memory_item_id)) FROM project_inspiration_card_sources s WHERE s.card_id = project_inspiration_cards.id) AS source_trace_json,
+      (SELECT t.id FROM topic_ideas t WHERE t.organization_id = project_inspiration_cards.organization_id AND t.project_id = project_inspiration_cards.project_id
+        AND t.source_type = 'inspiration_card' AND t.source_ref = project_inspiration_cards.id AND t.deleted_at IS NULL LIMIT 1) AS topic_id,
+      (status IN ('candidate', 'confirmed') AND (expires_at IS NULL OR julianday(expires_at) > julianday('now'))) AS is_convertible
+      FROM project_inspiration_cards WHERE ${clauses.join(" AND ")}
+      ORDER BY (id = ?) DESC, CASE status WHEN 'candidate' THEN 0 WHEN 'confirmed' THEN 1 WHEN 'rejected' THEN 2 WHEN 'archived' THEN 3 ELSE 4 END, updated_at DESC LIMIT 300`).bind(...bindings, cardId).all<Record<string, unknown>>();
+    return Response.json({ cards: rows.results.map((row) => ({ ...serializeInspirationCard(row), topic_id: row.topic_id || null, is_convertible: Boolean(row.is_convertible) })), canWrite: canWriteProjectAccess(access), canManage: canManageProjectKnowledge(access) });
   } catch (error) { return errorResponse(error); }
 }
 

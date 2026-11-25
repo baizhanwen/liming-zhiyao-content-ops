@@ -55,7 +55,7 @@ export async function GET(request: Request) {
         AND publication.status='published' AND julianday(publication.published_at)>=julianday(?) AND julianday(publication.published_at)<julianday(?))`;
 
     const [pendingReviews, jobCounts, historicalFailures, upcomingSchedules, openTasks, reviews, tasks,
-      jobs, projects, published, team, writeAccess, workTasks, assignableEmployees] = await Promise.all([
+      jobs, projects, published, team, writeAccess, workTasks, assignableEmployees, productionTrend] = await Promise.all([
       db.prepare(`SELECT COUNT(*) AS value FROM content_reviews r INNER JOIN content_items c
           ON c.id=r.content_item_id AND c.organization_id=r.organization_id AND c.project_id=r.project_id
         WHERE c.organization_id=? AND c.deleted_at IS NULL AND ${availableProject("c")}
@@ -129,6 +129,22 @@ export async function GET(request: Request) {
         FROM organization_members member INNER JOIN users u ON u.id=member.user_id
         WHERE member.organization_id=? AND member.role='member' AND member.status='active' AND u.status='active' AND ?=1
         ORDER BY name ASC,u.id ASC`).bind(organizationId, isAdmin ? 1 : 0).all(),
+      // Two 30-day periods let the chart switch ranges and compare complete calendar windows.
+      db.prepare(`WITH RECURSIVE bounds(last_day) AS (SELECT date(?, '+8 hours')),
+        calendar(day) AS (
+          SELECT date(last_day, '-59 days') FROM bounds
+          UNION ALL SELECT date(day, '+1 day') FROM calendar WHERE day < (SELECT last_day FROM bounds)
+        ), daily AS (
+          SELECT date(c.created_at, '+8 hours') AS day, COUNT(*) AS count
+          FROM content_items c
+          WHERE c.organization_id=? AND c.deleted_at IS NULL
+            AND date(c.created_at, '+8 hours') BETWEEN (SELECT MIN(day) FROM calendar) AND (SELECT MAX(day) FROM calendar)
+            AND ${availableProject("c")}${ownerScope("c")}${projectScope("c")}
+          GROUP BY date(c.created_at, '+8 hours')
+        )
+        SELECT calendar.day AS date, COALESCE(daily.count, 0) AS count FROM calendar
+        LEFT JOIN daily ON daily.day=calendar.day ORDER BY calendar.day`)
+        .bind(nowIso, organizationId, ...ownerValues, ...scopeValues).all<{ date: string; count: number }>(),
     ]);
 
     return Response.json({
@@ -143,7 +159,7 @@ export async function GET(request: Request) {
         monthlyContentTarget: projects.results.reduce((sum, project) => sum + (project.content_target || 0), 0),
       },
       reviews: reviews.results, tasks: tasks.results, jobs: jobs.results, projects: projects.results,
-      team: team.results, assignableEmployees: assignableEmployees.results,
+      team: team.results, assignableEmployees: assignableEmployees.results, productionTrend: productionTrend.results,
     });
   } catch (error) { return errorResponse(error); }
 }

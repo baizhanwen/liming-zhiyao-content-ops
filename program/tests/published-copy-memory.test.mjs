@@ -100,6 +100,5 @@ test("brand knowledge workspace hides history module while generation still trac
   assert.match(generation, /validateHistoricalStyleApplication/);
   assert.match(publication, /ON CONFLICT\(publication_id\) DO UPDATE/);
   assert.match(production, /historical_copy/);
-  assert.match(contentWorkspace, /历史文案应用报告/);
-  assert.match(contentWorkspace, /原创重复检测通过/);
+  assert.doesNotMatch(contentWorkspace, /历史文案应用报告|原创重复检测通过/);
 });

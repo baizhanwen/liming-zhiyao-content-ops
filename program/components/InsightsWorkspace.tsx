@@ -1,5 +1,10 @@
 "use client";
 import "./operations-cleanup.css";
+import { PeriodicReportLayout } from "./PeriodicReportLayout";
+import { AnalyzedAccountsOverview } from "./AnalyzedAccountsOverview";
+import "./performance-import.css";
+import "./insights-overview.css";
+import Link from "next/link";
 import { runScopedAction } from "../lib/client-scope";
 import { useWorkspaceInitialization } from "./useWorkspaceInitialization";
 import { loadClientProjects } from "../lib/client-scope";
@@ -7,7 +12,7 @@ import { readApiError as readError } from "../lib/client-format";
 
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ArrowRight, BookmarkCheck, BookmarkPlus, Building2, CheckCircle2, Clock3, FileSpreadsheet, RefreshCw, UserRound, Video, FileText, UploadCloud } from "lucide-react";
+import { AlertTriangle, ArrowRight, BookmarkCheck, BookmarkPlus, Building2, ChevronDown, CheckCircle2, Clock3, FileSpreadsheet, UserRound, Video, FileText, UploadCloud } from "lucide-react";
 import Papa from "papaparse";
 import { readCsvTable } from "../lib/csv-table";
 import { importDate, importDateInput } from "../lib/import-date";
@@ -20,7 +25,7 @@ import { readFirstWorksheet } from "../lib/xlsx-table";
 import { isMissingMetricCell, metricNumberCell, percentMetricCell, signedMetricNumberCell, watchMetricMilliseconds } from "../lib/performance-import";
 import { rememberCurrentScope, scopedFetch } from "../lib/client-scope";
 
-type View = "overview" | "imports" | "matches" | "reports";
+import type { InsightsView } from "./InsightsHeader";
 type Organization = { id: string; name: string }; type Project = { id: string; name: string };
 type ComparisonMetric = "views" | "interactions" | "followersGained" | "leads";
 type Diagnostics = { layers: Array<{ key: string; label: string; status: string; confidence: string; evidence: string[]; missing: string[] }>; rules: Array<{ code: string; label: string; layer: string; status: string; confidence: string; minimumSample: number; evidence: string[]; uncertainty: string }>; peerGroups: Array<{ key: string; label: string; sampleSize: number; medianViews: number | null; medianCompletionRate: number | null; medianEngagementRate: number | null; periodStart: string; periodEnd: string }>; attributionNotice: string; evidence?: Array<{ kind: string; contentItemId: string; sourceType: string; sourceId: string; label: string; quote: string | null; locator: string | null }> };type Analytics = { periodStart: string; periodEnd: string; summary: { timestampAliases?: number; timestampConflicts?: number; views: number; interactions: number; followersGained: number; leads: number; contentCount: number; cumulativeViews?: number; cumulativeInteractions?: number; cumulativeFollowersGained?: number; cumulativeLeads?: number; engagementRate: number; leadRate: number; averageCompletionRate: number | null; averageWatchSeconds: number | null; baselineCoverage?: { total: number; complete: number; partial: number; newPublications: number } }; comparison?: { periodStart: string; periodEnd: string; previous: Record<ComparisonMetric, number>; changeRate: Record<ComparisonMetric, number | null> } | null; series: Array<{ date: string; views: number; interactions: number; followersGained: number; leads: number }>; publishedSeries: Array<{ date: string; views: number; interactions: number; contentCount: number }>; platforms: Array<{ platform: string; views: number; interactions: number; contentCount: number; engagementRate: number }>; contentPerformance: Array<{ publicationId: string; title: string; platform: string; externalUrl: string | null; publishedAt: string | null; videoId: string | null; videoTitle: string | null; videoDurationSec: number | null; views: number; interactions: number; engagementRate: number; followersGained: number; leads: number }>; topContent: Array<{ publicationId: string; title: string; platform: string; externalUrl: string | null; views: number; cumulativeViews?: number; interactions: number; engagementRate: number; followersGained: number; leads: number }>; peerGroups?: Diagnostics["peerGroups"]; diagnostics?: Diagnostics };
@@ -78,12 +83,12 @@ function performanceTooltip(params: unknown) {
   const statusColor = videoId ? "#2f7458" : "#7c7f7a";
   const statusBackground = videoId ? "#edf7f1" : "#f1f2ef";
   const links = [
-    videoId ? `<a href="/analysis/${encodeURIComponent(videoId)}" style="color:#3f4d8f;font-weight:700;text-decoration:none">查看视频分析 →</a>` : "",
-    externalUrl ? `<a href="${escapeHtml(externalUrl)}" target="_blank" rel="noreferrer" style="color:#3f4d8f;font-weight:700;text-decoration:none">打开原视频 ↗</a>` : "",
+    videoId ? `<a href="/analysis/${encodeURIComponent(videoId)}" style="color:#10766f;font-weight:700;text-decoration:none">查看视频分析 →</a>` : "",
+    externalUrl ? `<a href="${escapeHtml(externalUrl)}" target="_blank" rel="noreferrer" style="color:#10766f;font-weight:700;text-decoration:none">打开原视频 ↗</a>` : "",
   ].filter(Boolean).join('<span style="color:#d2d4cf"> · </span>');
   return [
     '<div style="width:340px;max-width:calc(100vw - 48px);word-break:break-word">',
-    `<div style="display:flex;align-items:center;gap:7px;margin-bottom:8px"><span style="padding:3px 7px;border-radius:999px;color:${statusColor};background:${statusBackground};font-size:11px;font-weight:700">${videoId ? "已关联视频分析" : "未匹配视频"}</span><span style="color:#8a8d88;font-size:11px">${escapeHtml(platform)} · ${escapeHtml(publishedAt)}</span></div>`,
+    `<div style="display:flex;align-items:center;gap:7px;margin-bottom:8px"><span style="padding:3px 7px;border-radius:999px;color:${statusColor};background:${statusBackground};font-size:11px;font-weight:700">${videoId ? "已关联视频分析" : "未匹配视频"}</span><span style="color:#60786f;font-size:11px">${escapeHtml(platform)} · ${escapeHtml(publishedAt)}</span></div>`,
     `<strong style="display:block;margin-bottom:5px;line-height:1.5;font-size:14px">${escapeHtml(title)}</strong>`,
     videoTitle ? `<div style="margin-bottom:8px;color:#777a75;font-size:11px">分析视频：${escapeHtml(videoTitle)}${duration ? ` · ${duration}` : ""}</div>` : duration ? `<div style="margin-bottom:8px;color:#777a75;font-size:11px">视频时长：${duration}</div>` : "",
     '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:10px 0;padding:9px 0;border-top:1px solid #ecece8;border-bottom:1px solid #ecece8">',
@@ -129,7 +134,7 @@ function publishedTrendTooltip(params: unknown) {
   }).join("");
   return [
     '<div style="width:400px;max-width:calc(100vw - 48px);word-break:break-word">',
-    `<div style="display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:9px"><div><span style="display:block;color:#8a8d88;font-size:10px">发布日期</span><strong style="font-size:15px">${escapeHtml(date)}</strong></div><b style="color:#3f4d8f;font-size:12px">${contentCount} 条作品</b></div>`,
+    `<div style="display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:9px"><div><span style="display:block;color:#60786f;font-size:10px">发布日期</span><strong style="font-size:15px">${escapeHtml(date)}</strong></div><b style="color:#10766f;font-size:12px">${contentCount} 条作品</b></div>`,
     '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:7px;padding:9px 10px;border-radius:8px;background:#f6f7fb">',
     `<div><span style="display:block;color:#999;font-size:10px">当前播放</span><b>${escapeHtml(formatNumber(views))}</b></div>`,
     `<div><span style="display:block;color:#999;font-size:10px">当前互动</span><b>${escapeHtml(formatNumber(interactions))}</b></div>`,
@@ -140,13 +145,13 @@ function publishedTrendTooltip(params: unknown) {
   ].join("");
 }
 function formatDate(value: string) { return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "short", day: "numeric" }).format(new Date(value)); }
-function isoDate(offsetDays = 0) { const date = new Date(); date.setUTCDate(date.getUTCDate() + offsetDays); return date.toISOString().slice(0, 10); }
 function comparisonNote(analytics: Analytics, metric: ComparisonMetric) { const rate = analytics.comparison?.changeRate[metric]; if (rate === null || rate === undefined) return "前期无可比增量"; return `较前期${rate >= 0 ? "+" : ""}${(rate * 100).toFixed(1)}%`; }
 function formatImportErrors(value: string) { try { return JSON.stringify(JSON.parse(value), null, 2); } catch { return value; } }
 const importFieldLabels: Record<string, string> = { title: "作品名称", publishedAt: "发布时间", genre: "体裁", reviewStatus: "审核状态", views: "播放量", likes: "点赞量", shares: "分享量", comments: "评论量", saves: "收藏量", homepageVisits: "主页访问量", followerDelta: "粉丝增量", followersGained: "新增粉丝", leads: "线索", completionRate: "完播率", fiveSecondCompletionRate: "5秒完播率", coverCtr: "封面点击率", twoSecondBounceRate: "2秒跳出率", avgWatchMs: "平均播放时长", averageWatchSeconds: "平均观看秒数", publicationId: "发布记录ID", externalUrl: "作品链接", observedAt: "快照时间" };
 
-export function InsightsWorkspace({ initialView, initialOrganizationId = "", initialProjectId = "" }: { initialView: View; initialOrganizationId?: string; initialProjectId?: string }) {
+export function InsightsWorkspace({ initialView, initialOrganizationId = "", initialProjectId = "" }: { initialView: InsightsView; initialOrganizationId?: string; initialProjectId?: string }) {
   const [organizations, setOrganizations] = useState<Organization[]>([]); const [organizationId, setOrganizationId] = useState(""); const [projects, setProjects] = useState<Project[]>([]); const [projectId, setProjectId] = useState("");
+  const [loadedScope, setLoadedScope] = useState<{ organizationId: string; projectId: string } | null>(null);
   const [analytics, setAnalytics] = useState<Analytics>(emptyAnalytics); const [imports, setImports] = useState<ImportBatch[]>([]); const [platformImports, setPlatformImports] = useState<ImportBatch[]>([]); const [publications, setPublications] = useState<Publication[]>([]); const [reports, setReports] = useState<Report[]>([]); const [canImport, setCanImport] = useState(false); const [canGenerate, setCanGenerate] = useState(false);
   const [days, setDays] = useState(30); const [loading, setLoading] = useState(true); const [busy, setBusy] = useState(""); const [error, setError] = useState(""); const [importFormat, setImportFormat] = useState<"standard" | "douyin_16">("douyin_16"); const [asOfAt, setAsOfAt] = useState(new Date().toISOString()); const [selectedReportId, setSelectedReportId] = useState("");
 
@@ -155,15 +160,60 @@ export function InsightsWorkspace({ initialView, initialOrganizationId = "", ini
   const rows = importPreview.preview.data ?? [], filename = importPreview.preview.filename, parseMessage = importPreview.preview.message;
 
   const loadWorkspace = useCallback(async (orgId: string, projId: string, period = 30) => {
-    if (!orgId || !projId) return; const scope = `organizationId=${encodeURIComponent(orgId)}&projectId=${encodeURIComponent(projId)}`;
-    const [analyticsResponse, performanceResponse, reportsResponse] = await Promise.all([scopedFetch(`/api/analytics?${scope}&days=${period}`), scopedFetch(`/api/performance?${scope}`), scopedFetch(`/api/reports?${scope}`)]);
-    if (!analyticsResponse.ok) throw new Error(await readError(analyticsResponse)); if (!performanceResponse.ok) throw new Error(await readError(performanceResponse)); if (!reportsResponse.ok) throw new Error(await readError(reportsResponse));
-    const analyticsBody = await analyticsResponse.json() as Analytics; const performanceBody = await performanceResponse.json() as { imports: ImportBatch[]; platformImports?: ImportBatch[]; publications: Publication[]; canImport: boolean }; const reportsBody = await reportsResponse.json() as { reports: Report[]; canGenerate: boolean };
-    setAnalytics(analyticsBody); setImports(performanceBody.imports); setPlatformImports(performanceBody.platformImports || []); setPublications(performanceBody.publications); setCanImport(performanceBody.canImport); setReports(reportsBody.reports); setCanGenerate(reportsBody.canGenerate); setSelectedReportId((current) => reportsBody.reports.some((report) => report.id === current) ? current : reportsBody.reports[0]?.id || "");
-  }, []);
+    if (!orgId || !projId) return;
+    const scope = new URLSearchParams({ organizationId: orgId, projectId: projId });
+    if (initialView === "performance") {
+      const response = await scopedFetch(`/api/analytics?${scope}&days=${period}`);
+      if (!response.ok) throw new Error(await readError(response));
+      const data = await response.json() as Analytics & { canImport: boolean };
+      setAnalytics(data);
+      setCanImport(data.canImport);
+    } else if (initialView === "imports") {
+      const response = await scopedFetch(`/api/performance?${scope}`);
+      if (!response.ok) throw new Error(await readError(response));
+      const data = await response.json() as { imports: ImportBatch[]; platformImports?: ImportBatch[]; publications: Publication[]; canImport: boolean };
+      setImports(data.imports);
+      setPlatformImports(data.platformImports || []);
+      setPublications(data.publications);
+      setCanImport(data.canImport);
+    } else if (initialView === "reports") {
+      const response = await scopedFetch(`/api/reports?${scope}`);
+      if (!response.ok) throw new Error(await readError(response));
+      const data = await response.json() as { reports: Report[]; canGenerate: boolean };
+      setReports(data.reports);
+      setCanGenerate(data.canGenerate);
+      setSelectedReportId(current => data.reports.some(report => report.id === current) ? current : data.reports[0]?.id || "");
+    }
+    setLoadedScope({ organizationId: orgId, projectId: projId });
+  }, [initialView]);
   const loadProjects = useCallback(async (orgId: string, preferred = "") => {
     const body = await loadClientProjects<Project>(orgId, preferred); setProjects(body.projects); const next = body.selected; setProjectId(next); rememberCurrentScope(orgId, next); await loadWorkspace(orgId, next); }, [loadWorkspace]);
-  useWorkspaceInitialization({ initialOrganizationId, initialProjectId, setOrganizations, setOrganizationId, loadProjects, setError, setLoading, failureMessage: "数据复盘加载失败" });
+  useWorkspaceInitialization({ initialOrganizationId, initialProjectId, setOrganizations, setOrganizationId, loadProjects, setError, setLoading, failureMessage: "数据报告加载失败" });
+
+  function changeScope(orgId: string, projId?: string) {
+    setLoading(true);
+    setError(""); setLoadedScope(null);
+    return runScopedAction(async () => {
+      if (projId !== undefined) {
+        setProjectId(projId);
+        rememberCurrentScope(orgId, projId);
+        await loadWorkspace(orgId, projId, days);
+      } else {
+        setProjectId(""); setOrganizationId(orgId); setDays(30);
+        await loadProjects(orgId);
+      }
+    }, setError).finally(() => setLoading(false));
+  }
+
+  function changePeriod(value: number) {
+    if (busy || value === days) return;
+    setBusy("period");
+    setError("");
+    void runScopedAction(async () => {
+      await loadWorkspace(organizationId, projectId, value);
+      setDays(value);
+    }, setError).finally(() => setBusy(""));
+  }
 
   const trendOption = useMemo<EChartsCoreOption>(() => {
     const singlePublishDate = analytics.publishedSeries.length === 1;
@@ -178,16 +228,16 @@ export function InsightsWorkspace({ initialView, initialOrganizationId = "", ini
     const pointData = (item: Analytics["publishedSeries"][number], value: number) => ({ value, date: item.date, views: item.views, interactions: item.interactions, contentCount: item.contentCount, works: worksByDate.get(item.date) || [] });
     return {
       tooltip: { trigger: "item", confine: true, enterable: true, hideDelay: 180, extraCssText: "max-width:430px;white-space:normal;word-break:break-word;line-height:1.55;padding:12px 14px", formatter: publishedTrendTooltip },
-      legend: { bottom: 0, textStyle: { color: "#6f716d", fontSize: 10 } },
+      legend: { bottom: 0, textStyle: { color: "#536d64", fontSize: 10 } },
       grid: { left: 54, right: 54, top: 34, bottom: 44 },
-      xAxis: { type: "category", boundaryGap: singlePublishDate, data: analytics.publishedSeries.map((item) => item.date.slice(5)), axisLine: { lineStyle: { color: "#e4e5e0" } }, axisLabel: { color: "#92958f" } },
+      xAxis: { type: "category", boundaryGap: singlePublishDate, data: analytics.publishedSeries.map((item) => item.date.slice(5)), axisLine: { lineStyle: { color: "#dce7e1" } }, axisLabel: { color: "#60786f" } },
       yAxis: [
-        { type: "value", name: "播放", nameTextStyle: { color: "#92958f", fontSize: 9 }, axisLabel: { color: "#92958f" }, splitLine: { lineStyle: { color: "#eeeeeb" } } },
-        { type: "value", name: "互动", nameTextStyle: { color: "#92958f", fontSize: 9 }, axisLabel: { color: "#92958f" }, splitLine: { show: false } },
+        { type: "value", name: "播放", nameTextStyle: { color: "#60786f", fontSize: 9 }, axisLabel: { color: "#60786f" }, splitLine: { lineStyle: { color: "#e9efea" } } },
+        { type: "value", name: "互动", nameTextStyle: { color: "#60786f", fontSize: 9 }, axisLabel: { color: "#60786f" }, splitLine: { show: false } },
       ],
       series: [
-        { name: "播放量", type: "line", yAxisIndex: 0, smooth: !singlePublishDate, showSymbol: true, symbol: "circle", symbolSize: singlePublishDate ? 12 : 7, data: analytics.publishedSeries.map((item) => pointData(item, item.views)), lineStyle: { color: "#3f4d8f", width: 3 }, itemStyle: { color: "#fff", borderColor: "#3f4d8f", borderWidth: 3 }, areaStyle: { color: "rgba(63,77,143,.10)" }, label: { show: singlePublishDate, position: "top", color: "#3f4d8f", fontWeight: 700 } },
-        { name: "互动量", type: "line", yAxisIndex: 1, smooth: !singlePublishDate, showSymbol: true, symbol: "diamond", symbolSize: singlePublishDate ? 12 : 7, data: analytics.publishedSeries.map((item) => pointData(item, item.interactions)), lineStyle: { color: "#4d856d", width: 2 }, itemStyle: { color: "#fff", borderColor: "#4d856d", borderWidth: 2 }, label: { show: singlePublishDate, position: "bottom", color: "#4d856d", fontWeight: 700 } },
+        { name: "播放量", type: "line", yAxisIndex: 0, smooth: !singlePublishDate, showSymbol: true, symbol: "circle", symbolSize: singlePublishDate ? 12 : 7, data: analytics.publishedSeries.map((item) => pointData(item, item.views)), lineStyle: { color: "#10766f", width: 3 }, itemStyle: { color: "#fff", borderColor: "#10766f", borderWidth: 3 }, areaStyle: { color: "rgba(16,118,111,.10)" }, label: { show: singlePublishDate, position: "top", color: "#10766f", fontWeight: 700 } },
+        { name: "互动量", type: "line", yAxisIndex: 1, smooth: !singlePublishDate, showSymbol: true, symbol: "diamond", symbolSize: singlePublishDate ? 12 : 7, data: analytics.publishedSeries.map((item) => pointData(item, item.interactions)), lineStyle: { color: "#97711d", width: 2 }, itemStyle: { color: "#fff", borderColor: "#97711d", borderWidth: 2 }, label: { show: singlePublishDate, position: "bottom", color: "#97711d", fontWeight: 700 } },
       ],
     };
   }, [analytics.contentPerformance, analytics.publishedSeries]);
@@ -199,13 +249,13 @@ export function InsightsWorkspace({ initialView, initialOrganizationId = "", ini
     return {
       tooltip: { trigger: "item", confine: true, enterable: true, hideDelay: 300, extraCssText: "max-width:380px;white-space:normal;word-break:break-word;line-height:1.55;padding:12px 14px", formatter: performanceTooltip },
       grid: { left: 72, right: 36, top: 36, bottom: 58, containLabel: true },
-      xAxis: { type: "value", name: "播放量", nameLocation: "middle", nameGap: 30, nameTextStyle: { color: "#92958f", fontSize: 9 }, axisLabel: { color: "#92958f" }, splitLine: { lineStyle: { color: "#eeeeeb" } } },
-      yAxis: { type: "value", name: "互动率 %", nameTextStyle: { color: "#92958f", fontSize: 9 }, axisLabel: { color: "#92958f", formatter: "{value}%" }, splitLine: { lineStyle: { color: "#eeeeeb" } } },
+      xAxis: { type: "value", name: "播放量", nameLocation: "middle", nameGap: 30, nameTextStyle: { color: "#60786f", fontSize: 9 }, axisLabel: { color: "#60786f" }, splitLine: { lineStyle: { color: "#e9efea" } } },
+      yAxis: { type: "value", name: "互动率 %", nameTextStyle: { color: "#60786f", fontSize: 9 }, axisLabel: { color: "#60786f", formatter: "{value}%" }, splitLine: { lineStyle: { color: "#e9efea" } } },
       series: [{
         name: "作品", type: "scatter", symbolSize: 13,
-        data: works.map((item) => ({ name: item.title, value: [item.views, Number((item.engagementRate * 100).toFixed(2)), item.followersGained], platform: item.platform, publishedAt: item.publishedAt, videoId: item.videoId, videoTitle: item.videoTitle, videoDurationSec: item.videoDurationSec, externalUrl: item.externalUrl, itemStyle: { color: item.engagementRate >= averageEngagement / 100 ? "#4d856d" : "#6978b4", borderColor: "#fff", borderWidth: 2 } })),
+        data: works.map((item) => ({ name: item.title, value: [item.views, Number((item.engagementRate * 100).toFixed(2)), item.followersGained], platform: item.platform, publishedAt: item.publishedAt, videoId: item.videoId, videoTitle: item.videoTitle, videoDurationSec: item.videoDurationSec, externalUrl: item.externalUrl, itemStyle: { color: item.engagementRate >= averageEngagement / 100 ? "#10766f" : "#bf9442", borderColor: "#fff", borderWidth: 2 } })),
         emphasis: { scale: 1.25, focus: "self", label: { show: false } },
-        markLine: { silent: true, symbol: ["none", "none"], label: { color: "#8a8d88", fontSize: 8 }, lineStyle: { color: "#c9ccc6", type: "dashed" }, data: [{ xAxis: averageViews, name: "平均播放" }, { yAxis: averageEngagement, name: "平均互动率" }] },
+        markLine: { silent: true, symbol: ["none", "none"], label: { color: "#60786f", fontSize: 8 }, lineStyle: { color: "#b6c9bf", type: "dashed" }, data: [{ xAxis: averageViews, name: "平均播放" }, { yAxis: averageEngagement, name: "平均互动率" }] },
       }],
     };
   }, [analytics.contentPerformance]);
@@ -304,65 +354,198 @@ export function InsightsWorkspace({ initialView, initialOrganizationId = "", ini
     } finally { setBusy(""); }
   }
 
-  if (loading) return <div className="management-state" role="status">正在载入运营数据…</div>;
-  if (!organizationId || !projectId) return <div className="empty-panel"><h2>请先创建企业空间</h2><p>运营数据和报告必须归属于明确的企业空间。</p></div>;
-  return <div className="insights-workspace"><div className="management-toolbar insights-toolbar"><label>公司<select value={organizationId} disabled={Boolean(busy)} onChange={(event) => runScopedAction(async () => { setOrganizationId(event.target.value); await loadProjects(event.target.value); }, setError)}>{organizations.map((organization) => <option value={organization.id} key={organization.id}>{organization.name}</option>)}</select></label><label>企业空间<select value={projectId} disabled={Boolean(busy)} onChange={(event) => runScopedAction(async () => { setProjectId(event.target.value); rememberCurrentScope(organizationId, event.target.value); await loadWorkspace(organizationId, event.target.value, days); }, setError)}>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select></label><nav><a className={initialView === "overview" ? "active" : ""} href={`/insights?view=overview&organizationId=${organizationId}&projectId=${projectId}`}>复盘</a><a className={initialView === "imports" ? "active" : ""} href={`/insights?view=imports&organizationId=${organizationId}&projectId=${projectId}`}>导入</a><a className={initialView === "matches" ? "active" : ""} href={`/insights?view=matches&organizationId=${organizationId}&projectId=${projectId}`}>作品匹配</a><a className={initialView === "reports" ? "active" : ""} href={`/insights?view=reports&organizationId=${organizationId}&projectId=${projectId}`}>报告</a></nav></div>{error && <div className="inline-alert" role="alert">{error}</div>}
-    {initialView === "overview" && <Overview analytics={analytics} trendOption={trendOption} performanceMapOption={performanceMapOption} days={days} onDays={async (value) => { setDays(value); await loadWorkspace(organizationId, projectId, value); }} />}
-    {initialView === "imports" && <ImportView canImport={canImport} imports={[...platformImports, ...imports]} rows={rows} filename={filename} format={importFormat} offsetMinutes={importOffset} onOffset={(value) => { setImportOffset(value); importPreview.clear(); }} asOfAt={asOfAt} message={parseMessage} phase={importPreview.preview.phase} busy={busy} onFormat={(value) => { setImportFormat(value); importPreview.clear(); }} onAsOfAt={(value) => { try { setAsOfAt(value ? importDate(value, importOffset) : ""); } catch { setAsOfAt(""); setError("数据截至时间无效，请重新填写。"); } }} onTemplate={downloadTemplate} onFile={parseImportFile} onSubmit={submitImport} matchHref={`/insights?view=matches&organizationId=${organizationId}&projectId=${projectId}`} />}
+  if (loading) return <div className="management-state" role="status">正在载入数据报告…</div>;
+  const scopeQuery = new URLSearchParams({ organizationId, projectId });
+  const importHref = `/insights?view=imports&${scopeQuery}`;
+  const matchHref = `/insights?view=matches&${scopeQuery}`;
+  const performanceHref = `/insights?view=performance&${scopeQuery}`;
+  return <div className="insights-workspace">
+    {organizations.length > 0 && <div className="management-toolbar insights-toolbar">
+      <label>公司<select aria-label="公司" value={organizationId} disabled={Boolean(busy)} onChange={(event) => void changeScope(event.target.value)}>
+        {organizations.map((organization) => <option value={organization.id} key={organization.id}>{organization.name}</option>)}
+      </select></label>
+      <label>企业空间<select aria-label="企业空间" value={projectId} disabled={Boolean(busy) || !projects.length} onChange={(event) => void changeScope(organizationId, event.target.value)}>
+        {!projects.length && <option value="">暂无企业空间</option>}
+        {projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}
+      </select></label>
+      {initialView === "reports" && organizationId && projectId && <nav aria-label="报告数据"><Link href={importHref}>导入创作者后台数据</Link></nav>}
+      {["imports", "matches", "performance"].includes(initialView) && organizationId && projectId && <nav aria-label="报告数据">
+        <Link href={importHref} aria-current={initialView === "imports" ? "page" : undefined}>后台数据导入</Link>
+        <Link href={matchHref} aria-current={initialView === "matches" ? "page" : undefined}>作品匹配</Link>
+        <Link href={performanceHref} aria-current={initialView === "performance" ? "page" : undefined}>已导入作品表现</Link>
+      </nav>}
+    </div>}
+    {error && <div className="inline-alert" role="alert">{error}</div>}
+    {!organizationId || !projectId
+      ? <div className="empty-panel"><h2>请选择企业空间</h2><p>运营数据和报告按企业空间管理。</p><a className="primary-button link-button" href="/projects">管理企业空间</a></div>
+      : loadedScope?.organizationId === organizationId && loadedScope.projectId === projectId && <>
+    {initialView === "overview" && <AnalyzedAccountsOverview key={projectId} organizationId={organizationId} projectId={projectId} />}
+    {initialView === "performance" && <Overview analytics={analytics} trendOption={trendOption} performanceMapOption={performanceMapOption} days={days} onDays={changePeriod} updating={busy === "period"} importHref={canImport ? importHref : undefined} />}
+    {initialView === "imports" && <ImportView canImport={canImport} imports={[...platformImports, ...imports]} rows={rows} filename={filename} format={importFormat} offsetMinutes={importOffset} onOffset={(value) => { setImportOffset(value); importPreview.clear(); }} asOfAt={asOfAt} message={parseMessage} phase={importPreview.preview.phase} busy={busy} onFormat={(value) => { setImportFormat(value); importPreview.clear(); }} onAsOfAt={(value) => { try { setAsOfAt(value ? importDate(value, importOffset) : ""); } catch { setAsOfAt(""); setError("数据截至时间无效，请重新填写。"); } }} onTemplate={downloadTemplate} onFile={parseImportFile} onSubmit={submitImport} matchHref={matchHref} />}
     {initialView === "matches" && <OwnedWorkMatchingView organizationId={organizationId} projectId={projectId} />}
     {initialView === "reports" && <ReportsView reports={reports} selected={selectedReport} organizationId={organizationId} projectId={projectId} canGenerate={canGenerate} busy={busy} onSelect={setSelectedReportId} onGenerate={generateReport} onFinalize={finalizeReport} />}
+      </>}
   </div>;
 }
 
-function Overview({ analytics, trendOption, performanceMapOption, days, onDays }: { analytics: Analytics; trendOption: EChartsCoreOption; performanceMapOption: EChartsCoreOption; days: number; onDays: (days: number) => void }) { const coverage = analytics.summary.baselineCoverage; return <><div className="insights-period"><span>{analytics.periodStart} 至 {analytics.periodEnd}</span><div>{[30, 90, 365].map((value) => <button className={days === value ? "active" : ""} key={value} onClick={() => onDays(value)}>{value === 365 ? "一年" : `${value} 天`}</button>)}</div></div>{coverage && coverage.partial > 0 && <div className="insights-baseline-note" role="status"><strong>增量口径为部分覆盖</strong><span>{coverage.partial} 条历史作品缺少期初快照，系统从本期首条快照开始计算，不会把历史累计量冒充为本期新增。</span></div>}{Boolean(analytics.summary.timestampAliases) && <div className="insights-baseline-note" role="status"><strong>历史时间重复需核对</strong><span>{analytics.summary.timestampAliases} 条快照属于同一作品/时刻，其中 {analytics.summary.timestampConflicts || 0} 条指标不一致；统计保留首个已保存值，原记录未改。</span></div>}<div className="kpi-grid"><Kpi label="周期新增播放" value={formatNumber(analytics.summary.views)} note={`期末累计 ${formatNumber(analytics.summary.cumulativeViews ?? analytics.summary.views)} · ${comparisonNote(analytics, "views")}`} /><Kpi label="周期互动率" value={`${(analytics.summary.engagementRate * 100).toFixed(2)}%`} note={`${formatNumber(analytics.summary.interactions)} 次新增互动 · ${comparisonNote(analytics, "interactions")}`} /><Kpi label="周期新增关注" value={formatNumber(analytics.summary.followersGained)} note={comparisonNote(analytics, "followersGained")} /><Kpi label="周期新增线索" value={formatNumber(analytics.summary.leads)} note={`转化率 ${(analytics.summary.leadRate * 100).toFixed(2)}% · ${comparisonNote(analytics, "leads")}`} /></div><div className="insights-charts"><section className="panel"><header><h2>按发布时间的作品表现</h2><span>汇总同日作品 · 悬停查看视频明细</span></header>{analytics.publishedSeries.length ? <EChart option={trendOption} label="按作品发布时间汇总的播放与互动表现图" /> : <ChartEmpty />}</section><section className="panel"><header><h2>全部作品表现分布</h2><span>共 {analytics.contentPerformance.length} 条 · 悬停查看视频与表现</span></header>{analytics.contentPerformance.some((item) => item.views > 0 || item.engagementRate > 0) ? <EChart option={performanceMapOption} height={380} label="全部作品播放量与互动率分布图" /> : <ChartEmpty />}</section></div><section className="panel top-content"><header><h2>头部内容</h2><span>按周期新增播放排序</span></header><div className="top-content-row heading"><span>内容</span><span>新增播放</span><span>周期互动率</span><span>新增关注 / 线索</span></div>{analytics.topContent.map((item, index) => <a className="top-content-row" key={item.publicationId} href={item.externalUrl || undefined} target={item.externalUrl ? "_blank" : undefined} rel="noreferrer"><span><i>{index + 1}</i><strong>{item.title}</strong><small>{platformLabels[item.platform] || item.platform}{item.cumulativeViews !== undefined ? ` · 累计 ${formatNumber(item.cumulativeViews)}` : ""}</small></span><span>{formatNumber(item.views)}</span><span>{(item.engagementRate * 100).toFixed(2)}%</span><span>{item.followersGained} / {item.leads}</span></a>)}</section></>; }
-function Kpi({ label, value, note }: { label: string; value: string; note: string }) { return <article><span>{label}</span><strong>{value}</strong><small>{note}</small></article>; }
-function ChartEmpty() { return <div className="chart-empty"><strong>还没有可视化数据</strong><span>导入已发布作品的运营快照后自动生成。</span></div>; }
-function ImportView({ canImport, imports, rows, filename, format, offsetMinutes, onOffset, asOfAt, message, phase, busy, onFormat, onAsOfAt, onTemplate, onFile, onSubmit, matchHref }: { canImport: boolean; imports: ImportBatch[]; rows: ParsedImportRow[]; filename: string; format: "standard" | "douyin_16"; offsetMinutes: number; onOffset: (value: number) => void; asOfAt: string; message: string; phase: string; busy: string; onFormat: (value: "standard" | "douyin_16") => void; onAsOfAt: (value: string) => void; onTemplate: () => void; onFile: (file: File) => void; onSubmit: () => void; matchHref: string }) {
-  const douyin = format === "douyin_16";
-  const imported = /导入完成/.test(message);
-  const importing = busy === "import";
-  const messageState = phase === "error" || /失败|无效|错误|不能|没有可导入/.test(message) ? "error" : /已解析|完成/.test(message) ? "success" : "neutral";
-  const fieldGroups = [
-    { label: "作品信息", fields: ["名称", "时间", "体裁", "状态"] },
-    { label: "观看质量", fields: ["播放", "完播", "5秒", "2秒跳出", "观看时长"] },
-    { label: "互动转化", fields: ["赞", "评", "转", "藏", "主页", "增粉"] },
-  ];
-  return <div className="import-console">
-    <section className="panel import-process import-process-compact">
-      <ol aria-label="数据导入步骤"><li className={rows.length || importing || imported ? "done" : "active"}><span>1</span><strong>选择文件</strong></li><li className={importing || imported ? "done" : rows.length ? "active" : ""}><span>2</span><strong>核对数据</strong></li><li className={imported ? "done" : importing ? "active" : ""}><span>3</span><strong>确认导入</strong></li><li className={imported ? "active" : ""}><span>4</span><strong>匹配视频分析</strong></li></ol>
-    </section>
-    <div className="import-layout import-layout-refined">
-      <section className="panel import-panel import-panel-refined">
-        <header><div><span className="import-step-label">当前步骤</span><h2>导入作品数据</h2><p>{douyin ? "直接使用抖音创作者中心导出的 XLSX，无需转换CSV。" : "用于已经带有发布记录ID或作品链接的标准快照。"}</p></div><button type="button" onClick={onTemplate}><FileSpreadsheet aria-hidden="true" />下载 CSV 模板</button></header>
-        <div className="import-composer">
-          <fieldset className="import-format-field"><legend>文件类型</legend><div className="import-format-switch"><button type="button" disabled={busy === "import"} className={douyin ? "active" : ""} onClick={() => onFormat("douyin_16")}><strong>抖音作品列表</strong><span>XLSX / CSV · 16字段</span></button><button type="button" disabled={busy === "import"} className={!douyin ? "active" : ""} onClick={() => onFormat("standard")}><strong>标准发布快照</strong><span>CSV · 按发布记录匹配</span></button></div></fieldset>
-          <details className="import-format-guide"><summary>字段与读取规则 <span>{douyin ? "16 字段" : "标准快照"}</span></summary>{douyin && <div className="import-data-contract"><header><div><strong>读取字段</strong><span>缺失值保留为空，0 值保留为 0。</span></div></header><div>{fieldGroups.map((group) => <section key={group.label}><strong>{group.label}</strong><p>{group.fields.map((field) => <span key={field}>{field}</span>)}</p></section>)}</div></div>}<p>没有时区的日期按所选文件时区读取，统计按 UTC 日期分组。原文件在浏览器内解析，可先核对预览再导入。</p></details>
-          {canImport ? <div className="import-inputs">
-            <label className="import-asof" htmlFor="performance-import-timezone" aria-label="文件日期时区"><span><strong>文件日期时区</strong><small>更改后需重新选择文件。</small></span><select id="performance-import-timezone" disabled={busy === "import"} value={offsetMinutes} onChange={(event) => onOffset(Number(event.target.value))}><option value={0}>UTC +00:00</option><option value={480}>北京时间 +08:00</option></select></label>
-            {douyin && <label className="import-asof"><span><Clock3 aria-hidden="true" /><strong>数据截至时间</strong><small>按所选时区显示，用于区分累计快照。</small></span><input type="datetime-local" disabled={busy === "import"} value={asOfAt ? importDateInput(asOfAt, offsetMinutes) : ""} onChange={(event) => onAsOfAt(event.target.value)} /></label>}
-            <label className={"file-drop import-file-drop" + (filename ? " has-file" : "")}><input type="file" disabled={busy === "import"} accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) onFile(file); }} />{phase === "reading" ? <Clock3 aria-hidden="true" /> : phase === "error" ? <AlertTriangle aria-hidden="true" /> : filename ? <CheckCircle2 aria-hidden="true" /> : <UploadCloud aria-hidden="true" />}<strong>{filename || "选择或拖入作品列表"}</strong><span>{filename ? phase === "reading" ? "正在读取文件，请稍候。" : phase === "error" ? "读取未完成，请按提示修正或重新选择。" : "文件已读取，可以核对解析结果。" : douyin ? "XLSX / CSV 最多 20 MiB，单次最多500条作品" : "CSV 最多 20 MiB，单次最多500条作品"}</span><em>{filename ? "重新选择" : "浏览文件"}</em></label>
-          </div> : <div className="import-permission-note"><AlertTriangle aria-hidden="true" /><div><strong>当前账号只能查看</strong><span>请联系企业空间管理员或可编辑成员完成导入。</span></div></div>}
-          {message && <div className={"import-message " + messageState}>{messageState === "success" ? <CheckCircle2 aria-hidden="true" /> : messageState === "error" ? <AlertTriangle aria-hidden="true" /> : <Clock3 aria-hidden="true" />}<span>{message}</span></div>}
-        </div>
-        <footer className={"import-submit-bar" + (rows.length ? " ready" : "")}><div><span>{rows.length ? "文件校验完成" : "等待选择文件"}</span><strong>{rows.length ? douyin && !asOfAt ? "请填写数据截至时间" : rows.length + " 条作品 · 累计播放 " + formatNumber(rows.reduce((sum, row) => sum + row.views, 0)) : "选择文件并核对预览"}</strong><small>确认后才会写入当前企业空间。</small></div><button type="button" disabled={!rows.length || busy === "import" || douyin && !asOfAt} onClick={onSubmit}>{busy === "import" ? "正在导入…" : rows.length ? "确认导入 " + rows.length + " 条" : "确认导入"}<ArrowRight aria-hidden="true" /></button></footer>
-      </section>
-      <aside className="panel import-history import-history-refined">
-        <header><div><span className="import-step-label">最近记录</span><h2>导入历史</h2></div><strong>{imports.length} 个批次</strong></header>
-        {imports.length ? <div className="import-history-list">{imports.map((item) => {
-          const complete = item.status === "completed", interrupted = item.status === "failed", warning = !complete || Boolean(item.rejected_count || item.errors_json);
-          return <article key={item.id}>
-            <div className={"import-history-icon " + (!warning ? "success" : "warning")}>{!warning ? <CheckCircle2 aria-hidden="true" /> : <AlertTriangle aria-hidden="true" />}</div>
-            <div className="import-history-copy"><strong title={item.original_filename || "手动导入"}>{item.original_filename || "手动导入"}</strong><small>{formatDate(item.created_at)} · {item.as_of_at ? "截至 " + formatDate(item.as_of_at) : "标准格式"}</small>
-              <span>{complete ? `已完成 · ${item.accepted_count} 条成功${item.rejected_count ? " · " + item.rejected_count + " 条未导入" : ""}` : interrupted ? "未完成，请核对已保存数据后重试" : "未完成，需管理员停服核对"}</span>
-            </div>
-            {(item.errors_json || !complete) && <details><summary>查看问题与批次</summary><p>批次编号：{item.id}</p>{item.errors_json && <pre>{formatImportErrors(item.errors_json)}</pre>}{!complete && <p>{interrupted ? "保留原文件及数据截至时间；遇到关联不一致请先人工核对，勿删除已有记录。" : "请管理员按备份恢复说明核对旧导入批次，处理前不要反复提交或删除记录。"}</p>}</details>}
-          </article>;
-        })}</div> : <div className="import-history-empty"><FileSpreadsheet aria-hidden="true" /><strong>还没有导入记录</strong><span>首个文件导入后，批次和问题会保留在这里。</span></div>}
-        {imports.some(item => item.status === "completed" && item.accepted_count > 0) && <footer><span>已完成批次的数据已经进入当前企业空间</span><a href={matchHref}>下一步：匹配视频分析 <ArrowRight aria-hidden="true" /></a></footer>}
-      </aside>
+type OverviewDisplay = "ranking" | "published" | "distribution";
+const overviewDisplays = { ranking: "作品排行", published: "发布时间", distribution: "表现分布" } as const;
+
+function Overview({ analytics, trendOption, performanceMapOption, days, onDays, updating, importHref }: {
+  analytics: Analytics;
+  trendOption: EChartsCoreOption;
+  performanceMapOption: EChartsCoreOption;
+  days: number;
+  onDays: (days: number) => void;
+  updating: boolean;
+  importHref?: string;
+}) {
+  const [display, setDisplay] = useState<OverviewDisplay>("ranking");
+  const { summary } = analytics;
+  const coverage = summary.baselineCoverage;
+  const range = <div className="insights-period overview-period">
+    <span>{analytics.periodStart} 至 {analytics.periodEnd}</span>
+    <div role="group" aria-label="统计周期">
+      {[30, 90, 365].map(value => <button type="button" key={value} aria-pressed={days === value}
+        disabled={updating} onClick={() => onDays(value)}>{value === 365 ? "一年" : `${value} 天`}</button>)}
     </div>
   </div>;
+  return <section className="insights-overview" aria-busy={updating}>
+    {range}
+    {coverage && coverage.partial > 0 && <p className="overview-data-note" role="status"><strong>增量口径为部分覆盖</strong> {coverage.partial} 条历史作品缺少期初快照，从本期首条快照开始计算。</p>}
+    {!!summary.timestampAliases && <p className="overview-data-note" role="status"><strong>历史时间重复需核对</strong> {summary.timestampAliases} 条快照属于同一作品和时刻，其中 {summary.timestampConflicts || 0} 条指标不一致，统计采用首个已保存值，原记录未改。</p>}
+    {!summary.contentCount ? <div className="panel overview-empty">
+      <FileSpreadsheet size={24} aria-hidden="true" />
+      <h2>这个周期还没有作品数据</h2>
+      <p>{importHref ? "可导入作品数据，或切换上方统计周期。" : "可切换统计周期，或联系空间成员导入作品数据。"}</p>
+      {importHref && <Link href={importHref} className="primary-button">导入作品数据</Link>}
+    </div> : <>
+    <div className="kpi-grid">
+      <Kpi label="新增播放" value={formatNumber(summary.views)} note={`期末累计 ${formatNumber(summary.cumulativeViews ?? summary.views)} · ${comparisonNote(analytics, "views")}`} />
+      <Kpi label="周期互动率" value={`${(summary.engagementRate * 100).toFixed(2)}%`} note={`${formatNumber(summary.interactions)} 次新增互动 · ${comparisonNote(analytics, "interactions")}`} />
+      <Kpi label="新增关注" value={formatNumber(summary.followersGained)} note={comparisonNote(analytics, "followersGained")} />
+      <Kpi label="新增线索" value={formatNumber(summary.leads)} note={`转化率 ${(summary.leadRate * 100).toFixed(2)}% · ${comparisonNote(analytics, "leads")}`} />
+    </div>
+    <section className="panel overview-works">
+      <header>
+        <h2>作品表现 <span>{summary.contentCount} 条</span></h2>
+        <div className="overview-display" role="group" aria-label="作品表现视图">
+          {(Object.keys(overviewDisplays) as OverviewDisplay[]).map(value =>
+            <button type="button" key={value} aria-pressed={display === value} onClick={() => setDisplay(value)}>{overviewDisplays[value]}</button>)}
+        </div>
+      </header>
+      {display === "ranking" && <div className="overview-ranking"><table>
+        <caption>按周期新增播放排序</caption>
+        <thead><tr><th scope="col">作品</th><th scope="col">新增播放</th><th scope="col">互动率</th><th scope="col">新增关注</th><th scope="col">新增线索</th></tr></thead>
+        <tbody>{analytics.topContent.map((item, index) => <tr key={item.publicationId}>
+          <th scope="row"><div className="overview-work-name"><span aria-hidden="true">{index + 1}</span><div>
+            {item.externalUrl ? <a href={item.externalUrl} title={item.title} target="_blank" rel="noreferrer">{item.title}</a> : <strong title={item.title}>{item.title}</strong>}
+            <small>{platformLabels[item.platform] || item.platform}{item.cumulativeViews !== undefined && ` · 累计播放 ${formatNumber(item.cumulativeViews)}`}</small>
+          </div></div></th>
+          <td><small aria-hidden="true">新增播放</small>{formatNumber(item.views)}</td>
+          <td><small aria-hidden="true">互动率</small>{(item.engagementRate * 100).toFixed(2)}%</td>
+          <td><small aria-hidden="true">新增关注</small>{formatNumber(item.followersGained)}</td>
+          <td><small aria-hidden="true">新增线索</small>{formatNumber(item.leads)}</td>
+        </tr>)}</tbody>
+      </table></div>}
+      {display === "published" && (analytics.publishedSeries.length ?
+        <div className="overview-chart"><p>按发布时间的作品表现 · 汇总同日作品，悬停查看视频明细</p>
+          <EChart option={trendOption} label="按作品发布时间汇总的播放与互动表现图" /></div> : <p className="overview-chart-note">本期作品缺少可用于绘图的发布时间。</p>)}
+      {display === "distribution" && (analytics.contentPerformance.some(item => item.views > 0 || item.engagementRate > 0) ?
+        <div className="overview-chart"><p>全部作品表现分布 · 每个点代表一条作品</p>
+          <EChart option={performanceMapOption} height={380} label="全部作品播放量与互动率分布图" /></div> : <p className="overview-chart-note">本期作品还没有可绘制的播放或互动增量。</p>)}
+    </section>
+    </>}
+  </section>;
 }
+function Kpi({ label, value, note }: { label: string; value: string; note: string }) { return <article><span>{label}</span><strong>{value}</strong><small>{note}</small></article>; }
+function ImportView({ canImport, imports, rows, filename, format, offsetMinutes, onOffset, asOfAt, message, phase, busy, onFormat, onAsOfAt, onTemplate, onFile, onSubmit, matchHref }: { canImport: boolean; imports: ImportBatch[]; rows: ParsedImportRow[]; filename: string; format: "standard" | "douyin_16"; offsetMinutes: number; onOffset: (value: number) => void; asOfAt: string; message: string; phase: string; busy: string; onFormat: (value: "standard" | "douyin_16") => void; onAsOfAt: (value: string) => void; onTemplate: () => void; onFile: (file: File) => void; onSubmit: () => void; matchHref: string }) {
+  const douyin = format === "douyin_16";
+  const importing = busy === "import";
+  const messageState = phase === "error" ? "error" : phase === "ready" || phase === "done" ? "success" : "neutral";
+  const timeZone = offsetMinutes === 480 ? "UTC+08:00" : "UTC+00:00";
+  const cutoff = asOfAt ? importDateInput(asOfAt, offsetMinutes).replace("T", " ") : "";
+  const history = [...imports].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+  const hasIssues = (batch: ImportBatch) => batch.status !== "completed" || batch.rejected_count > 0 || Boolean(batch.errors_json && batch.errors_json.trim() !== "[]");
+  const issueCount = history.filter(hasIssues).length;
+  const hasImportedRows = history.some(item => item.status === "completed" && item.accepted_count > 0);
+
+  return <div className="performance-import">
+    <section className="panel performance-import-card" aria-labelledby="performance-import-title">
+      <header className="performance-import-heading">
+        <h2 id="performance-import-title">导入作品数据</h2>
+        <button className="performance-template" type="button" onClick={onTemplate}><FileSpreadsheet size={16} aria-hidden="true" />下载 CSV 模板</button>
+      </header>
+      <div className="performance-import-body">
+        <div className="import-format-switch" role="group" aria-label="文件格式">
+          <button type="button" aria-pressed={douyin} disabled={importing} onClick={() => { if (!douyin) onFormat("douyin_16"); }}>抖音作品列表</button>
+          <button type="button" aria-pressed={!douyin} disabled={importing} onClick={() => { if (douyin) onFormat("standard"); }}>标准发布快照</button>
+        </div>
+        {canImport ? <>
+          <label className={`import-file-drop${filename ? " has-file" : ""}`}>
+            <input type="file" aria-label="选择作品数据文件" disabled={importing}
+              accept={douyin ? ".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : ".csv,text/csv"}
+              onChange={event => { const file = event.target.files?.[0]; event.target.value = ""; if (file) onFile(file); }} />
+            {phase === "reading" ? <Clock3 aria-hidden="true" /> : phase === "error" ? <AlertTriangle aria-hidden="true" /> : filename ? <CheckCircle2 aria-hidden="true" /> : <UploadCloud aria-hidden="true" />}
+            <strong>{filename || "选择或拖入作品列表"}</strong>
+            <span>{phase === "error" ? "读取未完成，可重新选择文件" : filename ? "点击更换文件" : douyin ? "抖音创作者中心导出的 XLSX 或 CSV，最多 500 条、20 MiB" : "含发布记录 ID 或作品链接的 CSV，最多 500 条、20 MiB"}</span>
+          </label>
+          {message && <p role={phase === "error" ? "alert" : "status"} className={`import-message ${messageState}`}>{message}</p>}
+          {rows.length > 0 && <section className="performance-import-preview" aria-labelledby="import-preview-title">
+            <div><h3 id="import-preview-title">数据预览</h3><span>{rows.length > 3 ? `前 3 条 / 共 ${rows.length} 条` : `共 ${rows.length} 条`} · 累计播放 {rows.reduce((sum, row) => sum + row.views, 0).toLocaleString("zh-CN")}</span></div>
+            <table>
+              <thead><tr><th scope="col">{douyin ? "作品名称" : "作品链接 / 发布记录"}</th><th scope="col">{douyin ? "发布时间" : "快照时间"}<small>{timeZone}</small></th><th scope="col">播放量</th></tr></thead>
+              <tbody>{rows.slice(0, 3).map((row, index) => <tr key={index}>
+                <td>{"title" in row ? row.title : row.externalUrl || row.publicationId}</td>
+                <td>{importDateInput("publishedAt" in row ? row.publishedAt : row.observedAt, offsetMinutes).replace("T", " ")}</td>
+                <td>{row.views.toLocaleString("zh-CN")}</td>
+              </tr>)}</tbody>
+            </table>
+          </section>}
+          <div className="performance-import-controls">
+            <details className="performance-import-settings">
+              <summary><strong>时间设置</strong><span>{douyin ? cutoff ? `截至 ${cutoff} · ${timeZone}` : "请填写数据截至时间" : timeZone}</span></summary>
+              <div className="performance-time-fields">
+                <label className="import-asof" htmlFor="performance-import-timezone">文件日期时区
+                  <select id="performance-import-timezone" disabled={importing} value={offsetMinutes} onChange={event => onOffset(Number(event.target.value))}>
+                    <option value={0}>UTC +00:00</option><option value={480}>北京时间 +08:00</option>
+                  </select>
+                </label>
+                {douyin && <label className="import-asof" htmlFor="performance-import-cutoff">数据截至时间
+                  <input id="performance-import-cutoff" type="datetime-local" required disabled={importing} value={asOfAt ? importDateInput(asOfAt, offsetMinutes) : ""} onChange={event => onAsOfAt(event.target.value)} />
+                </label>}
+                <p>无时区的日期按所选时区读取，统计按 UTC 日期分组。更改时区后需重新选择文件。</p>
+              </div>
+            </details>
+            <button type="button" className="primary-button" disabled={phase !== "ready" || !rows.length || importing || (douyin && !asOfAt)} onClick={onSubmit}>
+              {importing ? "正在导入…" : rows.length ? `确认导入 ${rows.length} 条` : "确认导入"}
+            </button>
+          </div>
+        </> : <p className="import-permission-note">当前账号只能查看。请联系企业空间管理员或可编辑成员导入文件。</p>}
+      </div>
+    </section>
+
+    <section className="panel import-history performance-import-history" aria-label="导入历史">
+      <details open={issueCount > 0}>
+        <summary><strong>导入历史</strong><span>{history.length} 个批次{issueCount > 0 ? ` · ${issueCount} 个需核对` : ""}</span></summary>
+        {history.length ? <div className="performance-batches">{history.map(item => {
+          const complete = item.status === "completed", interrupted = item.status === "failed", warning = hasIssues(item);
+          return <article key={item.id}>
+            {warning ? <AlertTriangle size={16} className="batch-warning" aria-label="需核对" /> : <CheckCircle2 size={16} aria-hidden="true" />}
+            <div><strong>{item.original_filename || "手动导入"}</strong><span>{complete ? `已完成 · ${item.accepted_count} 条成功${item.rejected_count ? " · " + item.rejected_count + " 条未导入" : ""}` : interrupted ? "未完成，请核对已保存数据后重试" : "未完成，需管理员停服核对"}</span></div>
+            <small>{formatDate(item.created_at)}{item.as_of_at ? ` · 截至 ${formatDate(item.as_of_at)}` : " · 标准格式"}</small>
+            {warning && <details><summary>查看问题与批次</summary>
+              <p>批次编号 {item.id}</p>{item.errors_json && <pre>{formatImportErrors(item.errors_json)}</pre>}
+              {!complete && <p>{interrupted ? "保留原文件及数据截至时间，先核对已保存的数据，再决定是否重试。" : "请管理员按备份恢复说明核对旧导入批次，处理前请保留当前记录。"}</p>}
+            </details>}
+          </article>;
+        })}</div> : <p>还没有导入记录。</p>}
+      </details>
+      {hasImportedRows && <a className="performance-match-link" href={matchHref}>匹配已导入作品<ArrowRight size={15} aria-hidden="true" /></a>}
+    </section>
+  </div>;
+}
+
 type ReportsViewProps = { reports: Report[]; selected: Report | null; organizationId: string; projectId: string; canGenerate: boolean; busy: string; onSelect: (id: string) => void; onGenerate: (event: FormEvent<HTMLFormElement>) => void; onFinalize: () => void };
 
 function ReportsView(props: ReportsViewProps) {
@@ -370,7 +553,6 @@ function ReportsView(props: ReportsViewProps) {
   const [employeeVisited, setEmployeeVisited] = useState(false);
   return <div className="report-center-shell">
     <section className="report-mode-header report-mode-compact">
-      <span>报告对象</span>
       <nav aria-label="报告类型"><button type="button" aria-pressed={mode === "enterprise"} className={mode === "enterprise" ? "active" : ""} onClick={() => setMode("enterprise")}><Building2 aria-hidden="true" />企业运营报告</button><button type="button" aria-pressed={mode === "employee"} className={mode === "employee" ? "active" : ""} onClick={() => { setEmployeeVisited(true); setMode("employee"); }}><UserRound aria-hidden="true" />员工工作报告</button></nav>
     </section>
     <div hidden={mode !== "enterprise"}><EnterpriseReportsView key={`${props.organizationId}:${props.projectId}:${props.selected?.id ?? ""}`} {...props} /></div>
@@ -406,24 +588,21 @@ function EnterpriseReportsView({ reports, selected, organizationId, projectId, c
   const recommendations = selected ? JSON.parse(selected.recommendations_json) as string[] : [];
   const metrics = selected ? JSON.parse(selected.metrics_json) as Analytics : null;
   const recommendationRow = (item: string, index: number) => { const locator = `recommendation:${index}`; const saved = savedMemoLocators.has(locator); return <article key={`${item}-${index}`}><i aria-hidden="true">{String(index + 1).padStart(2, "0")}</i><p>{item}</p><button type="button" disabled={saved || Boolean(memoBusy)} onClick={() => void saveRecommendation(item, index)}>{saved ? <BookmarkCheck aria-hidden="true" /> : <BookmarkPlus aria-hidden="true" />}{saved ? "已记到备忘" : memoBusy === locator ? "保存中" : "记到我的备忘"}</button></article>; };
-  return <div className="reports-layout">
-    <aside className="panel reports-list">
-      {canGenerate && <form onSubmit={onGenerate}><h2>生成周期报告</h2><label>类型<select name="reportType" defaultValue="weekly"><option value="weekly">周报</option><option value="monthly">月报</option><option value="custom">自定义</option></select></label><div><label>开始<input type="date" name="periodStart" defaultValue={isoDate(-6)} required /></label><label>结束<input type="date" name="periodEnd" defaultValue={isoDate()} required /></label></div><label>标题<input name="title" maxLength={200} placeholder="留空使用默认标题" /></label><button disabled={Boolean(busy)}>{busy === "report" ? "生成中…" : "生成 / 刷新草稿"}</button></form>}
-      <nav>{reports.map((report) => <button className={selected?.id === report.id ? "active" : ""} onClick={() => onSelect(report.id)} key={report.id}><span>{report.status === "final" ? "已定稿" : "草稿"}</span><strong>{report.title}</strong><small>{report.period_start} 至 {report.period_end}</small></button>)}</nav>
-    </aside>
+  return <PeriodicReportLayout key={selected?.updated_at} enterprise reports={reports} selectedId={selected?.id}
+    canGenerate={canGenerate} busy={Boolean(busy)} onGenerate={onGenerate} onSelect={onSelect}>
     <main className="panel report-document">{selected && metrics ? <>
       <header><div><span>{selected.status === "final" ? "正式报告" : "报告草稿"}</span><h1>{selected.title}</h1><p>{selected.period_start} 至 {selected.period_end} · 生成于 {formatDate(selected.generated_at)}</p></div><div><button onClick={() => window.print()}>打印</button>{selected.status === "draft" && canGenerate && <button className="primary" disabled={Boolean(busy)} onClick={onFinalize}>{busy === "finalize" ? "正在定稿…" : "确认定稿"}</button>}</div></header>
-      <section className="report-brief"><div><span>本期判断</span><h2>{selected.summary}</h2></div><aside><span>数据覆盖</span><strong>{metrics.summary.baselineCoverage ? `${metrics.summary.baselineCoverage.complete}/${metrics.summary.baselineCoverage.total}` : metrics.summary.contentCount}</strong><small>{metrics.summary.baselineCoverage?.partial ? `${metrics.summary.baselineCoverage.partial} 条仅部分覆盖` : "可用于本期判断"}</small></aside></section>
-      <section className="report-result-block"><header><div><span>经营结果</span><h2>本期核心指标</h2></div><small>先看结果，再决定下期动作</small></header><div className="report-kpis"><Kpi label="纳入内容" value={String(metrics.summary.contentCount)} note="本期可比作品" /><Kpi label="新增播放" value={formatNumber(metrics.summary.views)} note={metrics.comparison ? comparisonNote(metrics, "views") : "暂无可比前期"} /><Kpi label="周期互动率" value={`${(metrics.summary.engagementRate * 100).toFixed(2)}%`} note={`${formatNumber(metrics.summary.interactions)} 次新增互动`} /><Kpi label="新增线索" value={formatNumber(metrics.summary.leads)} note={metrics.comparison ? comparisonNote(metrics, "leads") : "暂无可比前期"} /></div>
+      <section className="report-brief"><div><span>本期判断</span><h2>{selected.summary}</h2></div>{metrics.summary.contentCount > 0 ? <aside><span>数据覆盖</span><strong>{metrics.summary.baselineCoverage ? `${metrics.summary.baselineCoverage.complete}/${metrics.summary.baselineCoverage.total}` : metrics.summary.contentCount}</strong><small>{metrics.summary.baselineCoverage?.partial ? `${metrics.summary.baselineCoverage.partial} 条仅部分覆盖` : "可用于本期判断"}</small></aside> : <Link className="report-import-link" href={`/insights?view=imports&${new URLSearchParams({ organizationId, projectId })}`}>查看数据导入 →</Link>}</section>
+      {metrics.summary.contentCount > 0 && <section className="report-result-block"><header><div><h2>本期核心指标</h2></div></header><div className="report-kpis"><Kpi label="纳入内容" value={String(metrics.summary.contentCount)} note="本期可比作品" /><Kpi label="新增播放" value={formatNumber(metrics.summary.views)} note={metrics.comparison ? comparisonNote(metrics, "views") : "暂无可比前期"} /><Kpi label="周期互动率" value={metrics.summary.views > 0 && Number.isFinite(metrics.summary.engagementRate) ? `${(metrics.summary.engagementRate * 100).toFixed(2)}%` : "—"} note={`${formatNumber(metrics.summary.interactions)} 次新增互动`} /><Kpi label="新增线索" value={formatNumber(metrics.summary.leads)} note={metrics.comparison ? comparisonNote(metrics, "leads") : "暂无可比前期"} /></div>
         {metrics.topContent.length > 0 && <div className="report-result-ranking"><div className="heading"><span>表现前列内容</span><span>新增播放</span><span>互动率</span></div>{metrics.topContent.slice(0, 3).map((item, index) => <a key={item.publicationId} href={item.externalUrl || undefined} target={item.externalUrl ? "_blank" : undefined} rel="noreferrer"><span><i>{index + 1}</i><strong>{item.title}</strong></span><b>{formatNumber(item.views)}</b><em>{(item.engagementRate * 100).toFixed(2)}%</em></a>)}</div>}
-      </section>
-      <section className="report-decision-block"><header><div><span>经营决策</span><h2>发生了什么，下一步做什么</h2></div><small>行动项可以选择保存到员工个人备忘</small></header><div className="report-narrative-grid">
-        <section className="report-findings"><header><div><span>观察</span><h2>关键发现</h2></div><small>{highlights.length} 条</small></header><div>{highlights.slice(0, 3).map((item) => <article key={item}><i aria-hidden="true" /><p>{item}</p></article>)}</div>{highlights.length > 3 && <details className="report-more-items"><summary>查看其余 {highlights.length - 3} 条发现</summary><div>{highlights.slice(3).map((item) => <article key={item}><i aria-hidden="true" /><p>{item}</p></article>)}</div></details>}</section>
-        <section className="report-actions"><header><div><span>行动</span><h2>下期建议</h2></div><small>{recommendations.length} 条</small></header>{memoNotice && <p className="report-memo-notice" role="status">{memoNotice}</p>}<div>{recommendations.slice(0, 3).map(recommendationRow)}</div>{recommendations.length > 3 && <details className="report-more-items"><summary>查看其余 {recommendations.length - 3} 条建议</summary><div>{recommendations.slice(3).map((item, offset) => recommendationRow(item, offset + 3))}</div></details>}</section>
-      </div></section>
+      </section>}
+      {(highlights.length > 0 || recommendations.length > 0) && <section className="report-decision-block"><div className="report-narrative-grid">
+        {highlights.length > 0 && <section className="report-findings"><header><div><h2>关键发现</h2></div><small>{highlights.length} 条</small></header><div>{highlights.slice(0, 3).map((item) => <article key={item}><i aria-hidden="true" /><p>{item}</p></article>)}</div>{highlights.length > 3 && <details className="report-more-items"><summary>查看其余 {highlights.length - 3} 条发现</summary><div>{highlights.slice(3).map((item) => <article key={item}><i aria-hidden="true" /><p>{item}</p></article>)}</div></details>}</section>}
+        {recommendations.length > 0 && <section className="report-actions"><header><div><h2>下期建议</h2></div><small>{recommendations.length} 条</small></header>{memoNotice && <p className="report-memo-notice" role="status">{memoNotice}</p>}<div>{recommendations.slice(0, 3).map(recommendationRow)}</div>{recommendations.length > 3 && <details className="report-more-items"><summary>查看其余 {recommendations.length - 3} 条建议</summary><div>{recommendations.slice(3).map((item, offset) => recommendationRow(item, offset + 3))}</div></details>}</section>}
+      </div></section>}
       {metrics.diagnostics && <DiagnosticView diagnostics={metrics.diagnostics} />}
-    </> : <div className="report-empty"><h2>还没有报告</h2><p>选择一个周期生成首份数据报告。</p></div>}</main>
-  </div>;
+    </> : <div className="report-empty"><h2>暂无企业运营报告</h2><p>已生成的报告会显示在这里。</p></div>}</main>
+  </PeriodicReportLayout>;
 }
 
 function EmployeeReportsView({ organizationId, projectId }: { organizationId: string; projectId: string }) {
@@ -463,40 +642,43 @@ function EmployeeReportsView({ organizationId, projectId }: { organizationId: st
   }
   const selected = reports.find((report) => report.id === selectedReportId) || null;
   let snapshot: EmployeeReportSnapshot | null = null; if (selected) { try { snapshot = JSON.parse(selected.snapshot_json) as EmployeeReportSnapshot; } catch { snapshot = null; } }
-  const employee = employees.find((item) => item.id === employeeUserId);
   const contentStatus: Record<string, string> = { draft: "草稿", internal_revision: "内部修改", internal_review: "内部审核", client_review: "客户审核", publish_ready: "待发布", published: "已发布", reviewed: "已复盘", archived: "已归档" };
   const analysisStatus: Record<string, string> = { completed: "已完成", partial: "部分完成", failed: "失败", cancelled: "已取消", pending: "等待中", queued: "排队中", processing: "处理中", analyzing: "分析中", transcribing: "转写中", extracting: "提取中", downloading: "下载中" };
   const outcomeLabel: Record<string, string> = { viral: "爆款", high: "高表现", regular: "常规", insufficient: "样本不足" };
   if (loading) return <div className="panel employee-report-loading">正在读取员工工作记录…</div>;
-  return <div className="reports-layout employee-reports-layout">
-    <aside className="panel reports-list employee-reports-list">
-      <div className="employee-report-person"><span>报告员工</span><select value={employeeUserId} disabled={busy} onChange={(event) => void selectEmployee(event.target.value)}>{employees.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><small>{employee?.email || ""}</small></div>
-      {canGenerate && <form onSubmit={generate}><h2>生成工作报告</h2><label>周期<select name="reportType" defaultValue="weekly"><option value="weekly">周报</option><option value="monthly">月报</option><option value="custom">自定义</option></select></label><div><label>开始<input type="date" name="periodStart" defaultValue={isoDate(-6)} required /></label><label>结束<input type="date" name="periodEnd" defaultValue={isoDate()} required /></label></div><label>标题<input name="title" maxLength={200} placeholder="留空使用默认标题" /></label><button disabled={busy}>{busy ? "正在汇总…" : <><RefreshCw aria-hidden="true" />生成 / 刷新报告</>}</button></form>}
-      {error && <p className="employee-report-error" role="alert">{error}</p>}
-      <nav>{reports.map((report) => <button type="button" className={selected?.id === report.id ? "active" : ""} onClick={() => setSelectedReportId(report.id)} key={report.id}><span>工作报告</span><strong>{report.title}</strong><small>{report.period_start} 至 {report.period_end}</small></button>)}</nav>
-    </aside>
+  return <>
+    {error && <p className="employee-report-error" role="alert">{error}</p>}
+    <PeriodicReportLayout key={`${employeeUserId}:${selected?.updated_at ?? ""}`} reports={reports} selectedId={selected?.id}
+      canGenerate={canGenerate && Boolean(employeeUserId)} busy={busy} onGenerate={generate} onSelect={setSelectedReportId}
+      tools={<label className="periodic-report-person">报告员工
+        <select value={employeeUserId} disabled={busy || !employees.length} onChange={(event) => void selectEmployee(event.target.value)}>
+          {employees.map(item => <option key={item.id} value={item.id}>{item.name}{item.email ? ` · ${item.email}` : ""}</option>)}
+        </select>
+      </label>}>
     <main className="panel report-document employee-report-document">{selected && snapshot ? <>
       <header><div><span>员工工作报告</span><h1>{selected.title}</h1><p>{snapshot.employee.name} · {selected.period_start} 至 {selected.period_end} · 生成于 {formatDate(selected.generated_at)}</p></div><div><button onClick={() => window.print()}>打印</button></div></header>
       <section className="report-summary employee-report-summary"><h2>本期工作摘要</h2><p>{snapshot.summaryText}</p></section>
       <div className="report-kpis employee-report-kpis"><Kpi label="完成视频分析" value={String(snapshot.summary.analysesCompleted)} note={snapshot.summary.analysesFailed ? `${snapshot.summary.analysesFailed} 个失败或取消` : `${snapshot.summary.analysesStarted} 个任务已发起`} /><Kpi label="主创内容" value={String(snapshot.summary.contentOwned)} note="按负责人归属" /><Kpi label="参与产出" value={String(snapshot.summary.versionsCreated)} note={`${snapshot.summary.reviewsCompleted} 次审核 · ${snapshot.summary.publishingActions} 次发布`} /><Kpi label="高表现 / 爆款" value={`${snapshot.summary.highPerformingWorks} / ${snapshot.summary.viralWorks}`} note={`${snapshot.summary.attributedPublishedWorks} 条作品已归因`} /></div>
       <section className="employee-outcomes"><header><div><span>结果归因</span><h2>已发布作品表现</h2></div><small>{snapshot.benchmark.cohortSize} 条同期可比作品</small></header>{snapshot.outcomes.length ? <div className="employee-outcome-table"><div className="heading"><span>作品</span><span>播放</span><span>互动率</span><span>结果</span></div>{snapshot.outcomes.map((item) => <a key={item.workId} href={item.videoId ? `/analysis/${item.videoId}` : undefined}><span><strong>{item.title}</strong><small>{item.publishedAt.slice(0, 10)} · {item.reason}</small></span><b>{formatNumber(item.views)}</b><b>{(item.engagementRate * 100).toFixed(2)}%</b><em className={item.label}>{outcomeLabel[item.label]}</em></a>)}</div> : <div className="employee-report-section-empty"><strong>还没有可归因的发布结果</strong><span>作品完成匹配后，系统才能把播放、互动和增粉回溯到对应主创。</span></div>}</section>
-      <div className="employee-work-grid">
+      <details className="employee-work-details"><summary>查看视频分析和内容生产明细</summary><div className="employee-work-grid">
         <section><header><div><Video aria-hidden="true" /><span><strong>视频分析</strong><small>{snapshot.details ? `展示最近 ${snapshot.details.analyses.shown} / 全部 ${snapshot.details.analyses.total} 个任务` : `${snapshot.analyses.length} 个任务`}</small></span></div></header>{snapshot.analyses.length ? <div>{snapshot.analyses.map((item) => item.videoId ? <a key={item.jobId} href={`/analysis/${item.videoId}`}><span><strong>{item.title}</strong><small>{formatDate(item.startedAt)}</small></span><em className={item.status}>{analysisStatus[item.status] || item.status}</em></a> : <article key={item.jobId}><span><strong>{item.title}</strong><small>{formatDate(item.startedAt)}</small></span><em className={item.status}>{analysisStatus[item.status] || item.status}</em></article>)}</div> : <p>本期没有发起视频分析。</p>}</section>
         <section><header><div><FileText aria-hidden="true" /><span><strong>内容生产</strong><small>{snapshot.details ? `展示最近 ${snapshot.details.content.shown} / 全部 ${snapshot.details.content.total} 个主创任务` : `${snapshot.content.length} 个主创任务`}</small></span></div></header>{snapshot.content.length ? <div>{snapshot.content.map((item) => <article key={item.contentItemId}><span><strong>{item.title}</strong><small>{item.versionsCreated ? `${item.versionsCreated} 个本期版本` : `创建于 ${formatDate(item.createdAt)}`}</small></span><em>{contentStatus[item.status] || item.status}</em></article>)}</div> : <p>本期没有归属到该员工的主创内容。</p>}</section>
-      </div>
+      </div></details>
       <details className="employee-report-method"><summary>查看统计与爆款判定口径</summary><div><p>{snapshot.attribution.note}</p><p>{snapshot.benchmark.rule}</p>{snapshot.attribution.unmatchedPublishedWorks > 0 && <p>另有 {snapshot.attribution.unmatchedPublishedWorks} 条同期作品尚未匹配内容任务，因此没有归因给任何员工。</p>}</div></details>
-    </> : <div className="report-empty"><UserRound aria-hidden="true" /><h2>还没有员工工作报告</h2><p>选择周期生成报告，系统会按真实操作记录和已匹配作品汇总。</p></div>}</main>
-  </div>;
+    </> : <div className="report-empty"><UserRound aria-hidden="true" /><h2>暂无员工工作报告</h2><p>该员工已生成的报告会显示在这里。</p></div>}</main>
+    </PeriodicReportLayout>
+  </>;
 }
 
 function DiagnosticView({ diagnostics }: { diagnostics: Diagnostics }) {
   const statusLabel: Record<string, string> = { ready: "可用", watch: "需关注", insufficient: "样本不足", triggered: "已触发", not_triggered: "未触发" };
   const confidenceLabel: Record<string, string> = { high: "高", medium: "中", low: "低" };
   const evidence = diagnostics.evidence || [];
+  if (!diagnostics.layers.length && !diagnostics.rules.length && !diagnostics.peerGroups.length && !evidence.length && !diagnostics.attributionNotice) return null;
   return <section className="report-diagnostics report-diagnostics-collapsed">
     <header><div><span>判断依据</span><h2>诊断与归因</h2></div><small>{diagnostics.attributionNotice}</small></header>
     <div className="diagnostic-status-strip">{diagnostics.layers.map((layer) => <span className={layer.status} key={layer.key}><strong>{layer.label}</strong><em>{statusLabel[layer.status] || layer.status}</em></span>)}</div>
-    <details className="report-diagnostic-disclosure"><summary><span><strong>查看完整诊断</strong><small>{diagnostics.layers.length} 个诊断层级 · {diagnostics.rules.length} 条规则 · {evidence.length} 条关联证据</small></span><b>展开</b></summary><div className="report-diagnostic-content"><div className="diagnostic-layers">
+    <details className="report-diagnostic-disclosure"><summary><span><strong>查看完整诊断</strong><small>{diagnostics.layers.length} 个诊断层级 · {diagnostics.rules.length} 条规则 · {evidence.length} 条关联证据</small></span><ChevronDown size={16} aria-hidden="true" /></summary><div className="report-diagnostic-content"><div className="diagnostic-layers">
       <div className="diagnostic-layer-head" aria-hidden="true"><span>诊断层级</span><span>可信度</span><span>判断依据</span><span>待补信息</span></div>
       {diagnostics.layers.map((layer) => <article className={`diagnostic-layer ${layer.status}`} key={layer.key}>
         <div className="diagnostic-layer-name"><strong>{layer.label}</strong><span>{statusLabel[layer.status] || layer.status}</span></div>

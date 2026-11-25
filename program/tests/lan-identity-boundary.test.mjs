@@ -8,7 +8,7 @@ function loadAuth(env, session = null) {
   const loaded = { exports: {} };
   const require = name => {
     if (name === "cloudflare:workers") return { env };
-    if (name === "./local-auth") return { readLocalSessionIdentity: async () => session };
+    if (name === "./local-auth") return { readLocalSessionIdentity: async () => session, hasLocalDevSignOut: () => false };
     throw new Error(`Unexpected auth dependency: ${name}`);
   };
   new Function("require", "module", "exports", source)(require, loaded, loaded.exports);

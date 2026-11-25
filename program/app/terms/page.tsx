@@ -1,12 +1,12 @@
 import Link from "next/link";
+import { StandalonePageHeading } from "../../components/StandalonePageHeading";
 
 export default function TermsPage() {
   return (
-    <main className="legal-page">
+    <main className="standalone-page legal-page">
+      <StandalonePageHeading title="使用与责任边界" actions={<Link href="/">返回工作台 →</Link>} />
       <article>
-        <Link href="/">← 返回工作台</Link>
         <p className="section-kicker">产品内使用说明 · 商业合同约定优先</p>
-        <h1>使用与责任边界</h1>
         <p>本页说明平台的产品使用边界，不替代交付双方签署的软件授权、服务支持、保密、责任限制和数据处理约定。</p>
         <h2>允许用途</h2>
         <p>用户可在已获授权的公司和企业空间内管理内容、分析自有或有权使用的媒体、协作审核并记录发布与运营数据。</p>

@@ -85,7 +85,7 @@ export async function runBrowserChecks({ origin, users, password, runDir, nextUr
       ["/knowledge", "/api/knowledge"], ["/topics", "/api/topics"],
       ["/content", "/api/content-items"], ["/workflow", "/api/workflow"],
       ["/memory", "/api/project-memory"], ["/inspiration", "/api/inspiration-cards"],
-      ["/insights", "/api/analytics"],
+      ["/insights", "/api/analytics/accounts"],
     ];
     const workspacePage = pages[0].page;
     for (const [route, endpoint] of workspaceChecks) {

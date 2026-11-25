@@ -30,7 +30,7 @@ export function TaskForm({ scope, row, options, cases, references = [], enabled,
   const selectedCase = !brief.benchmark ? cases.find(item => item.id === brief.caseIds[0]) : null;
   const selectedBenchmarkKey = brief.benchmark ? `reference:${brief.benchmark.referenceId}:${brief.benchmark.analysisId}` : selectedCase ? `case:${selectedCase.id}` : "";
   const sourceReference = brief.benchmark ?? (selectedCase?.referenceId && selectedCase.analysisId ? { referenceId: selectedCase.referenceId, analysisId: selectedCase.analysisId, transcriptId: selectedCase.transcriptId ?? null } : null);
-  const strategyUrl = `/knowledge?${new URLSearchParams({ ...scope, tab: "strategy", from: "ecommerce" })}`;
+  const strategyUrl = `/space?${new URLSearchParams({ ...scope, tab: "strategy", from: "ecommerce" })}`;
   const benchmarkUrl = `/analysis?${new URLSearchParams({ ...scope, view: "benchmark" })}`;
   const change = (values: Partial<TaskBrief>) => { if ("benchmark" in values) benchmarkSelection.current = values.benchmark ?? null; setBrief(b => ({ ...b, ...values })); dirty(true); };
   const leaveForm = (event: MouseEvent<HTMLAnchorElement>) => { if (discard && !discard()) event.preventDefault(); else dirty(false); };

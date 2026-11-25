@@ -69,7 +69,7 @@ test("dashboard and search use real tenant-scoped records instead of sample copy
     readFile(new URL("../app/api/search/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../components/SearchWorkspace.tsx", import.meta.url), "utf8"),
   ]);
-  assert.match(home, /所有进度来自真实业务记录/);
+  assert.match(home, /scopedFetch\("\/api\/work-tasks\?organizationId=/);
   assert.doesNotMatch(home, /澄川管理咨询今天最需要推进/);
   assert.match(dashboard, /project_members own/);
   assert.match(search, /project_members own/);

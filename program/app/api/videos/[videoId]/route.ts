@@ -1,4 +1,5 @@
 import { readAnalysisModuleRetryState } from "../../../../lib/analysis-module-retry";
+import { readVideoPlatformComments } from "../../../../lib/video-platform-comments";
 import { manuscriptAssetForVersion } from "../../../../lib/manuscript-view";
 import { readScopedAnalysisMedia } from "../../../../lib/analysis-media";
 import { canAccessOrganizationVideoLibrary, canWriteProjectAccess, getD1, getOrganizationAccess, getProjectAccess } from "../../../../db/runtime";
@@ -28,14 +29,14 @@ export async function GET(request: Request, context: { params: Promise<{ videoId
       if (!library) return apiError("VIDEO_NOT_FOUND", "视频不存在或不属于公司素材库。", 404);
       sourceProjectId = library.source_project_id; libraryEntryId = library.library_entry_id; sharedReference = true;
       video = await db.prepare(`
-        SELECT v.id, v.platform, v.source_type, v.source_url, v.title, v.author_name, v.published_at, v.duration_sec, v.status, v.error_message, v.created_at,
+        SELECT v.id, v.platform, v.source_type, v.source_url, v.platform_work_id, v.platform_title, v.platform_description, v.published_at_source, v.metadata_collected_at, v.metadata_attempted_at, v.metadata_status, v.metadata_message, v.title, v.author_name, v.published_at, v.duration_sec, v.status, v.error_message, v.created_at,
           a.id AS local_media_asset_id, a.filename, a.content_type, a.size_bytes
         FROM videos v LEFT JOIN media_assets a ON a.id = v.media_asset_id AND a.organization_id = v.organization_id AND a.project_id = v.project_id AND a.status = 'active' AND a.kind IN ('source_video', 'source_audio') AND (a.video_id IS NULL OR a.video_id = v.id)
         WHERE v.id = ? AND v.organization_id = ? AND v.project_id = ? AND v.deleted_at IS NULL
       `).bind(videoId, organizationId, sourceProjectId).first<Record<string, unknown>>();
     } else {
       video = await db.prepare(`
-      SELECT v.id, v.platform, v.source_type, v.source_url, v.title, v.author_name, v.published_at, v.duration_sec, v.status, v.error_message, v.created_at,
+      SELECT v.id, v.platform, v.source_type, v.source_url, v.platform_work_id, v.platform_title, v.platform_description, v.published_at_source, v.metadata_collected_at, v.metadata_attempted_at, v.metadata_status, v.metadata_message, v.title, v.author_name, v.published_at, v.duration_sec, v.status, v.error_message, v.created_at,
         a.id AS local_media_asset_id, a.filename, a.content_type, a.size_bytes
       FROM videos v LEFT JOIN media_assets a ON a.id = v.media_asset_id AND a.organization_id = v.organization_id AND a.project_id = v.project_id AND a.status = 'active' AND a.kind IN ('source_video', 'source_audio') AND (a.video_id IS NULL OR a.video_id = v.id)
       WHERE v.id = ? AND v.organization_id = ? AND v.project_id = ? AND v.deleted_at IS NULL
@@ -53,7 +54,7 @@ export async function GET(request: Request, context: { params: Promise<{ videoId
       if (!reference) return apiError("VIDEO_NOT_FOUND", "视频不存在或不属于当前项目。", 404);
       sourceProjectId = reference.source_project_id; libraryEntryId = reference.library_entry_id; sharedReference = true;
       video = await db.prepare(`
-        SELECT v.id, v.platform, v.source_type, v.source_url, v.title, v.author_name, v.published_at, v.duration_sec, v.status, v.error_message, v.created_at,
+        SELECT v.id, v.platform, v.source_type, v.source_url, v.platform_work_id, v.platform_title, v.platform_description, v.published_at_source, v.metadata_collected_at, v.metadata_attempted_at, v.metadata_status, v.metadata_message, v.title, v.author_name, v.published_at, v.duration_sec, v.status, v.error_message, v.created_at,
           a.id AS local_media_asset_id, a.filename, a.content_type, a.size_bytes
         FROM videos v LEFT JOIN media_assets a ON a.id = v.media_asset_id AND a.organization_id = v.organization_id AND a.project_id = v.project_id AND a.status = 'active' AND a.kind IN ('source_video', 'source_audio') AND (a.video_id IS NULL OR a.video_id = v.id)
         WHERE v.id = ? AND v.organization_id = ? AND v.project_id = ? AND v.deleted_at IS NULL
@@ -65,13 +66,14 @@ export async function GET(request: Request, context: { params: Promise<{ videoId
     }
     if (requestedAnalysisId && !await db.prepare("SELECT id FROM video_analyses WHERE id = ? AND organization_id = ? AND project_id = ? AND video_id = ? LIMIT 1").bind(requestedAnalysisId, organizationId, sourceProjectId, videoId).first()) return apiError("ANALYSIS_NOT_FOUND", "指定的分析版本不存在或不在当前可访问的视频中。", 404);
     const canReadOwnedPerformance = !sharedReference || (Boolean(requestedLibraryEntryId) && projectId === sourceProjectId);
-    const [latestJob, latestTranscript, analyses, metrics, events, assets, ownedPerformance] = await Promise.all([
+    const [platformComments, latestJob, latestTranscript, analyses, metrics, events, assets, ownedPerformance] = await Promise.all([
+      readVideoPlatformComments(db, organizationId, sourceProjectId, videoId),
       db.prepare("SELECT id, status, analysis_profile, visual_analysis_mode, visual_sampling_level, execution_mode, collection_mode, progress, current_stage, error_code, error_message, retry_count, checkpoint_stage, checkpoint_json, checkpoint_updated_at, resume_count, created_at, updated_at, completed_at FROM analysis_jobs WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY created_at DESC,rowid DESC LIMIT 1").bind(organizationId, sourceProjectId, videoId).first<Record<string, unknown>>(),
       db.prepare("SELECT id, version, language, source, full_text, segments_json, confidence, created_at, updated_at FROM video_transcripts WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY version DESC LIMIT 1").bind(organizationId, sourceProjectId, videoId).first<{ segments_json: string } & Record<string, unknown>>(),
       db.prepare(`SELECT id, analysis_job_id, schema_version, report_json, confidence, model_provider, model_name, prompt_version, created_at FROM video_analyses WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY ${requestedAnalysisId ? "CASE WHEN id = ? THEN 0 ELSE 1 END, " : ""}created_at DESC, rowid DESC LIMIT 8`).bind(organizationId, sourceProjectId, videoId, ...(requestedAnalysisId ? [requestedAnalysisId] : [])).all<{ id: string; analysis_job_id: string | null; schema_version: string; created_at: string; report_json: string } & Record<string, unknown>>(),
       db.prepare("SELECT source, plays, likes, comments, favorites, shares, followers_gained, collected_at FROM video_metric_snapshots WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY collected_at DESC LIMIT 10").bind(organizationId, sourceProjectId, videoId).all(),
       db.prepare("SELECT event_type, from_status, to_status, progress, details_json, created_at FROM analysis_job_events WHERE organization_id = ? AND project_id = ? AND video_id = ? ORDER BY created_at DESC LIMIT 50").bind(organizationId, sourceProjectId, videoId).all(),
-      db.prepare("SELECT id, analysis_job_id, kind, filename, content_type, size_bytes, created_at FROM media_assets WHERE organization_id = ? AND project_id = ? AND video_id = ? AND kind IN ('keyframe', 'subtitle', 'report') AND status = 'active' ORDER BY created_at ASC,rowid ASC").bind(organizationId, sourceProjectId, videoId).all<{ id: string; analysis_job_id: string | null; kind: string; filename: string; created_at: string }>(),
+      db.prepare("SELECT id, analysis_job_id, kind, filename, content_type, size_bytes, is_cover, quality_score, created_at FROM media_assets WHERE organization_id = ? AND project_id = ? AND video_id = ? AND kind IN ('platform_cover', 'keyframe', 'subtitle', 'report') AND status = 'active' ORDER BY created_at ASC,rowid ASC").bind(organizationId, sourceProjectId, videoId).all<{ id: string; analysis_job_id: string | null; kind: string; is_cover: number; quality_score: number | null; filename: string; created_at: string }>(),
       canReadOwnedPerformance ? db.prepare(`
         SELECT w.id AS work_id, w.title AS work_title, s.as_of_at,
           s.views, s.completion_rate_bps, s.five_second_completion_rate_bps, s.cover_ctr_bps,
@@ -95,6 +97,8 @@ export async function GET(request: Request, context: { params: Promise<{ videoId
     const selected = analysisVersions[0];
     const assetUrl = (id: string) => sharedReference && libraryEntryId
       ? `/api/video-library/${libraryEntryId}/assets/${id}?${libraryQuery}` : `/api/videos/${videoId}/assets/${id}?${libraryQuery}`;
+    const cover = assets.results.find(asset => asset.kind === "platform_cover")
+      ?? assets.results.filter(asset => asset.kind === "keyframe").sort((a, b) => b.is_cover - a.is_cover || (b.quality_score ?? 0) - (a.quality_score ?? 0))[0];
     const manuscript = manuscriptAssetForVersion(assets.results, selected ?? null, Boolean(requestedAnalysisId));
     const extractionMedia = !requestedAnalysisId && manuscript?.analysis_job_id && manuscript.analysis_job_id !== selected?.analysis_job_id
       ? await db.prepare("SELECT id,filename,content_type,size_bytes FROM media_assets WHERE organization_id=? AND project_id=? AND video_id=? AND analysis_job_id=? AND kind IN ('source_video','source_audio') AND status='active' ORDER BY created_at DESC,rowid DESC LIMIT 1")
@@ -150,8 +154,12 @@ export async function GET(request: Request, context: { params: Promise<{ videoId
         "content-disposition": `attachment; filename="analysis-diagnostics.json"; filename*=UTF-8''${encodedFilename}`,
       } });
     }
+    const canCreateFromStructure = canWriteProjectAccess(access) && (sourceProjectId === projectId || (sharedReference && (!requestedLibraryEntryId || Boolean(await db.prepare(
+      "SELECT id FROM project_video_references WHERE organization_id = ? AND project_id = ? AND library_entry_id = ? AND purpose = 'benchmark' AND status = 'active' LIMIT 1"
+    ).bind(organizationId, projectId, libraryEntryId).first()))));
     return Response.json({
-      video: { ...video, filename: media?.filename ?? video.filename, content_type: media?.content_type ?? video.content_type,
+      video: { ...video, cover_url: cover ? assetUrl(cover.id) : null, cover_source: cover ? (cover.kind === "platform_cover" ? "platform" : "keyframe") : null,
+        filename: media?.filename ?? video.filename, content_type: media?.content_type ?? video.content_type,
         size_bytes: media?.size_bytes ?? video.size_bytes, media_binding: extractionMedia ? "manuscript" : selectedMedia.binding,
         is_shared_reference: sharedReference, library_entry_id: libraryEntryId, local_media_asset_id: undefined, media_url: mediaUrl },
       job: safeJob,
@@ -162,10 +170,12 @@ export async function GET(request: Request, context: { params: Promise<{ videoId
       analysis: analysisVersions[0] ?? null,
       analyses: analysisVersions,
       metrics: metrics.results,
+      platform_comments: platformComments,
       ownedPerformance,
       assets: assets.results.map((asset) => ({ ...asset, url: assetUrl(asset.id) })),
       events: events.results.map((event) => ({ ...event, details: parseStoredJson(typeof event.details_json === "string" ? event.details_json : null), details_json: undefined })),
       canWrite: !sharedReference && canWriteProjectAccess(access),
+      canCreateFromStructure,
     });
   } catch (error) { return errorResponse(error); }
 }

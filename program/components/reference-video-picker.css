@@ -1,0 +1,17 @@
+.reference-video-picker { max-width: 72rem; padding: clamp(1rem, 3vw, 2rem); }
+.reference-video-picker h2 { margin: 0 0 1.25rem; }
+.reference-video-search { display: grid; gap: .4rem; font-weight: 600; }
+.reference-video-search input { width: 100%; font: inherit; padding: .65rem .8rem; border: 1px solid #b8c9c3; border-radius: .5rem; }
+.reference-video-picker ul { list-style: none; margin: 1rem 0 0; padding: 0; }
+.reference-video-picker li + li { border-top: 1px solid #dee6e2; }
+.reference-video-picker li a { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem .25rem; text-decoration: none; }
+.reference-video-picker li a:hover strong { text-decoration: underline; }
+.reference-video-picker li strong, .reference-video-picker li small { display: block; overflow-wrap: anywhere; }
+.reference-video-picker li small { margin-top: .3rem; color: #546e66; }
+.reference-video-search { grid-template-columns: minmax(0,1fr) auto; align-items: end; }
+.reference-video-search input { margin-top: .3rem; }
+.reference-video-search button, .reference-video-pages button { padding: .6rem .85rem; }
+.reference-video-pending { margin-top: 1rem; }
+.reference-video-pending summary { cursor: pointer; color: #546e66; }
+.reference-video-pending li a > span:last-child { flex-shrink: 0; font-size: .85rem; }
+.reference-video-pages { display: flex; align-items: center; justify-content: end; gap: .75rem; margin-top: 1rem; }

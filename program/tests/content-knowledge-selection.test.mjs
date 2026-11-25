@@ -67,7 +67,7 @@ for (const borrow of [true, false]) test(`selected benchmark content may be ${bo
     if (call === 1) return {}; // Exercise the full-output retry, not only the initial prompt.
     assert.match(input.user, /未指定时不得补充品牌知识/);
     assert.doesNotMatch(input.user, /referenceExamples 只指导结构|至少一条项目 knowledge/);
-    return { ...base, qualityReview: { ...base.qualityReview, benchmarkMethods: [{ sourceId: "benchmark", method: "分步讲解", application }] }, citations: [
+    return { ...base, benchmarkMethods: [{ sourceId: "benchmark", method: "分步讲解", application }], citations: [
       { sourceType: "strategy", sourceId: "strategy", quote: "内容策略继续指导创作方向与表达方式" },
       { sourceType: "method_knowledge", sourceId: prompt.methodologyPlan.planId, quote: "一条内容只保留一个核心主张" },
       { sourceType: "benchmark", sourceId: "benchmark", quote },
@@ -82,7 +82,9 @@ for (const borrow of [true, false]) test(`selected benchmark content may be ${bo
   assert.equal(f.calls.length, 2);
   const version = f.sqlite.prepare("SELECT pack_json, prompt_version FROM content_versions WHERE content_item_id = ? AND version = 2").get(f.contentId);
   assert.equal(version.prompt_version, production.CONTENT_PROMPT_VERSION);
-  assert.deepEqual(JSON.parse(version.pack_json).qualityReview.benchmarkMethods, [{ sourceId: "benchmark", method: "分步讲解", application }]);
+  const pack = JSON.parse(version.pack_json);
+  assert.deepEqual(pack.benchmarkMethods, [{ sourceId: "benchmark", method: "分步讲解", application }]);
+  assert.equal(pack.qualityReview, undefined);
 });
 
 test("selected but inaccessible or revoked knowledge blocks generation instead of substituting other cases", async t => {

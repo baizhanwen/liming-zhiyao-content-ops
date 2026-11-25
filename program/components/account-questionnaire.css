@@ -1,0 +1,36 @@
+.account-questionnaire, .guided-fields, .guided-question, .guided-extra > div, .guided-choice, .guided-conditions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  min-width: 0;
+}
+.guided-fields, .guided-question, .guided-options { margin: 0; padding: 0; min-width: 0; border: 0; }
+.guided-fields label, .guided-choice { min-width: 0; align-content: start; }
+.guided-choice { align-self: start; }
+.guided-options > label { margin-top: 8px; }
+.guided-question > legend, .guided-options > legend { padding: 0; margin: 0 0 8px; color: var(--ink); font-size: 14px; font-weight: 650; }
+.guided-options > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.guided-options > div > label, .guided-conditions > label:has(input[type="checkbox"]) {
+  display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px;
+  border: 1px solid var(--line); border-radius: 7px; cursor: pointer; font-size: 12px;
+}
+.guided-options > div > label:has(input:checked) { background: var(--brand-soft); border-color: var(--brand); }
+.guided-options > div input[type="checkbox"], .guided-conditions input[type="checkbox"] {
+  appearance: auto; width: 14px; height: 14px; min-height: 0; margin: 0; accent-color: var(--brand);
+}
+.guided-material, .guided-extra { border-top: 1px solid var(--line); padding-top: 12px; }
+.account-questionnaire .guided-material[hidden] { display: none; }
+.guided-extra > summary { cursor: pointer; color: var(--brand-deep); font-size: 13px; font-weight: 600; }
+.guided-extra[open] > div { margin-top: 12px; }
+.account-questionnaire h3 { margin: 0; font-size: 15px; }
+.guided-conditions { align-items: start; }
+.guided-conditions > label:has(input[type="checkbox"]) { justify-self: start; }
+.knowledge-card > p { white-space: pre-line; }
+
+.knowledge-create .account-questionnaire, .strategy-create .guided-fields { gap: 20px; }
+.knowledge-create .guided-fields { row-gap: 16px; }
+.knowledge-create .account-questionnaire > .stack-form { margin-top: 0; }
+.knowledge-create .form-row { grid-template-columns: minmax(0, 1fr); }
+.guided-fields > button { justify-self: start; }
+.guided-conditions > label:not(:has(input[type="checkbox"])) { width: 100%; }
+.knowledge-create .guided-options > div > label, .strategy-create .guided-options > div > label { min-height: 36px; padding-inline: 11px; }

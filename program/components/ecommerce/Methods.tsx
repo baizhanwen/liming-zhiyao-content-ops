@@ -1,5 +1,7 @@
 "use client";
 
+import { RecordSidebar, RecordSidebarItem } from "../RecordSidebar";
+import { SplitWorkspace } from "../SplitWorkspace";
 import { useCallback, useEffect, useState } from "react";
 import { Checks, Choice, displayTime, ecommerceApi, evidenceKinds, Notices, platforms, splitLines, State, statuses, targets, TextField, TimeField, useEcommerceAction, type ComponentRow, type MethodCard, type Scope } from "./shared";
 
@@ -19,7 +21,19 @@ export function Methods({ scope, enabled, canManage, dirty, discard }: { scope: 
   const visible = rows.filter(row => { try { return isWritingCard(JSON.parse(row.body_json)); } catch { return false; } }).filter(row => (kind === "all" || row.kind === kind) && `${row.name} ${row.body_json}`.toLowerCase().includes(search.toLowerCase()));
   return <><section className="ec-panel"><header className="ec-panel-head"><div><h2>文案方法库</h2><p className="ec-muted">按商品、人群和场景选用开头与文案结构，商品事实以已确认的依据为准。</p></div><button type="button" disabled={!enabled || !canManage || action.busy} onClick={() => void action.act(async () => { const result = await ecommerceApi<{ cards: Starter[] }>(scope, "components/starter"); const cards = result.cards.filter(item => isWritingCard(item.card)); setStarter(cards); setKeys(cards.map(c => c.key)); if (!cards.length) action.setError("当前交付未包含基础方法包，可以创建并确认自己的方法组件。"); })}>查看基础方法</button></header><Notices error={action.error} message={action.message} />
     {!!starter.length && <section className="ec-inset"><h3>基础方法 · 导入前核对</h3><p className="ec-muted">来自项目现有授权方法目录的电商适配，尚无真实成交验证。导入当前空间，之后可修改；重复导入保留已有修改。</p><div className="ec-card-grid">{starter.map(item => <details key={item.key}><summary>{item.card.name} · {writingKinds[item.card.kind as keyof typeof writingKinds]}</summary><label className="ec-check"><input type="checkbox" checked={keys.includes(item.key)} onChange={e => setKeys(e.target.checked ? [...keys, item.key] : keys.filter(k => k !== item.key))} />选择此方法</label><p>{item.card.instruction}</p><p>所需条件：{item.card.requiredEvidenceKinds.map(k => evidenceKinds[k]).join("、") || "本任务的主卖点及证据"}</p><p className="ec-muted ec-pre">{item.card.sourceLocator}</p>{item.methods.map(m => <small key={m.id}>{m.id} · {m.source.revision}<br /></small>)}</details>)}</div><div className="ec-actions"><button type="button" onClick={() => setKeys(keys.length === starter.length ? [] : starter.map(c => c.key))}>{keys.length === starter.length ? "取消全选" : "全选"}</button><button type="button" className="ec-primary" disabled={!enabled || !canManage || action.busy || !keys.length} onClick={() => void action.act(async () => { await ecommerceApi(scope, "components/starter", { keys, confirm: true }); await load(); setStarter([]); }, "导入完成；已经存在的方法保留当前空间的修改。")}>确认并导入 {keys.length} 张</button><button type="button" onClick={() => setStarter([])}>收起</button></div></section>}
-  </section><div className="ec-split"><aside className="ec-panel ec-list"><div className="ec-panel-head"><h3>方法卡</h3><button type="button" disabled={!enabled} onClick={() => { if (discard()) { dirty(false); setSelectedId(""); } }}>新建</button></div><TextField label="搜索名称、规则或来源" value={search} onChange={setSearch} /><Choice label="方法类别" value={kind} values={{ all: "全部", ...writingKinds }} onChange={setKind} />{visible.length ? visible.map(row => <button type="button" key={row.id} className={`ec-list-item ${row.id === selectedId ? "selected" : ""}`} onClick={() => { if (row.id !== selectedId && discard()) { dirty(false); setSelectedId(row.id); } }}><strong>{row.name}</strong><small>{writingKinds[row.kind as keyof typeof writingKinds]} · v{row.current_version} · {row.scope === "system" ? "通用" : "本空间"}</small><State value={row.status} /></button>) : <p className="ec-muted">没有匹配的方法卡。可导入基础方法，或整理已有授权资料。</p>}</aside><section className="ec-panel"><MethodEditor key={`${selected?.id ?? "new"}:${selected?.revision ?? 0}`} scope={scope} row={selected} enabled={enabled} dirty={dirty} saved={async id => { dirty(false); await load(); setSelectedId(id); }} /></section></div></>;
+  </section><SplitWorkspace className="ec-split record-sidebar-layout">
+    <RecordSidebar title="方法卡" count={visible.length}
+      action={<button type="button" disabled={!enabled} onClick={() => { if (discard()) { dirty(false); setSelectedId(""); } }}>新建</button>}
+      tools={<>
+        <TextField label="搜索名称、规则或来源" value={search} onChange={setSearch} />
+        <Choice label="方法类别" value={kind} values={{ all: "全部", ...writingKinds }} onChange={setKind} />
+      </>}>
+      {visible.length ? visible.map(row => <RecordSidebarItem key={row.id} title={row.name} version={row.current_version}
+        status={<State value={row.status} />} meta={`${writingKinds[row.kind as keyof typeof writingKinds]} · ${row.scope === "system" ? "通用" : "本空间"}`}
+        selected={selectedId === row.id} onSelect={() => { if (row.id !== selectedId && discard()) { dirty(false); setSelectedId(row.id); } }} />)
+        : <p className="ec-muted">没有匹配的方法卡。可导入基础方法，或整理已有授权资料。</p>}
+    </RecordSidebar>
+    <section key={selectedId} className="ec-panel"><MethodEditor key={`${selected?.id ?? "new"}:${selected?.revision ?? 0}`} scope={scope} row={selected} enabled={enabled} dirty={dirty} saved={async id => { dirty(false); await load(); setSelectedId(id); }} /></section></SplitWorkspace></>;
 }
 
 function MethodEditor({ scope, row, enabled, dirty, saved }: { scope: Scope; row?: ComponentRow; enabled: boolean; dirty: (value: boolean) => void; saved: (id: string) => Promise<void> }) {

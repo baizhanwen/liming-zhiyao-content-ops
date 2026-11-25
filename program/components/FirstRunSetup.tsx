@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
+import { StandalonePageHeading } from "./StandalonePageHeading";
 
 type Status = { deliveryMode: boolean; setupRequired: boolean; setupCodeConfigured: boolean; setupCodeRequired: boolean };
 
@@ -39,9 +40,11 @@ export function FirstRunSetup() {
     window.location.replace("/login?initialized=1");
   }
 
-  return <section className="login-card first-run-card">
+  return <>
+    <StandalonePageHeading title="建立首家公司与管理员" />
+    <section className="login-card first-run-card">
     <div className="login-brand"><span className="brand-mark">利</span><div><strong>利明智耀</strong><small>本地工作台首次设置</small></div></div>
-    <p className="section-kicker">仅限主机电脑 · 一次性操作</p><h1>建立首家公司与管理员</h1>
+    <p className="section-kicker">仅限主机电脑 · 一次性操作</p>
     <p>开通完成后入口将永久关闭。其他成员由管理员登录后在“成员与权限”中邀请。</p>
     {!status && !error ? <div className="management-state" role="status">正在检查安装状态…</div> : status && (!status.setupCodeRequired || status.setupCodeConfigured) ? <form className="stack-form" onSubmit={submit}>
       <label>公司名称<input name="companyName" required minLength={2} maxLength={80} /></label>
@@ -53,5 +56,6 @@ export function FirstRunSetup() {
       {error && <div className="inline-alert" role="alert">{error}</div>}
       <button className="primary-button" disabled={working}>{working ? "正在建立…" : "完成开通"}</button>
     </form> : <div className="inline-alert" role="alert">{error || "交付包未配置初始化码，请联系软件提供方。"}</div>}
-  </section>;
+    </section>
+  </>;
 }

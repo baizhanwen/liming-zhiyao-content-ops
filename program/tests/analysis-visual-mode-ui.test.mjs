@@ -83,7 +83,7 @@ for (const executionMode of ["controlled_parallel", "serial"]) for (const visual
     const requests = [];
     const bindings = {
       organizationId: "synthetic-org", projectId: "synthetic-project", analysisProfile: "max", transcriptReviewEnabled: true, visualAnalysisMode, visualSamplingLevel, executionMode,
-      collectionMode: "anonymous", setSubmitting() {}, setError() {}, setSubmitMessage() {}, setTranscriptReviewEnabled() {},
+      collectionMode: "anonymous", submitting: false, setSubmissionKind() {}, setError() {}, setSubmitMessage() {}, setTranscriptReviewEnabled() {},
       taskReader: { current: { reader: { invalidate() {} } } },
       FormData: class { get(name) { return name === "url" ? "https://v.douyin.com/synthetic/" : "合成备注"; } },
       scopedFetch: async (url, init) => { requests.push({ url, body: JSON.parse(init.body) }); return Response.json({ video: { id: "video" }, job: { id: "job" } }, { status: 201 }); },
@@ -99,9 +99,11 @@ for (const executionMode of ["controlled_parallel", "serial"]) for (const visual
 
   test(`batch upload carries ${visualAnalysisMode}/${visualSamplingLevel}/${executionMode} for every file`, async () => {
     const requests = [];
+    const submissionKinds = [];
     const bindings = {
       organizationId: "synthetic-org", projectId: "synthetic-project", analysisProfile: "standard", visualAnalysisMode, visualSamplingLevel, executionMode,
-      setSubmitting() {}, setError() {}, setUploadProgress() {}, setUploadEstimates() {},
+      submitting: false, setSubmissionKind: kind => submissionKinds.push(kind),
+      setError() {}, setUploadProgress() {}, setUploadEstimates() {}, setInspectingFiles() {}, uploadSelectionVersion: { current: 0 },
       taskReader: { current: { reader: { invalidate() {} } } },
       scopedFetch: async (url, init) => { requests.push({ url, mode: init.body.get("visualAnalysisMode"), samplingLevel: init.body.get("visualSamplingLevel"), executionMode: init.body.get("executionMode") }); return Response.json({ video: { id: "video" }, job: { id: "job" } }); },
       readError: async () => "error", appendCreated() {}, loadVideos: async () => {},
@@ -110,6 +112,7 @@ for (const executionMode of ["controlled_parallel", "serial"]) for (const visual
       elements: { namedItem: () => ({ files: [new File(["a"], "first.mp4"), new File(["b"], "second.mp4")] }) }, reset() {},
     } });
     assert.equal(requests.length, 2);
+    assert.deepEqual(submissionKinds, ["upload", null]);
     assert.ok(requests.every(request => request.mode === visualAnalysisMode));
     assert.ok(requests.every(request => request.samplingLevel === visualSamplingLevel));
     assert.ok(requests.every(request => request.executionMode === executionMode));
@@ -133,6 +136,47 @@ for (const executionMode of ["controlled_parallel", "serial"]) for (const visual
     assert.equal(requests[1].body.reanalyze, true);
   });
 }
+
+test("selected files appear immediately and an older duration read cannot replace the current selection", async () => {
+  const state = {};
+  const resolveDuration = new Map();
+  const inspect = loadFunction("components/AnalysisWorkspace.tsx", "inspectUploadFiles", {
+    uploadSelectionVersion: { current: 0 },
+    setUploadProgress() {},
+    setError: value => { state.error = value; },
+    setUploadEstimates: value => { state.files = value; },
+    setInspectingFiles: value => { state.inspecting = value; },
+    readMediaDuration: file => new Promise(resolve => resolveDuration.set(file.name, resolve)),
+  });
+  const input = { value: "", files: [] };
+  const select = names => {
+    input.files = names.map(name => ({ name }));
+    return inspect({ currentTarget: input });
+  };
+
+  const first = select(["first.mp4"]);
+  const second = select(["second.mp4"]);
+  assert.deepEqual(state.files, [{ name: "second.mp4", durationSeconds: null }]);
+  assert.equal(state.inspecting, true);
+  resolveDuration.get("first.mp4")(120);
+  await first;
+  assert.equal(state.inspecting, true);
+  assert.deepEqual(state.files, [{ name: "second.mp4", durationSeconds: null }]);
+  resolveDuration.get("second.mp4")(8);
+  await second;
+  assert.deepEqual(state.files, [{ name: "second.mp4", durationSeconds: 8 }]);
+  assert.equal(state.inspecting, false);
+
+  for (const replacement of [[], Array(11).fill("too-many.mp4")]) {
+    const pending = select(["pending.mp4"]);
+    await select(replacement);
+    resolveDuration.get("pending.mp4")(15);
+    await pending;
+    assert.deepEqual(state.files, []);
+    assert.equal(state.inspecting, false);
+    if (replacement.length) assert.match(state.error, /10 个文件/);
+  }
+});
 
 test("the selector states the pure-vision boundary and disables edits while submitting", () => {
   const source = ts.transpileModule(read("components/VisualAnalysisModeSelect.tsx"), {

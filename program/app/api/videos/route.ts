@@ -1,3 +1,4 @@
+import { libraryCoverFields, videoCoverColumns, videoCoverJoin } from "../../../lib/video-cover";
 import { taskProgressSnapshot } from "../../../lib/analysis-task-progress";
 import { materialAnalysisProjection } from "../../../lib/material-analysis-state";
 import { ACTIVE_ANALYSIS_STATUSES_SQL } from "../../../lib/analysis-jobs";
@@ -24,16 +25,18 @@ export async function GET(request: Request) {
     const [videos, jobs, readiness, queueStats, sharedQueue] = await Promise.all([
       db.prepare(`
         SELECT * FROM (
-          SELECT v.id, v.platform, v.source_type, v.source_url, v.title, v.author_name, v.status, v.error_message, v.created_at, a.filename, a.size_bytes, (SELECT id FROM video_analyses WHERE organization_id=v.organization_id AND video_id=v.id ORDER BY created_at DESC LIMIT 1) AS analysis_id,
-            0 AS is_reference, (SELECT library.id FROM video_library_entries library WHERE library.organization_id = v.organization_id AND library.source_video_id = v.id LIMIT 1) AS library_entry_id
+          SELECT v.id, v.platform, v.source_type, v.source_url, v.title, v.platform_title, v.platform_description, v.published_at_source, v.metadata_collected_at, v.published_at, v.duration_sec, v.author_name, v.status, v.error_message, v.created_at, a.filename, a.size_bytes, (SELECT id FROM video_analyses WHERE organization_id=v.organization_id AND video_id=v.id ORDER BY created_at DESC LIMIT 1) AS analysis_id,
+            ${videoCoverColumns}, 0 AS is_reference, (SELECT library.id FROM video_library_entries library WHERE library.organization_id = v.organization_id AND library.source_video_id = v.id LIMIT 1) AS library_entry_id
           FROM videos v LEFT JOIN media_assets a ON a.id = v.media_asset_id
+          ${videoCoverJoin}
           WHERE v.organization_id = ? AND v.project_id = ? AND v.deleted_at IS NULL
           UNION ALL
-          SELECT v.id, v.platform, v.source_type, v.source_url, v.title, v.author_name, v.status, v.error_message, refs.created_at, a.filename, a.size_bytes, (SELECT id FROM video_analyses WHERE organization_id=v.organization_id AND video_id=v.id ORDER BY created_at DESC LIMIT 1) AS analysis_id,
-            1 AS is_reference, library.id AS library_entry_id
+          SELECT v.id, v.platform, v.source_type, v.source_url, v.title, v.platform_title, v.platform_description, v.published_at_source, v.metadata_collected_at, v.published_at, v.duration_sec, v.author_name, v.status, v.error_message, refs.created_at, a.filename, a.size_bytes, (SELECT id FROM video_analyses WHERE organization_id=v.organization_id AND video_id=v.id ORDER BY created_at DESC LIMIT 1) AS analysis_id,
+            ${videoCoverColumns}, 1 AS is_reference, library.id AS library_entry_id
           FROM project_video_references refs
           INNER JOIN video_library_entries library ON library.id = refs.library_entry_id AND library.organization_id = refs.organization_id
           INNER JOIN videos v ON v.id = library.source_video_id AND v.organization_id = library.organization_id
+          ${videoCoverJoin}
           LEFT JOIN media_assets a ON a.id = v.media_asset_id
           WHERE refs.organization_id = ? AND refs.project_id = ? AND refs.purpose = 'analysis' AND refs.status = 'active' AND v.deleted_at IS NULL
             AND NOT EXISTS (SELECT 1 FROM videos own WHERE own.organization_id = refs.organization_id AND own.project_id = refs.project_id AND own.id = v.id AND own.deleted_at IS NULL)
@@ -82,7 +85,8 @@ export async function GET(request: Request) {
       current_stage: job.status === "cancelled" && (!job.lease_expires_at || String(job.lease_expires_at) <= queueNow) ? "任务已取消" : job.current_stage,
       checkpoint_json: undefined, progress_json: undefined, lease_owner: undefined, progress_enqueued_at: undefined, taskProgress: taskProgressSnapshot({ ...job, enqueued_at: job.progress_enqueued_at } as Parameters<typeof taskProgressSnapshot>[0], queueNow), segment_progress: summarizeSegmentProgress(job.checkpoint_json) }));
     return Response.json({
-      videos: videos.results, jobs: safeJobs, canWrite: canWriteProjectAccess(access),
+      videos: videos.results.map(row => ({ ...row, ...libraryCoverFields(row, row.library_entry_id, organizationId, projectId) })),
+      jobs: safeJobs, canWrite: canWriteProjectAccess(access),
       queue: { sampleCount: queueStats?.sample_count ?? 0, averageSeconds: queueStats?.average_seconds ?? null, waitingCount: sharedQueue?.waiting_count ?? 0, runningCount: sharedQueue?.running_count ?? 0,
         stoppingCount: sharedQueue?.stopping_count ?? 0, ownCount: sharedQueue?.own_count ?? 0, outstandingCount: sharedQueue?.outstanding_count ?? 0, userLimit: 10, hostLimit: 50, concurrency: 1 },
       service: {

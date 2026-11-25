@@ -109,6 +109,8 @@ try {
       assert.ok(existsSync(path.join(packageRoot, filename)), `Missing settings runtime: ${filename}`);
     for (const filename of ["app/api/dashboard/route.ts", "components/DashboardWorkspace.tsx", "components/dashboard-workspace.css", "lib/dashboard-period.ts", "lib/work-tasks.ts"])
       assert.ok(existsSync(path.join(packageRoot, filename)), `Missing dashboard runtime: ${filename}`);
+    for (const filename of ["drizzle/0057_guided_account_forms.sql", "components/AccountQuestionnaire.tsx", "components/account-questionnaire.css", "lib/account-questionnaire.ts"])
+      assert.ok(existsSync(path.join(packageRoot, filename)), `Missing account questionnaire runtime: ${filename}`);
     if (features.videoAnalysis) for (const filename of ["scripts/analyzer_local_runtime.py", "scripts/prepare_analyzer_models.py", "services/analyzer/uv.lock", "services/analyzer/liming_analyzer/douyin_collector/node/package-lock.json"])
       assert.ok(existsSync(path.join(packageRoot, filename)), `Missing video environment dependency: ${filename}`);
     if (features.videoAnalysis) for (const filename of [

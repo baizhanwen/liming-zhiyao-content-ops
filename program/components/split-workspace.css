@@ -1,0 +1,24 @@
+@media screen {
+  .workspace-split:not([data-independent-scroll]) > :is(.report-source-column, .workflow-inspector, .operations-side, .member-side, .create-panel) {
+    position: static;
+    max-height: none;
+  }
+  .workspace-split[data-independent-scroll] > :nth-child(-n + 2) {
+    position: relative;
+    top: auto;
+    min-height: 0;
+    max-height: var(--split-available-height);
+  }
+  .workspace-split[data-independent-scroll] > :nth-child(-n + 2):not(.record-sidebar) {
+    overflow: auto;
+    overscroll-behavior-y: contain;
+    overflow-anchor: none;
+  }
+}
+@media print {
+  .workspace-split > :nth-child(-n + 2) {
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
+}

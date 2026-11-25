@@ -1,3 +1,4 @@
+import { projectKnowledgeForm, type KnowledgeForm } from "../../../../lib/account-questionnaire";
 import { canManageProjectKnowledge, includesValue, knowledgeCategories, knowledgeSourceTypes } from "../../../../lib/content-ops";
 import { ensureUser, getD1, getProjectAccess } from "../../../../db/runtime";
 import { apiError, errorResponse } from "../../../../lib/api-response";
@@ -29,20 +30,27 @@ export async function PATCH(request: Request, context: { params: Promise<{ itemI
   const { itemId } = await context.params; const current = await scope(request, itemId); if ("error" in current) return current.error;
   try {
     if (!canManageProjectKnowledge(current.access)) return apiError("KNOWLEDGE_MANAGER_REQUIRED", "只有公司管理员或已分配到当前企业空间的员工可以编辑品牌知识。", 403);
-    const payload = await request.json() as Record<string, unknown>; const title = typeof payload.title==='string'?payload.title.trim():''; const body = typeof payload.body==='string'?payload.body.trim():''; const sourceRef = text(payload.sourceRef, 1_000) || null; const changeSummary = text(payload.changeSummary, 500) || "编辑产生新版本";
+    let payload = await request.json() as Record<string, unknown>;
+    let form: KnowledgeForm | null = null;
+    if (payload.form !== undefined) {
+      try { const projected = projectKnowledgeForm(payload.form); form = projected.form; payload = { ...payload, ...projected }; }
+      catch (reason) { return apiError("INVALID_KNOWLEDGE_FORM", (reason as Error).message, 400); }
+    }
+    const title = typeof payload.title==='string'?payload.title.trim():''; const body = typeof payload.body==='string'?payload.body.trim():''; const sourceRef = text(payload.sourceRef, 1_000) || null; const changeSummary = text(payload.changeSummary, 500) || "编辑产生新版本";
     const revision=readReferenceRevision(payload);if(!revision)return apiError('KNOWLEDGE_VERSION_REQUIRED','缺少已读取的资料版本，请刷新列表后重新编辑；先复制当前修改。',400);
     if (title.length < 2 || title.length>120) return apiError("INVALID_KNOWLEDGE_TITLE", "知识标题需要 2 至 120 个字符。", 400);
     if (body.length < 10 || body.length>20000) return apiError("INVALID_KNOWLEDGE_BODY", "知识正文需要 10 至 20000 个字符；超长内容不会截断保存。", 400);
     if (!includesValue(knowledgeCategories, payload.category) || !includesValue(knowledgeSourceTypes, payload.sourceType)) return apiError("INVALID_KNOWLEDGE_FIELDS", "知识分类或来源无效。", 400);
     if (payload.sourceType !== "manual" && !sourceRef) return apiError("KNOWLEDGE_SOURCE_REF_REQUIRED", "非人工知识必须填写具体来源。", 400);
-    const db = getD1(); const item = await db.prepare("SELECT current_version, status, updated_at FROM knowledge_items WHERE id = ? AND organization_id = ? AND project_id = ? AND deleted_at IS NULL LIMIT 1").bind(current.itemId, current.organizationId, current.projectId).first<{ current_version: number; status: string;updated_at:string }>();
+    const db = getD1(); const item = await db.prepare("SELECT current_version, status, updated_at, (SELECT form_json FROM knowledge_item_versions v WHERE v.item_id = knowledge_items.id AND v.version = knowledge_items.current_version) AS existing_form FROM knowledge_items WHERE id = ? AND organization_id = ? AND project_id = ? AND deleted_at IS NULL LIMIT 1").bind(current.itemId, current.organizationId, current.projectId).first<{ current_version: number; status: string;updated_at:string;existing_form:string | null }>();
     if (!item) return apiError("KNOWLEDGE_NOT_FOUND", "品牌知识不存在或已归档。", 404);
+    if (item.existing_form && !form) return apiError("KNOWLEDGE_FORM_REQUIRED", "请从资料问题单编辑此条材料，以保留公开范围和原始回答。", 400);
     if(item.status==='archived'||revision.version!==item.current_version||revision.updatedAt!==item.updated_at)return apiError('KNOWLEDGE_STATE_CHANGED','知识版本或状态已改变，本次未保存。请先复制修改，再刷新核对。',409);
     const user = await ensureUser(current.identity); const now = nextWriteTimestamp(item.updated_at); const nextVersion = Number(item.current_version) + 1;
     const saved=await commitReferenceWrite(db,{request,authSubject:current.identity.authSubject,scope:{organizationId:current.organizationId,projectId:current.projectId,userId:user.id},targetId:current.itemId,version:now,action:'knowledge.version_created',targetType:'knowledge_item',metadata:{previousVersion:item.current_version,version:nextVersion,sourceType:payload.sourceType},
       guard:"EXISTS(SELECT 1 FROM knowledge_items WHERE id=? AND organization_id=? AND project_id=? AND current_version=? AND status=? AND updated_at=? AND deleted_at IS NULL)",bindings:[current.itemId,current.organizationId,current.projectId,item.current_version,item.status,item.updated_at],mutate:(marker,markerId)=>[
         db.prepare(`UPDATE knowledge_items SET category = ?, title = ?, status = 'draft', current_version = ?, confirmed_by = NULL, confirmed_at = NULL, updated_by = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND ${marker}`).bind(payload.category,title,nextVersion,user.id,now,current.itemId,current.organizationId,current.projectId,markerId),
-        db.prepare(`INSERT INTO knowledge_item_versions (id, organization_id, project_id, item_id, version, body, source_type, source_ref, change_summary, created_by, created_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${marker}`).bind(crypto.randomUUID(),current.organizationId,current.projectId,current.itemId,nextVersion,body,payload.sourceType,sourceRef,changeSummary,user.id,now,markerId),
+        db.prepare(`INSERT INTO knowledge_item_versions (id, organization_id, project_id, item_id, version, body, source_type, source_ref, change_summary, created_by, created_at, form_json) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${marker}`).bind(crypto.randomUUID(),current.organizationId,current.projectId,current.itemId,nextVersion,body,payload.sourceType,sourceRef,changeSummary,user.id,now,form ? JSON.stringify(form) : null,markerId),
       ]});
     if (!saved) return apiError("KNOWLEDGE_STATE_CHANGED", "知识状态已经变化，本次未保存。请先复制修改，再刷新核对。", 409);
     return Response.json({ item: { id: current.itemId, category: payload.category, title, body, source_type: payload.sourceType, source_ref: sourceRef, status: "draft", current_version: nextVersion, updated_at: now } }, { status: 201 });

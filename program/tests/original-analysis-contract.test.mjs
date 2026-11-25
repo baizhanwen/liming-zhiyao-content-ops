@@ -95,15 +95,15 @@ test("independent saved manuscript keeps candidate reasons, timestamp and per-se
   assert.ok(html.includes(view.reviews[0].original));
 });
 
-test("independent original-mode manuscript displays the original choice without offering candidate retries", t => {
+test("original-mode manuscript displays the text without an empty review card", t => {
   const f = runtimeFixture(t), Component = loadReportComponent(f);
   const view = f.load("lib/analysis-report-view.ts").analysisReportView("analysis.v12", original);
   const html = renderToStaticMarkup(React.createElement(Component, {
     view, assets: [], canLocate: false, onLocate() {}, onCopyScript() {}, canCopyScript: true,
     failedModuleKeys: [], manuscript: React.createElement("section", null, "原始ASR正文"),
   }));
-  assert.match(html, /未启用自动校对或生成纠错候选/);
-  assert.doesNotMatch(html, /核对疑义句|只补这一句/);
+  assert.match(html, /原始ASR正文/);
+  assert.doesNotMatch(html, /report-script-review|未启用自动校对或生成纠错候选|核对疑义句|只补这一句/);
 });
 
 test("completion saves an original report only for a task that requested original text", async t => {

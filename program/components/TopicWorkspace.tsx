@@ -4,6 +4,8 @@ import { useWorkspaceInitialization } from "./useWorkspaceInitialization";
 import { loadClientProjects } from "../lib/client-scope";
 import { readApiError as readError } from "../lib/client-format";
 import { isScopeCancellation } from "../lib/client-scope-request";
+import { studioHref } from "../lib/studio-links";
+import "./creation-cleanup.css";
 
 
 import { TopicReferenceControls } from "./TopicReferenceControls";
@@ -17,60 +19,95 @@ type Project = { id: string; name: string };
 type Topic = { id: string; title: string; angle: string | null; source_type: string; source_ref: string | null; pillar: string | null; audience: string | null; objective: string | null; hook: string | null; rationale: string | null; priority: number; status: string; created_at: string; updated_at: string };
 type Citation = { id: string; topic_id: string; citation_type: string; citation_id: string; quote: string | null };
 type KnowledgeItem = { id: string; title: string; status: string; category: string };
+type InspirationSource = { id: string; title: string; core_insight: string; status: string; version: number; expires_at: string | null };
 type GeneratedField = "angle" | "pillar" | "priority" | "audience" | "objective" | "hook" | "rationale";
 
-const sourceLabels: Record<string, string> = { manual: "人工策划", knowledge: "品牌知识", video_analysis: "视频分析", performance: "历史表现", trend: "行业热点", comment: "评论需求", project_assistant: "灵感对话" };
+const sourceLabels: Record<string, string> = { manual: "人工策划", knowledge: "品牌知识", video_analysis: "视频分析", performance: "历史表现", trend: "行业热点", comment: "评论需求", project_assistant: "灵感对话", inspiration_card: "灵感卡片" };
 const knowledgeCategoryLabels: Record<string, string> = { brand_story: "品牌故事", founder: "创始人/出镜人", case_study: "成功案例", customer_question: "客户问题", sales_script: "销售话术", high_performing_copy: "优质文案", industry_term: "行业术语", compliance: "合规红线", brand_voice: "品牌语气", client_preference: "修改偏好", other: "其他" };
 const generatedFields: GeneratedField[] = ["angle", "pillar", "priority", "audience", "objective", "hook", "rationale"];
 const generatedFieldLabels: Record<GeneratedField, string> = { angle: "切入角度", pillar: "内容支柱", priority: "优先级", audience: "目标人群", objective: "内容目标", hook: "开场钩子", rationale: "选题理由" };
 
 
-export function TopicWorkspace({ initialOrganizationId = "", initialProjectId = "", sourceVideoId = "" }: { initialOrganizationId?: string; initialProjectId?: string; sourceVideoId?: string }) {
+export function TopicWorkspace({ initialOrganizationId = "", initialProjectId = "", sourceVideoId = "", inspirationCardId = "", initialTopicId = "" }: { initialOrganizationId?: string; initialProjectId?: string; sourceVideoId?: string; inspirationCardId?: string; initialTopicId?: string }) {
   const [organizations, setOrganizations] = useState<Organization[]>([]); const [organizationId, setOrganizationId] = useState(""); const [projects, setProjects] = useState<Project[]>([]); const [projectId, setProjectId] = useState("");
   const [topics, setTopics] = useState<Topic[]>([]); const [citations, setCitations] = useState<Citation[]>([]); const [knowledge, setKnowledge] = useState<KnowledgeItem[]>([]); const [canWrite, setCanWrite] = useState(false); const [canDelete, setCanDelete] = useState(false);
   const [loading, setLoading] = useState(true); const [saving, setSaving] = useState(false); const [error, setError] = useState("");
+  const [topicView, setTopicView] = useState<"list" | "create">("list");
   const [movingTopicId, setMovingTopicId] = useState("");
   const [deleteCandidate, setDeleteCandidate] = useState<Topic | null>(null); const [deleteConfirmation, setDeleteConfirmation] = useState(""); const [deletingTopicId, setDeletingTopicId] = useState("");
   const writeBusy = saving || Boolean(movingTopicId) || Boolean(deletingTopicId);
   const [accountBackground, setAccountBackground] = useState<TopicBackground | null>(null);
   const [includeSourceVideo, setIncludeSourceVideo] = useState(true);
+  const [inspirationSource, setInspirationSource] = useState<InspirationSource | null>(null);
   const [sourcesUsed, setSourcesUsed] = useState<TopicSourcePreview[] | null>(null);
   const [recommendations, setRecommendations] = useState<{ query: string; items: TopicReferenceRecommendation[] } | null>(null);
   const [recommending, setRecommending] = useState(false);
   const generatedValues = useRef<Partial<Record<GeneratedField, string>>>({});
   const [linkedVideoScope, setLinkedVideoScope] = useState("");
-  const activeSourceVideoId = includeSourceVideo && linkedVideoScope === organizationId + ":" + projectId ? sourceVideoId : "";
+  const videoAvailable = Boolean(sourceVideoId && linkedVideoScope === organizationId + ":" + projectId);
+  const activeSourceVideoId = includeSourceVideo && videoAvailable ? sourceVideoId : "";
   const [selectedKnowledgeIds, setSelectedKnowledgeIds] = useState<string[]>([]);
   const [generatingFields, setGeneratingFields] = useState<GeneratedField[]>([]); const [generationMessage, setGenerationMessage] = useState(""); const topicFormRef = useRef<HTMLFormElement>(null); const deleteConfirmationInputRef = useRef<HTMLInputElement>(null);
 
   const loadWorkspace = useCallback(async (orgId: string, projId: string) => {
-    if (orgId && projId) setLinkedVideoScope(current => current || orgId + ":" + projId);
-    setAccountBackground(null); setIncludeSourceVideo(true); setSourcesUsed(null); setRecommendations(null); setRecommending(false); setGenerationMessage(""); generatedValues.current = {}; topicFormRef.current?.reset();
+    const sourceScopeMatches = (!initialOrganizationId || orgId === initialOrganizationId) && (!initialProjectId || projId === initialProjectId);
+    if (orgId && projId && sourceScopeMatches) setLinkedVideoScope(current => current || orgId + ":" + projId);
+    setCanWrite(false); setCanDelete(false); setTopics([]); setCitations([]);
+    setAccountBackground(null); setIncludeSourceVideo(true); setInspirationSource(null); setSourcesUsed(null); setRecommendations(null); setRecommending(false); setGenerationMessage(""); generatedValues.current = {}; topicFormRef.current?.reset();
     setSelectedKnowledgeIds([]); setDeleteCandidate(null); setDeleteConfirmation(""); if (!orgId || !projId) return; const query = `organizationId=${encodeURIComponent(orgId)}&projectId=${encodeURIComponent(projId)}`;
-    const [topicResponse, knowledgeResponse] = await Promise.all([scopedFetch(`/api/topics?${query}`), scopedFetch(`/api/knowledge?${query}`)]);
+    const hashTopicId = window.location.hash.startsWith("#topic-") ? window.location.hash.slice(7) : "";
+    const connectedCard = inspirationCardId && orgId === initialOrganizationId && projId === initialProjectId;
+    const [topicResponse, knowledgeResponse, cardResponse] = await Promise.all([
+      scopedFetch(`/api/topics?${query}&topicId=${encodeURIComponent(initialTopicId || hashTopicId)}`),
+      scopedFetch(`/api/knowledge?${query}`),
+      connectedCard ? scopedFetch(`/api/inspiration-cards/${encodeURIComponent(inspirationCardId)}?${query}`) : null,
+    ]);
     if (!topicResponse.ok) throw new Error(await readError(topicResponse)); if (!knowledgeResponse.ok) throw new Error(await readError(knowledgeResponse));
     const topicBody = await topicResponse.json() as { topics: Topic[]; citations: Citation[]; canWrite: boolean; canDelete: boolean; accountBackground: TopicBackground | null }; const knowledgeBody = await knowledgeResponse.json() as { items: KnowledgeItem[] };
+    const hasSource = sourceScopeMatches && Boolean(sourceVideoId || connectedCard);
+    const showCreate = topicBody.canWrite && !initialTopicId && !hashTopicId && (hasSource || topicBody.topics.length === 0);
+    setTopicView(showCreate ? "create" : "list");
     setAccountBackground(topicBody.accountBackground); setTopics(topicBody.topics); setCitations(topicBody.citations); setCanWrite(topicBody.canWrite); setCanDelete(topicBody.canDelete); setKnowledge(knowledgeBody.items.filter((item) => item.status === "confirmed"));
-  }, []);
+    if (cardResponse) {
+      if (!cardResponse.ok) throw new Error(await readError(cardResponse));
+      const { history } = await cardResponse.json() as { history: InspirationSource[] };
+      const source = history.find((card) => card.id === inspirationCardId && ["candidate", "confirmed"].includes(card.status) && (!card.expires_at || Date.parse(card.expires_at) > Date.now()));
+      if (!source) throw new Error("该灵感卡片已失效，请从灵感页重新选择来源。");
+      setInspirationSource(source);
+    }
+  }, [initialTopicId, initialOrganizationId, initialProjectId, inspirationCardId, sourceVideoId]);
   const loadProjects = useCallback(async (orgId: string, preferred = "") => {
     const body = await loadClientProjects<Project>(orgId, preferred); setProjects(body.projects); const selected = body.selected; setProjectId(selected); rememberCurrentScope(orgId, selected); await loadWorkspace(orgId, selected); }, [loadWorkspace]);
   useWorkspaceInitialization({ initialOrganizationId, initialProjectId, setOrganizations, setOrganizationId, loadProjects, setError, setLoading, failureMessage: "加载失败" });
   useEffect(() => { if (deleteCandidate) deleteConfirmationInputRef.current?.focus(); }, [deleteCandidate]);
   useEffect(() => {
-    const id = window.location.hash.slice(1);
+    if (loading || topicView !== "list") return;
+    const id = initialTopicId ? `topic-${initialTopicId}` : window.location.hash.slice(1);
     if (id.startsWith("topic-")) document.getElementById(id)?.scrollIntoView({ block: "center" });
-  }, [topics]);
+  }, [topics, initialTopicId, loading, topicView]);
+
+  useEffect(() => {
+    if (!inspirationSource || loading) return;
+    const input = topicFormRef.current?.querySelector<HTMLInputElement>("#topic-title");
+    input?.focus({ preventScroll: true });
+    input?.scrollIntoView({ block: "center" });
+  }, [inspirationSource, loading]);
 
   async function createTopic(event: FormEvent<HTMLFormElement>) {
     if (writeBusy) { event.preventDefault(); return; }
     event.preventDefault(); setSaving(true); setError(""); const formElement = event.currentTarget; const form = new FormData(formElement); const sourceKnowledgeItemIds = selectedKnowledgeIds;
     const priority = String(form.get("priority") || "").trim();
     try {
-      const response = await scopedFetch("/api/topics", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, sourceVideoId: activeSourceVideoId, sourceKnowledgeItemIds, title: form.get("title"), angle: form.get("angle"), pillar: form.get("pillar"), audience: form.get("audience"), objective: form.get("objective"), hook: form.get("hook"), rationale: form.get("rationale"), priority: priority ? Number(priority) : 50 }) });
+      const response = await scopedFetch("/api/topics", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, sourceVideoId: activeSourceVideoId, inspirationCardId: inspirationSource?.id, sourceKnowledgeItemIds, title: form.get("title"), angle: form.get("angle"), pillar: form.get("pillar"), audience: form.get("audience"), objective: form.get("objective"), hook: form.get("hook"), rationale: form.get("rationale"), priority: priority ? Number(priority) : 50 }) });
       if (!response.ok) throw new Error(await readError(response));
       const body = await response.json() as { topic: Topic; citation: Citation | null; citations?: Citation[] };
       if (!body.topic?.id || !body.topic.updated_at) throw new Error("暂时无法确认选题是否已保存。请刷新列表核对，勿连续重复提交；先复制已填写内容。");
+      if (inspirationSource) {
+        window.location.assign(studioHref("topics", { organizationId, projectId, topicId: body.topic.id }));
+        return;
+      }
       const createdCitations = body.citations ?? (body.citation ? [body.citation] : []); setTopics((current) => [body.topic, ...current]); if (createdCitations.length) setCitations((current) => [...createdCitations, ...current]); formElement.reset(); setSourcesUsed(null); setRecommendations(null); generatedValues.current = {}; setSelectedKnowledgeIds([]); setGenerationMessage("");
+      setTopicView("list");
     } catch (reason) {
       if (!isScopeCancellation(reason)) setError(reason instanceof Error && !/fetch|network/i.test(reason.message) ? reason.message : "连接中断，选题提交状态尚未确认。请先复制填写内容、刷新列表核对，再决定是否重试。");
     } finally { setSaving(false); }
@@ -78,7 +115,7 @@ export function TopicWorkspace({ initialOrganizationId = "", initialProjectId = 
 
   async function moveTopicToProduction(topic: Topic) {
     if (writeBusy) return;
-    const destination = `/content?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}&topicId=${encodeURIComponent(topic.id)}`;
+    const destination = studioHref("drafts", { organizationId, projectId, topicId: topic.id });
     if (topic.status === "drafting") { window.location.assign(destination); return; }
     setMovingTopicId(topic.id); setError("");
     try {
@@ -168,9 +205,20 @@ export function TopicWorkspace({ initialOrganizationId = "", initialProjectId = 
     void generateTopicFields(empty);
   }
 
-  function fieldGenerateButton(field: GeneratedField) {
-    const busy = generatingFields.length > 0;
-    return <button type="button" disabled={busy || writeBusy} onClick={() => void generateTopicFields([field])}>{generatingFields.includes(field) ? "生成中…" : "单独生成"}</button>;
+  function topicField(field: GeneratedField, options: { maxLength?: number; rows?: number; placeholder?: string; defaultValue?: string }) {
+    const id = "topic-" + field;
+    const props = { id, name: field, disabled: writeBusy, placeholder: options.placeholder, defaultValue: options.defaultValue };
+    return <div className="topic-form-field">
+      <div className="topic-field-heading">
+        <label id={id + "-label"} htmlFor={id}>{generatedFieldLabels[field]}</label>
+        <button type="button" disabled={generatingFields.length > 0 || writeBusy} aria-describedby={id + "-label"} onClick={() => void generateTopicFields([field])}>
+          {generatingFields.includes(field) ? "生成中…" : "单独生成"}
+        </button>
+      </div>
+      {options.rows ? <textarea {...props} rows={options.rows} maxLength={options.maxLength} />
+        : field === "priority" ? <input {...props} type="number" min={0} max={100} />
+        : <input {...props} maxLength={options.maxLength} />}
+    </div>;
   }
 
   function toggleKnowledge(itemId: string) {
@@ -183,27 +231,66 @@ export function TopicWorkspace({ initialOrganizationId = "", initialProjectId = 
   if (error && organizations.length === 0) return <div className="management-state error-state"><strong>暂时无法进入选题中心</strong><p>{error}</p><small>请确认本地身份已启用，并先创建公司与企业空间。</small></div>;
   if (!organizationId || !projectId) return <div className="empty-panel"><h2>请先创建企业空间</h2><p>选题必须归属于明确的企业空间。</p></div>;
   return <div className="topic-workspace creation-cleanup"><div className="management-toolbar topic-toolbar"><label>公司<select disabled={writeBusy} value={organizationId} onChange={(event) => runScopedAction(async () => { const id = event.target.value; setOrganizationId(id); await loadProjects(id); }, setError)}>{organizations.map((organization) => <option key={organization.id} value={organization.id}>{organization.name}</option>)}</select></label><label>企业空间<select disabled={writeBusy} value={projectId} onChange={(event) => runScopedAction(async () => { const id = event.target.value; setProjectId(id); rememberCurrentScope(organizationId, id); await loadWorkspace(organizationId, id); }, setError)}>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><span>{topics.length} 个选题</span></div>{error && <div className="inline-alert" role="alert">{error}</div>}
-    <div className="topic-layout"><section className="panel topic-list-panel"><div className="panel-heading"><div><p className="section-kicker">复用方法，不做近义词洗稿</p><h2>选题池</h2></div></div>{topics.length ? <div className="topic-list">{topics.map((topic) => { const topicCitations = citations.filter((citation) => citation.topic_id === topic.id); return <article key={topic.id} id={"topic-" + topic.id}><div className="topic-card-head"><span className="topic-priority">P{topic.priority}</span><span className="status neutral">{topic.status === "idea" ? "想法" : topic.status === "selected" ? "已入选" : topic.status === "drafting" ? "生产中" : "已归档"}</span></div><h3>{topic.title}</h3>{topic.angle && <p>{topic.angle}</p>}<dl><div><dt>内容支柱</dt><dd>{topic.pillar || "待归类"}</dd></div><div><dt>目标人群</dt><dd>{topic.audience || "待补充"}</dd></div><div><dt>内容目标</dt><dd>{topic.objective || "待补充"}</dd></div></dl>{topic.source_type === "project_assistant" && <details className="topic-inspiration-sources"><summary>选题理由与参考来源</summary><p>{topic.rationale}</p>{topicCitations.map((citation) => <p key={citation.id}>{citation.quote || "已保留对标来源"}</p>)}{!topicCitations.length && <p>通用创意建议，未引用对标素材。</p>}{topic.source_ref && <a href={"/inspiration?organizationId=" + encodeURIComponent(organizationId) + "&projectId=" + encodeURIComponent(projectId) + "&conversationId=" + encodeURIComponent(topic.source_ref)}>查看原灵感对话 →</a>}</details>}<footer><div><span>{sourceLabels[topic.source_type] || topic.source_type}</span>{topicCitations.length > 0 && <em title={topicCitations[0].quote || "已保留来源"}>已保留 {topicCitations.length} 条参考</em>}</div><div className="topic-card-actions">{canDelete && <button className="topic-delete-button" type="button" disabled={writeBusy} onClick={() => { setError(""); setDeleteCandidate(topic); setDeleteConfirmation(""); }}>删除</button>}{topic.status !== "archived" && (canWrite || topic.status === "drafting") && <button type="button" disabled={writeBusy} onClick={() => void moveTopicToProduction(topic)}>{movingTopicId === topic.id ? "正在生成口播稿…" : topic.status === "drafting" ? "继续生产 →" : "进入生产 →"}</button>}</div></footer></article>; })}</div> : <div className="list-empty">从品牌知识、视频分析或人工策划创建第一个选题。</div>}</section>
-      {canWrite && <aside className="create-panel topic-create">
-        <p className="section-kicker">新选题</p><h2>{sourceVideoId ? "从视频分析转为选题" : "加入项目选题池"}</h2>
-        {sourceVideoId && <div className="source-banner"><strong>已关联分析结果</strong><span>创建时会由服务端确认该视频属于当前项目。</span></div>}
-        <form ref={topicFormRef} className="stack-form" onSubmit={createTopic}>
-          <label htmlFor="topic-title" aria-label="选题标题"><span className="topic-field-heading"><span>选题标题</span><em className="topic-required-note">必填</em></span><input disabled={writeBusy} id="topic-title" name="title" required minLength={2} maxLength={160} placeholder="明确讲什么，而不是宽泛关键词" onChange={() => setRecommendations(null)} /></label>
-          <TopicReferenceControls background={accountBackground} videoAvailable={Boolean(sourceVideoId && linkedVideoScope === organizationId + ":" + projectId)} includeVideo={includeSourceVideo} onVideoChange={setIncludeSourceVideo} selected={knowledge.filter(item => selectedKnowledgeIds.includes(item.id))} recommendations={recommendations} recommending={recommending} busy={generatingFields.length > 0 || writeBusy} onRecommend={() => void recommendReferences()} onAdd={toggleKnowledge} sources={sourcesUsed} onClearGenerated={clearGeneratedFields}>
+    {canWrite && <div className="creation-view-switch" role="group" aria-label="选题工作区">
+      <button type="button" aria-pressed={topicView === "list"} aria-controls="topic-list-view" disabled={writeBusy} onClick={() => setTopicView("list")}>选题池</button>
+      <button type="button" aria-pressed={topicView === "create"} aria-controls="topic-create-view" disabled={writeBusy} onClick={() => setTopicView("create")}>新建选题</button>
+    </div>}
+    <div className="topic-layout">
+      <section className="panel topic-list-panel" id="topic-list-view" hidden={canWrite && topicView !== "list"}>
+        <div className="panel-heading"><h2>选题列表</h2></div>
+        {topics.length ? <div className="topic-list">{topics.map((topic) => {
+          const topicCitations = citations.filter((citation) => citation.topic_id === topic.id);
+          const cardId = topic.source_type === "inspiration_card" ? topic.source_ref : null;
+          const conversationId = topic.source_type === "project_assistant" ? topic.source_ref : null;
+          const inspirationLink = cardId || conversationId
+            ? studioHref("inspiration", { organizationId, projectId, cardId: cardId ?? undefined, conversationId: conversationId ?? undefined }, cardId ? `card-${cardId}` : "")
+            : null;
+          return <article key={topic.id} id={"topic-" + topic.id} className={initialTopicId === topic.id ? "studio-selected-record" : undefined}>
+            <div className="topic-card-head"><span className="topic-priority">P{topic.priority}</span><span className="status neutral">{topic.status === "idea" ? "想法" : topic.status === "selected" ? "已入选" : topic.status === "drafting" ? "生产中" : "已归档"}</span></div>
+            <h3>{topic.title}</h3>
+            {topic.angle && <p>{topic.angle}</p>}
+            <dl><div><dt>内容支柱</dt><dd>{topic.pillar || "待归类"}</dd></div><div><dt>目标人群</dt><dd>{topic.audience || "待补充"}</dd></div><div><dt>内容目标</dt><dd>{topic.objective || "待补充"}</dd></div></dl>
+            {(cardId || conversationId) && <details className="topic-inspiration-sources">
+              <summary>选题理由与来源</summary>
+              {topic.rationale && <p>{topic.rationale}</p>}
+              {topicCitations.map((citation) => <p key={citation.id}>{citation.quote || "已保留参考来源"}</p>)}
+              {inspirationLink && <a href={inspirationLink}>{cardId ? "查看原灵感卡片" : "查看原灵感对话"} →</a>}
+            </details>}
+            <footer>
+              <div><span>{sourceLabels[topic.source_type] || topic.source_type}</span>{topicCitations.length > 0 && <em title={topicCitations[0].quote || "已保留来源"}>已保留 {topicCitations.length} 条参考</em>}</div>
+              <div className="topic-card-actions">
+                {canDelete && <button className="topic-delete-button" type="button" disabled={writeBusy} onClick={() => { setError(""); setDeleteCandidate(topic); setDeleteConfirmation(""); }}>删除</button>}
+                {topic.status !== "archived" && (canWrite || topic.status === "drafting") && <button type="button" disabled={writeBusy} onClick={() => void moveTopicToProduction(topic)}>{movingTopicId === topic.id ? "正在生成口播稿…" : topic.status === "drafting" ? "打开稿件 →" : "进入创作 →"}</button>}
+              </div>
+            </footer>
+          </article>;
+        })}</div> : <div className="list-empty">{canWrite ? "可以直接新建选题，也可以从灵感卡片或视频分析转入。" : "当前空间还没有选题。"}</div>}
+      </section>
+      {canWrite && <section className="create-panel topic-create" id="topic-create-view" hidden={topicView !== "create"}>
+        <h2>{inspirationSource ? "从灵感创建选题" : videoAvailable ? "从视频分析创建选题" : "新建选题"}</h2>
+        {activeSourceVideoId && <div className="source-banner"><strong>已关联视频分析结果</strong></div>}
+        {inspirationSource && <div className="source-banner"><strong>来源灵感 v{inspirationSource.version} · {inspirationSource.title}</strong><a href={studioHref("inspiration", { organizationId, projectId, cardId: inspirationSource.id }, `card-${inspirationSource.id}`)}>查看灵感卡片</a></div>}
+        <form ref={topicFormRef} className="stack-form" onSubmit={createTopic} key={inspirationSource?.id ?? "new-topic"}>
+          <label htmlFor="topic-title" aria-label="选题标题"><span className="topic-field-heading"><span>选题标题</span><em className="topic-required-note">必填</em></span><input disabled={writeBusy} id="topic-title" name="title" defaultValue={inspirationSource?.title} required minLength={2} maxLength={160} placeholder="填写选题标题" onChange={() => setRecommendations(null)} /></label>
+          <TopicReferenceControls background={accountBackground} videoAvailable={videoAvailable} includeVideo={includeSourceVideo} onVideoChange={setIncludeSourceVideo} selected={knowledge.filter(item => selectedKnowledgeIds.includes(item.id))} recommendations={recommendations} recommending={recommending} busy={generatingFields.length > 0 || writeBusy} onRecommend={() => void recommendReferences()} onAdd={toggleKnowledge} sources={sourcesUsed} onClearGenerated={clearGeneratedFields}>
             <fieldset className="topic-knowledge-picker" disabled={generatingFields.length > 0 || writeBusy}><legend><span>引用品牌知识</span><em>可多选</em></legend><div className="topic-knowledge-actions"><span>只有勾选的知识参与补全</span><div><button type="button" disabled={!knowledge.length || selectedKnowledgeIds.length === Math.min(knowledge.length, 20)} onClick={() => { setError(""); setSelectedKnowledgeIds(knowledge.slice(0, 20).map((item) => item.id)); }}>全选</button><button type="button" disabled={!selectedKnowledgeIds.length} onClick={() => setSelectedKnowledgeIds([])}>清空</button></div></div>{knowledge.length ? <div className="topic-knowledge-options">{knowledge.map((item) => { const inputId = `topic-knowledge-${item.id}`; return <label className="topic-knowledge-option" htmlFor={inputId} aria-label={item.title} key={item.id}><input id={inputId} type="checkbox" name="sourceKnowledgeItemIds" value={item.id} checked={selectedKnowledgeIds.includes(item.id)} onChange={() => toggleKnowledge(item.id)} /><span><strong>{item.title}</strong><small>{knowledgeCategoryLabels[item.category] || item.category}</small></span></label>; })}</div> : <p className="topic-knowledge-empty">还没有已确认的品牌知识。</p>}</fieldset>
           </TopicReferenceControls>
           <div className="topic-ai-toolbar"><div><strong>AI 智能补全</strong><span>只填写空白项，不覆盖你已经输入的内容</span></div><button type="button" disabled={generatingFields.length > 0 || writeBusy} onClick={generateEmptyTopicFields}>{generatingFields.length > 1 ? `正在补全 ${generatingFields.length} 项…` : "一键补全空白内容"}</button></div>
           {generationMessage && <p className="topic-generation-message" role="status">{generationMessage}</p>}
-          <label><span className="topic-field-heading"><span>切入角度</span>{fieldGenerateButton("angle")}</span><textarea disabled={writeBusy} name="angle" rows={3} maxLength={2000} /></label>
-          <div className="form-row"><label><span className="topic-field-heading"><span>内容支柱</span>{fieldGenerateButton("pillar")}</span><input disabled={writeBusy} name="pillar" maxLength={200} /></label><label><span className="topic-field-heading"><span>优先级</span>{fieldGenerateButton("priority")}</span><input disabled={writeBusy} name="priority" type="number" min={0} max={100} placeholder="不填写默认 50" /></label></div>
-          <label><span className="topic-field-heading"><span>目标人群</span>{fieldGenerateButton("audience")}</span><input disabled={writeBusy} name="audience" maxLength={1000} /></label>
-          <label><span className="topic-field-heading"><span>内容目标</span>{fieldGenerateButton("objective")}</span><input disabled={writeBusy} name="objective" maxLength={1000} placeholder="涨粉、收藏、咨询或建立认知" /></label>
-          <label><span className="topic-field-heading"><span>开场钩子</span>{fieldGenerateButton("hook")}</span><textarea disabled={writeBusy} name="hook" rows={2} maxLength={500} /></label>
-          <label><span className="topic-field-heading"><span>选题理由</span>{fieldGenerateButton("rationale")}</span><textarea disabled={writeBusy} name="rationale" rows={2} maxLength={2000} /></label>
+          {topicField("angle", { rows: 3, maxLength: 2000 })}
+          <div className="form-row">
+            {topicField("pillar", { maxLength: 200 })}
+            {topicField("priority", { placeholder: "不填写默认 50" })}
+          </div>
+          <div className="form-row">
+            {topicField("audience", { maxLength: 1000 })}
+            {topicField("objective", { maxLength: 1000, placeholder: "涨粉、收藏、咨询或建立认知" })}
+          </div>
+          {topicField("hook", { rows: 2, maxLength: 500 })}
+          {topicField("rationale", { rows: 2, maxLength: 2000, defaultValue: inspirationSource?.core_insight.slice(0, 2000) })}
           <button className="primary-button" disabled={writeBusy || generatingFields.length > 0}>{saving ? "正在创建…" : "创建选题"}</button>
         </form>
-        <a className="production-entry" href={`/content?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`}>进入内容生产 →</a>
-      </aside>}
+      </section>}
     </div>
     {deleteCandidate && <div className="confirmation-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeDeleteConfirmation(); }} onKeyDown={(event) => { if (event.key === "Escape") closeDeleteConfirmation(); }}><section className="confirmation-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-topic-title" aria-describedby="delete-topic-description"><form onSubmit={deleteTopic}><p className="section-kicker">管理员确认</p><h2 id="delete-topic-title">删除选题</h2><p id="delete-topic-description">删除后，这个选题会从选题池隐藏；已经进入内容生产的稿件和历史版本不会被删除。</p><div className="confirmation-topic-name">{deleteCandidate.title}</div><label htmlFor="delete-topic-confirmation">输入完整选题标题以确认<input ref={deleteConfirmationInputRef} id="delete-topic-confirmation" value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} autoComplete="off" /></label><div className="confirmation-actions"><button type="button" onClick={closeDeleteConfirmation} disabled={deletingTopicId === deleteCandidate.id}>取消</button><button className="confirmation-danger" disabled={deleteConfirmation.trim() !== deleteCandidate.title || deletingTopicId === deleteCandidate.id}>{deletingTopicId === deleteCandidate.id ? "正在删除…" : "确认删除"}</button></div></form></section></div>}
   </div>;

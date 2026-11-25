@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
+import { deadlineState, summarizeWorkTasks } from "../lib/work-progress-view.ts";
 
 test("dashboard separates administrator operations from employee work", async () => {
   const [dashboard, route, styles] = await Promise.all([
@@ -9,26 +10,13 @@ test("dashboard separates administrator operations from employee work", async ()
     readFile(new URL("../components/dashboard-workspace.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(dashboard, /role-dashboard home-dashboard/);
-  assert.match(dashboard, /className="page-heading management-heading home-heading"/);
-  assert.match(dashboard, /className="management-toolbar home-context"/);
-  assert.match(dashboard, /处理待办、查看运营进度，从这里开始今天的工作。/);
-  assert.match(dashboard, /工作台/);
-  assert.match(dashboard, /我的工作台/);
-  assert.match(dashboard, /常用操作/);
-  assert.match(dashboard, /项目待审核/);
-  assert.match(dashboard, /团队待办/);
-  assert.match(dashboard, /dashboard.summary.openWorkTasks/);
-  assert.match(dashboard, /dashboard\?\.assignableEmployees/);
-  assert.match(dashboard, /home-completed-tasks/);
-  for (const anchor of ["home-reviews", "work-tasks", "home-analysis", "home-monthly"]) {
-    assert.ok(dashboard.includes(`href="#${anchor}"`));
-    assert.ok(dashboard.includes(`id="${anchor}"`));
-  }
-  assert.match(dashboard, /我的内容任务/);
+  assert.match(dashboard, /aria-label="公司"/);
+  assert.match(dashboard, /aria-label="任务摘要"/);
+  assert.match(dashboard, /isAdmin && <Filter label="员工"/);
+  assert.match(dashboard, /<details className="wp-recent"><summary>/);
   assert.match(dashboard, /我的备忘/);
-  assert.match(styles, /\.home-stats \{[^}]*grid-template-columns: repeat\(4, minmax\(0, 1fr\)\)/);
-  assert.match(styles, /\.home-assignment-disclosure:not\(\[open\]\)/);
+  assert.doesNotMatch(dashboard, /DashboardTrend|home-reviews|home-analysis|home-monthly/);
+  assert.match(styles, /@container progress-home/);
 
   assert.match(route, /mode: isAdmin \? "admin" : "employee"/);
   assert.match(route, /j\.created_by = \?/);
@@ -37,4 +25,20 @@ test("dashboard separates administrator operations from employee work", async ()
   assert.doesNotMatch(route, /reviewer\.role IN/);
   assert.match(route, /canCreateContent/);
   assert.match(route, /team: team\.results/);
+});
+
+test("progress summary distinguishes missing reports from zero and excludes cancelled tasks", () => {
+  const now = Date.parse("2026-11-21T03:00:00Z");
+  const due = "2026-11-22T00:00:00Z";
+  const task = (workflow_status, progress_percent, due_at = due) => ({ workflow_status, progress_percent, due_at });
+  const tasks = [
+    task("pending", null, "2026-11-21T02:59:00Z"), task("in_progress", 0),
+    task("waiting", 50, "2026-11-21T15:00:00Z"), task("completed", null), task("cancelled", 80),
+  ];
+  assert.deepEqual(summarizeWorkTasks(tasks, now), { open: 3, waiting: 1, today: 1, overdue: 1, known: 3, unknown: 1, average: 50 });
+  assert.equal(summarizeWorkTasks([tasks[0]], now).average, null);
+  assert.equal(summarizeWorkTasks([tasks[1]], now).average, 0);
+  assert.equal(summarizeWorkTasks([tasks[4]], now).unknown, 0);
+  assert.equal(deadlineState(task("completed", 100, "2020-01-01T00:00:00Z"), now), "");
+  assert.equal(deadlineState(task("pending", null, "2026-11-21T16:00:00Z"), now), "");
 });

@@ -10,7 +10,9 @@ const root = fileURLToPath(new URL("../..", import.meta.url));
 
 export function runtimeFixture(t) {
   const sqlite = new DatabaseSync(":memory:");
-  t.after(() => sqlite.close());
+  const backgroundTasks = [];
+  const waitUntil = task => { backgroundTasks.push(task); };
+  t.after(() => Promise.all(backgroundTasks).finally(() => sqlite.close()));
   for (const file of readdirSync(path.join(root, "drizzle")).filter(f => f.endsWith(".sql")).sort()) sqlite.exec(readFileSync(path.join(root, "drizzle", file), "utf8"));
   const db = {
     prepare(query) {
@@ -45,7 +47,7 @@ export function runtimeFixture(t) {
   const mocks = new Map([
     ["zod", zod],
     ["node:crypto", { createHash }],
-    ["cloudflare:workers", { env: { DELIVERY_MODE: "1", FIRST_RUN_SETUP_CODE: "synthetic-test-code" } }],
+    ["cloudflare:workers", { waitUntil, env: { DELIVERY_MODE: "1", FIRST_RUN_SETUP_CODE: "synthetic-test-code" } }],
     [path.join(root, "db/runtime.ts"), runtime],
     [path.join(root, "lib/request-auth.ts"), { readRequestIdentity: async () => ({ authSubject: identity.userId }) }],
   ]);
@@ -67,5 +69,8 @@ export function runtimeFixture(t) {
     return loaded.exports;
   }
   const initialize = (index = 0) => load("lib/first-run.ts").initializeCommercialInstallation({ companyName: `Test company ${index}`, administratorName: `Test admin ${index}`, email: `test-${index}@example.invalid`, password: "synthetic-password-only", setupCode: "synthetic-test-code" });
-  return { sqlite, db, load, identity, initialize, runtime, mockModule: (name, exports) => mocks.set(name, exports), mock: (relative, exports) => mocks.set(path.resolve(root, relative), exports) };
+  function mockModule(name, exports) {
+    mocks.set(name, name === "cloudflare:workers" ? { waitUntil, ...exports } : exports);
+  }
+  return { sqlite, db, load, identity, initialize, runtime, mockModule, mock: (relative, exports) => mocks.set(path.resolve(root, relative), exports) };
 }

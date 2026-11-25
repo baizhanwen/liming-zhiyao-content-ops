@@ -1,12 +1,12 @@
 import Link from "next/link";
+import { StandalonePageHeading } from "../../components/StandalonePageHeading";
 
 export default function PrivacyPage() {
   return (
-    <main className="legal-page">
+    <main className="standalone-page legal-page">
+      <StandalonePageHeading title="隐私与数据处理" actions={<Link href="/">返回工作台 →</Link>} />
       <article>
-        <Link href="/">← 返回工作台</Link>
         <p className="section-kicker">产品内数据处理说明 · 客户配置与合同约定优先</p>
-        <h1>隐私与数据处理</h1>
         <p>本页说明平台的产品数据流向，不替代交付双方签署的合同、数据处理协议或模型供应商条款。</p>
         <h2>处理的数据</h2>
         <p>平台会处理公司与项目资料、成员账号、客户知识、选题与稿件、审核记录、发布与运营数据，以及用户主动提交的视频、音频和分析产物。</p>

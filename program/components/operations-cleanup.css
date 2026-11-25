@@ -9,8 +9,7 @@
 .workflow-actions-compact > header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px; margin-bottom: 10px; }
 .workflow-actions-compact > header h3 { margin: 0; font-size: 13px; }
 .workflow-actions-compact > header small { font-size: 11px; }
-.workflow-inspector-clean :is(.workflow-actions textarea, .comment-panel textarea) { font-size: 12px; }
-.workflow-inspector-clean :is(.workflow-actions button, .comment-panel form button, .schedule-panel form button, .publication-panel form button) { min-height: var(--control-height, 38px); font-size: var(--control-font-size, 12px); }
+.workflow-inspector-clean :is(.workflow-actions button, .comment-panel form button, .schedule-panel form button, .publication-panel form button) { min-height: var(--field-height); border-radius: var(--field-radius); font-size: var(--control-font-size); }
 .workflow-inspector-clean .review-content-preview > header { padding: 14px 20px 10px; }
 .workflow-inspector-clean .review-content-preview > header h3 { font-size: 13px; }
 .workflow-inspector-clean .review-script-copy { max-height: 360px; overflow-y: auto; font-size: 13px; }
@@ -60,7 +59,7 @@
 .operations-model-role > summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 0; cursor: pointer; list-style: none; }
 .operations-model-role > summary::-webkit-details-marker { display: none; }
 .operations-model-role > summary > span:first-child { flex: 1; display: grid; gap: 5px; min-width: 0; }
-.operations-model-role > summary::after { content: '›'; color: var(--subtle); }
+.operations-model-role > summary::after { content: '›'; flex: none; width: 1em; margin-inline-end: 4px; line-height: 1; text-align: center; color: var(--subtle); }
 .operations-model-role[open] > summary::after { transform: rotate(90deg); }
 .operations-model-role > summary strong { color: var(--ink); font-size: 13px; font-weight: 600; }
 .operations-model-role > summary small { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
@@ -70,7 +69,6 @@
 .operations-model-role-body { padding: 0 0 18px; }
 .operations-model-role-body > p { min-height: 0; }
 .operations-model-role-body .stack-form label { font-size: 12px; }
-.operations-model-role-body .stack-form input { font-size: 12px; }
 
 /* Override legacy page-specific small type at the actual control depth. */
 .insights-workspace .insights-toolbar > nav > a,
@@ -94,35 +92,57 @@
 .import-console .import-step-label,
 .import-console .import-process-compact li > strong,
 .import-console .import-process-compact li > span { font-size: 11px; }
-.import-console .import-asof :is(input, select) { min-height: var(--control-height, 38px); font-size: var(--control-font-size, 12px); }
+.import-console .import-inputs { container-type: inline-size; }
+.import-console .import-asof { display: grid; grid-template-columns: minmax(0, 1fr) 14rem; }
+.import-console .import-asof > span:not(:has(svg)) { grid-template-columns: minmax(0, 1fr); }
+.import-console .import-asof :is(input, select) { width: 100%; min-width: 0; }
+@container (max-width: 28rem) {
+  .import-console .import-asof { grid-template-columns: minmax(0, 1fr); gap: 7px; }
+}
 .import-console .import-panel-refined > header > button,
-.import-console .import-submit-bar > button { min-height: var(--control-height, 38px); }
+.import-console .import-submit-bar > button { min-height: var(--field-height); }
 .import-console .import-history-copy > strong { font-size: 12px; }
 .import-console .import-history-copy :is(small, span),
 .import-console .import-history-refined details { font-size: 11px; line-height: 1.6; }
 
-.report-center-shell .reports-list form :is(label, input, select, button),
+.report-center-shell .reports-list form :is(label, button),
 .report-center-shell .reports-list nav button > strong,
-.report-center-shell .employee-report-person > select,
 .report-center-shell .report-document > header button,
 .report-center-shell .report-actions article > button { font-size: var(--control-font-size, 12px); }
-.report-center-shell .reports-list form :is(input, select, button),
-.report-center-shell .employee-report-person > select,
+.report-center-shell .reports-list form > button { min-height: var(--field-height); border-radius: var(--field-radius); }
 .report-center-shell .report-document > header button,
-.report-center-shell .report-actions article > button { min-height: var(--control-height, 38px); }
+.report-center-shell .report-actions article > button { min-height: var(--field-height); }
 .report-center-shell .reports-list nav button > :is(small, span),
-.report-center-shell .employee-report-person > :is(span, small) { font-size: 11px; line-height: 1.6; }
+.report-center-shell .employee-report-person > :is(label, small) { font-size: 11px; line-height: 1.6; }
 
 .operations-model-roles .operations-model-role-body button,
-.model-status-list .model-probe-actions > button { min-height: var(--control-height, 38px); font-size: var(--control-font-size, 12px); }
+.model-status-list .model-probe-actions > button { min-height: var(--field-height); font-size: var(--control-font-size); }
 .operations-model-roles .operations-model-role-body > p,
 .operations-model-roles .operations-model-role-body form > p,
 .operations-model-roles .operations-model-role-body > div { font-size: 11px; line-height: 1.6; }
-.workflow-workspace .review-board button > strong { font-size: 12px; }
+.workflow-workspace .review-board button > strong { font-size: 14px; }
+.workflow-inspector-clean > .workflow-publish-link { display: inline-flex; width: fit-content; margin: 8px 0; color: var(--brand); font-weight: 650; }
+.workflow-publish-link:hover { text-decoration: underline; }
 .workflow-workspace .review-board button > small,
 .workflow-inspector-clean .workflow-version-summary > small { font-size: 11px; }
-.workflow-inspector-clean :is(.schedule-panel label, .publication-panel label, .comment-panel form select, .schedule-panel input, .schedule-panel select, .publication-panel input, .publication-panel select) { font-size: var(--control-font-size, 12px); }
-.workflow-inspector-clean :is(.comment-panel article > button, .comment-panel form button) { font-size: 12px; min-height: var(--control-height, 38px); }
+.workflow-inspector-clean :is(.schedule-panel label, .publication-panel label) { font-size: var(--control-font-size); }
+.workflow-inspector-clean .comment-panel article > button { font-size: 12px; min-height: var(--field-compact-height); }
+
+.report-center-shell .reports-list form > div {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 145px), 1fr));
+}
+.report-center-shell .reports-list form > div label { min-width: 0; }
+.insights-workspace :is(.owned-match-candidates, .owned-analyze-box) label { min-width: 0; font-size: var(--control-font-size); }
+.insights-workspace .owned-match-candidates button { align-self: end; grid-row: 1; }
+.insights-workspace :is(.owned-match-candidates, .owned-analyze-box) > button { min-height: var(--field-height); border-radius: var(--field-radius); font-size: var(--control-font-size); }
+@media (max-width: 560px) {
+  .insights-workspace .owned-match-candidates button { grid-column: 1 / -1; grid-row: auto; }
+}
+
+@media screen and (max-width: 980px) {
+  .report-center-shell .reports-layout { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .report-center-shell .reports-list { position: static; max-height: none; }
+}
 
 @media (max-width: 760px) {
   .workflow-version-summary { align-items: flex-start; flex-direction: column; }
@@ -135,6 +155,13 @@
   .model-status-row > summary { grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; }
   .model-status-identity { grid-column: 1 / -1; grid-row: 2; padding-left: 16px; font-size: 11px; }
   .model-status-label { grid-column: 2; grid-row: 1; }
+}
+
+@media screen and (max-width: 560px) {
+  .report-center-shell .report-document { min-height: 0; }
+  .report-center-shell .report-empty { min-height: 180px; }
+  .report-center-shell .report-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .report-center-shell .reports-list input { min-width: 0; width: 100%; }
 }
 
 @media print { .report-center-shell > .report-mode-compact { display: none; } }

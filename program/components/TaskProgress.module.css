@@ -35,6 +35,10 @@
 .compact .detail { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; margin-top: 5px; font-size: 11px; line-height: 1.5; }
 .compact .metrics { gap: 4px; margin-top: 5px; }
 .compact .metrics li { background: var(--surface); font-size: 10px; }
+.draft { width: 100%; box-sizing: border-box; }
+.draft[data-status="needs_material"] .dot, .draft[data-status="unconfirmed"] .dot { background: var(--warning, #9e6d26); }
+.draft[data-status="failed"] .dot { background: var(--danger); }
+.draft[data-status="completed"] .dot { background: var(--success); }
 .more { margin-top: 5px; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .more summary { width: fit-content; cursor: pointer; }
 .more summary:hover, .more summary:focus-visible { color: var(--brand); }

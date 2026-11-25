@@ -32,7 +32,58 @@ async function fixture(t) {
   return { ...f, owner, source, target, seed, create, list, setWritable: value => { writable = value; } };
 }
 
+test('library and references prefer the publisher cover, with an accurately labelled keyframe fallback', async t => {
+  const f = await fixture(t);
+  const { video, entry } = f.create(null);
+  assert.equal((await f.list()).entries[0].cover_source, null);
+  const addImage = (kind, key, selected) => f.seed('media_assets', {
+    video_id: video, project_id: f.source, kind, r2_key: key, filename: key + '.jpg',
+    content_type: 'image/jpeg', size_bytes: 1, sha256: 'a'.repeat(64), status: 'active', is_cover: selected,
+  });
+  addImage('keyframe', 'frame', 1);
+  assert.equal((await f.list()).entries[0].cover_source, 'keyframe');
+  addImage('platform_cover', 'original', 0);
+  const stored = new Set(['frame', 'original']);
+  f.runtime.getMediaObject = async key => stored.has(key)
+    ? { source: 'primary', object: { size: 1, httpEtag: '"image"', body: new Uint8Array([1]), writeHttpMetadata(headers) { headers.set('content-type', 'image/jpeg'); } } }
+    : null;
+  const cover = f.load('app/api/video-library/[entryId]/cover/route.ts');
+  const read = url => cover.GET(new Request(new URL(url, 'http://localhost')), { params: Promise.resolve({ entryId: entry }) });
+  for (const mode of ['assets', 'benchmark']) {
+    const row = (await f.list(mode)).entries[0];
+    assert.equal(row.cover_source, 'platform');
+    assert.equal((await read(row.cover_url)).headers.get('x-video-cover-source'), 'platform');
+    stored.delete('original');
+    assert.equal((await read(row.cover_url)).status, 404);
+    assert.equal((await read(row.fallback_cover_url)).headers.get('x-video-cover-source'), 'keyframe');
+    const generic = new URL(row.cover_url, 'http://localhost');
+    generic.searchParams.delete('source');
+    assert.equal((await read(generic)).headers.get('x-video-cover-source'), 'keyframe');
+    stored.add('original');
+  }
+});
+
 const classification = (dimension_id, tags, evidence_ids = ['transcript:0001']) => ({ dimension_id, state: 'known', tags, primary_tag: tags[0], reason: null, evidence_ids });
+
+test('company library and project reference display the source video comment sample read-only', async t => {
+  const f = await fixture(t);
+  const { video, entry } = f.create(null);
+  const at = '2026-11-23T10:00:00.000Z';
+  const comments = [{ comment_id: '7513159958159622970', text: '评论原文', like_count: 1, reply_count: null, published_at: null, has_image: false }];
+  f.sqlite.prepare('UPDATE videos SET platform_comments_json=?,platform_comments_collected_at=? WHERE id=?').run(JSON.stringify(comments),at,video);
+  const org = f.owner.organizationId;
+  const responses = [
+    await f.load('app/api/video-library/[entryId]/route.ts').GET(new Request('http://localhost/library?organizationId=' + org), { params: Promise.resolve({ entryId: entry }) }),
+    await f.load('app/api/videos/[videoId]/route.ts').GET(new Request(`http://localhost/detail?organizationId=${org}&projectId=${f.target}`), { params: Promise.resolve({ videoId: video }) }),
+  ];
+  for (const response of responses) {
+    assert.equal(response.status, 200, await response.clone().text());
+    const detail = await response.json();
+    assert.deepEqual(detail.platform_comments, { status: 'available', error: null, collected_at: at, comments });
+    if (detail.video) assert.equal(detail.canWrite, false);
+  }
+});
+
 function report() {
   const completed = { status: 'completed', reason: null, validation: { passed: true, issues: [] } };
   return { analysis_meta: { quality_audit: { status: 'partial', acceptance_passed: false, completion_status: 'partial' } },

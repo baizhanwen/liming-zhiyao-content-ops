@@ -1,6 +1,9 @@
 import { env } from "cloudflare:workers";
 import { getD1 } from "../db/runtime";
 import { isMiniMaxFlashVisionConfiguration, isMiniMaxTokenPlanKey, probeMiniMaxTokenPlanVision, visionConfigurationFingerprint } from "./minimax-vision";
+import { OrganizationSettingsError as ModelSettingsError, sealCredential, unsealCredential } from "./organization-settings-credential";
+
+export { ModelSettingsError };
 
 export const modelRoles = ["analysisText", "contentGeneration", "visualUnderstanding", "projectAssistant"] as const;
 export type ModelRole = typeof modelRoles[number];
@@ -14,10 +17,6 @@ type StoredRole = { provider: string; baseUrl: string; model: string; key: strin
 type StoredSettings = Partial<Record<ModelRole, StoredRole>>;
 type Row = { version: number; settings_json: string; updated_at: string };
 export type ModelRolePatch = { provider: string; baseUrl: string; model: string; apiKey?: string; clearApiKey?: boolean };
-
-export class ModelSettingsError extends Error {
-  constructor(public code: string, message: string, public status = 400) { super(message); }
-}
 
 function environmentRuntime(): Record<string, string> {
   return Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
@@ -36,36 +35,6 @@ export function validateModelEndpoint(value: string) {
   return url.toString().replace(/\/+$/, "");
 }
 
-async function encryptionKey() {
-  const value = environmentRuntime().MODEL_SETTINGS_ENCRYPTION_KEY || "";
-  if (!/^[a-f\d]{64}$/i.test(value)) throw new ModelSettingsError("MODEL_SETTINGS_KEY_REQUIRED", "本机模型配置加密尚未初始化，请重新启动项目。", 503);
-  const bytes = Uint8Array.from(value.match(/../g)!, (part) => Number.parseInt(part, 16));
-  return crypto.subtle.importKey("raw", bytes, "AES-GCM", false, ["encrypt", "decrypt"]);
-}
-
-function additionalData(organizationId: string, role: ModelRole, config: Pick<StoredRole, "provider" | "baseUrl">) {
-  return new TextEncoder().encode(JSON.stringify([organizationId, role, config.provider, config.baseUrl]));
-}
-
-async function seal(value: string, organizationId: string, role: ModelRole, config: StoredRole) {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const encrypted = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: additionalData(organizationId, role, config) }, await encryptionKey(), new TextEncoder().encode(value)));
-  return `v1.${btoa(String.fromCharCode(...iv))}.${btoa(String.fromCharCode(...encrypted))}`;
-}
-
-async function unseal(value: string | null, organizationId: string, role: ModelRole, config: StoredRole) {
-  if (!value) return "";
-  try {
-    const [version, nonce, body] = value.split(".");
-    if (version !== "v1" || !nonce || !body) throw new Error("invalid encrypted value");
-    const iv = Uint8Array.from(atob(nonce), (char) => char.charCodeAt(0));
-    const data = Uint8Array.from(atob(body), (char) => char.charCodeAt(0));
-    return new TextDecoder().decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv, additionalData: additionalData(organizationId, role, config) }, await encryptionKey(), data));
-  } catch {
-    throw new ModelSettingsError("MODEL_SETTINGS_DECRYPT_FAILED", "本项目的模型凭据无法读取，请在设置页重新填写密钥。", 503);
-  }
-}
-
 async function storedSettings(organizationId: string) {
   const row = await getD1().prepare("SELECT version, settings_json, updated_at FROM organization_model_settings WHERE organization_id = ?").bind(organizationId).first<Row>();
   return { row, settings: row ? JSON.parse(row.settings_json) as StoredSettings : {} };
@@ -81,7 +50,7 @@ export async function readEffectiveModelRuntime(organizationId: string): Promise
     runtime[keys[0]] = config.provider;
     runtime[keys[1]] = config.baseUrl;
     runtime[keys[2]] = config.model;
-    runtime[keys[3]] = await unseal(config.key, organizationId, role, config);
+    runtime[keys[3]] = await unsealCredential(config.key, organizationId, role, config);
     if (role === "contentGeneration") runtime.CONTENT_MODEL_CONFIGURED_IN_UI = "1";
   }
   return runtime;
@@ -127,7 +96,7 @@ export async function saveModelSettings(organizationId: string, userId: string, 
     const key = patch.clearApiKey ? "" : newKey || oldKey;
     if (key && (!provider || !baseUrl || !model)) throw new ModelSettingsError("INCOMPLETE_MODEL_CONFIG", "保存密钥前请填写提供方、接口地址和模型名称。");
     const config: StoredRole = { provider, baseUrl, model, key: null };
-    if (key) config.key = await seal(key, organizationId, role, config);
+    if (key) config.key = await sealCredential(key, organizationId, role, config);
     settings[role] = config;
   }
   const db = getD1();

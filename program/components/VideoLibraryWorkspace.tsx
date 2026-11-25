@@ -1,17 +1,15 @@
 "use client";
-import { runScopedAction } from "../lib/client-scope";
-import { loadClientProjects } from "../lib/client-scope";
 import { readApiError as readError } from "../lib/client-format";
-
-
 import Link from "next/link";
 import { materialCardState } from "../lib/material-analysis-state";
-import { ChangeEvent, FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, useCallback, useRef, useState } from "react";
 import { readMaterialArchive, readMaterialResponse, materialManifestFiles } from "../lib/material-archive";
 import { MATERIAL_MAX_ARCHIVE_BYTES, MATERIAL_MAX_MANIFEST_BYTES, MATERIAL_MAX_MEDIA_BYTES } from "../lib/material-transfer-limits";
 import { strFromU8, strToU8, zipSync } from "fflate";
 import { Download, FolderInput, Upload } from "lucide-react";
-import { preferredOrganizationId, rememberCurrentScope, scopedFetch } from "../lib/client-scope";
+import { loadClientProjects, rememberCurrentScope, runScopedAction, scopedFetch } from "../lib/client-scope";
+import { useWorkspaceInitialization } from "./useWorkspaceInitialization";
+import { resolveVideoCover, type VideoCoverSource } from "./VideoPlatformMetadata";
 import "./analysis-cleanup.css";
 
 type Organization = { id: string; name: string };
@@ -21,7 +19,7 @@ type LibraryEntry = Parameters<typeof materialCardState>[0] & {
   platform: string; source_type: string; source_url: string | null; title: string | null; author_name: string | null;
   duration_sec: number | null; status: string; job_status: string | null; job_progress: number | null; current_stage: string | null;
   content_category?: string | null; content_category_label?: string | null; content_tags?: string[];
-  source_project_id?: string; source_project_name: string; account_name: string | null; cover_url: string | null; reference_count?: number; imported_to_project?: number;
+  source_project_id?: string; source_project_name: string; account_name: string | null; cover_url: string | null; cover_source?: VideoCoverSource; fallback_cover_url?: string | null; reference_count?: number; imported_to_project?: number;
 };
 
 type ContentFilters = { topicCategory: string; contentForm: string; durationBucket: string; tag: string };
@@ -32,7 +30,11 @@ const emptyFilterOptions: FilterOptions = { topicCategories: [], contentForms: [
 
 
 
-export function VideoLibraryWorkspace({ mode }: { mode: "benchmark" | "assets" }) {
+export function VideoLibraryWorkspace({ mode, initialOrganizationId = "", initialProjectId = "" }: {
+  mode: "benchmark" | "assets";
+  initialOrganizationId?: string;
+  initialProjectId?: string;
+}) {
   const [organizations, setOrganizations] = useState<Organization[]>([]); const [organizationId, setOrganizationId] = useState("");
   const [projects, setProjects] = useState<Project[]>([]); const [projectId, setProjectId] = useState("");
   const [entries, setEntries] = useState<LibraryEntry[]>([]); const [selected, setSelected] = useState<string[]>([]);
@@ -42,7 +44,7 @@ export function VideoLibraryWorkspace({ mode }: { mode: "benchmark" | "assets" }
   const loadGeneration = useRef(0);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true); const [working, setWorking] = useState(false); const [error, setError] = useState(""); const [notice, setNotice] = useState("");
-  const [canManage, setCanManage] = useState(false); const [canWrite, setCanWrite] = useState(false); const [coverFailures, setCoverFailures] = useState<Record<string, boolean>>({});
+  const [canManage, setCanManage] = useState(false); const [canWrite, setCanWrite] = useState(false); const [coverFailures, setCoverFailures] = useState<Record<string, string[]>>({});
   const [coverRetries, setCoverRetries] = useState<Record<string, number>>({});
   const [transferring, setTransferring] = useState(false);
 
@@ -64,20 +66,12 @@ export function VideoLibraryWorkspace({ mode }: { mode: "benchmark" | "assets" }
     finally { if (generation === loadGeneration.current) setLoading(false); }
   }, [mode]);
 
-  const loadProjects = useCallback(async (orgId: string) => {
-    const body = await loadClientProjects<Project>(orgId, ""); const nextProject = body.selected;
+  const loadProjects = useCallback(async (orgId: string, preferred = "") => {
+    const body = await loadClientProjects<Project>(orgId, preferred); const nextProject = body.selected;
     setProjects(body.projects); setProjectId(nextProject); setContentFilters(emptyContentFilters); rememberCurrentScope(orgId, nextProject); await loadEntries(orgId, nextProject);
   }, [loadEntries]);
 
-  useEffect(() => { let active = true; (async () => {
-    try {
-      const response = await fetch("/api/organizations"); if (!response.ok) throw new Error(await readError(response));
-      const body = await response.json() as { organizations: Organization[] }; if (!active) return;
-      const nextOrganization = preferredOrganizationId(body.organizations); setOrganizations(body.organizations); setOrganizationId(nextOrganization);
-      if (nextOrganization) await loadProjects(nextOrganization);
-    } catch (reason) { if (active) setError(reason instanceof Error ? reason.message : "公司与项目加载失败。"); }
-    finally { if (active) setLoading(false); }
-  })(); return () => { active = false; }; }, [loadProjects]);
+  useWorkspaceInitialization({ initialOrganizationId, initialProjectId, setOrganizations, setOrganizationId, loadProjects, setError, setLoading, failureMessage: "公司与企业空间加载失败。" });
 
   async function filterContent(key: keyof ContentFilters, value: string) {
     const next = { ...contentFilters, [key]: value };
@@ -98,7 +92,7 @@ export function VideoLibraryWorkspace({ mode }: { mode: "benchmark" | "assets" }
     if (!entry.reference_id) return; setWorking(true); setError(""); setNotice("");
     try {
       const response = await scopedFetch("/api/video-library/references", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationId, projectId, referenceId: entry.reference_id }) });
-      if (!response.ok) throw new Error(await readError(response)); setNotice("已从当前项目移出该对标素材。"); await loadEntries(organizationId, projectId, query, contentFilters);
+      if (!response.ok) throw new Error(await readError(response)); setNotice("已从当前企业空间移出该对标素材。"); await loadEntries(organizationId, projectId, query, contentFilters);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "移出失败。"); } finally { setWorking(false); }
   }
   function downloadBlob(blob: Blob, filename: string) {
@@ -156,11 +150,13 @@ export function VideoLibraryWorkspace({ mode }: { mode: "benchmark" | "assets" }
     ? filterOptions.tags : [contentFilters.tag, ...filterOptions.tags];
 
   function retryCover(entryId: string) {
-    setCoverFailures((current) => ({ ...current, [entryId]: false }));
+    setCoverFailures((current) => ({ ...current, [entryId]: [] }));
     setCoverRetries((current) => ({ ...current, [entryId]: (current[entryId] ?? 0) + 1 }));
   }
 
-  if (!organizationId && !loading) return <div className="empty-panel"><h2>请先创建公司和企业空间</h2><p>素材必须归属于明确的公司空间。</p><Link className="primary-button link-button" href="/projects">前往企业空间</Link></div>;
+  if (!organizationId && !loading) return error
+    ? <div className="management-state error-state" role="alert"><strong>素材库加载失败</strong><p>{error}</p></div>
+    : <div className="empty-panel"><h2>请先创建公司和企业空间</h2><p>素材按公司和企业空间管理。</p><Link className="primary-button link-button" href="/projects">管理企业空间</Link></div>;
   return <div className="video-library-workspace">
     <div className="management-toolbar library-scope-toolbar">
       <label>公司<select aria-label="公司" disabled={working || transferring} value={organizationId} onChange={(event) => runScopedAction(async () => { const id = event.target.value; setOrganizationId(id); setQuery(""); await loadProjects(id); }, setError)}>{organizations.map((organization) => <option key={organization.id} value={organization.id}>{organization.name}</option>)}</select></label>
@@ -171,7 +167,7 @@ export function VideoLibraryWorkspace({ mode }: { mode: "benchmark" | "assets" }
       <div className="library-command-bar">
         <form onSubmit={search}><input disabled={working || transferring} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索标题、作者、账号、标签或来源项目" aria-label="搜索素材" /><button type="submit" disabled={loading || working || transferring}>搜索</button></form>
         <div className="library-command-summary">
-          <span className="library-material-count">{mode === "assets" ? <><small>公司素材</small><strong>{entries.length}</strong><em>条</em></> : <><small>项目对标素材</small><strong>{entries.length}</strong><em>条</em></>}</span>
+          <span className="library-material-count"><small>当前结果</small><strong>{entries.length}</strong><em>条</em></span>
           {mode === "assets" && <div className="library-command-actions">
             <button className="library-import-button" type="button" disabled={!selected.length || !canImportToProject || loading || working || transferring} onClick={() => void importSelected()}><FolderInput aria-hidden="true" /><span>{working ? "处理中…" : `同步到对标内容库${selected.length ? `（${selected.length}）` : ""}`}</span></button>
             {canManage && <details className="library-more-actions"><summary>更多操作</summary><div className="library-transfer-actions" aria-label="素材迁移">
@@ -189,29 +185,37 @@ export function VideoLibraryWorkspace({ mode }: { mode: "benchmark" | "assets" }
         <label>时长分组<select aria-label="时长分组" disabled={working || transferring} value={contentFilters.durationBucket} onChange={event => void filterContent("durationBucket", event.target.value)}><option value="">全部时长</option>{filterOptions.durationBuckets.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
         <label>标签<select aria-label="标签" disabled={working || transferring} value={contentFilters.tag} onChange={event => void filterContent("tag", event.target.value)}><option value="">全部标签</option>{tagOptions.map(tag => <option key={tag} value={tag}>{tag}</option>)}</select></label>
       </div></details>
-      {loading ? <div className="list-empty">正在整理素材库…</div> : entries.length === 0 ? <div className="list-empty">{mode === "assets" ? "公司素材库还没有匹配的分析视频。新分析完成后会自动沉淀到这里。" : "当前项目还没有对标素材。请从素材中心选择并导入。"}</div> : <div className="library-grid">{entries.map((entry) => {
+      {loading ? <div className="list-empty" role="status">正在载入素材…</div> : entries.length === 0 ? <div className="list-empty library-empty">
+        {error ? "请刷新素材列表后再试。" : activeFilterCount || query.trim() ? "没有匹配的素材。请调整搜索或筛选条件。" : mode === "assets"
+          ? <>公司暂无素材。<Link href={`/analysis?${new URLSearchParams({ view: "videos", organizationId, projectId })}`}>前往分析任务</Link></>
+          : projectId
+            ? <>当前空间暂无对标。<Link href={`/analysis?${new URLSearchParams({ view: "assets", organizationId, projectId })}`}>从公司素材添加</Link></>
+            : <>请选择企业空间。<Link href="/projects">管理企业空间</Link></>}
+      </div> : <div className="library-grid">{entries.map((entry) => {
         const checked = selected.includes(entry.id); const analysisState = materialCardState(entry);
-        const analysisParams = new URLSearchParams({ organizationId, projectId });
+        const analysisParams = new URLSearchParams({ organizationId, projectId, view: mode });
         if (entry.source_project_id !== projectId) analysisParams.set("libraryEntryId", entry.id);
-        const coverUrl = entry.cover_url ? entry.cover_url + (entry.cover_url.includes("?") ? "&" : "?") + "mediaRetry=" + (coverRetries[entry.id] ?? 0) : null;
+        const failedCovers = coverFailures[entry.id] ?? [];
+        const cover = resolveVideoCover(entry, failedCovers);
+        const coverUrl = cover && cover.url + (cover.url.includes("?") ? "&" : "?") + "mediaRetry=" + (coverRetries[entry.id] ?? 0);
         return <article className={`library-card${checked ? " selected" : ""}`} key={entry.reference_id ?? entry.id}>
           <div className="library-cover">
-            {coverUrl && !coverFailures[entry.id] ? (
+            {cover && coverUrl ? (
               // eslint-disable-next-line @next/next/no-img-element -- Private media requires browser session cookies.
               <img
-                key={coverRetries[entry.id] ?? 0}
+                key={coverUrl}
                 src={coverUrl}
-                alt={`${entry.title || "视频素材"}封面`}
+                alt={`${entry.title || "视频素材"} · ${cover.label}`}
                 loading="lazy"
-                onLoad={() => setCoverFailures((current) => current[entry.id] ? { ...current, [entry.id]: false } : current)}
-                onError={() => setCoverFailures((current) => ({ ...current, [entry.id]: true }))}
+                onError={() => setCoverFailures((current) => ({ ...current, [entry.id]: [...(current[entry.id] ?? []), cover.url] }))}
               />
             ) : (
-              <span className={`library-cover-placeholder${coverFailures[entry.id] ? " library-cover-failure" : ""}`} role={coverFailures[entry.id] ? "alert" : undefined} aria-hidden={!coverFailures[entry.id]}>
-                {coverFailures[entry.id] ? <><strong>封面读取失败</strong><button type="button" onClick={() => retryCover(entry.id)}>重试</button></> : entry.source_type === "upload" ? "本地" : "链接"}
+              <span className={`library-cover-placeholder${failedCovers.length ? " library-cover-failure" : ""}`} role={failedCovers.length ? "alert" : undefined} aria-hidden={!failedCovers.length}>
+                {failedCovers.length ? <><strong>封面读取失败</strong><button type="button" onClick={() => retryCover(entry.id)}>重试</button></> : entry.source_type === "upload" ? "本地" : "链接"}
               </span>
             )}
             <em className={`status ${analysisState.tone}`} title={analysisState.hint || analysisState.label}>{analysisState.label}</em>
+            {cover && <span className="library-cover-source">{cover.label}</span>}
             {mode === "assets" && !entry.imported_to_project && <label className="library-select"><input type="checkbox" checked={checked} disabled={!canImportToProject} onChange={() => setSelected((current) => current.includes(entry.id) ? current.filter((id) => id !== entry.id) : [...current, entry.id])} /><span>选择</span></label>}
           </div>
           <div className="library-card-body"><div className="library-card-tags"><span>{entry.content_category_label || "待分类"}</span><small>{entry.platform === "douyin" ? "抖音" : "本地上传"}</small></div><h3>{entry.title || "待提取视频标题"}</h3><p>{entry.account_name || entry.author_name || "未关联账号"}{mode === "assets" && ` · 来源：${entry.source_project_name}`}</p><div className="plain-chips">{entry.tags.length ? entry.tags.slice(0, 6).map(tag => <span key={tag}>{tag}</span>) : <span>暂无标签</span>}</div>{entry.tags.length > 6 && <details className="library-tag-details"><summary>查看全部 {entry.tags.length} 个标签</summary><div className="plain-chips">{entry.tags.slice(6).map(tag => <span key={tag}>{tag}</span>)}</div></details>}

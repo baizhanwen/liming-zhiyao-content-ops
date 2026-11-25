@@ -1,0 +1,107 @@
+/* The outer box owns the height, border and focus ring, including for fields with icons. */
+:root {
+  --field-height: 42px;
+  --field-compact-height: 36px;
+  --field-radius: 9px;
+  --field-padding-x: 12px;
+  --field-border: #bfcec6;
+  --field-size: var(--field-height);
+  --field-font-size: 14px;
+}
+
+:where(.field-compact, .management-toolbar, .library-content-filters, .library-command-bar,
+  .analysis-visual-mode-compact, .analysis-version-toolbar, .analysis-rerun-bar,
+  .report-version-line, .report-original-tools, .production-settings-row,
+  .project-assignment-list, .inline-select) {
+  --field-size: var(--field-compact-height);
+  --field-font-size: 13px;
+}
+
+/* Native option lists, file pickers, checkboxes and editable artwork keep their own geometry. */
+:is(.workbench-shell .workspace, .login-page, .invitation-page) {
+  & :is(
+    input:where(:not([type]), [type="text"], [type="email"], [type="password"], [type="search"],
+      [type="url"], [type="tel"], [type="number"], [type="date"], [type="datetime-local"],
+      [type="time"], [type="week"], [type="month"]),
+    select:where(:not([multiple], [size]:not([size="1"]))),
+    textarea, .field-affix
+  ):not(:where(.wechat-poster *, .wechat-infographic-frame *, .field-affix *)) {
+    box-sizing: border-box;
+    min-width: 0;
+    max-width: 100%;
+    border: 1px solid var(--field-border);
+    border-radius: var(--field-radius);
+    background-color: var(--surface);
+    color: var(--ink);
+    font-family: inherit;
+    font-size: var(--field-font-size);
+    font-weight: 400;
+    line-height: 1.45;
+    padding-inline: var(--field-padding-x);
+
+    &:is(input, select, .field-affix) {
+      height: var(--field-size);
+      min-height: var(--field-size);
+      padding-block: 0;
+    }
+    &:is(select) {
+      -webkit-appearance: none;
+      appearance: none;
+      padding-right: calc(var(--field-padding-x) + 18px);
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='none' viewBox='0 0 12 12'%3E%3Cpath d='m2 4 4 4 4-4' stroke='%23476a5f' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-position: right var(--field-padding-x) center;
+      background-repeat: no-repeat;
+    }
+    &:is(textarea) {
+      padding-block: 9px;
+      line-height: 1.55;
+      resize: vertical;
+    }
+    &:is(.field-affix) {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    &:focus-visible, &.field-affix:focus-within {
+      border-color: var(--brand);
+      outline: 2px solid var(--focus);
+      outline-offset: -2px;
+    }
+    &:is(:disabled, .field-affix:has(:disabled)) {
+      background-color: var(--surface-soft);
+      color: var(--muted);
+      cursor: not-allowed;
+    }
+    &[aria-invalid="true"] { border-color: var(--danger); }
+  }
+
+  & .field-affix > :is(input, select) {
+    min-width: 0;
+    min-height: 0;
+    height: 100%;
+    flex: 1 1 0%;
+    padding: 0;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    outline: 0;
+    box-shadow: none;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+  }
+
+  & .field-affix > select { -webkit-appearance: none; appearance: none; }
+  & .field-affix > svg { flex: none; pointer-events: none; }
+  & :is(.stack-form, .global-search-panel) button.primary-button {
+    min-height: var(--field-size);
+    border-radius: var(--field-radius);
+  }
+}
+
+@media (forced-colors: active) {
+  :is(.workbench-shell .workspace, .login-page, .invitation-page) select:not([multiple], .field-affix *) {
+    appearance: auto;
+    background-image: none;
+  }
+}

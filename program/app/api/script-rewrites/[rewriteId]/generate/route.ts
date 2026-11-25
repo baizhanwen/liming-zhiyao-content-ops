@@ -6,7 +6,7 @@ import { ModelConfigurationError, ModelRequestError, readContentModelConfig } fr
 import { invokeRecordedContentRequest, type ContentModelRequestRecord } from "../../../../../lib/recorded-content-model";
 import { checkOrganizationQuota } from "../../../../../lib/operations";
 import {
-  applyRewriteCopyRepairs, batchScriptUnits, buildMicroRewritePlan, buildMissingRewriteFactSources, buildRestructureLengthTargets, buildRewriteCopyRepairWindows, buildRewriteFactRepairScope, buildScriptUnits, compactRestructureOutline, estimateRewriteUsage, fallbackRestructureOutline, immutableRewriteFacts, mergeImprovedRewriteParagraphRows, mergeMicroRewriteParts, mergeRewriteParagraphRows,
+  applyRewriteCopyRepairs, batchScriptUnits, buildMicroRewritePlan, buildMissingRewriteFactSources, buildRestructureLengthTargets, buildRewriteCopyRepairWindows, buildRewriteFactRepairScope, buildScriptUnits, compactRestructureOutline, fallbackRestructureOutline, immutableRewriteFacts, mergeImprovedRewriteParagraphRows, mergeMicroRewriteParts, mergeRewriteParagraphRows,
   isReviewableLightRewrite, longestSharedRewriteMatch, normalizeRewriteText, readRewriteModelUsage, repairRestructureOutline, rewriteParagraphTargets, rewriteValidationQualityScore,
   rewriteVariantLabel, semanticRewriteFacts, SCRIPT_REWRITE_MAX_CHARACTERS,
   SCRIPT_REWRITE_MICRO_BATCH_CHARACTERS, SCRIPT_REWRITE_MICRO_BATCH_UNITS, SCRIPT_REWRITE_MICRO_REPAIR_ATTEMPTS, SCRIPT_REWRITE_PROMPT_VERSION, validateLightRewrite, validateRestructuredRewrite,
@@ -22,6 +22,11 @@ import {
 import { readRequestIdentity } from "../../../../../lib/request-auth";
 import { canContinueRewriteWrite, rewriteVersionAudit, rewriteVersionInsert } from "../../../../../lib/script-rewrite-write";
 
+import { readRewriteBrandContext, rewriteBrandGuard, type RewriteBrandContext } from "../../../../../lib/script-rewrite-brand";
+import { rewriteStageInstructions } from "../../../../../lib/script-rewrite-adaptation";
+import { planRewriteAdaptation, verifyAdaptedRewrite, rewriteBrief, RewriteAdaptationError, type AdaptationModelStep } from "../../../../../lib/script-rewrite-adapt-generation";
+import { estimateAdaptedRewriteUsage, parseRewriteSnapshot, readRewriteOptions, type RewriteAdaptationSnapshot } from "../../../../../lib/script-rewrite-options";
+
 export const dynamic = "force-dynamic";
 
 const clean = (value: unknown, maximum: number) => typeof value === "string" ? value.trim().slice(0, maximum) : "";
@@ -33,8 +38,8 @@ class RewriteContractError extends Error {
 
 type Usage = { inputTokens: number; outputTokens: number; totalTokens: number };
 type TrackedCall = { id: string; provider: string; model: string; latencyMs: number; usage: Usage; json: unknown; unknownRequestCount: number; reused?: boolean };
-type GenerationScope = { organizationId: string; projectId: string; userId: string; workspaceId: string; runId: string; resumeRunIds?: string[]; assertWritable: () => Promise<void> };
-type GenerationResult = { text: string; paragraphs: string[]; sourceMapping: string[]; outline: RewriteOutlineSection[]; validation: RewriteValidation; calls: TrackedCall[] };
+type GenerationScope = { organizationId: string; projectId: string; userId: string; workspaceId: string; runId: string; resumeRunIds?: string[]; adaptation?: RewriteAdaptationSnapshot | null; evidenceGuard?: ReturnType<typeof rewriteBrandGuard>; assertWritable: () => Promise<void> };
+type GenerationResult = { text: string; paragraphs: string[]; sourceMapping: string[]; outline: RewriteOutlineSection[]; validation: RewriteValidation; calls: TrackedCall[]; facts?: RewriteFactCard[]; sourceProfile?: RewriteSourceProfile };
 type GeneratedRewriteSection = { sectionId: string; factIds: string[]; paragraphs: string[] };
 type RewriteSourceProfile = {
   theme: string;
@@ -57,7 +62,10 @@ async function invokeTrackedModel(input: GenerationScope & {
 }) {
   await input.assertWritable();
   const db = getD1(); const config = readContentModelConfig("max", await readEffectiveModelRuntime(input.organizationId));
-  const userJson = JSON.stringify(input.payload); const inputJson = JSON.stringify({ runId: input.runId, payload: input.payload }); const inputHash = await sha256Hex(new TextEncoder().encode(`${input.system}\n${userJson}`));
+  const settings = input.adaptation;
+  const system = settings ? input.system + "\n" + rewriteStageInstructions(settings.mode, rewriteBrief(settings)) : input.system;
+  const payload = settings ? { ...asRecord(input.payload), rewrite_brief: rewriteBrief(settings), brand_mode: settings.mode, target_name: settings.targetName } : input.payload;
+  const userJson = JSON.stringify(payload); const inputJson = JSON.stringify({ runId: input.runId, payload }); const inputHash = await sha256Hex(new TextEncoder().encode(`${system}\n${userJson}`));
   // Only foundation steps can resume. Repairs and audits must use fresh feedback.
   if (input.resumeRunIds?.length && ["script_rewrite_micro_homomorphic_body_batch", "script_rewrite_restructure_facts_batch"].includes(input.taskType)) {
     const placeholders = input.resumeRunIds.map(() => "?").join(",");
@@ -77,11 +85,11 @@ async function invokeTrackedModel(input: GenerationScope & {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       await input.assertWritable();
-      const invocation = await invokeRecordedContentRequest({ system: input.system, user: userJson, profile: "max", nativeJson: attempt === 0, temperature: input.temperature, maxTokens: input.maxTokens }, {
+      const invocation = await invokeRecordedContentRequest({ system, user: userJson, profile: "max", nativeJson: attempt === 0, temperature: input.temperature, maxTokens: input.maxTokens }, {
         id: attempt === 0 ? id : crypto.randomUUID(), rootCallId: id, organizationId: input.organizationId, projectId: input.projectId,
         topicId: null, promptTemplateId: null, taskType: input.taskType, promptVersion: SCRIPT_REWRITE_PROMPT_VERSION, modelConfig: config, provider: config.provider, model: config.model, userId: input.userId,
         step: attempt === 0 ? "generation" : "json_repair", inputHash, inputJson, monthlyLimit: quota.limit, ledger: modelRequests,
-        rewriteWorkspaceId: input.workspaceId,
+        rewriteWorkspaceId: input.workspaceId, rewriteEvidenceGuard: input.evidenceGuard,
       });
       accumulatedLatencyMs += invocation.latencyMs;
       addUsage(usage, readRewriteModelUsage(invocation.raw));
@@ -652,7 +660,7 @@ async function polishRestructuredParagraphs(scope: GenerationScope, units: Scrip
 
 /** A reviewable saved body can be polished without repeating extraction/planning. */
 async function recoverRestructuredDraft(scope: GenerationScope, units: ScriptUnit[]): Promise<GenerationResult | null> {
-  if (!scope.resumeRunIds?.length) return null;
+  if (!scope.resumeRunIds?.length || scope.adaptation) return null;
   const db = getD1(), config = readContentModelConfig("max", await readEffectiveModelRuntime(scope.organizationId));
   const placeholders = scope.resumeRunIds.map(() => "?").join(",");
   const saved = await db.prepare(`SELECT v.run_id, v.text, v.paragraphs_json, v.source_mapping_json, v.outline_json FROM script_rewrite_versions v JOIN script_rewrite_runs r ON r.id = v.run_id AND r.organization_id = v.organization_id AND r.project_id = v.project_id AND r.workspace_id = v.workspace_id WHERE v.organization_id = ? AND v.project_id = ? AND v.created_by = ? AND v.variant = 'restructured' AND r.status = 'completed' AND v.model_provider = ? AND v.model_name = ? AND v.run_id IN (${placeholders}) ORDER BY v.created_at DESC LIMIT 1`).bind(scope.organizationId, scope.projectId, scope.userId, config.provider, config.model, ...scope.resumeRunIds).first<{ run_id: string; text: string; paragraphs_json: string; source_mapping_json: string; outline_json: string }>();
@@ -702,7 +710,7 @@ async function recoverRestructuredDraft(scope: GenerationScope, units: ScriptUni
     calls.push(audit);
     validation = withSemanticAudit(deterministic, readRestructureAudit(audit.json));
   } catch (error) { validation = withUnavailableSemanticAudit(deterministic, error); }
-  return { text, paragraphs, sourceMapping, outline, validation, calls };
+  return { text, paragraphs, sourceMapping, outline, validation, calls, facts, sourceProfile };
 }
 
 async function generateRestructuredRewrite(scope: GenerationScope, units: ScriptUnit[]): Promise<GenerationResult> {
@@ -1004,7 +1012,60 @@ async function generateRestructuredRewrite(scope: GenerationScope, units: Script
     validation = withUnavailableSemanticAudit(deterministicValidation, error);
   }
   if (!validation.passed && !isReviewableDraft(deterministicValidation, "restructured")) throw new RewriteContractError("内容等价重构未通过命题覆盖、结构差异或语义审计。", "RESTRUCTURE_VALIDATION_FAILED", validation);
-  return { text: candidateText, paragraphs: body.paragraphs, sourceMapping: body.factMapping, outline, validation, calls: [...generationCalls, ...auditCalls] };
+  return { text: candidateText, paragraphs: body.paragraphs, sourceMapping: body.factMapping, outline, validation, facts, sourceProfile, calls: [...generationCalls, ...auditCalls] };
+}
+
+function rewriteFactIssues(validation: RewriteValidation) {
+  const issues: string[] = [];
+  if (validation.missingImmutableFacts.length) issues.push("补回有原稿依据的事实或标识：" + validation.missingImmutableFacts.join("、"));
+  if (validation.unexpectedImmutableFacts?.length) issues.push("移除无依据的新事实或标识：" + validation.unexpectedImmutableFacts.join("、"));
+  return issues;
+}
+
+async function generateVariant(scope: GenerationScope, variant: ScriptRewriteVariant, source: string, snapshot: RewriteAdaptationSnapshot | null, brand: RewriteBrandContext | null) {
+  const extraCalls: TrackedCall[] = [];
+  const invoke = async (step: AdaptationModelStep) => {
+    const call = await invokeTrackedModel({ ...scope, ...step });
+    extraCalls.push(call);
+    return call;
+  };
+  const plan = snapshot ? await planRewriteAdaptation(source, snapshot, brand, invoke) : null;
+  if (plan && snapshot) {
+    snapshot.mappings = plan.mappings;
+    snapshot.unresolved = plan.unresolved;
+  }
+  const working = plan?.text ?? source;
+  const units = buildScriptUnits(working, variant === "light_rewrite" ? SCRIPT_REWRITE_MAX_CHARACTERS : undefined);
+  const writerScope = { ...scope, adaptation: snapshot };
+  const generated = variant === "light_rewrite" ? await generateLightRewrite(writerScope, units) : await generateRestructuredRewrite(writerScope, units);
+  if (!snapshot || !plan) return generated;
+  const verified = await verifyAdaptedRewrite({ source, plan, snapshot, brand, paragraphs: generated.paragraphs, invoke, initialFactIssues: rewriteFactIssues(generated.validation),
+    validateRepair: async paragraphs => {
+      const rows = paragraphs.map((text, i) => ({ paragraphId: generated.sourceMapping[i], text }));
+      const light = variant === "light_rewrite";
+      const deterministic = light ? validateLightRewrite(units, rows) :
+        validateRestructuredRewrite(units, generated.facts ?? [], paragraphs, generated.sourceMapping, generated.outline);
+      const factIssues = rewriteFactIssues(deterministic);
+      if (factIssues.length || (!deterministic.passed && !isReviewableDraft(deterministic, variant))) {
+        const failedChecks = deterministic.checks.filter(check => !check.passed).map(check => check.label + "（" + check.value + "）");
+        throw new RewriteAdaptationError("REWRITE_BRAND_REPAIR_INVALID", "品牌修订影响了原稿的信息或结构，本次未保存。",
+          { ...deterministic, issues: [...factIssues, ...failedChecks] });
+      }
+      const call = await invokeTrackedModel({ ...writerScope, taskType: "script_rewrite_brand_repair_structure_audit", temperature: 0, maxTokens: 2500,
+        system: light ? MICRO_HOMOMORPHIC_AUDITOR_PROMPT : EQUIVALENT_AUDITOR_PROMPT,
+        payload: light ? { task: "audit_micro_homomorphic_script", source_paragraphs: units.map(row => ({ paragraph_id: row.paragraphId, text: row.text })),
+          candidate_paragraphs: rows.map(row => ({ paragraph_id: row.paragraphId, text: row.text })) } :
+          { task: "audit_equivalent_restructure", source_text: working, source_profile: generated.sourceProfile, fact_ledger: generated.facts,
+            planned_outline: generated.outline, candidate_text: paragraphs.join("\n\n") } });
+      extraCalls.push(call);
+      generated.validation = light ? withLightSemanticAudit(deterministic, readLightAudit(call.json)) : withSemanticAudit(deterministic, readRestructureAudit(call.json));
+      if (!generated.validation.semanticAudit?.passed) throw new RewriteAdaptationError("REWRITE_BRAND_REPAIR_INVALID", "品牌修订未通过原稿语义复核。", generated.validation);
+    } });
+  snapshot.qualityNotes = verified.qualityNotes;
+  generated.paragraphs = verified.paragraphs;
+  generated.text = verified.paragraphs.join("\n\n");
+  generated.calls.push(...extraCalls);
+  return generated;
 }
 
 export async function POST(request: Request, context: { params: Promise<{ rewriteId: string }> }) {
@@ -1025,55 +1086,73 @@ export async function POST(request: Request, context: { params: Promise<{ rewrit
     if (!sourceVersion) return apiError("REWRITE_SOURCE_VERSION_MISSING", "来源快照不存在，不能继续生成。", 409);
     const retryOfRunId = clean(payload.retryOfRunId, 100);
     const resumeRunIds: string[] = [];
+    let options;
+    try { options = payload.adaptation === undefined ? null : readRewriteOptions(payload.adaptation); }
+    catch (error) { return apiError("REWRITE_OPTIONS_INVALID", error instanceof Error ? error.message : "改写设置无效。", 400); }
     if (retryOfRunId) {
       if (variants.length !== 1) return apiError("REWRITE_RETRY_SINGLE_VARIANT", "单版重试一次只能选择一个版本。", 400);
-      const retryRun = await db.prepare("SELECT id FROM script_rewrite_runs WHERE id = ? AND organization_id = ? AND project_id = ? AND workspace_id = ? AND variant = ?").bind(retryOfRunId, organizationId, projectId, rewriteId, variants[0]).first();
+      const retryRun = await db.prepare("SELECT id, adaptation_json, status FROM script_rewrite_runs WHERE id = ? AND organization_id = ? AND project_id = ? AND workspace_id = ? AND variant = ? AND source_version_id = ?")
+        .bind(retryOfRunId, organizationId, projectId, rewriteId, variants[0], sourceVersion.id).first<{ id: string; adaptation_json: string | null; status: string }>();
       if (!retryRun) return apiError("REWRITE_RETRY_NOT_FOUND", "要重试的运行记录不存在。", 404);
+      if (retryRun.status === "started") return apiError("REWRITE_RETRY_ACTIVE", "生成仍在进行中，请等待本次结果。", 409);
+      const previous = parseRewriteSnapshot(retryRun.adaptation_json);
+      options = previous ? readRewriteOptions(previous) : null;
       let ancestorId: string | null = retryOfRunId;
       while (ancestorId && resumeRunIds.length < 20 && !resumeRunIds.includes(ancestorId)) {
-        const ancestor: { retry_of_run_id: string | null } | null = await db.prepare("SELECT retry_of_run_id FROM script_rewrite_runs WHERE id = ? AND organization_id = ? AND project_id = ? AND workspace_id = ? AND variant = ? AND source_version_id = ? AND status <> 'started'").bind(ancestorId, organizationId, projectId, rewriteId, variants[0], sourceVersion.id).first<{ retry_of_run_id: string | null }>();
+        const ancestor: { retry_of_run_id: string | null } | null = await db.prepare("SELECT retry_of_run_id FROM script_rewrite_runs WHERE id = ? AND organization_id = ? AND project_id = ? AND workspace_id = ? AND variant = ? AND source_version_id = ? AND (prompt_version = ? OR (adaptation_json IS NULL AND ? = 1)) AND status <> 'started'").bind(ancestorId, organizationId, projectId, rewriteId, variants[0], sourceVersion.id, SCRIPT_REWRITE_PROMPT_VERSION, Number(!options)).first();
         if (!ancestor) break;
         resumeRunIds.push(ancestorId);
         ancestorId = ancestor.retry_of_run_id;
       }
     }
+    const brand = options?.mode === "current_brand" ? await readRewriteBrandContext(db, { organizationId, projectId }, workspace.source_text) : null;
+    if (brand && options?.brandStamp !== undefined && brand.stamp !== options.brandStamp) return apiError("REWRITE_BRAND_CHANGED", "当前空间的品牌资料已更新，请刷新后用最新资料发起新的生成。", 409);
+    if (brand && !brand.targetName) return apiError("REWRITE_BRAND_REQUIRED", brand.missing.join(" ") || "请先确认当前空间的品牌发布名称。", 409);
+    const evidenceGuard = brand ? rewriteBrandGuard({ organizationId, projectId }, brand.stamp) : undefined;
+    const makeSnapshot = (): RewriteAdaptationSnapshot | null => options ? { ...options, ...(brand ? { brandStamp: brand.stamp } : {}),
+      targetName: brand?.targetName ?? null, sources: brand?.sources ?? [], mappings: [], unresolved: [], qualityNotes: [] } : null;
     readContentModelConfig("max", await readEffectiveModelRuntime(organizationId));
-    const estimate = estimateRewriteUsage(workspace.source_text, variants); const user = await ensureUser(identity);
+    const estimate = estimateAdaptedRewriteUsage(workspace.source_text, variants, options?.mode ?? null); const user = await ensureUser(identity);
     const writeScope = { organizationId, projectId, workspaceId: rewriteId, userId: user.id };
     const assertWritable = async () => {
       const currentIdentity = await readRequestIdentity(request);
       if (!currentIdentity || currentIdentity.authSubject !== identity.authSubject || !await canContinueRewriteWrite(db, writeScope)) {
         throw new RewriteContractError("登录状态、项目权限或工作区状态已改变，已停止后续模型请求和版本保存；此前已发出的请求仍计入用量。请刷新确认权限后再操作。", "REWRITE_ACCESS_CHANGED");
       }
+      if (evidenceGuard && !(await db.prepare(`SELECT 1 AS ok WHERE ${evidenceGuard.sql}`).bind(...evidenceGuard.bindings).first())) {
+        throw new RewriteContractError("品牌资料在生成期间发生变化，请刷新后用最新资料重新生成。", "REWRITE_BRAND_CHANGED");
+      }
     };
     const quota = await checkOrganizationQuota(organizationId, user.id, "modelCalls", estimate.callCount);
     if (!quota.allowed && !resumeRunIds.length) return apiError("MODEL_QUOTA_EXCEEDED", `本次预计调用 ${estimate.callCount} 次模型，当前月度剩余额度不足。`, 429, { usage: quota.current, limit: quota.limit, requested: estimate.callCount });
-    const units = buildScriptUnits(workspace.source_text);
-    const homomorphicUnits = buildScriptUnits(workspace.source_text, SCRIPT_REWRITE_MAX_CHARACTERS);
     const results: Array<Record<string, unknown>> = [];
     for (const variant of variants) {
-      const variantEstimate = estimateRewriteUsage(workspace.source_text, [variant]); const runId = crypto.randomUUID(); const startedAt = new Date().toISOString();
-      await db.prepare(`INSERT INTO script_rewrite_runs (id, organization_id, project_id, workspace_id, variant, status, source_version_id, result_version_id, retry_of_run_id, estimated_call_count, estimated_input_tokens, maximum_output_tokens, actual_input_tokens, actual_output_tokens, actual_total_tokens, model_call_id, prompt_version, validation_json, error_code, error_message, created_by, created_at, completed_at) VALUES (?, ?, ?, ?, ?, 'started', ?, NULL, ?, ?, ?, ?, 0, 0, 0, NULL, ?, '{}', NULL, NULL, ?, ?, NULL)`).bind(runId, organizationId, projectId, rewriteId, variant, sourceVersion.id, retryOfRunId || null, variantEstimate.callCount, variantEstimate.estimatedInputTokens, variantEstimate.maximumOutputTokens, SCRIPT_REWRITE_PROMPT_VERSION, user.id, startedAt).run();
+      const adaptation = makeSnapshot();
+      const variantEstimate = estimateAdaptedRewriteUsage(workspace.source_text, [variant], options?.mode ?? null); const runId = crypto.randomUUID(); const startedAt = new Date().toISOString();
+      await db.prepare(`INSERT INTO script_rewrite_runs (id, organization_id, project_id, workspace_id, variant, status, source_version_id, result_version_id, retry_of_run_id, estimated_call_count, estimated_input_tokens, maximum_output_tokens, actual_input_tokens, actual_output_tokens, actual_total_tokens, model_call_id, prompt_version, validation_json, error_code, error_message, created_by, created_at, completed_at, adaptation_json) VALUES (?, ?, ?, ?, ?, 'started', ?, NULL, ?, ?, ?, ?, 0, 0, 0, NULL, ?, '{}', NULL, NULL, ?, ?, NULL, ?)`).bind(runId, organizationId, projectId, rewriteId, variant, sourceVersion.id, retryOfRunId || null, variantEstimate.callCount, variantEstimate.estimatedInputTokens, variantEstimate.maximumOutputTokens, SCRIPT_REWRITE_PROMPT_VERSION, user.id, startedAt, adaptation ? JSON.stringify(adaptation) : null).run();
       try {
-        const generated = variant === "light_rewrite"
-          ? await generateLightRewrite({ ...writeScope, runId, resumeRunIds, assertWritable }, homomorphicUnits)
-          : await generateRestructuredRewrite({ ...writeScope, runId, resumeRunIds, assertWritable }, units);
+        const generated = await generateVariant({ ...writeScope, runId, resumeRunIds, evidenceGuard, assertWritable }, variant, workspace.source_text, adaptation, brand);
         const usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }; generated.calls.forEach((call) => addUsage(usage, call.usage));
         const unknownRequestCount = generated.calls.reduce((count, call) => count + call.unknownRequestCount, 0);
         await assertWritable();
         const versionId = crypto.randomUUID(); const completedAt = new Date().toISOString(); const firstCall = generated.calls[0];
         const saved = await db.batch([
-          rewriteVersionInsert(db, { ...writeScope, id: versionId, variant, parentVersionId: sourceVersion.id, runId, text: generated.text, paragraphs: generated.paragraphs, sourceMapping: generated.sourceMapping, outline: generated.outline, validation: generated.validation, modelProvider: firstCall?.provider, modelName: firstCall?.model, promptVersion: SCRIPT_REWRITE_PROMPT_VERSION, modelCallId: firstCall?.id, changeSummary: `${rewriteVariantLabel(variant)}自动生成`, now: completedAt }),
-          db.prepare("UPDATE script_rewrite_runs SET status = 'completed', result_version_id = ?, actual_input_tokens = ?, actual_output_tokens = ?, actual_total_tokens = ?, model_call_id = ?, validation_json = ?, completed_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'started' AND EXISTS (SELECT 1 FROM script_rewrite_versions WHERE id = ?)").bind(versionId, usage.inputTokens, usage.outputTokens, usage.totalTokens, firstCall?.id ?? null, JSON.stringify({ ...generated.validation, modelUsage: { unknownRequestCount } }), completedAt, runId, organizationId, projectId, versionId),
+          rewriteVersionInsert(db, { ...writeScope, id: versionId, variant, parentVersionId: sourceVersion.id, runId, adaptation, evidenceGuard, text: generated.text, paragraphs: generated.paragraphs, sourceMapping: generated.sourceMapping, outline: generated.outline, validation: generated.validation, modelProvider: firstCall?.provider, modelName: firstCall?.model, promptVersion: SCRIPT_REWRITE_PROMPT_VERSION, modelCallId: firstCall?.id, changeSummary: `${rewriteVariantLabel(variant)}自动生成`, now: completedAt }),
+          db.prepare("UPDATE script_rewrite_runs SET status = 'completed', result_version_id = ?, adaptation_json = ?, actual_input_tokens = ?, actual_output_tokens = ?, actual_total_tokens = ?, model_call_id = ?, validation_json = ?, completed_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'started' AND EXISTS (SELECT 1 FROM script_rewrite_versions WHERE id = ?)").bind(versionId, adaptation ? JSON.stringify(adaptation) : null, usage.inputTokens, usage.outputTokens, usage.totalTokens, firstCall?.id ?? null, JSON.stringify({ ...generated.validation, modelUsage: { unknownRequestCount } }), completedAt, runId, organizationId, projectId, versionId),
           db.prepare("UPDATE script_rewrite_workspaces SET updated_by = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND EXISTS (SELECT 1 FROM script_rewrite_versions WHERE id = ?)").bind(user.id, completedAt, rewriteId, organizationId, projectId, versionId),
           rewriteVersionAudit(db, { ...writeScope, id: crypto.randomUUID(), versionId, action: "script_rewrite.generated", metadata: { workspaceId: rewriteId, runId, variant, sourceHash: workspace.source_hash, modelCallIds: generated.calls.map(call => call.id), usage, validation: generated.validation }, now: completedAt }),
           db.prepare("SELECT version FROM script_rewrite_versions WHERE id = ?").bind(versionId),
         ]);
-        if (!saved[0].meta.changes) throw new RewriteContractError("项目权限、工作区或运行状态在保存前已改变，结果没有写入新版本。请刷新确认后再操作；原有版本保留。", "REWRITE_SAVE_CONFLICT");
+        if (!saved[0].meta.changes) {
+          if (evidenceGuard && !await db.prepare(`SELECT 1 WHERE ${evidenceGuard.sql}`).bind(...evidenceGuard.bindings).first()) {
+            throw new RewriteContractError("保存前品牌资料发生变化，请刷新后重新生成。", "REWRITE_BRAND_CHANGED");
+          }
+          throw new RewriteContractError("项目权限、工作区或运行状态在保存前已改变，结果没有写入新版本。请刷新确认后再操作；原有版本保留。", "REWRITE_SAVE_CONFLICT");
+        }
         const version = (saved[4].results[0] as { version: number }).version;
         results.push({ variant, status: "completed", runId, versionId, version, validation: generated.validation, usage, reusedCallCount: generated.calls.filter((call) => call.reused).length });
       } catch (error) {
-        const completedAt = new Date().toISOString(); const contract = error instanceof RewriteContractError ? error : null; const code = contract?.code ?? (error instanceof ModelRequestError ? error.code : "REWRITE_GENERATION_FAILED"); const message = error instanceof Error ? error.message.slice(0, 1000) : "改写生成失败";
+        const completedAt = new Date().toISOString(); const contract = error instanceof RewriteContractError || error instanceof RewriteAdaptationError ? error : null; const code = contract?.code ?? (error instanceof ModelRequestError ? error.code : "REWRITE_GENERATION_FAILED"); const message = error instanceof Error ? error.message.slice(0, 1000) : "改写生成失败";
         const callUsage = await db.prepare(`SELECT COALESCE(SUM(CAST(json_extract(output_json, '$.usage.inputTokens') AS INTEGER)), 0) AS input_tokens,
           COALESCE(SUM(CAST(json_extract(output_json, '$.usage.outputTokens') AS INTEGER)), 0) AS output_tokens,
           COALESCE(SUM(CAST(json_extract(output_json, '$.usage.totalTokens') AS INTEGER)), 0) AS total_tokens,
@@ -1081,7 +1160,7 @@ export async function POST(request: Request, context: { params: Promise<{ rewrit
           MIN(id) AS model_call_id FROM model_calls WHERE organization_id = ? AND project_id = ? AND created_by = ?
           AND json_extract(input_json, '$.runId') = ? AND task_type LIKE 'script_rewrite_%'`).bind(organizationId, projectId, user.id, runId).first<{ input_tokens: number; output_tokens: number; total_tokens: number; unknown_requests: number; model_call_id: string | null }>();
         await db.batch([
-          db.prepare("UPDATE script_rewrite_runs SET status = 'failed', actual_input_tokens = ?, actual_output_tokens = ?, actual_total_tokens = ?, model_call_id = ?, validation_json = ?, error_code = ?, error_message = ?, completed_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'started'").bind(callUsage?.input_tokens ?? 0, callUsage?.output_tokens ?? 0, callUsage?.total_tokens ?? 0, callUsage?.model_call_id ?? null, JSON.stringify({ ...(asRecord(contract?.validation) ?? {}), modelUsage: { unknownRequestCount: callUsage?.unknown_requests ?? 0 } }), code, message, completedAt, runId, organizationId, projectId),
+          db.prepare("UPDATE script_rewrite_runs SET status = 'failed', adaptation_json = ?, actual_input_tokens = ?, actual_output_tokens = ?, actual_total_tokens = ?, model_call_id = ?, validation_json = ?, error_code = ?, error_message = ?, completed_at = ? WHERE id = ? AND organization_id = ? AND project_id = ? AND status = 'started'").bind(adaptation ? JSON.stringify(adaptation) : null, callUsage?.input_tokens ?? 0, callUsage?.output_tokens ?? 0, callUsage?.total_tokens ?? 0, callUsage?.model_call_id ?? null, JSON.stringify({ ...(asRecord(contract?.validation) ?? {}), modelUsage: { unknownRequestCount: callUsage?.unknown_requests ?? 0 } }), code, message, completedAt, runId, organizationId, projectId),
           db.prepare(`INSERT INTO audit_logs (id, organization_id, project_id, actor_user_id, action, target_type, target_id, metadata_json, created_at) VALUES (?, ?, ?, ?, 'script_rewrite.failed', 'script_rewrite_run', ?, ?, ?)`).bind(crypto.randomUUID(), organizationId, projectId, user.id, runId, JSON.stringify({ workspaceId: rewriteId, variant, code, validation: contract?.validation ?? {} }), completedAt),
         ]);
         results.push({ variant, status: "failed", runId, error: { code, message }, validation: contract?.validation ?? {} });

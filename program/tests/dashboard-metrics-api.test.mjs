@@ -94,6 +94,7 @@ test("employee data stays own-scoped while pending reviews remain project-scoped
   assert.deepEqual(result.jobs.map(row => row.id), [ownJob]); assert.deepEqual(result.tasks.map(row => row.id), [ownContent]);
   assert.equal(result.summary.openWorkTasks, 1); assert.equal(result.summary.openTasks, 1);
   assert.equal(result.summary.pendingReviews, 2); assert.equal(result.reviews.length, 2); assert.ok(result.reviews.every(row => row.project_id === shared));
+  assert.equal(result.productionTrend.reduce((sum, day) => sum + day.count, 0), 1);
   assert.deepEqual(result.assignableEmployees, []); assert.deepEqual(result.team, []); assert.equal(result.summary.monthlyContentTarget, 10);
 });
 
@@ -178,4 +179,23 @@ for (const [boundary, delta, expected] of [["start", -1, 0], ["start", 0, 1], ["
 
 test("dashboard denies another organization without reading its summaries", async t => {
   const f = await fixture(t), response = await f.read("another-organization"); assert.equal(response.status, 403);
+});
+
+test("production trend counts new visible drafts by Shanghai calendar day and fills the full comparison window", async t => {
+  const f = await fixture(t), project = f.project();
+  const days = await f.data().then(data => data.productionTrend);
+  const today = new Date(Date.parse(f.now) + 8 * 3600000).toISOString().slice(0, 10);
+  assert.equal(days.length, 60);
+  assert.equal(days.at(-1).date, today);
+  assert.ok(days.every(day => day.count === 0));
+  const first = Date.parse(days[0].date + "T00:00:00+08:00");
+  const at = offset => new Date(first + offset).toISOString();
+  for (const offset of [-1, 0, 86400000 - 1, 86400000, 60 * 86400000]) f.content(project, { created_at: at(offset) });
+  f.content(project, { created_at: days[1].date + "T00:00:00+08:00" });
+  f.content(project, { created_at: at(0), deleted_at: f.now });
+  f.content(f.project({ status: "archived" }), { created_at: at(0) });
+  f.content(f.project({ deleted_at: f.now }), { created_at: at(0) });
+  const result = await f.data();
+  assert.deepEqual(result.productionTrend.map(day => day.count), [2, 2, ...Array(58).fill(0)]);
+  assert.equal(Date.parse(days[59].date) - Date.parse(days[0].date), 59 * 86400000);
 });

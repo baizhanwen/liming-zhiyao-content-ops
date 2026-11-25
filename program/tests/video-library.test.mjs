@@ -47,7 +47,8 @@ test("material center supports search, classification, tags, import and removal"
   assert.match(writes, /video_library\.removed/);
   assert.match(writes, /prepareProjectMemoryEventWithDb/);
   assert.match(component, /封面读取失败/);
-  assert.match(libraryRoute, /frame\.is_cover DESC/);
+  assert.match(libraryRoute, /videoCoverJoin/);
+  assert.match(await read("../lib/video-cover.ts"), /frame\.is_cover DESC/);
 });
 
 test("company-level library detail does not require a target project", async () => {

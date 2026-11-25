@@ -1,5 +1,7 @@
 "use client";
 
+import { RecordSidebar, RecordSidebarItem } from "../RecordSidebar";
+import { SplitWorkspace } from "../SplitWorkspace";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { productInternalSchema, productPublicSchema } from "../../lib/ecommerce/contracts";
 import { isScopeCancellation } from "../../lib/client-scope-request";
@@ -49,9 +51,16 @@ export function Products({ scope, enabled, dirty, discard, guidedStep, selectedP
     {guidedStep === "product" && selectedProductId === undefined && <div className="ec-panel-head"><Field label="使用已有商品，或新建一个"><select value={selectedId} onChange={event => pick(event.target.value)}><option value="">新建商品</option>{rows.map(row => <option key={row.id} value={row.id}>{row.name} · {priceLabel(row)} · {statuses[row.status as keyof typeof statuses] ?? row.status}</option>)}</select></Field>{selectedId && <button type="button" disabled={!enabled} onClick={() => pick("")}>新建商品</button>}</div>}
     {editor}
   </section>;
-  return <div className="ec-split"><aside className="ec-panel ec-list"><div className="ec-panel-head"><h2>商品资料</h2><button type="button" disabled={!enabled} onClick={() => pick("")}>新建商品</button></div>
-    <Notices error={action.error} />{!loaded ? <p role="status">正在加载商品…</p> : !rows.length ? <p className="ec-muted">补全并确认商品信息，即可生成完整文案，参考视频可选。</p> : rows.map(row => <button type="button" key={row.id} className={`ec-list-item ${row.id === selectedId ? "selected" : ""}`} onClick={() => pick(row.id)}><strong>{row.name}</strong><small>{priceLabel(row)} · v{row.current_version}</small><State value={row.status} /></button>)}
-  </aside><section className="ec-panel">{selected && onCreateCopy && <div className="ec-actions ec-product-next"><button type="button" className="ec-primary" disabled={!enabled || selected.status !== "confirmed"} onClick={() => { if (discard()) { dirty(false); onCreateCopy(selected.version_id); } }}>用此商品写文案 →</button>{selected.status !== "confirmed" && <small className="ec-muted">确认商品信息后，即可生成完整文案。</small>}</div>}{editor}</section></div>;
+  return <SplitWorkspace className="ec-split record-sidebar-layout">
+    <RecordSidebar title="商品资料" count={loaded ? rows.length : undefined}
+      action={<button type="button" disabled={!enabled} onClick={() => pick("")}>新建商品</button>}>
+      <Notices error={action.error} />
+      {!loaded ? <p role="status">正在加载商品…</p> : !rows.length ? <p className="ec-muted">补全并确认商品信息，即可生成完整文案，参考视频可选。</p>
+        : rows.map(row => <RecordSidebarItem key={row.id} title={row.name} version={row.current_version}
+          status={<State value={row.status} />} meta={priceLabel(row)}
+          selected={row.id === selectedId} onSelect={() => pick(row.id)} />)}
+    </RecordSidebar>
+    <section key={selectedId} className="ec-panel">{selected && onCreateCopy && <div className="ec-actions ec-product-next"><button type="button" className="ec-primary" disabled={!enabled || selected.status !== "confirmed"} onClick={() => { if (discard()) { dirty(false); onCreateCopy(selected.version_id); } }}>用此商品写文案 →</button>{selected.status !== "confirmed" && <small className="ec-muted">确认商品信息后，即可生成完整文案。</small>}</div>}{editor}</section></SplitWorkspace>;
 }
 
 function ProductEditor({ scope, row, enabled, dirty, saved, guidedStep, onProgressChange, beginSave }: { scope: Scope; row?: ProductRow; enabled: boolean; dirty: Props["dirty"]; saved: (id: string, current: () => boolean) => Promise<void>; guidedStep?: Props["guidedStep"]; onProgressChange?: Props["onProgressChange"]; beginSave: () => () => boolean }) {

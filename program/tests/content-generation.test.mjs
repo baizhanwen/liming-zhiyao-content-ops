@@ -39,8 +39,8 @@ test("production pack uses a strict Zod contract and traceable citations", async
   const invalidBound = { ...pack, hashtags: ["过长".repeat(41)] };
   assert.match(production.productionPackValidationIssue(production.productionPackSchema.safeParse(invalidBound).error, invalidBound), /hashtags\.0.*实际长度 82/);
   assert.equal(production.CONTENT_OUTPUT_SCHEMA.properties.citations.items.properties.quote.maxLength, 80);
-  assert.equal(production.CONTENT_OUTPUT_SCHEMA.properties.hashtags.items.maxLength, 80);
-  assert.equal(production.CONTENT_OUTPUT_SCHEMA.properties.adaptations.items.properties.platform.maxLength, 80);
+  assert.equal(production.CONTENT_OUTPUT_SCHEMA.properties.hashtags, undefined);
+  assert.equal(production.CONTENT_OUTPUT_SCHEMA.properties.adaptations, undefined);
   const usage = production.buildSourceUsageReport([
     { sourceType: "strategy", sourceId: "strategy-1" },
     { sourceType: "knowledge", sourceId: "knowledge-1" },
@@ -69,7 +69,7 @@ test("production pack uses a strict Zod contract and traceable citations", async
   ]);
   assert.equal(completeBenchmarks.status, "verified");
   assert.match(production.CONTENT_SYSTEM_PROMPT, /每条输入 benchmark 都必须在 citations 中逐条引用/);
-  assert.match(production.CONTENT_SYSTEM_PROMPT, /benchmarkMethods 必须与输入中的 benchmark 逐条对应且不得遗漏/);
+  assert.match(production.CONTENT_SYSTEM_PROMPT, /benchmarkMethods 与所选来源逐条对应/);
 
   const layers = production.partitionContentPromptSources([
     { sourceType: "topic", sourceId: "topic-1", title: "选题任务", text: "待验证的选题假设" },
@@ -203,15 +203,17 @@ test("model adapter keeps provider credentials server-side and supports profiles
   assert.doesNotMatch(adapter, /NEXT_PUBLIC/);
 });
 
-test("content production is a real routed workspace rather than a dashboard anchor", async () => {
-  const [shell, page, workspace] = await Promise.all([
+test("manuscript production is routed through the creation center with a legacy redirect", async () => {
+  const [shell, page, legacyPage, workspace] = await Promise.all([
     readFile(new URL("../components/AppShell.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/studio/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/content/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/ContentProductionWorkspace.tsx", import.meta.url), "utf8"),
   ]);
-  assert.match(shell, /href: "\/content"/);
+  assert.match(shell, /href: "\/studio"/);
   assert.match(page, /ContentProductionWorkspace/);
+  assert.match(legacyPage, /redirect\(studioHref\("drafts"/);
   assert.match(workspace, /AI 生成新版本/);
   assert.match(workspace, /保存为新版本/);
-  assert.match(workspace, /来源引用/);
+  assert.match(workspace, /已保存稿件的实际引用/);
 });

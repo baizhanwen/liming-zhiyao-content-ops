@@ -1,6 +1,15 @@
 import { AppShell } from "../../components/AppShell";
+import { ModuleHeader } from "../../components/ModuleHeader";
 import { ProjectManager } from "../../components/ProjectManager";
+import { spaceSearchParams, type SpaceSearchParams } from "../../lib/space-navigation";
 
-export default function ProjectsPage() {
-  return <AppShell activePath="/projects"><section className="page-heading management-heading"><div><p>空间管理</p><h1>企业空间</h1><span>每个企业空间拥有独立成员、资料、内容和分析任务。</span></div><a className="secondary-link" href="/members">管理成员与权限 →</a></section><ProjectManager /></AppShell>;
+export default async function ProjectsPage({ searchParams }: { searchParams: Promise<SpaceSearchParams> }) {
+  const params = spaceSearchParams(await searchParams);
+  const organizationId = params.get("organizationId")?.trim() ?? "";
+  const projectId = params.get("projectId")?.trim() ?? "";
+  const strategyOverview = params.get("view") === "strategies";
+  return <AppShell activePath="/projects">
+    <ModuleHeader title={strategyOverview ? "策略总览" : "企业空间管理"} />
+    <ProjectManager key={JSON.stringify([organizationId, projectId])} requestedOrganizationId={organizationId} requestedProjectId={projectId} strategyOverview={strategyOverview} />
+  </AppShell>;
 }
